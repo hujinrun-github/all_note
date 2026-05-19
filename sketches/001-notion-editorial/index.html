@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Variant 1: 编辑风 · 仪表盘</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{bg:'#fbfbfa',surface:'#ffffff',border:'#e8e7e4',text:'#37352f',muted:'#9b9a97',accent:'#2383e2',hover:'#f1f1ef'}}}}</script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;color:#37352f;background:#fbfbfa}
+  .sidebar{width:240px;min-width:240px;background:#fbfbfa;border-right:1px solid #e8e7e4;transition:all .2s}
+  .sidebar.closed{width:0;min-width:0;overflow:hidden;border:none}
+  .nav-item{padding:4px 8px;border-radius:4px;cursor:pointer;font-size:14px;color:#37352f;transition:background .15s}
+  .nav-item:hover{background:#e8e7e4}
+  .nav-item.active{background:#e8e7e4;font-weight:500}
+  .card{background:#fff;border:1px solid #e8e7e4;border-radius:6px;padding:16px;transition:box-shadow .15s}
+  .card:hover{box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .btn{font-size:13px;padding:5px 12px;border-radius:4px;cursor:pointer;transition:background .15s;border:none}
+  .btn-primary{background:#2383e2;color:#fff}.btn-primary:hover{background:#1b6ec1}
+  .btn-ghost{background:transparent;color:#37352f}.btn-ghost:hover{background:#e8e7e4}
+  .editor-toolbar{opacity:0;transition:opacity .15s}
+  .editor-block:hover .editor-toolbar{opacity:1}
+  .tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:3px;font-size:12px;background:#f1f1ef;color:#6b6b65}
+  .quick-capture{position:fixed;top:60px;left:50%;transform:translateX(-50%);width:520px;background:#fff;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.14);z-index:100;display:none;overflow:hidden}
+  .quick-capture.show{display:block;animation:slideDown .2s ease-out}
+  @keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+  input:focus,textarea:focus{outline:none}
+  .tab-btn{padding:6px 16px;font-size:13px;border-radius:6px 6px 0 0;cursor:pointer;color:#9b9a97;border-bottom:2px solid transparent;transition:all .15s}
+  .tab-btn.active{color:#37352f;border-bottom-color:#37352f;font-weight:500}
+  .tab-btn:hover:not(.active){color:#6b6b65;background:#f1f1ef}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:99;display:none}
+  .overlay.show{display:block}
+  .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .status-dot.todo{background:#d1d0cc}.status-dot.done{background:#2383e2}.status-dot.wip{background:#f5a623}
+</style>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+<!-- Sidebar -->
+<aside id="sidebar" class="sidebar flex flex-col p-3 gap-1">
+  <div class="flex items-center gap-2 px-2 py-3 mb-3">
+    <div class="w-6 h-6 rounded bg-[#2383e2] flex items-center justify-center text-white text-xs font-bold">F</div>
+    <span class="font-semibold text-sm">FlowSpace</span>
+  </div>
+
+  <div class="text-[11px] font-semibold text-[#9b9a97] uppercase tracking-wider px-2 mt-2 mb-1">导航</div>
+  <div class="nav-item active" onclick="showDashboard()">
+    <span class="mr-2">🏠</span> 今日
+  </div>
+  <div class="nav-item" onclick="showInbox()">
+    <span class="mr-2">📥</span> 收件箱 <span class="ml-auto text-xs text-[#9b9a97] bg-[#f1f1ef] px-1.5 rounded">3</span>
+  </div>
+
+  <div class="text-[11px] font-semibold text-[#9b9a97] uppercase tracking-wider px-2 mt-4 mb-1">工作区</div>
+  <div class="nav-item active">
+    <span class="mr-2">📝</span> 笔记
+  </div>
+  <div class="nav-item">
+    <span class="mr-2">✅</span> 任务
+  </div>
+  <div class="nav-item">
+    <span class="mr-2">📅</span> 日历
+  </div>
+
+  <div class="text-[11px] font-semibold text-[#9b9a97] uppercase tracking-wider px-2 mt-4 mb-1">文件夹</div>
+  <div class="nav-item text-sm"><span class="mr-2">📁</span> 工作</div>
+  <div class="nav-item text-sm"><span class="mr-2">📁</span> 个人</div>
+  <div class="nav-item text-sm"><span class="mr-2">📁</span> 项目A</div>
+
+  <div class="mt-auto">
+    <button class="nav-item w-full text-left text-sm text-[#9b9a97]" onclick="document.getElementById('sidebar').classList.toggle('closed')">
+      <span class="mr-2">◀</span> 收起侧栏
+    </button>
+  </div>
+</aside>
+
+<!-- Main Content -->
+<main class="flex-1 overflow-y-auto">
+
+  <!-- Quick Capture Bar -->
+  <div class="sticky top-0 z-10 bg-[#fbfbfa] px-8 py-4 border-b border-[#e8e7e4] flex items-center gap-4">
+    <button onclick="toggleCapture()" class="flex-1 flex items-center gap-2 bg-white border border-[#e8e7e4] rounded-lg px-4 py-2.5 text-sm text-[#9b9a97] hover:border-[#d1d0cc] hover:text-[#6b6b65] transition-all cursor-pointer">
+      <span class="text-base">⚡</span>
+      <span>快速捕获... 输入笔记、任务或日程</span>
+      <span class="ml-auto text-xs bg-[#f1f1ef] px-2 py-0.5 rounded text-[#9b9a97]">⌘⇧N</span>
+    </button>
+    <button onclick="showNoteEditor()" class="btn btn-primary text-sm px-4 py-2.5 rounded-lg">+ 新笔记</button>
+  </div>
+
+  <!-- Overlay -->
+  <div id="overlay" class="overlay" onclick="closeCapture()"></div>
+
+  <!-- Quick Capture Panel -->
+  <div id="quickCapture" class="quick-capture">
+    <div class="p-4">
+      <input id="captureInput" type="text" placeholder="输入你想记录的... (例如: 明天下午3点开会 #项目A)" 
+             class="w-full text-[15px] py-2 text-[#37352f] placeholder-[#c1c0bc]"
+             oninput="parseCapture()">
+    </div>
+    <div id="capturePreview" class="hidden border-t border-[#e8e7e4] bg-[#fbfbfa] px-4 py-3">
+      <div class="flex items-center gap-2 text-xs text-[#9b9a97] mb-2">
+        <span>识别结果：</span><span id="captureTypeBadge" class="tag">📅 日历事件</span>
+      </div>
+      <div class="text-sm text-[#37352f]" id="captureDetail"></div>
+      <div class="flex gap-2 mt-3">
+        <button class="btn btn-primary text-xs" onclick="closeCapture()">✓ 创建</button>
+        <button class="btn btn-ghost text-xs" onclick="closeCapture()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Content Area -->
+  <div id="contentArea" class="max-w-[740px] mx-auto px-8 py-10">
+
+    <!-- Dashboard View -->
+    <div id="dashboardView">
+      <!-- Greeting -->
+      <div class="mb-10">
+        <h1 class="text-2xl font-semibold mb-2">👋 下午好</h1>
+        <p class="text-[#9b9a97] text-[15px]">5月14日 周三 · 本周已完成 12 个任务</p>
+      </div>
+
+      <!-- Today's Focus -->
+      <div class="mb-10">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wider">今日焦点</h2>
+          <span class="text-xs text-[#9b9a97]">3/5 已完成</span>
+        </div>
+        <div class="space-y-1">
+          <div class="flex items-center gap-3 p-2 rounded hover:bg-[#f1f1ef] cursor-pointer group">
+            <div class="w-5 h-5 rounded border-2 border-[#d1d0cc] flex items-center justify-center group-hover:border-[#2383e2] transition-colors"></div>
+            <span class="text-[15px]">完成产品架构文档的 Tiptap 集成方案</span>
+            <span class="ml-auto tag text-[10px]">#项目A</span>
+          </div>
+          <div class="flex items-center gap-3 p-2 rounded hover:bg-[#f1f1ef] cursor-pointer group">
+            <div class="w-5 h-5 rounded border-2 border-[#d1d0cc] flex items-center justify-center group-hover:border-[#2383e2] transition-colors"></div>
+            <span class="text-[15px]">给前端团队同步新 API 设计</span>
+            <span class="ml-auto tag text-[10px]">📅 16:00</span>
+          </div>
+          <div class="flex items-center gap-3 p-2 rounded hover:bg-[#f1f1ef] cursor-pointer group line-through text-[#c1c0bc]">
+            <div class="w-5 h-5 rounded bg-[#2383e2] flex items-center justify-center text-white text-[11px]">✓</div>
+            <span>调研竞品 Tiptap 编辑器方案</span>
+          </div>
+          <div class="flex items-center gap-3 p-2 rounded hover:bg-[#f1f1ef] cursor-pointer group line-through text-[#c1c0bc]">
+            <div class="w-5 h-5 rounded bg-[#2383e2] flex items-center justify-center text-white text-[11px]">✓</div>
+            <span>整理 Reddit 调研数据</span>
+          </div>
+          <div class="flex items-center gap-3 p-2 rounded hover:bg-[#f1f1ef] cursor-pointer group line-through text-[#c1c0bc]">
+            <div class="w-5 h-5 rounded bg-[#2383e2] flex items-center justify-center text-white text-[11px]">✓</div>
+            <span>完成桌面端架构设计文档</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Calendar Glance -->
+      <div class="mb-10">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wider">今日日程</h2>
+          <span class="text-xs text-[#2383e2] cursor-pointer hover:underline">查看全部 →</span>
+        </div>
+        <div class="space-y-2">
+          <div class="flex items-start gap-3 p-3 bg-white border border-[#e8e7e4] rounded-lg">
+            <div class="text-center min-w-[48px]">
+              <div class="text-xs text-[#9b9a97]">10:00</div>
+              <div class="h-8 w-[1px] bg-[#e8e7e4] mx-auto my-1"></div>
+              <div class="text-xs text-[#9b9a97]">11:00</div>
+            </div>
+            <div>
+              <div class="font-medium text-[15px]">产品评审会</div>
+              <div class="text-sm text-[#9b9a97]">会议室 3F · <span class="cursor-pointer text-[#2383e2] hover:underline">📄 3 篇关联笔记</span></div>
+            </div>
+          </div>
+          <div class="flex items-start gap-3 p-3 bg-white border border-[#e8e7e4] rounded-lg">
+            <div class="text-center min-w-[48px]">
+              <div class="text-xs text-[#9b9a97]">16:00</div>
+              <div class="h-8 w-[1px] bg-[#e8e7e4] mx-auto my-1"></div>
+              <div class="text-xs text-[#9b9a97]">16:30</div>
+            </div>
+            <div>
+              <div class="font-medium text-[15px]">团队同步</div>
+              <div class="text-sm text-[#9b9a97]">线上 · <span class="cursor-pointer text-[#2383e2] hover:underline">✅ 2 个关联任务</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Notes -->
+      <div>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wider">最近笔记</h2>
+          <button class="text-xs text-[#2383e2] cursor-pointer hover:underline" onclick="showNoteEditor()">+ 新建</button>
+        </div>
+        <div class="space-y-2">
+          <div class="card cursor-pointer hover:border-[#d1d0cc]" onclick="showNoteEditor()">
+            <div class="flex items-start gap-3">
+              <span class="text-xl mt-0.5">📄</span>
+              <div class="flex-1 min-w-0">
+                <h3 class="font-medium text-[15px] truncate">桌面端架构设计 — Tiptap 编辑器方案</h3>
+                <p class="text-sm text-[#9b9a97] mt-1 line-clamp-2">Tiptap 自定义节点的能力是关联引擎的 UI 基础。可以自定义任务节点、日历事件节点、笔记链接节点——这正是我们需要的一体化编辑体验。</p>
+                <div class="flex items-center gap-2 mt-2">
+                  <span class="tag">#技术</span>
+                  <span class="tag">#架构</span>
+                  <span class="text-xs text-[#c1c0bc]">2小时前</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card cursor-pointer hover:border-[#d1d0cc]" onclick="showNoteEditor()">
+            <div class="flex items-start gap-3">
+              <span class="text-xl mt-0.5">📝</span>
+              <div class="flex-1 min-w-0">
+                <h3 class="font-medium text-[15px] truncate">产品规划笔记 — MVP 功能范围</h3>
+                <p class="text-sm text-[#9b9a97] mt-1 line-clamp-2">MVP 明确不做云同步、多人协作、AI 功能、插件系统。v1 必须打开 <1 秒。</p>
+                <div class="flex items-center gap-2 mt-2">
+                  <span class="tag">#产品</span>
+                  <span class="tag">#规划</span>
+                  <span class="text-xs text-[#c1c0bc]">昨天</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card cursor-pointer hover:border-[#d1d0cc]" onclick="showNoteEditor()">
+            <div class="flex items-start gap-3">
+              <span class="text-xl mt-0.5">📊</span>
+              <div class="flex-1 min-w-0">
+                <h3 class="font-medium text-[15px] truncate">Reddit 效率工具调研报告</h3>
+                <p class="text-sm text-[#9b9a97] mt-1 line-clamp-2">1351 条效率工具相关反馈，Top 痛点：AI 反感、工具碎片化、订阅疲劳。</p>
+                <div class="flex items-center gap-2 mt-2">
+                  <span class="tag">#调研</span>
+                  <span class="tag">#Reddit</span>
+                  <span class="text-xs text-[#c1c0bc]">3天前</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Note Editor View (hidden by default) -->
+    <div id="noteEditorView" class="hidden">
+      <!-- Cover -->
+      <div class="h-32 bg-gradient-to-r from-[#e8f0fe] to-[#fce8e6] rounded-lg mb-6 -mx-2"></div>
+
+      <!-- Title -->
+      <div class="editor-block mb-6">
+        <div class="flex items-center gap-2 mb-1">
+          <div class="editor-toolbar flex gap-1">
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#9b9a97] cursor-pointer text-xs" title="添加图标">😀</button>
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#9b9a97] cursor-pointer text-xs" title="添加封面">🖼</button>
+          </div>
+        </div>
+        <h1 contenteditable="true" class="text-[2.2rem] font-bold leading-tight outline-none" 
+            onfocus="this.closest('.editor-block').querySelector('.editor-toolbar').style.opacity='1'">桌面端架构设计</h1>
+      </div>
+
+      <!-- Meta -->
+      <div class="flex items-center gap-3 mb-8 text-sm text-[#9b9a97]">
+        <span>📁 工作 / 项目A</span>
+        <span>·</span>
+        <span>2小时前</span>
+        <span>·</span>
+        <span>1,245 字</span>
+        <span class="flex gap-1 ml-auto">
+          <button class="tag cursor-pointer hover:bg-[#e8e7e4]">#技术</button>
+          <button class="tag cursor-pointer hover:bg-[#e8e7e4]">#架构</button>
+          <button class="tag cursor-pointer hover:bg-[#e8e7e4]">+ 添加</button>
+        </span>
+      </div>
+
+      <!-- Content Blocks -->
+      <div class="space-y-1">
+        <div class="editor-block p-1 rounded hover:bg-[#fbfbfa]">
+          <div class="editor-toolbar flex gap-1 absolute -ml-10 mt-1">
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#c1c0bc] cursor-pointer text-xs" title="拖拽">⋮⋮</button>
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#9b9a97] cursor-pointer text-xs" title="添加">＋</button>
+          </div>
+          <p contenteditable="true" class="text-[15px] leading-[1.8] outline-none pl-0"
+             onfocus="this.closest('.editor-block').querySelector('.editor-toolbar').style.opacity='1'">
+            Tiptap 是基于 ProseMirror 的编辑器框架。我们选择它而不是 Slate.js 或 Lexical，<strong>核心原因是它的自定义节点能力</strong>——这是关联引擎的 UI 基础。
+          </p>
+        </div>
+
+        <div class="editor-block p-1 rounded hover:bg-[#fbfbfa]">
+          <div class="editor-toolbar flex gap-1 absolute -ml-10 mt-1">
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#c1c0bc] cursor-pointer text-xs">⋮⋮</button>
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#9b9a97] cursor-pointer text-xs">＋</button>
+          </div>
+          <h2 contenteditable="true" class="text-xl font-semibold mt-6 mb-2 outline-none"
+              onfocus="this.closest('.editor-block').querySelector('.editor-toolbar').style.opacity='1'">需要自定义的节点</h2>
+        </div>
+
+        <div class="editor-block p-1 rounded hover:bg-[#fbfbfa]">
+          <div class="editor-toolbar flex gap-1 absolute -ml-10 mt-1">
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#c1c0bc] cursor-pointer text-xs">⋮⋮</button>
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#9b9a97] cursor-pointer text-xs">＋</button>
+          </div>
+          <ul contenteditable="true" class="list-disc list-inside text-[15px] leading-[1.8] outline-none space-y-1 pl-0"
+              onfocus="this.closest('.editor-block').querySelector('.editor-toolbar').style.opacity='1'">
+            <li><strong>TaskNode</strong> — 在笔记中嵌入可勾选的任务卡片</li>
+            <li><strong>EventNode</strong> — 嵌入日历事件，显示时间和标题</li>
+            <li><strong>NoteLinkNode</strong> — [[双向链接]]，hover 预览摘要</li>
+            <li><strong>TagNode</strong> — #标签 自动变色，可点击筛选</li>
+            <li><strong>DateInline</strong> — "明天" "下周三" 自动转日期 chip</li>
+          </ul>
+        </div>
+
+        <!-- Inline Task in Note -->
+        <div class="editor-block p-1 rounded">
+          <div class="ml-2 p-3 bg-[#fbfbfa] rounded-lg border border-[#e8e7e4]">
+            <div class="flex items-center gap-3">
+              <div class="w-5 h-5 rounded border-2 border-[#2383e2] bg-[#2383e2]/10 cursor-pointer"></div>
+              <div class="flex-1">
+                <span class="text-[15px]">完成 Tiptap TaskNode 的原型验证</span>
+                <div class="flex items-center gap-2 mt-1">
+                  <span class="text-xs text-[#9b9a97]">📅 截止 5月16日</span>
+                  <span class="text-xs text-[#9b9a97]">🔗 关联到任务列表</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="editor-block p-1 rounded hover:bg-[#fbfbfa] mt-4">
+          <div class="editor-toolbar flex gap-1 absolute -ml-10 mt-1">
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#c1c0bc] cursor-pointer text-xs">⋮⋮</button>
+            <button class="p-1 rounded hover:bg-[#e8e7e4] text-[#9b9a97] cursor-pointer text-xs">＋</button>
+          </div>
+          <p contenteditable="true" class="text-[15px] leading-[1.8] outline-none pl-0"
+             onfocus="this.closest('.editor-block').querySelector('.editor-toolbar').style.opacity='1'">
+            这就是我们与 Obsidian 的关键差异：<strong>不需要装插件，开箱即有结构化的任务和日历节点</strong>。
+          </p>
+        </div>
+      </div>
+
+      <!-- Back to dashboard -->
+      <div class="mt-10 pt-6 border-t border-[#e8e7e4]">
+        <button onclick="showDashboard()" class="btn btn-ghost text-sm">
+          ← 返回仪表盘
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Link Panel (contextual) -->
+  <div id="linkPanel" class="hidden absolute right-4 top-24 w-[260px] bg-white border border-[#e8e7e4] rounded-lg shadow-sm p-4">
+    <h3 class="text-xs font-semibold text-[#9b9a97] uppercase tracking-wider mb-3">关联内容</h3>
+    <div class="space-y-3">
+      <div>
+        <div class="text-[11px] text-[#c1c0bc] mb-1">关联任务</div>
+        <div class="text-sm hover:bg-[#f1f1ef] p-1.5 rounded cursor-pointer">✅ 完成 Tiptap 原型验证</div>
+        <div class="text-sm hover:bg-[#f1f1ef] p-1.5 rounded cursor-pointer">✅ 调研编辑器方案</div>
+      </div>
+      <div>
+        <div class="text-[11px] text-[#c1c0bc] mb-1">关联笔记</div>
+        <div class="text-sm hover:bg-[#f1f1ef] p-1.5 rounded cursor-pointer">📄 产品规划笔记</div>
+        <div class="text-sm hover:bg-[#f1f1ef] p-1.5 rounded cursor-pointer">📊 Reddit 调研报告</div>
+      </div>
+      <div>
+        <div class="text-[11px] text-[#c1c0bc] mb-1">反向链接</div>
+        <div class="text-sm hover:bg-[#f1f1ef] p-1.5 rounded cursor-pointer">📝 周报 5月W3</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+function toggleCapture(){
+  const panel=document.getElementById('quickCapture');
+  const overlay=document.getElementById('overlay');
+  panel.classList.toggle('show');
+  overlay.classList.toggle('show');
+  if(panel.classList.contains('show')) document.getElementById('captureInput').focus();
+}
+function closeCapture(){
+  document.getElementById('quickCapture').classList.remove('show');
+  document.getElementById('overlay').classList.remove('show');
+}
+function parseCapture(){
+  const v=document.getElementById('captureInput').value;
+  const prev=document.getElementById('capturePreview');
+  if(v.length>3){prev.classList.remove('hidden');document.getElementById('captureDetail').textContent='标题: '+v.replace('明天下午3点','').replace('#项目A','').trim()+' | 时间: 2026-05-15 15:00 | 标签: 项目A'}
+  else{prev.classList.add('hidden')}
+}
+function showDashboard(){
+  document.getElementById('dashboardView').classList.remove('hidden');
+  document.getElementById('noteEditorView').classList.add('hidden');
+  document.getElementById('linkPanel').classList.add('hidden');
+}
+function showNoteEditor(){
+  document.getElementById('dashboardView').classList.add('hidden');
+  document.getElementById('noteEditorView').classList.remove('hidden');
+  document.getElementById('linkPanel').classList.remove('hidden');
+}
+function showInbox(){
+  alert('收件箱页面 — 待实现');
+}
+</script>
+</body>
+</html>

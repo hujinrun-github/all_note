@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Variant 2: 结构风 · 三栏仪表盘</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{bg:'#fbfbfa',surface:'#ffffff',border:'#e8e7e4',text:'#37352f',muted:'#9b9a97',accent:'#2383e2',hover:'#f1f1ef',warn:'#f5a623',green:'#0f9d58'}}}}</script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;color:#37352f;background:#fbfbfa}
+  .sidebar{width:220px;min-width:220px;background:#fbfbfa;border-right:1px solid #e8e7e4;transition:all .2s}
+  .nav-item{padding:3px 10px;border-radius:4px;cursor:pointer;font-size:13px;color:#37352f;transition:background .12s;display:flex;align-items:center;gap:8px}
+  .nav-item:hover{background:#e8e7e4}
+  .nav-item.active{background:#e8e7e4;font-weight:600}
+  .card{background:#fff;border:1px solid #e8e7e4;border-radius:8px;transition:box-shadow .15s,border-color .15s}
+  .card:hover{border-color:#d1d0cc;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+  .btn{font-size:13px;padding:6px 14px;border-radius:5px;cursor:pointer;transition:all .15s;border:none;font-weight:500}
+  .btn-primary{background:#2383e2;color:#fff}.btn-primary:hover{background:#1b6ec1}
+  .btn-ghost{background:transparent;color:#37352f}.btn-ghost:hover{background:#e8e7e4}
+  .btn-outline{background:transparent;color:#37352f;border:1px solid #e8e7e4}.btn-outline:hover{background:#f1f1ef}
+  .tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:3px;font-size:11px;background:#f1f1ef;color:#6b6b65}
+  .task-row{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;cursor:pointer;transition:background .12s}
+  .task-row:hover{background:#fbfbfa}
+  .checkbox{width:18px;height:18px;border-radius:4px;border:2px solid #d1d0cc;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+  .checkbox.done{background:#0f9d58;border-color:#0f9d58;color:#fff;font-size:11px}
+  .event-chip{display:flex;align-items:flex-start;gap:10px;padding:8px 12px;border-radius:6px;cursor:pointer;transition:background .12s}
+  .event-chip:hover{background:#fbfbfa}
+  .event-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex-shrink:0}
+  .tabs{display:flex;gap:0;border-bottom:1px solid #e8e7e4}
+  .tab{padding:8px 18px;font-size:13px;cursor:pointer;color:#9b9a97;border-bottom:2px solid transparent;transition:all .12s}
+  .tab.active{color:#37352f;border-bottom-color:#37352f;font-weight:600}
+  .tab:hover:not(.active){color:#6b6b65}
+  .mini-calendar td{width:32px;height:32px;text-align:center;font-size:12px;border-radius:4px;cursor:pointer;transition:background .12s}
+  .mini-calendar td:hover{background:#e8e7e4}
+  .mini-calendar td.today{background:#2383e2;color:#fff;font-weight:600}
+  .mini-calendar td.has-event{position:relative}
+  .mini-calendar td.has-event::after{content:'';position:absolute;bottom:3px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:#2383e2}
+  .mini-calendar td.today.has-event::after{background:#fff}
+  .progress-bar{height:4px;border-radius:2px;background:#e8e7e4;overflow:hidden}
+  .progress-bar-fill{height:100%;border-radius:2px;background:#2383e2;transition:width .3s}
+  .quick-bar{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:50}
+  .quick-bar-inner{display:flex;align-items:center;gap:4px;background:#fff;border:1px solid #e8e7e4;border-radius:24px;padding:6px 8px;box-shadow:0 4px 20px rgba(0,0,0,.08)}
+  .quick-btn{width:36px;height:36px;border-radius:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s;border:none;background:transparent;font-size:16px}
+  .quick-btn:hover{background:#f1f1ef}
+  .quick-btn.primary{background:#2383e2;color:#fff;width:auto;padding:0 18px;border-radius:20px;font-size:13px;font-weight:500;gap:6px;display:flex;align-items:center}
+  .quick-btn.primary:hover{background:#1b6ec1}
+</style>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+<!-- Sidebar -->
+<aside class="sidebar flex flex-col p-2 gap-0.5">
+  <div class="flex items-center gap-2 px-2 py-3 mb-2">
+    <div class="w-7 h-7 rounded-lg bg-[#2383e2] flex items-center justify-center text-white text-xs font-bold">F</div>
+    <div>
+      <div class="font-semibold text-[13px] leading-tight">FlowSpace</div>
+      <div class="text-[10px] text-[#c1c0bc] leading-tight">个人工作区</div>
+    </div>
+  </div>
+
+  <div class="text-[10px] font-semibold text-[#c1c0bc] uppercase px-2 mt-3 mb-1">菜单</div>
+  <div class="nav-item active"><span>🏠</span> 仪表盘</div>
+  <div class="nav-item"><span>📥</span> 收件箱 <span class="ml-auto text-[10px] bg-[#f1f1ef] px-1.5 rounded-full">3</span></div>
+  <div class="nav-item"><span>📝</span> 笔记</div>
+  <div class="nav-item"><span>✅</span> 任务</div>
+  <div class="nav-item"><span>📅</span> 日历</div>
+  <div class="nav-item"><span>🔍</span> 搜索</div>
+
+  <div class="text-[10px] font-semibold text-[#c1c0bc] uppercase px-2 mt-3 mb-1">空间</div>
+  <div class="nav-item"><span>📁</span> 工作</div>
+  <div class="nav-item"><span>📁</span> 个人</div>
+  <div class="nav-item"><span>📁</span> 项目A</div>
+
+  <div class="mt-auto flex flex-col gap-0.5">
+    <div class="nav-item text-[#9b9a97]"><span>⚙️</span> 设置</div>
+    <div class="nav-item text-[#9b9a97]"><span>⌨</span> 快捷键</div>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="flex-1 overflow-y-auto">
+
+  <!-- Top bar -->
+  <header class="sticky top-0 z-10 bg-[#fbfbfa]/90 backdrop-blur-sm border-b border-[#e8e7e4] px-8 py-3 flex items-center justify-between">
+    <div class="tabs">
+      <div class="tab active">仪表盘</div>
+      <div class="tab">笔记</div>
+      <div class="tab">任务</div>
+      <div class="tab">日历</div>
+    </div>
+    <div class="flex items-center gap-3">
+      <button class="btn btn-ghost text-sm">🔍 快速搜索</button>
+      <button class="btn btn-primary text-sm">⚡ 快速捕获</button>
+    </div>
+  </header>
+
+  <!-- Dashboard Grid -->
+  <div class="p-8">
+    <!-- Greeting Row -->
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-[26px] font-bold">👋 下午好</h1>
+        <p class="text-sm text-[#9b9a97] mt-1">5月14日 周三 · 本周已完成 <span class="text-[#0f9d58] font-medium">12</span> 个任务</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="text-right">
+          <div class="text-xs text-[#9b9a97]">本周进度</div>
+          <div class="text-lg font-semibold">60%</div>
+        </div>
+        <div class="w-24">
+          <div class="progress-bar"><div class="progress-bar-fill" style="width:60%"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3-Column Grid: Tasks | Calendar | Notes -->
+    <div class="grid grid-cols-12 gap-6">
+
+      <!-- Column 1: Tasks (5 cols) -->
+      <div class="col-span-5 space-y-4">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wide">今日任务</h2>
+            <span class="text-xs text-[#9b9a97]">3/5</span>
+          </div>
+          <div class="space-y-0.5">
+            <div class="task-row">
+              <div class="checkbox"></div>
+              <div class="flex-1 min-w-0">
+                <span class="text-sm">完成产品架构文档的 Tiptap 方案</span>
+                <div class="flex items-center gap-2 mt-0.5">
+                  <span class="tag">#项目A</span>
+                  <span class="text-[10px] text-[#f5a623]">⚠ 高优</span>
+                </div>
+              </div>
+            </div>
+            <div class="task-row">
+              <div class="checkbox"></div>
+              <div class="flex-1 min-w-0">
+                <span class="text-sm">给前端团队同步新 API</span>
+                <div class="flex items-center gap-2 mt-0.5">
+                  <span class="tag">📅 16:00</span>
+                </div>
+              </div>
+            </div>
+            <div class="task-row">
+              <div class="checkbox done">✓</div>
+              <div class="flex-1 min-w-0">
+                <span class="text-sm line-through text-[#c1c0bc]">调研竞品编辑器方案</span>
+              </div>
+            </div>
+            <div class="task-row">
+              <div class="checkbox done">✓</div>
+              <div class="flex-1 min-w-0">
+                <span class="text-sm line-through text-[#c1c0bc]">整理 Reddit 调研数据</span>
+              </div>
+            </div>
+            <div class="task-row">
+              <div class="checkbox done">✓</div>
+              <div class="flex-1 min-w-0">
+                <span class="text-sm line-through text-[#c1c0bc]">完成桌面端架构设计</span>
+              </div>
+            </div>
+          </div>
+          <button class="w-full mt-3 text-center text-sm text-[#9b9a97] hover:text-[#37352f] py-2 rounded-md hover:bg-[#f1f1ef] transition-colors cursor-pointer">
+            + 添加任务
+          </button>
+        </div>
+
+        <!-- Linked Items Panel -->
+        <div class="card p-5">
+          <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wide mb-3">🔗 最近关联</h2>
+          <div class="space-y-2">
+            <div class="flex items-center gap-2 text-sm p-2 rounded hover:bg-[#fbfbfa] cursor-pointer">
+              <span>📄</span> <span>Reddit 调研报告</span>
+              <span class="ml-auto text-[10px] text-[#9b9a97]">→ 3个任务</span>
+            </div>
+            <div class="flex items-center gap-2 text-sm p-2 rounded hover:bg-[#fbfbfa] cursor-pointer">
+              <span>📝</span> <span>产品规划笔记</span>
+              <span class="ml-auto text-[10px] text-[#9b9a97]">→ 5个任务</span>
+            </div>
+            <div class="flex items-center gap-2 text-sm p-2 rounded hover:bg-[#fbfbfa] cursor-pointer">
+              <span>📅</span> <span>产品评审会</span>
+              <span class="ml-auto text-[10px] text-[#9b9a97]">→ 1篇笔记</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 2: Calendar (4 cols) -->
+      <div class="col-span-4 space-y-4">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wide">日历</h2>
+            <div class="flex items-center gap-1">
+              <button class="p-1 rounded hover:bg-[#e8e7e4] text-xs">◀</button>
+              <span class="text-sm font-medium">5月 2026</span>
+              <button class="p-1 rounded hover:bg-[#e8e7e4] text-xs">▶</button>
+            </div>
+          </div>
+          <table class="mini-calendar w-full">
+            <tr class="text-[10px] text-[#c1c0bc]"><td>一</td><td>二</td><td>三</td><td>四</td><td>五</td><td>六</td><td>日</td></tr>
+            <tr><td></td><td></td><td></td><td>1</td><td>2</td><td>3</td><td>4</td></tr>
+            <tr><td>5</td><td>6</td><td>7</td><td>8</td><td>9</td><td>10</td><td>11</td></tr>
+            <tr><td>12</td><td class="has-event">13</td><td class="today">14</td><td class="has-event">15</td><td>16</td><td>17</td><td>18</td></tr>
+            <tr><td>19</td><td class="has-event">20</td><td>21</td><td>22</td><td>23</td><td>24</td><td>25</td></tr>
+            <tr><td>26</td><td>27</td><td>28</td><td>29</td><td>30</td><td>31</td><td></td></tr>
+          </table>
+        </div>
+
+        <div class="card p-5">
+          <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wide mb-3">今日日程</h2>
+          <div class="space-y-1">
+            <div class="event-chip">
+              <div class="event-dot" style="background:#2383e2"></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium">产品评审会</div>
+                <div class="text-xs text-[#9b9a97]">10:00 - 11:00 · 会议室 3F</div>
+                <div class="text-[10px] text-[#2383e2] cursor-pointer hover:underline mt-0.5">📄 3 篇关联笔记</div>
+              </div>
+            </div>
+            <div class="event-chip">
+              <div class="event-dot" style="background:#f5a623"></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium">团队同步</div>
+                <div class="text-xs text-[#9b9a97]">16:00 - 16:30 · 线上</div>
+                <div class="text-[10px] text-[#2383e2] cursor-pointer hover:underline mt-0.5">✅ 2 个关联任务</div>
+              </div>
+            </div>
+            <div class="event-chip">
+              <div class="event-dot" style="background:#0f9d58"></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium">🏃 跑步</div>
+                <div class="text-xs text-[#9b9a97]">19:00 - 19:40</div>
+              </div>
+            </div>
+          </div>
+          <button class="w-full mt-2 text-center text-sm text-[#9b9a97] hover:text-[#37352f] py-2 rounded-md hover:bg-[#f1f1ef] transition-colors cursor-pointer">
+            + 添加事件
+          </button>
+        </div>
+      </div>
+
+      <!-- Column 3: Recent Notes (3 cols) -->
+      <div class="col-span-3 space-y-4">
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-semibold text-[#9b9a97] uppercase tracking-wide">最近笔记</h2>
+            <button class="btn btn-primary text-xs py-1 px-3">+ 新建</button>
+          </div>
+          <div class="space-y-3">
+            <div class="p-3 rounded-lg hover:bg-[#fbfbfa] cursor-pointer transition-colors border border-transparent hover:border-[#e8e7e4]">
+              <div class="flex items-start gap-2">
+                <span class="text-base mt-0.5">📄</span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-medium truncate">桌面端架构设计</div>
+                  <div class="text-xs text-[#9b9a97] mt-1 line-clamp-2">Tiptap 自定义节点的能力是关联引擎的 UI 基础...</div>
+                  <div class="flex items-center gap-1.5 mt-2">
+                    <span class="tag">#技术</span>
+                    <span class="tag">#架构</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="p-3 rounded-lg hover:bg-[#fbfbfa] cursor-pointer transition-colors border border-transparent hover:border-[#e8e7e4]">
+              <div class="flex items-start gap-2">
+                <span class="text-base mt-0.5">📝</span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-medium truncate">产品规划笔记</div>
+                  <div class="text-xs text-[#9b9a97] mt-1 line-clamp-2">MVP 明确不做云同步、多人协作...</div>
+                  <div class="flex items-center gap-1.5 mt-2">
+                    <span class="tag">#产品</span>
+                    <span class="tag">#规划</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="p-3 rounded-lg hover:bg-[#fbfbfa] cursor-pointer transition-colors border border-transparent hover:border-[#e8e7e4]">
+              <div class="flex items-start gap-2">
+                <span class="text-base mt-0.5">📊</span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-medium truncate">Reddit 调研报告</div>
+                  <div class="text-xs text-[#9b9a97] mt-1 line-clamp-2">1351 条效率工具相关反馈...</div>
+                  <div class="flex items-center gap-1.5 mt-2">
+                    <span class="tag">#调研</span>
+                    <span class="tag">#Reddit</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stats Mini Card -->
+        <div class="card p-5">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <div class="text-2xl font-bold text-[#2383e2]">24</div>
+              <div class="text-[10px] text-[#9b9a97] uppercase">本周笔记</div>
+            </div>
+            <div>
+              <div class="text-2xl font-bold text-[#0f9d58]">12<span class="text-sm text-[#9b9a97] font-normal">/20</span></div>
+              <div class="text-[10px] text-[#9b9a97] uppercase">任务完成</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Floating Quick Bar -->
+  <div class="quick-bar">
+    <div class="quick-bar-inner">
+      <button class="quick-btn" title="新笔记">📝</button>
+      <button class="quick-btn" title="新任务">✅</button>
+      <button class="quick-btn" title="新事件">📅</button>
+      <div class="w-[1px] h-5 bg-[#e8e7e4] mx-1"></div>
+      <button class="quick-btn primary">⚡ 快速捕获</button>
+    </div>
+  </div>
+
+</main>
+</body>
+</html>
