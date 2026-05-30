@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@theme {
+  --color-fs-bg: #fafafa;
+  --color-fs-surface: #ffffff;
+  --color-fs-hover: #f4f4f5;
+  --color-fs-border: #e4e4e7;
+  --color-fs-border-hover: #d4d4d8;
+  --color-fs-text: #18181b;
+  --color-fs-text-secondary: #52525b;
+  --color-fs-text-muted: #a1a1aa;
+  --color-fs-text-disabled: #d4d4d8;
+  --color-fs-accent: #2563eb;
+  --color-fs-accent-hover: #1d4ed8;
+  --color-fs-warning: #f59e0b;
+  --color-fs-success: #10b981;
+
+  --font-family-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+  --font-family-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+
+  --font-size-hero: 28px;
+  --font-size-h1: 22px;
+  --font-size-h2: 18px;
+  --font-size-body: 15px;
+  --font-size-caption: 13px;
+  --font-size-small: 12px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 9999px;
+  --radius-capture: 14px;
+
+  --shadow-hover: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-popover: 0 4px 16px rgba(0,0,0,0.12);
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+body {
+  font-family: var(--font-family-sans);
+  color: var(--color-fs-text);
+  background: var(--color-fs-bg);
+  -webkit-font-smoothing: antialiased;
+}
