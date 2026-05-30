@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getTasks, createTask, updateTask, deleteTask, type Task } from '../api/tasks'
+import { getTasks, createTask, updateTask, type Task } from '../api/tasks'
 import { TaskRow } from '../components/ui/TaskRow'
 
 const projects = ['全部', '项目A', '技术', '工作', '个人']

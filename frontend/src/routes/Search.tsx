@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useSearch } from '../hooks/useSearch'
+import type { SearchResult } from '../api/search'
 
 const typeLabels: Record<string, string> = { note: '笔记', task: '任务', event: '日程' }
 
@@ -22,8 +23,8 @@ export default function Search() {
 
   const { data, isLoading } = useSearch(q)
 
-  const grouped: Record<string, typeof data.items> = {}
-  data?.items.forEach((item) => {
+  const grouped: Record<string, SearchResult[]> = {}
+  data?.items?.forEach((item) => {
     if (!grouped[item.type]) grouped[item.type] = []
     grouped[item.type].push(item)
   })
