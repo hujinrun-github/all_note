@@ -10,7 +10,8 @@
     "noUnusedParameters": true,
     "paths": { "@/*": ["./src/*"] },
     "baseUrl": ".",
-    "ignoreDeprecations": "6.0"
+    "ignoreDeprecations": "6.0",
+    "noEmit": true
   },
   "include": ["src"]
 }
