@@ -20,6 +20,12 @@ importers:
       '@tiptap/starter-kit':
         specifier: ^3.24.0
         version: 3.24.0
+      markdown-it:
+        specifier: ^14.2.0
+        version: 14.2.0
+      prosemirror-markdown:
+        specifier: ^1.13.4
+        version: 1.13.4
       react:
         specifier: ^19.2.6
         version: 19.2.6
