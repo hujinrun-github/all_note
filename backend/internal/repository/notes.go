@@ -36,7 +36,7 @@ func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, err
 	}
 	defer rows.Close()
 
-	var notes []model.Note
+	notes := make([]model.Note, 0)
 	for rows.Next() {
 		var n model.Note
 		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.FolderID, &n.Tags, &n.CreatedAt, &n.UpdatedAt); err != nil {
@@ -121,7 +121,7 @@ func GetRecentNotes(limit int) ([]model.Note, error) {
 	}
 	defer rows.Close()
 
-	var notes []model.Note
+	notes := make([]model.Note, 0)
 	for rows.Next() {
 		var n model.Note
 		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.FolderID, &n.Tags, &n.CreatedAt, &n.UpdatedAt); err != nil {

@@ -24,7 +24,7 @@ export default function Notes() {
         <button onClick={() => setFolder('')} className={`text-left border-0 bg-transparent rounded-md px-2.5 py-1.5 text-sm cursor-pointer transition-colors ${!folder ? 'bg-fs-hover text-fs-accent font-semibold' : 'text-fs-text-secondary hover:bg-fs-hover'}`}>
           全部
         </button>
-        {foldersQ.data?.map((f) => (
+        {(foldersQ.data ?? []).map((f) => (
           <button key={f.id} onClick={() => setFolder(f.id)}
             className={`text-left border-0 bg-transparent rounded-md px-2.5 py-1.5 text-sm cursor-pointer transition-colors flex justify-between ${folder === f.id ? 'bg-fs-hover text-fs-accent font-semibold' : 'text-fs-text-secondary hover:bg-fs-hover'}`}>
             <span>{f.name}</span>
@@ -42,7 +42,7 @@ export default function Notes() {
         </div>
 
         <div className="grid gap-1">
-          {notesQ.data?.notes.map((n) => (
+          {(notesQ.data?.notes ?? []).map((n) => (
             <div key={n.id} className="flex justify-between items-center px-3 py-2.5 rounded-md hover:bg-fs-hover cursor-pointer transition-colors" onClick={() => navigate(`/editor/${n.id}`)}>
               <div>
                 <strong className="text-sm font-medium">{n.title}</strong>
@@ -59,7 +59,7 @@ export default function Notes() {
           ))}
         </div>
 
-        {notesQ.data?.notes.length === 0 && (
+        {(notesQ.data?.notes ?? []).length === 0 && (
           <p className="text-fs-text-muted text-sm text-center py-8">暂无笔记</p>
         )}
       </div>

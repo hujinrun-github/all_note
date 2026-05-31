@@ -18,7 +18,7 @@ export default function Tasks() {
   })
 
   async function handleToggle(id: string) {
-    const task = data?.tasks.find((t) => t.id === id)
+    const task = (data?.tasks ?? []).find((t) => t.id === id)
     if (!task) return
     await updateTask(id, { done: task.done ? 0 : 1 })
     refetch()
@@ -32,7 +32,8 @@ export default function Tasks() {
   }
 
   const tasksByScope: Record<string, Task[]> = {}
-  data?.tasks.forEach((t) => {
+  const taskList = data?.tasks ?? [];
+  (taskList as Task[]).forEach((t) => {
     const scope = t.scope || 'daily'
     if (!tasksByScope[scope]) tasksByScope[scope] = []
     tasksByScope[scope].push(t)

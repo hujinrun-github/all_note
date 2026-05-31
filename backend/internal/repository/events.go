@@ -26,7 +26,7 @@ func GetEvents(monthStart, monthEnd int64, page, pageSize int) ([]model.Event, i
 	}
 	defer rows.Close()
 
-	var events []model.Event
+		events := make([]model.Event, 0)
 	for rows.Next() {
 		var e model.Event
 		if err := rows.Scan(&e.ID, &e.Title, &e.StartTime, &e.EndTime, &e.Location, &e.Kind, &e.NoteID, &e.CreatedAt, &e.UpdatedAt); err != nil {
@@ -112,7 +112,7 @@ func GetTodayEvents(todayStart, todayEnd int64) ([]model.Event, error) {
 	}
 	defer rows.Close()
 
-	var events []model.Event
+		events := make([]model.Event, 0)
 	for rows.Next() {
 		var e model.Event
 		rows.Scan(&e.ID, &e.Title, &e.StartTime, &e.EndTime, &e.Location, &e.Kind, &e.NoteID, &e.CreatedAt, &e.UpdatedAt)

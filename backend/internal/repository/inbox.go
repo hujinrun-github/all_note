@@ -28,7 +28,7 @@ func GetInboxItems(kind string, page, pageSize int) ([]model.InboxItem, int, err
 	}
 	defer rows.Close()
 
-	var items []model.InboxItem
+		items := make([]model.InboxItem, 0)
 	for rows.Next() {
 		var it model.InboxItem
 		if err := rows.Scan(&it.ID, &it.Kind, &it.Title, &it.Body, &it.Source, &it.Archived, &it.ConvertedTo, &it.CreatedAt, &it.UpdatedAt); err != nil {

@@ -70,7 +70,7 @@ export default function Inbox() {
       </div>
 
       <div className="grid gap-2">
-        {data?.items.map((item: InboxItem) => (
+        {(data?.items ?? []).map((item: InboxItem) => (
           <div key={item.id} className="flex items-start gap-3 px-3 py-2.5 border border-fs-border rounded-md hover:border-fs-border-hover transition-colors">
             <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} className="mt-1.5" />
             <div className="flex-1 min-w-0">
@@ -96,7 +96,7 @@ export default function Inbox() {
         ))}
       </div>
 
-      {data?.items.length === 0 && (
+      {(data?.items ?? []).length === 0 && (
         <p className="text-fs-text-muted text-sm text-center py-8">收件箱为空</p>
       )}
     </div>

@@ -16,7 +16,7 @@ func Search(q string, page, pageSize int) ([]model.SearchResult, int, error) {
 
 	ftsQuery := buildFTS5Query(q)
 	limit := pageSize * searchPageMultiplier
-	var allResults []model.SearchResult
+		allResults := make([]model.SearchResult, 0)
 	totalCount := 0
 
 	noteResults, noteCount := searchNotes(ftsQuery, limit)
@@ -76,7 +76,7 @@ func searchNotes(q string, limit int) ([]model.SearchResult, int) {
 	}
 	defer rows.Close()
 
-	var results []model.SearchResult
+		results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var r model.SearchResult
 		r.Type = "note"
@@ -103,7 +103,7 @@ func searchTasks(q string, limit int) ([]model.SearchResult, int) {
 	}
 	defer rows.Close()
 
-	var results []model.SearchResult
+		results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var r model.SearchResult
 		r.Type = "task"
@@ -130,7 +130,7 @@ func searchEvents(q string, limit int) ([]model.SearchResult, int) {
 	}
 	defer rows.Close()
 
-	var results []model.SearchResult
+		results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var r model.SearchResult
 		r.Type = "event"

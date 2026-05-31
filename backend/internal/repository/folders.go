@@ -15,7 +15,7 @@ func GetFolders() ([]model.Folder, error) {
 	}
 	defer rows.Close()
 
-	var folders []model.Folder
+		folders := make([]model.Folder, 0)
 	for rows.Next() {
 		var f model.Folder
 		if err := rows.Scan(&f.ID, &f.Name, &f.SortOrder, &f.NoteCount, &f.CreatedAt); err != nil {

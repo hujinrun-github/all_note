@@ -44,7 +44,7 @@ func GetTasks(project, status, scope string, page, pageSize int) ([]model.Task, 
 	}
 	defer rows.Close()
 
-	var tasks []model.Task
+		tasks := make([]model.Task, 0)
 	for rows.Next() {
 		var t model.Task
 		if err := rows.Scan(&t.ID, &t.Title, &t.Project, &t.Due, &t.Priority, &t.Done, &t.Scope, &t.SortOrder, &t.NoteID, &t.CreatedAt, &t.UpdatedAt); err != nil {
@@ -153,7 +153,7 @@ func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []m
 }
 
 func scanTasks(rows *sql.Rows) []model.Task {
-	var tasks []model.Task
+		tasks := make([]model.Task, 0)
 	for rows.Next() {
 		var t model.Task
 		rows.Scan(&t.ID, &t.Title, &t.Project, &t.Due, &t.Priority, &t.Done, &t.Scope, &t.SortOrder, &t.NoteID, &t.CreatedAt, &t.UpdatedAt)
