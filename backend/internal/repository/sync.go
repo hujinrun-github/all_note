@@ -6,6 +6,8 @@ func SaveSyncTarget(target *model.SyncTarget) error {
 	now := nowUnix()
 	if target.ID == "" {
 		target.ID = newUUID()
+	}
+	if target.CreatedAt == 0 {
 		target.CreatedAt = now
 	}
 	target.UpdatedAt = now
