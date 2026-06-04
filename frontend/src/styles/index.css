@@ -331,6 +331,64 @@ body {
   flex-wrap: wrap;
 }
 
+.sync-card {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--color-fs-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-fs-surface);
+  padding: 0.85rem;
+}
+
+.sync-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.sync-card-header span {
+  color: var(--color-fs-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.sync-card-header strong {
+  font-size: 0.78rem;
+}
+
+.sync-card-status-synced {
+  color: var(--color-fs-success);
+}
+
+.sync-card-status-failed {
+  color: #b91c1c;
+}
+
+.sync-card-status-pending,
+.sync-card-status-unsynced {
+  color: var(--color-fs-accent);
+}
+
+.sync-card p,
+.sync-card em,
+.sync-card code {
+  margin: 0;
+  color: var(--color-fs-text-muted);
+  font-size: 0.76rem;
+}
+
+.sync-card code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--font-family-mono);
+}
+
+.sync-card em {
+  color: #b91c1c;
+  font-style: normal;
+}
+
 @media (max-width: 560px) {
   .sync-overlay {
     align-items: end;
