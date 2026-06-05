@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS folders (
   created_at INTEGER NOT NULL
 );
 
+INSERT OR IGNORE INTO folders (id, name, sort_order, created_at) VALUES
+  ('__uncategorized', '未分类', 0, unixepoch()),
+  ('__work', '工作', 1, unixepoch()),
+  ('__personal', '个人', 2, unixepoch());
+
 CREATE TABLE IF NOT EXISTS notes (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT UNIQUE NOT NULL,

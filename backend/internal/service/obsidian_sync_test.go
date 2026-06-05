@@ -280,7 +280,7 @@ func openServiceTestDB(t *testing.T) {
 func insertServiceSyncFixtures(t *testing.T, target *model.SyncTarget, note *model.Note) {
 	t.Helper()
 	_, err := repository.DB.Exec(`
-		INSERT INTO folders (id, name, sort_order, created_at)
+		INSERT OR IGNORE INTO folders (id, name, sort_order, created_at)
 		VALUES ('__work', 'Work', 0, 1717200000)
 	`)
 	if err != nil {
