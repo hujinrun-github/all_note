@@ -20,7 +20,6 @@ export default function Calendar() {
   const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1))
   const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1))
 
-  // Map events to day numbers
   const eventsByDay: Record<number, Event[]> = {}
   data?.events.forEach((e) => {
     const startDay = new Date(e.start_time * 1000).getDate()
@@ -31,29 +30,47 @@ export default function Calendar() {
     }
   })
 
-  const [selectedDay, setSelectedDay] = useState<number | null>(null)
+  const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate())
   const selectedEvents = selectedDay ? eventsByDay[selectedDay] ?? [] : []
 
   return (
-    <div className="grid grid-cols-[1fr_280px] gap-6 max-[960px]:grid-cols-1 max-w-[900px]">
-      <div>
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex gap-3 items-center">
-            <button onClick={prevMonth} className="border border-fs-border rounded-md px-3 py-1 bg-transparent cursor-pointer hover:bg-fs-hover transition-colors text-sm">←</button>
-            <strong className="text-lg">{currentDate.toLocaleDateString('zh-CN', { month: 'long', year: 'numeric' })}</strong>
-            <button onClick={nextMonth} className="border border-fs-border rounded-md px-3 py-1 bg-transparent cursor-pointer hover:bg-fs-hover transition-colors text-sm">→</button>
+    <div className="calendar-workspace">
+      <section className="surface-panel calendar-panel">
+        <div className="panel-heading">
+          <div>
+            <span>2026年6月</span>
+            <h2>{currentDate.toLocaleDateString('zh-CN', { month: 'long', year: 'numeric' })}</h2>
           </div>
-          <button onClick={() => setCurrentDate(new Date())} className="border border-fs-border rounded-md px-3 py-1 text-xs bg-transparent cursor-pointer hover:bg-fs-hover transition-colors">
-            今天
-          </button>
+          <div className="toolbar-actions">
+            <div className="segmented-tabs">
+              <button className="is-active">月</button>
+              <button>周</button>
+              <button>日</button>
+            </div>
+            <button onClick={() => setCurrentDate(new Date())} className="secondary-action">今天</button>
+          </div>
+        </div>
+
+        <div className="calendar-toolbar">
+          <button onClick={prevMonth}>上一月</button>
+          <div className="calendar-legend">
+            <span><i className="is-work" />工作</span>
+            <span><i className="is-personal" />个人</span>
+            <span><i className="is-reminder" />提醒</span>
+          </div>
+          <button onClick={nextMonth}>下一月</button>
         </div>
 
         {isLoading ? (
           <div className="h-[400px] bg-fs-hover rounded-lg animate-pulse" />
         ) : (
-          <div className="grid grid-cols-7 gap-px bg-fs-border rounded-lg overflow-hidden">
-            {days.map((d) => <div key={d} className="bg-fs-surface text-center text-xs text-fs-text-muted py-2 font-medium">{d}</div>)}
-            {Array.from({ length: firstDay }).map((_, i) => <div key={`empty-${i}`} className="bg-fs-surface min-h-[80px]" />)}
+          <div className="calendar-grid">
+            {days.map((d) => (
+              <div key={d} className="calendar-weekday">{d}</div>
+            ))}
+            {Array.from({ length: firstDay }).map((_, i) => (
+              <div key={`empty-${i}`} className="calendar-day is-empty" />
+            ))}
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1
               const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear()
@@ -61,15 +78,27 @@ export default function Calendar() {
               const isSelected = day === selectedDay
 
               return (
-                <div key={day} onClick={() => setSelectedDay(isSelected ? null : day)}
-                  className={`bg-fs-surface min-h-[80px] p-1.5 cursor-pointer transition-colors ${isSelected ? 'ring-2 ring-fs-accent' : ''}`}>
-                  <span className={`text-xs tabular-nums ${isToday ? 'bg-fs-accent text-white rounded-full w-5 h-5 inline-grid place-items-center' : ''}`}>{day}</span>
+                <div
+                  key={day}
+                  onClick={() => setSelectedDay(isSelected ? null : day)}
+                  className={`calendar-day ${isSelected ? 'is-selected' : ''}`}
+                >
+                  <span className={`text-xs tabular-nums inline-grid place-items-center w-6 h-6 rounded-full ${
+                    isToday ? 'bg-fs-accent text-white font-semibold' : 'text-fs-text-secondary'
+                  }`}>{day}</span>
                   {dayEvents.length > 0 && (
-                    <div className="flex gap-0.5 mt-0.5 flex-wrap">
+                    <div className="calendar-dots">
                       {dayEvents.slice(0, 3).map((e) => (
-                        <div key={e.id} className={`w-1.5 h-1.5 rounded-full ${e.kind === 'work' ? 'bg-fs-accent' : e.kind === 'personal' ? 'bg-fs-success' : 'bg-fs-warning'}`} />
+                        <div
+                          key={e.id}
+                          className={`w-2 h-2 rounded-full ${
+                            e.kind === 'work' ? 'bg-fs-accent' : e.kind === 'personal' ? 'bg-fs-success' : 'bg-fs-warning'
+                          }`}
+                        />
                       ))}
-                      {dayEvents.length > 3 && <span className="text-[9px] text-fs-text-muted">+{dayEvents.length - 3}</span>}
+                      {dayEvents.length > 3 && (
+                        <span className="text-[9px] text-fs-text-muted leading-none">+{dayEvents.length - 3}</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -77,18 +106,33 @@ export default function Calendar() {
             })}
           </div>
         )}
-      </div>
+      </section>
 
-      {selectedDay && (
-        <div className="grid gap-3 content-start border-l border-fs-border pl-5 max-[960px]:border-l-0 max-[960px]:pl-0 max-[960px]:border-t max-[960px]:pt-4">
-          <h3 className="text-sm font-semibold">{`${month + 1}月${selectedDay}日`}</h3>
+      <aside className="surface-panel calendar-inspector">
+        <div className="panel-heading is-compact">
+          <div>
+            <span>选中日期</span>
+            <h2>{selectedDay ? `${month + 1}月${selectedDay}日` : '选择日期'}</h2>
+          </div>
+        </div>
+        <div className="inline-create is-stacked">
+          <input placeholder="新增日程" />
+          <button>添加</button>
+        </div>
+        <div className="inspector-section">
+          <span>日程</span>
           {selectedEvents.length === 0 ? (
-            <p className="text-fs-text-muted text-sm">无日程</p>
+            <p className="empty-copy">今天无更多日程</p>
           ) : (
             selectedEvents.map((e) => <EventChip key={e.id} event={e} />)
           )}
         </div>
-      )}
+        <div className="inspector-section">
+          <span>关联笔记</span>
+          <div className="linked-note">设计评审记录</div>
+          <div className="linked-note">用户访谈摘要</div>
+        </div>
+      </aside>
     </div>
   )
 }

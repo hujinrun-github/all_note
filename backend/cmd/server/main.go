@@ -14,11 +14,12 @@ func main() {
 	}
 	log.Println("database initialized")
 
-	r := router.Setup()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+
+	r := router.Setup()
 	addr := ":" + port
 	log.Printf("server starting on %s", addr)
 	if err := r.Run(addr); err != nil {

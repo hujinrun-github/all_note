@@ -1,26 +1,33 @@
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useUIStore } from '../../stores/ui'
+
+const quickTabs = [
+  { label: '笔记', path: '/notes' },
+  { label: '任务', path: '/tasks' },
+  { label: '日程', path: '/calendar' },
+]
 
 export function QuickBar() {
   const setCaptureOpen = useUIStore((s) => s.setCaptureOpen)
+  const navigate = useNavigate()
+  const location = useLocation()
 
   return (
-    <div className="fixed left-1/2 bottom-6 -translate-x-1/2 inline-flex items-center gap-1 bg-fs-surface border border-fs-border rounded-full shadow-hover px-1.5 py-1.5 z-50 max-[760px]:gap-0">
-      <button className="border-0 bg-transparent rounded-full min-h-[34px] px-3 text-sm cursor-pointer hover:bg-fs-hover transition-colors">
-        📝 笔记
-      </button>
-      <button className="border-0 bg-transparent rounded-full min-h-[34px] px-3 text-sm cursor-pointer hover:bg-fs-hover transition-colors">
-        ✅ 任务
-      </button>
-      <button className="border-0 bg-transparent rounded-full min-h-[34px] px-3 text-sm cursor-pointer hover:bg-fs-hover transition-colors">
-        📅 日程
-      </button>
-      <div className="w-px h-5 bg-fs-border mx-1" />
-      <button
-        onClick={() => setCaptureOpen(true)}
-        className="border-0 bg-fs-accent text-white rounded-full min-h-[34px] px-4 text-sm cursor-pointer hover:bg-fs-accent-hover transition-colors font-medium"
-      >
+    <nav className="quick-command-bar" aria-label="快速导航">
+      {quickTabs.map((tab) => (
+        <button
+          key={tab.path}
+          type="button"
+          onClick={() => navigate(tab.path)}
+          className={location.pathname.startsWith(tab.path) ? 'is-tab-active' : ''}
+        >
+          {tab.label}
+        </button>
+      ))}
+      <span />
+      <button type="button" onClick={() => setCaptureOpen(true)} className="is-primary">
         快速捕获
       </button>
-    </div>
+    </nav>
   )
 }

@@ -17,69 +17,63 @@ export default function Notes() {
     queryFn: () => getNotes({ folder_id: folder || undefined, sort }),
   })
 
-  if (notesQ.isLoading) {
+  if (notesQ.isLoading) return <Skeleton />
+  if (notesQ.error) {
     return (
-      <div className="grid gap-2">
-        {Array.from({ length: 5 }).map((_, index) => (
-          <div key={index} className="h-12 bg-fs-hover rounded-md animate-pulse" />
-        ))}
+      <div className="text-center py-12">
+        <p className="text-fs-text-muted text-sm">加载失败</p>
       </div>
     )
   }
 
-  if (notesQ.error) {
-    return <div className="text-red-500 text-sm">加载失败</div>
-  }
-
   return (
-    <div className="grid grid-cols-[180px_1fr] gap-6 max-[760px]:grid-cols-1">
-      <aside className="grid gap-1 content-start">
-        <button
-          onClick={() => setFolder('')}
-          className={`text-left border-0 bg-transparent rounded-md px-2.5 py-1.5 text-sm cursor-pointer transition-colors ${!folder ? 'bg-fs-hover text-fs-accent font-semibold' : 'text-fs-text-secondary hover:bg-fs-hover'}`}
-        >
-          全部
+    <div className="list-workspace">
+      <aside className="filter-rail">
+        <div className="filter-title">文件夹</div>
+        <button onClick={() => setFolder('')} className={!folder ? 'is-active' : ''}>
+          <span>全部</span>
+          <span className="text-xs opacity-60">{notesQ.data?.pagination.total ?? 0}</span>
         </button>
         {(foldersQ.data ?? []).map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setFolder(item.id)}
-            className={`text-left border-0 bg-transparent rounded-md px-2.5 py-1.5 text-sm cursor-pointer transition-colors flex justify-between ${folder === item.id ? 'bg-fs-hover text-fs-accent font-semibold' : 'text-fs-text-secondary hover:bg-fs-hover'}`}
-          >
+          <button key={item.id} onClick={() => setFolder(item.id)} className={folder === item.id ? 'is-active' : ''}>
             <span>{item.name}</span>
             <span className="text-fs-text-muted text-xs">{item.note_count}</span>
           </button>
         ))}
+        <div className="rail-summary">
+          <span>最近更新</span>
+          <strong>{notesQ.data?.pagination.total ?? 0}</strong>
+          <p>按文件夹保持知识有序</p>
+        </div>
       </aside>
 
-      <div>
-        <div className="flex justify-between items-center mb-4 gap-3">
-          <span className="text-fs-text-muted text-xs">{notesQ.data?.pagination.total ?? 0} 篇笔记</span>
-          <div className="flex items-center gap-2">
+      <section className="surface-panel list-panel">
+        <div className="panel-heading">
+          <div>
+            <span>{notesQ.data?.pagination.total ?? 0} 篇笔记</span>
+            <h2>笔记库</h2>
+          </div>
+          <div className="toolbar-actions">
             <button onClick={() => setSyncOpen(true)} className="secondary-action">
               同步
             </button>
-            <button
-              onClick={() => setSort(sort === 'recent' ? 'az' : 'recent')}
-              className="border border-fs-border rounded-md px-3 py-1 text-xs bg-transparent cursor-pointer hover:bg-fs-hover transition-colors"
-            >
-              {sort === 'recent' ? '最近' : 'A-Z'}
+            <button onClick={() => setSort(sort === 'recent' ? 'az' : 'recent')} className="secondary-action">
+              {sort === 'recent' ? '最近更新' : 'A-Z'}
             </button>
+            <button className="primary-action">新建笔记</button>
           </div>
         </div>
 
-        <div className="grid gap-1">
+        <div className="list-rows">
           {(notesQ.data?.notes ?? []).map((note) => (
-            <div
-              key={note.id}
-              className="flex justify-between items-center px-3 py-2.5 rounded-md hover:bg-fs-hover cursor-pointer transition-colors"
-              onClick={() => navigate(`/editor/${note.id}`)}
-            >
-              <div>
-                <strong className="text-sm font-medium">{note.title}</strong>
-                <div className="text-fs-text-muted text-xs mt-0.5">
+            <div key={note.id} className="rich-row group" onClick={() => navigate(`/editor/${note.id}`)}>
+              <div className="min-w-0">
+                <strong className="text-sm font-medium text-fs-text block truncate">{note.title}</strong>
+                <div className="text-fs-text-muted text-xs mt-1">
                   {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}
-                  {note.folder_id !== '__uncategorized' && ` · ${note.folder_id.replace('__', '')}`}
+                  {note.folder_id !== '__uncategorized' && note.folder_id !== '__work' && (
+                    <span> · {note.folder_id.replace('__', '')}</span>
+                  )}
                 </div>
               </div>
               <button
@@ -87,7 +81,7 @@ export default function Notes() {
                   event.stopPropagation()
                   deleteNote(note.id).then(() => notesQ.refetch())
                 }}
-                className="border-0 bg-transparent text-fs-text-muted hover:text-red-500 cursor-pointer text-xs transition-colors"
+                className="border-0 bg-transparent text-fs-text-muted hover:text-red-500 cursor-pointer text-xs px-2 py-1 rounded transition-colors opacity-0 group-hover:opacity-100"
               >
                 删除
               </button>
@@ -95,12 +89,27 @@ export default function Notes() {
           ))}
         </div>
 
-        {(notesQ.data?.notes ?? []).length === 0 && (
-          <p className="text-fs-text-muted text-sm text-center py-8">暂无笔记</p>
-        )}
-      </div>
+        {(notesQ.data?.notes ?? []).length === 0 && <p className="empty-copy">暂无笔记</p>}
+      </section>
 
       {syncOpen && <ObsidianSyncPanel onClose={() => setSyncOpen(false)} />}
+    </div>
+  )
+}
+
+function Skeleton() {
+  return (
+    <div className="grid grid-cols-[180px_1fr] gap-6">
+      <div className="grid gap-2">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="h-9 bg-fs-hover rounded-lg animate-pulse" />
+        ))}
+      </div>
+      <div className="grid gap-2">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div key={index} className="h-14 bg-fs-hover rounded-lg animate-pulse" />
+        ))}
+      </div>
     </div>
   )
 }

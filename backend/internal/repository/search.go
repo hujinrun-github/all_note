@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"log"
 	"sort"
 	"strings"
 
@@ -16,21 +17,42 @@ func Search(q string, page, pageSize int) ([]model.SearchResult, int, error) {
 
 	ftsQuery := buildFTS5Query(q)
 	limit := pageSize * searchPageMultiplier
-		allResults := make([]model.SearchResult, 0)
+
+	allResults := make([]model.SearchResult, 0)
 	totalCount := 0
 
-	noteResults, noteCount := searchNotes(ftsQuery, limit)
+	// FTS5 search (handles English + multi-char tokens)
+	noteResults, noteCount := searchNotesFTS(ftsQuery, limit)
 	totalCount += noteCount
 	allResults = append(allResults, noteResults...)
 
-	taskResults, taskCount := searchTasks(ftsQuery, limit)
+	taskResults, taskCount := searchTasksFTS(ftsQuery, limit)
 	totalCount += taskCount
 	allResults = append(allResults, taskResults...)
 
-	eventResults, eventCount := searchEvents(ftsQuery, limit)
+	eventResults, eventCount := searchEventsFTS(ftsQuery, limit)
 	totalCount += eventCount
 	allResults = append(allResults, eventResults...)
 
+	log.Printf("[search] q=%q ftsQuery=%q ftsResults=%d", q, ftsQuery, len(allResults))
+
+	// LIKE fallback: if FTS5 found nothing, use wildcard LIKE for substring matching
+	if len(allResults) == 0 {
+		likeQuery := "%" + strings.TrimSpace(q) + "%"
+		likeLimit := limit
+
+		likeNotes, lnCount := searchNotesLIKE(likeQuery, likeLimit)
+		likeTasks, ltCount := searchTasksLIKE(likeQuery, likeLimit)
+		likeEvents, leCount := searchEventsLIKE(likeQuery, likeLimit)
+
+		totalCount = lnCount + ltCount + leCount
+		allResults = append(allResults, likeNotes...)
+		allResults = append(allResults, likeTasks...)
+		allResults = append(allResults, likeEvents...)
+		log.Printf("[search] LIKE fallback: notes=%d tasks=%d events=%d", lnCount, ltCount, leCount)
+	}
+
+	log.Printf("[search] final total=%d", totalCount)
 	sort.Slice(allResults, func(i, j int) bool {
 		return allResults[i].UpdatedAt > allResults[j].UpdatedAt
 	})
@@ -54,12 +76,15 @@ func buildFTS5Query(q string) string {
 	}
 	words := strings.Fields(q)
 	for i, w := range words {
-		words[i] = "\"" + w + "\""
+		// Prefix match: "Play" → Play* matches "Playwright"
+		words[i] = w + "*"
 	}
-	return strings.Join(words, " AND ")
+	return strings.Join(words, " ")
 }
 
-func searchNotes(q string, limit int) ([]model.SearchResult, int) {
+// ---- FTS5 search functions ----
+
+func searchNotesFTS(q string, limit int) ([]model.SearchResult, int) {
 	var total int
 	DB.QueryRow("SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH ?", q).Scan(&total)
 
@@ -76,7 +101,7 @@ func searchNotes(q string, limit int) ([]model.SearchResult, int) {
 	}
 	defer rows.Close()
 
-		results := make([]model.SearchResult, 0)
+	results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var r model.SearchResult
 		r.Type = "note"
@@ -86,7 +111,7 @@ func searchNotes(q string, limit int) ([]model.SearchResult, int) {
 	return results, total
 }
 
-func searchTasks(q string, limit int) ([]model.SearchResult, int) {
+func searchTasksFTS(q string, limit int) ([]model.SearchResult, int) {
 	var total int
 	DB.QueryRow("SELECT COUNT(*) FROM tasks_fts WHERE tasks_fts MATCH ?", q).Scan(&total)
 
@@ -103,7 +128,7 @@ func searchTasks(q string, limit int) ([]model.SearchResult, int) {
 	}
 	defer rows.Close()
 
-		results := make([]model.SearchResult, 0)
+	results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var r model.SearchResult
 		r.Type = "task"
@@ -113,7 +138,7 @@ func searchTasks(q string, limit int) ([]model.SearchResult, int) {
 	return results, total
 }
 
-func searchEvents(q string, limit int) ([]model.SearchResult, int) {
+func searchEventsFTS(q string, limit int) ([]model.SearchResult, int) {
 	var total int
 	DB.QueryRow("SELECT COUNT(*) FROM events_fts WHERE events_fts MATCH ?", q).Scan(&total)
 
@@ -130,11 +155,92 @@ func searchEvents(q string, limit int) ([]model.SearchResult, int) {
 	}
 	defer rows.Close()
 
-		results := make([]model.SearchResult, 0)
+	results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var r model.SearchResult
 		r.Type = "event"
 		rows.Scan(&r.ID, &r.Title, &r.Highlight, &r.Kind, &r.UpdatedAt)
+		results = append(results, r)
+	}
+	return results, total
+}
+
+// ---- LIKE fallback for CJK / substring search ----
+
+func searchNotesLIKE(q string, limit int) ([]model.SearchResult, int) {
+	var total int
+	DB.QueryRow("SELECT COUNT(*) FROM notes WHERE title LIKE ? OR body LIKE ? OR tags LIKE ?", q, q, q).Scan(&total)
+
+	rows, err := DB.Query(`
+		SELECT id, title, folder_id, updated_at
+		FROM notes
+		WHERE title LIKE ? OR body LIKE ? OR tags LIKE ?
+		ORDER BY updated_at DESC LIMIT ?
+	`, q, q, q, limit)
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	results := make([]model.SearchResult, 0)
+	for rows.Next() {
+		var r model.SearchResult
+		r.Type = "note"
+		rows.Scan(&r.ID, &r.Title, &r.FolderID, &r.UpdatedAt)
+		// Build highlight with the matched substring
+		r.Highlight = r.Title
+		results = append(results, r)
+	}
+	return results, total
+}
+
+func searchTasksLIKE(q string, limit int) ([]model.SearchResult, int) {
+	var total int
+	DB.QueryRow("SELECT COUNT(*) FROM tasks WHERE title LIKE ?", q).Scan(&total)
+
+	rows, err := DB.Query(`
+		SELECT id, title, done, updated_at
+		FROM tasks
+		WHERE title LIKE ?
+		ORDER BY updated_at DESC LIMIT ?
+	`, q, limit)
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	results := make([]model.SearchResult, 0)
+	for rows.Next() {
+		var r model.SearchResult
+		r.Type = "task"
+		rows.Scan(&r.ID, &r.Title, &r.Done, &r.UpdatedAt)
+		r.Highlight = r.Title
+		results = append(results, r)
+	}
+	return results, total
+}
+
+func searchEventsLIKE(q string, limit int) ([]model.SearchResult, int) {
+	var total int
+	DB.QueryRow("SELECT COUNT(*) FROM events WHERE title LIKE ? OR location LIKE ?", q, q).Scan(&total)
+
+	rows, err := DB.Query(`
+		SELECT id, title, kind, updated_at
+		FROM events
+		WHERE title LIKE ? OR location LIKE ?
+		ORDER BY updated_at DESC LIMIT ?
+	`, q, q, limit)
+	if err != nil {
+		return nil, 0
+	}
+	defer rows.Close()
+
+	results := make([]model.SearchResult, 0)
+	for rows.Next() {
+		var r model.SearchResult
+		r.Type = "event"
+		rows.Scan(&r.ID, &r.Title, &r.Kind, &r.UpdatedAt)
+		r.Highlight = r.Title
 		results = append(results, r)
 	}
 	return results, total

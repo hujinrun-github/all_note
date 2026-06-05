@@ -5,7 +5,7 @@ export interface APIResponse<T> {
 }
 
 class APIClient {
-  private basePath = ''
+  private basePath = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '')
 
   async get<T>(path: string, params?: Record<string, string>): Promise<APIResponse<T>> {
     const url = new URL(`${this.basePath}${path}`, window.location.origin)

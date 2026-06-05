@@ -1,69 +1,165 @@
 # FlowSpace / all_note
 
-轻量 All-in-one 效率工具的产品预研仓库。当前阶段是产品定义、架构设计和 UI 原型验证，还不是可运行应用。
+轻量 All-in-one 效率工具 — 笔记 + 任务 + 日历自然打通的日常效率中枢。
 
-一句话定位：给不想被工具绑架的人，一个秒开、本地优先、笔记 + 任务 + 日历自然打通的日常效率中枢。
+## 技术栈
 
-## 当前结论
+| 层 | 技术 |
+|---|------|
+| 前端 | React 19 + TypeScript + Tailwind CSS v4 + Vite |
+| 编辑器 | Tiptap v3 (ProseMirror) |
+| 状态管理 | Zustand + TanStack React Query |
+| 后端 | Go + Gin |
+| 数据库 | SQLite (FTS5 全文搜索) |
 
-Reddit 调研显示，目标用户的主要痛点不是“缺一个更强大的 Notion”，而是：
-
-- 工具太碎：日程、任务、笔记、协作分散在不同产品里。
-- 产品太重：Notion、Evernote、ClickUp 等被反复吐槽慢、臃肿、难维护。
-- 订阅疲劳：用户更愿意接受买断、本地优先、可迁移的数据模型。
-- AI 疲劳：用户接受有用的辅助，不接受强塞式 AI。
-
-因此 v1 不追求大而全，先验证“快捕获 + 本地笔记任务 + 今日视图”的核心闭环。
-
-## 仓库结构
+## 项目结构
 
 ```text
 .
-├── product-plan.md                 # 产品定位、MVP 范围、路线图、风险和推广策略
-├── desktop-architecture.md         # Tauri/Rust/React 架构、数据模型、窗口和性能设计
-├── Reddit/
-│   ├── crawl_reddit.py             # Reddit 调研爬虫
-│   ├── analyze.py                  # 调研数据分析脚本
-│   ├── reddit_analysis.md          # 调研报告
-│   └── reddit_raw.json             # 原始采集数据
-└── sketches/
-    ├── THEME.md                    # 合并后的 UI 设计规范
-    ├── 001-notion-editorial/       # 编辑风静态原型
-    └── 002-notion-structured/      # 结构风静态原型
+├── frontend/                  # React 前端
+│   └── src/
+│       ├── routes/            # 页面组件 (Dashboard, Notes, Editor, Tasks, Calendar, Inbox, Search)
+│       ├── components/        # UI 组件 + 布局组件
+│       ├── hooks/             # React Query hooks
+│       ├── api/               # API 调用层
+│       ├── stores/            # Zustand stores
+│       └── styles/            # 全局 CSS
+├── backend/                   # Go 后端
+│   └── internal/
+│       ├── handler/           # HTTP 处理器
+│       ├── repository/        # 数据层 (SQLite + FTS5)
+│       ├── service/           # 业务逻辑层
+│       ├── model/             # 数据模型
+│       ├── router/            # 路由注册
+│       └── middleware/        # 中间件 (CORS)
+└── README.md
 ```
 
-## MVP 范围
+## 启动方式
 
-v1 应该只包含能证明核心价值的功能：
+### 一键启动（推荐）
 
-- Quick Capture：全局快捷键唤起 mini 窗口，快速写入笔记、任务或日程意图。
-- 笔记：Markdown 编辑、标题/正文、标签、最近笔记列表。
-- 任务：收件箱、今日任务、完成状态、优先级。
-- 今日视图：今日任务、今日日程占位、最近笔记聚合。
-- 智能关联：笔记和任务的手动关联、从笔记中提取待办。
-- 本地存储：Markdown 文件作为真实源，SQLite 作为索引和查询缓存。
+```bash
+make dev
+```
 
-明确延后：Web 端、iOS、云同步、多人协作、知识地图、完整插件系统、完整日历视图。
+默认后端端口 `8080`，前端端口 `5199`。自定义端口：
 
-## 技术方向
+```bash
+PORT=9090 FRONTEND_PORT=5199 make dev
+```
 
-- 桌面壳：Tauri v2
-- 后端核心：Rust
-- 前端：React + TypeScript + Tailwind CSS
-- 编辑器：Tiptap
-- 状态管理：Zustand
-- 本地数据：Markdown + SQLite
-- 搜索：v1 先用 SQLite FTS5，Tantivy 作为 Phase 0/1.1 验证项
+Makefile 会自动：
+1. 杀掉占用端口的旧进程
+2. 编译并启动后端
+3. 启动前端开发服务器
 
-## 下一步
+### 端口配置
 
-Phase 0 的目标是做技术 spike，而不是继续写更多规划：
+| 服务 | 环境变量 | 默认值 | 说明 |
+|------|----------|--------|------|
+| 后端 | `PORT` | `8080` | Go 服务监听端口 |
+| 前端代理 | `VITE_BACKEND_PORT` | `8080` | Vite 将 `/api` 代理到后端端口 |
 
-1. 创建 Tauri + React 最小工程。
-2. 验证冷启动时间，release build 取 10 次中位数。
-3. 做 Quick Capture 独立窗口，验证全局快捷键唤起和写入反馈。
-4. 打通 SQLite + Markdown 的创建、编辑、删除、重建索引。
-5. 在 Tiptap 中实现一个最小 `TaskNode`，验证编辑器内任务状态同步。
-6. 用 1000 篇中文 Markdown 对比 SQLite FTS5 和 Tantivy 的搜索效果。
+如需本地固定后端端口，可在 `frontend/.env` 中写入 `VITE_BACKEND_PORT=8080`。
 
-通过 Phase 0 后，再进入桌面 MVP 实现。
+### 1. 启动后端
+
+```bash
+cd backend
+go build -o server ./cmd/server
+
+# 默认 8080
+./server
+
+# 自定义端口
+PORT=9090 ./server
+```
+
+### 2. 启动前端
+
+```bash
+cd frontend
+pnpm install    # 首次运行需要
+
+# 默认 5173
+pnpm dev
+
+# 自定义端口 + 自定义后端
+npx vite --port 5199 --host 127.0.0.1
+```
+
+如果后端端口不是默认 8080，启动前端时设置：
+```bash
+VITE_BACKEND_PORT=9090 npx vite --port 5199 --host 127.0.0.1
+```
+
+启动后访问 **http://127.0.0.1:5199**。
+
+### 3. 一行启动全部（WSL）
+
+```bash
+# 后端 (默认 8080)
+cd /mnt/d/MyGitProject/all_note/backend && go build -o server ./cmd/server && ./server &
+
+# 前端 (5199)
+cd /mnt/d/MyGitProject/all_note/frontend && npx vite --port 5199 --host 127.0.0.1 &
+```
+
+自定义后端端口：
+```bash
+PORT=9090 go run ./cmd/server &
+VITE_BACKEND_PORT=9090 npx vite --port 5199 --host 127.0.0.1 &
+```
+
+## 页面路由
+
+| 路径 | 页面 | 说明 |
+|------|------|------|
+| `/` | 今日 | 三栏：今日任务 · 日程 · 最近笔记 |
+| `/tasks` | 任务 | 按项目/状态筛选，行内添加 |
+| `/notes` | 笔记 | 按文件夹浏览，点击进入编辑 |
+| `/editor/:id` | 编辑器 | Markdown 编辑，工具栏 + 自动保存 |
+| `/calendar` | 日历 | 月视图，点击日期查看日程 |
+| `/inbox` | 收件箱 | 快速捕获项管理，批量归档/删除 |
+| `/search` | 搜索 | FTS5 全文搜索，300ms 防抖 |
+
+## API 端点
+
+```
+GET    /api/notes          # 笔记列表
+GET    /api/notes/:id      # 笔记详情
+POST   /api/notes          # 创建笔记
+PATCH  /api/notes/:id      # 更新笔记
+DELETE /api/notes/:id      # 删除笔记
+
+GET    /api/tasks          # 任务列表
+POST   /api/tasks          # 创建任务
+PATCH  /api/tasks/:id      # 更新任务
+DELETE /api/tasks/:id      # 删除任务
+
+GET    /api/events         # 日程列表
+POST   /api/events         # 创建日程
+PATCH  /api/events/:id     # 更新日程
+DELETE /api/events/:id     # 删除日程
+
+GET    /api/inbox          # 收件箱列表
+POST   /api/inbox          # 添加捕获项
+POST   /api/inbox/:id/convert  # 转换捕获项
+POST   /api/inbox/batch    # 批量操作
+DELETE /api/inbox/:id      # 删除捕获项
+
+GET    /api/folders        # 文件夹列表
+GET    /api/search?q=      # 全文搜索 (FTS5)
+GET    /api/today          # 今日视图聚合数据
+```
+
+## 设计系统
+
+暖纸编辑风 (Warm Paper Editorial)：
+
+- **背景**: `#f7f4ee` 暖奶油色
+- **表面**: `#fefdf8` 暖纸白，带柔和阴影
+- **强调色**: `#b87333` 铜色
+- **标题字体**: Noto Serif SC (宋体)
+- **正文字体**: PingFang SC / Noto Sans SC

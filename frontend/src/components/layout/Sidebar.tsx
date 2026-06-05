@@ -11,37 +11,34 @@ const navItems = [
 
 export function Sidebar() {
   return (
-    <aside className="h-screen border-r border-fs-border bg-fs-surface px-3.5 py-[18px] flex flex-col gap-[22px] max-[760px]:hidden">
-      <div className="flex gap-2.5 items-center px-1 pb-2">
-        <div className="w-8 h-8 rounded-lg bg-fs-accent grid place-items-center text-white font-bold text-sm">F</div>
+    <aside className="workspace-sidebar">
+      <div className="sidebar-brand">
+        <div className="sidebar-logo">F</div>
         <div>
-          <strong className="block text-sm leading-tight">FlowSpace</strong>
-          <span className="text-fs-text-muted text-xs">轻量效率中枢</span>
+          <strong>FlowSpace</strong>
+          <span>轻量效率中枢</span>
         </div>
       </div>
 
-      <nav className="grid gap-1.5">
+      <nav className="sidebar-nav">
         {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `flex items-center justify-between min-h-[34px] px-2.5 rounded-md text-[13px] font-medium transition-colors ${
-                isActive ? 'bg-fs-hover text-fs-accent font-semibold' : 'text-fs-text hover:bg-fs-hover'
-              }`
+              `sidebar-link ${isActive ? 'is-active' : ''}`
             }
           >
-            <span className="inline-flex items-center gap-2 min-w-0">
-              <Icon />
-              {label}
-            </span>
+            <Icon />
+            <span>{label}</span>
           </NavLink>
         ))}
       </nav>
 
-      <div className="mt-auto grid gap-1.5">
-        <div className="text-fs-text-muted text-[11px] font-semibold uppercase tracking-wider px-1">FlowSpace v0.1</div>
+      <div className="sidebar-status">
+        <span>本地优先</span>
+        <strong>FlowSpace v0.1</strong>
       </div>
     </aside>
   )

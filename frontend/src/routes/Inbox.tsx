@@ -43,62 +43,107 @@ export default function Inbox() {
     { kind: 'event', label: '转为日程' },
   ]
 
-  if (isLoading) return <div className="grid gap-2">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-12 bg-fs-hover rounded-md animate-pulse" />)}</div>
-  if (error) return <div className="text-red-500 text-sm">加载失败</div>
+  if (isLoading) return <Skeleton />
+  if (error) return <div className="text-center py-12"><p className="text-fs-text-muted text-sm">加载失败</p></div>
 
   return (
-    <div className="grid gap-5 max-w-[720px]">
-      <div className="flex justify-between items-center">
-        <div className="flex gap-2">
+    <div className="list-workspace">
+      <aside className="filter-rail">
+        <div className="filter-title">捕获类型</div>
           {kinds.map((k) => (
-            <button key={k} onClick={() => setKind(k)}
-              className={`border-0 rounded-md px-3 py-1.5 text-xs cursor-pointer transition-colors ${kind === k ? 'bg-fs-accent text-white' : 'bg-fs-hover text-fs-text-secondary hover:bg-fs-border'}`}>
+            <button
+              key={k}
+              onClick={() => setKind(k)}
+              className={kind === k ? 'is-active' : ''}
+            >
               {kindLabels[k]}
             </button>
           ))}
+        <div className="rail-summary">
+          <span>待处理</span>
+          <strong>{data?.items.length ?? 0}</strong>
+          <p>先捕获，再整理成具体对象</p>
         </div>
-        {selected.size > 0 && (
-          <div className="flex gap-2">
-            <button onClick={() => handleBatch('archive')} className="border border-fs-border rounded-md px-3 py-1 text-xs bg-transparent cursor-pointer hover:bg-fs-hover transition-colors">
-              归档 ({selected.size})
+      </aside>
+
+      <section className="surface-panel list-panel">
+        <div className="panel-heading">
+          <div>
+            <span>收件箱</span>
+            <h2>未整理捕获</h2>
+          </div>
+          <div className="toolbar-actions">
+            <button onClick={() => handleBatch('archive')} disabled={selected.size === 0} className="secondary-action">
+              批量归档{selected.size > 0 ? ` (${selected.size})` : ''}
             </button>
-            <button onClick={() => handleBatch('delete')} className="border border-red-300 rounded-md px-3 py-1 text-xs bg-transparent text-red-500 cursor-pointer hover:bg-red-50 transition-colors">
-              删除 ({selected.size})
+            <button onClick={() => handleBatch('delete')} disabled={selected.size === 0} className="danger-action">
+              删除{selected.size > 0 ? ` (${selected.size})` : ''}
             </button>
           </div>
-        )}
-      </div>
+        </div>
 
-      <div className="grid gap-2">
+      <div className="list-rows">
         {(data?.items ?? []).map((item: InboxItem) => (
-          <div key={item.id} className="flex items-start gap-3 px-3 py-2.5 border border-fs-border rounded-md hover:border-fs-border-hover transition-colors">
-            <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} className="mt-1.5" />
+          <div
+            key={item.id}
+            className={`capture-row ${selected.has(item.id) ? 'is-selected' : ''}`}
+          >
+            <input
+              type="checkbox"
+              checked={selected.has(item.id)}
+              onChange={() => toggleSelect(item.id)}
+              className="mt-1.5 accent-fs-accent"
+            />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded-sm ${item.kind === 'note' ? 'bg-fs-accent/10 text-fs-accent' : item.kind === 'task' ? 'bg-fs-warning/10 text-fs-warning' : 'bg-fs-success/10 text-fs-success'}`}>
+                <span className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${
+                  item.kind === 'note' ? 'bg-fs-accent/10 text-fs-accent' :
+                  item.kind === 'task' ? 'bg-fs-warning/10 text-fs-warning' :
+                  'bg-fs-success/10 text-fs-success'
+                }`}>
                   {kindLabels[item.kind]}
                 </span>
-                <strong className="text-sm">{item.title}</strong>
+                <strong className="text-sm text-fs-text">{item.title}</strong>
               </div>
               {item.body && <p className="text-fs-text-secondary text-xs mt-1 truncate">{item.body}</p>}
-              <span className="text-fs-text-muted text-[11px] mt-1 block">{new Date(item.created_at * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="text-fs-text-muted text-[11px] mt-1.5 block">
+                {new Date(item.created_at * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </span>
             </div>
-            <div className="flex gap-1 shrink-0">
+            <div className="row-actions">
               {convertKinds.map(({ kind: ck, label }) => (
-                <button key={ck} onClick={() => handleConvert(item.id, ck)} disabled={convertItem.isPending}
-                  className="border border-fs-border rounded px-2 py-1 text-[10px] bg-transparent cursor-pointer hover:bg-fs-hover transition-colors disabled:opacity-50">
+                <button
+                  key={ck}
+                  onClick={() => handleConvert(item.id, ck)}
+                  disabled={convertItem.isPending}
+                >
                   {label}
                 </button>
               ))}
-              <button onClick={() => handleDelete(item.id)} className="border-0 bg-transparent text-fs-text-muted hover:text-red-500 cursor-pointer text-xs px-1 transition-colors">×</button>
+              <button
+                onClick={() => handleDelete(item.id)}
+                className="icon-danger"
+              >
+                ×
+              </button>
             </div>
           </div>
         ))}
       </div>
 
       {(data?.items ?? []).length === 0 && (
-        <p className="text-fs-text-muted text-sm text-center py-8">收件箱为空</p>
+        <p className="empty-copy">收件箱为空</p>
       )}
+      </section>
+    </div>
+  )
+}
+
+function Skeleton() {
+  return (
+    <div className="max-w-[780px] grid gap-3">
+      <div className="flex gap-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-8 w-14 bg-fs-hover rounded-full animate-pulse" />)}</div>
+      <div className="grid gap-2">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-16 bg-fs-hover rounded-lg animate-pulse" />)}</div>
     </div>
   )
 }
