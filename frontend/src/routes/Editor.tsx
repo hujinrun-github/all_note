@@ -1,16 +1,18 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
+import { NoteSyncCard } from '../components/sync/NoteSyncCard'
 import { useNote, useUpdateNote } from '../hooks/useNotes'
+import { useSyncObsidianNote, useSyncTargets } from '../hooks/useSync'
 
-function getMarkdown(e: Editor | null): string {
-  if (!e || e.isDestroyed) return ''
-  const s = e.storage as unknown as Record<string, { getMarkdown: () => string } | undefined>
-  return s.markdown?.getMarkdown() ?? ''
+function getMarkdown(editor: Editor | null): string {
+  if (!editor || editor.isDestroyed) return ''
+  const storage = editor.storage as unknown as Record<string, { getMarkdown: () => string } | undefined>
+  return storage.markdown?.getMarkdown() ?? ''
 }
 
 export default function EditorPage() {
@@ -18,6 +20,11 @@ export default function EditorPage() {
   const navigate = useNavigate()
   const { data: note, isLoading, error } = useNote(id!)
   const updateNote = useUpdateNote()
+  const syncTargetsQ = useSyncTargets()
+  const { mutate: syncCurrentNote, isPending: isAutoSyncPending } = useSyncObsidianNote(id)
+  const autoSyncEnabled = Boolean(
+    syncTargetsQ.data?.some((target) => target.type === 'obsidian' && target.enabled && target.auto_sync),
+  )
 
   const [title, setTitle] = useState('')
 
@@ -34,83 +41,108 @@ export default function EditorPage() {
         spellcheck: 'false',
       },
     },
-    onUpdate: ({ editor: ed }) => {
-      // Mark this so auto-save doesn't miss unsaved changes
-      if (!ed.isDestroyed) {
-        ;(ed as Editor & { _dirty?: boolean })._dirty = true
+    onUpdate: ({ editor: activeEditor }) => {
+      if (!activeEditor.isDestroyed) {
+        ;(activeEditor as Editor & { _dirty?: boolean })._dirty = true
       }
     },
   })
 
-  // Load note content into editor when data arrives
   useEffect(() => {
     if (note && editor && !editor.isDestroyed) {
       setTitle(note.title)
-      // editor.commands.setContent with Markdown extension parses Markdown → HTML
       editor.commands.setContent(note.body || '')
     }
   }, [note, editor])
 
-  // Also load when id changes (navigate between notes)
   useEffect(() => {
     if (!id) return
     setTitle('')
     if (editor && !editor.isDestroyed) {
       editor.commands.setContent('')
     }
-  }, [id])
+  }, [id, editor])
+
+  const syncAfterSave = useCallback(() => {
+    if (autoSyncEnabled && !isAutoSyncPending) {
+      syncCurrentNote()
+    }
+  }, [autoSyncEnabled, isAutoSyncPending, syncCurrentNote])
 
   const save = useCallback(() => {
     if (!id || !title.trim() || !editor || editor.isDestroyed) return
-    updateNote.mutate({ id, title: title.trim(), body: getMarkdown(editor) })
-  }, [id, title, editor, updateNote])
+    updateNote.mutate(
+      { id, title: title.trim(), body: getMarkdown(editor) },
+      { onSuccess: syncAfterSave },
+    )
+  }, [id, title, editor, updateNote, syncAfterSave])
 
-  // Debounced auto-save every 5s
   useEffect(() => {
-    if (!editor) return
-    const t = setInterval(() => {
+    if (!editor || !id) return
+    const timer = setInterval(() => {
       if (updateNote.isPending || editor.isDestroyed) return
-      const md = getMarkdown(editor)
+      const markdown = getMarkdown(editor)
       if (!note) return
-      if (title.trim() && (md !== note.body || title.trim() !== note.title)) {
-        updateNote.mutate({ id: id!, title: title.trim(), body: md })
+      if (title.trim() && (markdown !== note.body || title.trim() !== note.title)) {
+        updateNote.mutate(
+          { id, title: title.trim(), body: markdown },
+          { onSuccess: syncAfterSave },
+        )
       }
     }, 5000)
-    return () => clearInterval(t)
-  }, [editor, title, id, note, updateNote])
+    return () => clearInterval(timer)
+  }, [editor, title, id, note, updateNote, syncAfterSave])
 
-  if (isLoading) return (
-    <div className="max-w-[740px] mx-auto grid gap-4">
-      <div className="h-10 bg-fs-hover rounded-md animate-pulse" />
-      <div className="h-96 bg-fs-hover rounded-md animate-pulse" />
-    </div>
-  )
+  if (isLoading) {
+    return (
+      <div className="max-w-[740px] mx-auto grid gap-4">
+        <div className="h-10 bg-fs-hover rounded-md animate-pulse" />
+        <div className="h-96 bg-fs-hover rounded-md animate-pulse" />
+      </div>
+    )
+  }
 
-  if (error || !note) return (
-    <div className="text-red-500 text-sm">
-      笔记未找到 <button onClick={() => navigate('/notes')} className="underline ml-2">返回列表</button>
-    </div>
-  )
+  if (error || !note) {
+    return (
+      <div className="text-red-500 text-sm">
+        笔记未找到
+        <button onClick={() => navigate('/notes')} className="underline ml-2">
+          返回列表
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-[740px] mx-auto grid gap-4">
       <div className="flex justify-between items-center">
-        <button onClick={() => navigate('/notes')} className="border-0 bg-transparent text-fs-text-muted hover:text-fs-text cursor-pointer text-sm transition-colors">
+        <button
+          onClick={() => navigate('/notes')}
+          className="border-0 bg-transparent text-fs-text-muted hover:text-fs-text cursor-pointer text-sm transition-colors"
+        >
           ← 返回
         </button>
         <span className="text-fs-text-muted text-xs">
-          {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+          {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
           {updateNote.isPending && <span className="ml-2 text-fs-accent">保存中...</span>}
+          {isAutoSyncPending && <span className="ml-2 text-fs-accent">同步中...</span>}
         </span>
       </div>
 
       <input
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(event) => setTitle(event.target.value)}
         onBlur={save}
         placeholder="笔记标题"
         className="w-full border-0 bg-transparent text-[28px] font-bold outline-none font-sans"
       />
+
+      {id && <NoteSyncCard noteID={id} />}
 
       {editor && (
         <BubbleMenu editor={editor} className="flex gap-0.5 bg-white border border-fs-border rounded-lg shadow-popover px-1 py-1">
@@ -135,7 +167,7 @@ export default function EditorPage() {
           </MenuBtn>
           <div className="w-px bg-fs-border mx-0.5" />
           <MenuBtn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')}>
-            •≡
+            •
           </MenuBtn>
           <MenuBtn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')}>
             1.
@@ -148,7 +180,7 @@ export default function EditorPage() {
           </MenuBtn>
           <div className="w-px bg-fs-border mx-0.5" />
           <MenuBtn onClick={() => editor.chain().focus().setHorizontalRule().run()} active={false}>
-            —
+            -
           </MenuBtn>
         </BubbleMenu>
       )}
@@ -165,7 +197,7 @@ export default function EditorPage() {
   )
 }
 
-function MenuBtn({ onClick, active, children }: { onClick: () => void; active: boolean; children: React.ReactNode }) {
+function MenuBtn({ onClick, active, children }: { onClick: () => void; active: boolean; children: ReactNode }) {
   return (
     <button
       type="button"

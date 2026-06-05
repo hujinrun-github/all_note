@@ -19,6 +19,15 @@ func Setup() *gin.Engine {
 		api.POST("/notes", handler.CreateNote)
 		api.PATCH("/notes/:id", handler.UpdateNote)
 		api.DELETE("/notes/:id", handler.DeleteNote)
+		api.GET("/notes/:id/sync-state", handler.GetNoteSyncState)
+
+		api.GET("/sync/targets", handler.ListSyncTargets)
+		api.POST("/sync/targets", handler.SaveSyncTarget)
+		api.PATCH("/sync/targets/:id", handler.UpdateSyncTarget)
+		api.POST("/sync/obsidian/test", handler.TestObsidianTarget)
+		api.POST("/sync/obsidian/notes/:id", handler.SyncObsidianNote)
+		api.POST("/sync/obsidian/folders/:folder_id", handler.SyncObsidianFolder)
+		api.POST("/sync/obsidian/all", handler.SyncObsidianAll)
 
 		api.GET("/tasks", handler.GetTasks)
 		api.POST("/tasks", handler.CreateTask)

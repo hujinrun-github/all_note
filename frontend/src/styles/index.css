@@ -176,3 +176,235 @@ body {
   height: 0;
   pointer-events: none;
 }
+
+.primary-action,
+.secondary-action {
+  min-height: 30px;
+  border-radius: var(--radius-md);
+  padding: 0 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 160ms var(--ease-standard), border-color 160ms var(--ease-standard),
+    color 160ms var(--ease-standard), opacity 160ms var(--ease-standard);
+}
+
+.primary-action:disabled,
+.secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.primary-action {
+  border: 1px solid var(--color-fs-accent);
+  background: var(--color-fs-accent);
+  color: #ffffff;
+}
+
+.primary-action:hover:not(:disabled) {
+  border-color: var(--color-fs-accent-hover);
+  background: var(--color-fs-accent-hover);
+}
+
+.secondary-action {
+  border: 1px solid var(--color-fs-border);
+  background: var(--color-fs-surface);
+  color: var(--color-fs-text-secondary);
+}
+
+.secondary-action:hover:not(:disabled) {
+  border-color: var(--color-fs-border-hover);
+  background: var(--color-fs-hover);
+  color: var(--color-fs-text);
+}
+
+.sync-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  background: rgba(24, 24, 27, 0.28);
+  backdrop-filter: blur(3px);
+  padding: 1rem;
+}
+
+.sync-panel {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 1rem;
+  border: 1px solid var(--color-fs-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-fs-surface);
+  box-shadow: var(--shadow-popover);
+  padding: 1.25rem;
+}
+
+.sync-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.sync-panel-header span,
+.sync-field span {
+  color: var(--color-fs-text-muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.sync-panel-header h2 {
+  margin-top: 0.2rem;
+  font-size: 1.25rem;
+  font-weight: 720;
+}
+
+.sync-panel-header button {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-fs-text-muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sync-panel-header button:hover {
+  background: var(--color-fs-hover);
+  color: var(--color-fs-text);
+}
+
+.sync-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.sync-field input {
+  min-height: 40px;
+  border: 1px solid var(--color-fs-border);
+  border-radius: var(--radius-md);
+  background: var(--color-fs-surface);
+  color: var(--color-fs-text);
+  padding: 0 0.8rem;
+  outline: none;
+}
+
+.sync-field input:focus {
+  border-color: var(--color-fs-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.sync-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-fs-text-secondary);
+  font-size: 0.86rem;
+}
+
+.sync-message {
+  margin: 0;
+  border-radius: var(--radius-md);
+  padding: 0.65rem 0.75rem;
+  background: var(--color-fs-hover);
+  color: var(--color-fs-text-secondary);
+  font-size: 0.84rem;
+}
+
+.sync-message-success {
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+}
+
+.sync-message-error {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+.sync-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.sync-card {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--color-fs-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-fs-surface);
+  padding: 0.85rem;
+}
+
+.sync-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.sync-card-header span {
+  color: var(--color-fs-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.sync-card-header strong {
+  font-size: 0.78rem;
+}
+
+.sync-card-status-synced {
+  color: var(--color-fs-success);
+}
+
+.sync-card-status-failed {
+  color: #b91c1c;
+}
+
+.sync-card-status-pending,
+.sync-card-status-unsynced {
+  color: var(--color-fs-accent);
+}
+
+.sync-card p,
+.sync-card em,
+.sync-card code {
+  margin: 0;
+  color: var(--color-fs-text-muted);
+  font-size: 0.76rem;
+}
+
+.sync-card code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--font-family-mono);
+}
+
+.sync-card em {
+  color: #b91c1c;
+  font-style: normal;
+}
+
+@media (max-width: 560px) {
+  .sync-overlay {
+    align-items: end;
+    padding: 0;
+  }
+
+  .sync-panel {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+
+  .sync-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}

@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS folders (
   created_at INTEGER NOT NULL
 );
 
+INSERT OR IGNORE INTO folders (id, name, sort_order, created_at) VALUES
+  ('__uncategorized', '未分类', 0, unixepoch()),
+  ('__work', '工作', 1, unixepoch()),
+  ('__personal', '个人', 2, unixepoch());
+
 CREATE TABLE IF NOT EXISTS notes (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT UNIQUE NOT NULL,
@@ -105,4 +110,29 @@ CREATE TABLE IF NOT EXISTS inbox (
   converted_to TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_targets (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  vault_path TEXT NOT NULL,
+  base_folder TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  auto_sync INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS note_sync_state (
+  note_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  external_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  last_synced_at INTEGER,
+  status TEXT NOT NULL,
+  error_message TEXT,
+  PRIMARY KEY (note_id, target_id),
+  FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
 );

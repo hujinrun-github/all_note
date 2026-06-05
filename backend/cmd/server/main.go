@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/router"
@@ -14,8 +15,13 @@ func main() {
 	log.Println("database initialized")
 
 	r := router.Setup()
-	log.Println("server starting on :8080")
-	if err := r.Run(":8080"); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	addr := ":" + port
+	log.Printf("server starting on %s", addr)
+	if err := r.Run(addr); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
 }
