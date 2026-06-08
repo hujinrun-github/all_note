@@ -63,6 +63,19 @@ Makefile 会自动：
 
 如需本地固定后端端口，可在 `frontend/.env` 中写入 `VITE_BACKEND_PORT=8080`。
 
+### Obsidian 双向同步
+
+Obsidian 同步支持配置一个 Vault 路径和一个同步目录。双向同步只扫描 `vault_path/base_folder` 中的 Markdown 文件，不会扫描整个 Vault。
+
+同步规则：
+
+- FlowSpace 新增或修改的笔记会写入 Obsidian。
+- Obsidian 新增的 Markdown 会导入 FlowSpace。
+- Obsidian 修改的 Markdown 会更新 FlowSpace。
+- 两边同时修改时，Obsidian 优先。
+- Obsidian 删除已同步 Markdown 后，FlowSpace 只标记为“Obsidian 已删除”，需要在同步面板确认后才会删除 FlowSpace 笔记。
+- 选择“保留并重新导出”会重新生成 Obsidian Markdown 文件。
+
 ### 1. 启动后端
 
 ```bash
