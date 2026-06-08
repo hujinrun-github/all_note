@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { useNoteSyncState, useRestoreObsidianDeletion, useSyncObsidianNote, useSyncTargets } from '../../hooks/useSync'
 
 function syncStatusLabel(status: string | undefined) {
   if (status === 'synced') return '已同步'
   if (status === 'failed') return '同步失败'
   if (status === 'external_deleted') return 'Obsidian 已删除'
+  if (status === 'pending') return '待同步'
   return '未同步'
 }
 
@@ -12,6 +14,7 @@ export function NoteSyncCard({ noteID }: { noteID: string }) {
   const stateQ = useNoteSyncState(noteID)
   const syncNote = useSyncObsidianNote(noteID)
   const restoreDeletion = useRestoreObsidianDeletion()
+  const [restoreError, setRestoreError] = useState<string | null>(null)
   const target = targetsQ.data?.find((item) => item.type === 'obsidian')
   const state = stateQ.data
   const status = state?.status ?? 'unsynced'
@@ -22,7 +25,12 @@ export function NoteSyncCard({ noteID }: { noteID: string }) {
   }
 
   async function handleRestore() {
-    await restoreDeletion.mutateAsync(noteID)
+    setRestoreError(null)
+    try {
+      await restoreDeletion.mutateAsync(noteID)
+    } catch {
+      setRestoreError('重新导出失败，请先执行双向同步后再试')
+    }
   }
 
   return (
@@ -42,6 +50,7 @@ export function NoteSyncCard({ noteID }: { noteID: string }) {
               <button type="button" className="secondary-action" onClick={handleRestore} disabled={restoreDeletion.isPending}>
                 {restoreDeletion.isPending ? '重新导出中' : '保留并重新导出'}
               </button>
+              {restoreError && <em>{restoreError}</em>}
             </>
           ) : (
             <button type="button" className="secondary-action" onClick={handleSync} disabled={syncNote.isPending}>
