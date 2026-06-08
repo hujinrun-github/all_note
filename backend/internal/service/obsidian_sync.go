@@ -149,16 +149,28 @@ func writeNoteToTarget(note *model.Note, target *model.SyncTarget) (*model.SyncR
 		}
 		return nil, wrapped
 	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		wrapped := fmt.Errorf("stat obsidian note: %w", err)
+		if recordErr := recordSyncFailure(note, target, outputPath, contentHash, wrapped); recordErr != nil {
+			return nil, fmt.Errorf("%w; failed to record sync state: %v", wrapped, recordErr)
+		}
+		return nil, wrapped
+	}
 
 	now := time.Now().Unix()
+	externalMTime := info.ModTime().Unix()
 	if err := repository.UpsertSyncState(&model.SyncState{
-		NoteID:       note.ID,
-		TargetID:     target.ID,
-		ExternalPath: outputPath,
-		ContentHash:  contentHash,
-		LastSyncedAt: &now,
-		Status:       "synced",
-		ErrorMessage: nil,
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  outputPath,
+		ContentHash:   contentHash,
+		ExternalHash:  contentHash,
+		ExternalMTime: &externalMTime,
+		LastDirection: "push",
+		LastSyncedAt:  &now,
+		Status:        "synced",
+		ErrorMessage:  nil,
 	}); err != nil {
 		return nil, fmt.Errorf("record sync state: %w", err)
 	}

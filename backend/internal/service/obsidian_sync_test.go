@@ -95,6 +95,45 @@ func TestRenderObsidianMarkdownEscapesYamlStrings(t *testing.T) {
 	}
 }
 
+func TestParseObsidianMarkdownWithFlowSpaceFrontmatter(t *testing.T) {
+	raw := "---\nid: n01\nsource: flowspace\nfolder: \"__work\"\ntags:\n  - product\n---\n\n# Product Plan\n\nBody text\n"
+	parsed, err := parseObsidianMarkdown([]byte(raw), "Product Plan.md")
+	if err != nil {
+		t.Fatalf("parse markdown: %v", err)
+	}
+	if parsed.ID != "n01" || parsed.Title != "Product Plan" || parsed.FolderID != "__work" {
+		t.Fatalf("unexpected parsed metadata: %+v", parsed)
+	}
+	if parsed.Body != "Body text\n" || parsed.TagsJSON != `["product"]` {
+		t.Fatalf("unexpected body or tags: body=%q tags=%s", parsed.Body, parsed.TagsJSON)
+	}
+}
+
+func TestParseObsidianMarkdownWithoutFrontmatterUsesFileName(t *testing.T) {
+	raw := "Loose note body\nSecond line\n"
+	parsed, err := parseObsidianMarkdown([]byte(raw), "Loose Note.md")
+	if err != nil {
+		t.Fatalf("parse markdown: %v", err)
+	}
+	if parsed.ID != "" || parsed.Title != "Loose Note" || parsed.Body != raw {
+		t.Fatalf("unexpected parsed note: %+v", parsed)
+	}
+	if parsed.FolderID != "__uncategorized" || parsed.TagsJSON != "[]" {
+		t.Fatalf("unexpected defaults: %+v", parsed)
+	}
+}
+
+func TestParseObsidianMarkdownRemovesDuplicateHeading(t *testing.T) {
+	raw := "# Meeting\n\nNotes\n"
+	parsed, err := parseObsidianMarkdown([]byte(raw), "Meeting.md")
+	if err != nil {
+		t.Fatalf("parse markdown: %v", err)
+	}
+	if parsed.Title != "Meeting" || parsed.Body != "Notes\n" {
+		t.Fatalf("unexpected parsed markdown: %+v", parsed)
+	}
+}
+
 func TestResolveOutputPathRejectsEscape(t *testing.T) {
 	target := &model.SyncTarget{
 		VaultPath:  t.TempDir(),
@@ -121,6 +160,37 @@ func TestResolveOutputPathAllowsBaseFolder(t *testing.T) {
 	want := filepath.Join(vault, "FlowSpace Notes", "Hello.md")
 	if got != want {
 		t.Fatalf("resolveOutputPath() = %q, want %q", got, want)
+	}
+}
+
+func TestScanObsidianMarkdownFilesOnlyReturnsBaseFolderMarkdown(t *testing.T) {
+	vault := t.TempDir()
+	base := filepath.Join(vault, "FlowSpace Notes")
+	if err := os.MkdirAll(filepath.Join(base, "Nested"), 0755); err != nil {
+		t.Fatalf("create nested: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, ".obsidian"), 0755); err != nil {
+		t.Fatalf("create hidden: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "One.md"), []byte("# One\n"), 0644); err != nil {
+		t.Fatalf("write one: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "Nested", "Two.md"), []byte("# Two\n"), 0644); err != nil {
+		t.Fatalf("write two: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "ignore.txt"), []byte("ignore"), 0644); err != nil {
+		t.Fatalf("write ignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, ".obsidian", "Plugin.md"), []byte("# Plugin\n"), 0644); err != nil {
+		t.Fatalf("write plugin: %v", err)
+	}
+
+	files, err := scanObsidianMarkdownFiles(&model.SyncTarget{VaultPath: vault, BaseFolder: "FlowSpace Notes"})
+	if err != nil {
+		t.Fatalf("scan files: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 markdown files, got %+v", files)
 	}
 }
 
@@ -165,6 +235,56 @@ func TestWriteNoteToTargetUsesUniqueFileNameForTitleCollision(t *testing.T) {
 	}
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("expected unique note file: %v", err)
+	}
+}
+
+func TestWriteNoteToTargetRecordsPushExternalMetadata(t *testing.T) {
+	openServiceTestDB(t)
+	vault := t.TempDir()
+	baseDir := filepath.Join(vault, "FlowSpace Notes")
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		t.Fatalf("create base dir: %v", err)
+	}
+
+	target := &model.SyncTarget{
+		ID:         "sync-target-1",
+		Type:       "obsidian",
+		Name:       "Local Vault",
+		VaultPath:  vault,
+		BaseFolder: "FlowSpace Notes",
+		Enabled:    true,
+	}
+	note := &model.Note{
+		ID:        "note-1",
+		Title:     "Push Metadata",
+		Body:      "body",
+		FolderID:  "__work",
+		Tags:      "[]",
+		CreatedAt: 1717200000,
+		UpdatedAt: 1717286400,
+	}
+	insertServiceSyncFixtures(t, target, note)
+
+	item, err := writeNoteToTarget(note, target)
+	if err != nil {
+		t.Fatalf("writeNoteToTarget(): %v", err)
+	}
+	info, err := os.Stat(item.ExternalPath)
+	if err != nil {
+		t.Fatalf("stat output file: %v", err)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if state.ExternalHash != state.ContentHash || state.ExternalHash == "" {
+		t.Fatalf("unexpected external hash/content hash: %+v", state)
+	}
+	if state.ExternalMTime == nil || *state.ExternalMTime != info.ModTime().Unix() {
+		t.Fatalf("unexpected external mtime: state=%+v file=%d", state, info.ModTime().Unix())
+	}
+	if state.LastDirection != "push" || state.Status != "synced" {
+		t.Fatalf("unexpected sync status metadata: %+v", state)
 	}
 }
 
