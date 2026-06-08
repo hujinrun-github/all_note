@@ -31,6 +31,7 @@ class APIClient {
       const errBody = await res.json().catch(() => ({}))
       throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
     }
+    if (res.status === 204) return { data: undefined as T }
     return res.json()
   }
 

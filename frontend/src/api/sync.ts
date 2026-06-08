@@ -106,11 +106,11 @@ export async function getObsidianDeletions(): Promise<ExternalDeletedNote[]> {
 }
 
 export async function confirmObsidianDeletion(noteID: string): Promise<void> {
-  await api.post(`/api/sync/obsidian/deletions/${noteID}/confirm`)
+  await api.post(`/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/confirm`)
 }
 
 export async function restoreObsidianDeletion(noteID: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/deletions/${noteID}/restore`)
+  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/restore`)
   return res.data.item
 }
 
