@@ -2266,6 +2266,78 @@ body {
   color: #b91c1c;
 }
 
+.sync-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 0.45rem;
+}
+
+.sync-summary span {
+  border: 1px solid rgba(184, 115, 51, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--color-fs-text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.45rem 0.55rem;
+}
+
+.sync-deletions {
+  display: grid;
+  gap: 0.6rem;
+  border-top: 1px solid var(--color-fs-border);
+  padding-top: 0.85rem;
+}
+
+.sync-deletions > strong {
+  color: var(--color-fs-text);
+  font-size: 0.86rem;
+}
+
+.sync-deletion-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid rgba(184, 115, 51, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 0.65rem;
+}
+
+.sync-deletion-item span {
+  display: block;
+  color: var(--color-fs-text);
+  font-weight: 800;
+  font-size: 0.84rem;
+}
+
+.sync-deletion-item code {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--color-fs-text-muted);
+  font-family: var(--font-family-mono);
+  font-size: 0.72rem;
+  margin-top: 0.2rem;
+}
+
+.sync-deletion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.sync-panel .danger-action {
+  min-height: 34px;
+  border: 1px solid rgba(180, 64, 48, 0.32);
+  border-radius: 7px;
+  background: rgba(180, 64, 48, 0.08);
+  color: #9a382c;
+  font-weight: 800;
+  padding: 0 0.75rem;
+}
+
 .sync-actions {
   display: flex;
   justify-content: flex-end;
@@ -2329,6 +2401,16 @@ body {
 .sync-card em {
   color: #b91c1c;
   font-style: normal;
+}
+
+@media (max-width: 640px) {
+  .sync-deletion-item {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-deletion-actions {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 560px) {

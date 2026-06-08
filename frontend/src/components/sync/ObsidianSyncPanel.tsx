@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  useConfirmObsidianDeletion,
+  useObsidianDeletions,
+  useRestoreObsidianDeletion,
   useSaveSyncTarget,
   useSyncObsidianAll,
+  useSyncObsidianBidirectional,
   useSyncTargets,
   useTestObsidianTarget,
 } from '../../hooks/useSync'
+import type { ObsidianBidirectionalResult } from '../../api/sync'
 
 type SyncMessage = {
   tone: 'neutral' | 'success' | 'error'
@@ -16,6 +21,10 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
   const saveTarget = useSaveSyncTarget()
   const testTarget = useTestObsidianTarget()
   const syncAll = useSyncObsidianAll()
+  const syncBoth = useSyncObsidianBidirectional()
+  const deletionsQ = useObsidianDeletions()
+  const confirmDeletion = useConfirmObsidianDeletion()
+  const restoreDeletion = useRestoreObsidianDeletion()
   const target = useMemo(() => targetsQ.data?.find((item) => item.type === 'obsidian'), [targetsQ.data])
 
   const [name, setName] = useState('Obsidian Vault')
@@ -23,6 +32,7 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
   const [baseFolder, setBaseFolder] = useState('FlowSpace Notes')
   const [autoSync, setAutoSync] = useState(false)
   const [message, setMessage] = useState<SyncMessage | null>(null)
+  const [lastBidirectionalResult, setLastBidirectionalResult] = useState<ObsidianBidirectionalResult | null>(null)
 
   useEffect(() => {
     if (!target) return
@@ -40,7 +50,13 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
     enabled: true,
     auto_sync: autoSync,
   }
-  const isBusy = saveTarget.isPending || testTarget.isPending || syncAll.isPending
+  const isBusy =
+    saveTarget.isPending ||
+    testTarget.isPending ||
+    syncAll.isPending ||
+    syncBoth.isPending ||
+    confirmDeletion.isPending ||
+    restoreDeletion.isPending
 
   async function handleSave() {
     setMessage(null)
@@ -70,6 +86,29 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
     } catch {
       setMessage({ tone: 'error', text: '同步失败，请先保存并测试路径' })
     }
+  }
+
+  async function handleSyncBidirectional() {
+    setMessage(null)
+    setLastBidirectionalResult(null)
+    try {
+      const result = await syncBoth.mutateAsync()
+      setLastBidirectionalResult(result)
+      setMessage({
+        tone: 'success',
+        text: `双向同步完成：导入 ${result.imported}，从 Obsidian 更新 ${result.pulled}，写入 Obsidian ${result.pushed}，待确认删除 ${result.external_deleted}，失败 ${result.failed}`,
+      })
+    } catch {
+      setMessage({ tone: 'error', text: '双向同步失败，请先保存并测试 Obsidian 路径' })
+    }
+  }
+
+  async function handleConfirmDeletion(noteID: string) {
+    await confirmDeletion.mutateAsync(noteID)
+  }
+
+  async function handleRestoreDeletion(noteID: string) {
+    await restoreDeletion.mutateAsync(noteID)
   }
 
   return (
@@ -112,12 +151,57 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
 
         {message && <p className={`sync-message sync-message-${message.tone}`}>{message.text}</p>}
 
+        {lastBidirectionalResult && (
+          <div className="sync-summary" aria-label="双向同步结果">
+            <span>导入 {lastBidirectionalResult.imported}</span>
+            <span>Obsidian 更新 {lastBidirectionalResult.pulled}</span>
+            <span>写入 {lastBidirectionalResult.pushed}</span>
+            <span>待确认删除 {lastBidirectionalResult.external_deleted}</span>
+            <span>失败 {lastBidirectionalResult.failed}</span>
+          </div>
+        )}
+
+        {Boolean(deletionsQ.data?.length) && (
+          <div className="sync-deletions">
+            <strong>Obsidian 已删除，等待确认</strong>
+            {deletionsQ.data!.map((item) => (
+              <div className="sync-deletion-item" key={item.note_id}>
+                <div>
+                  <span>{item.title}</span>
+                  <code>{item.external_path}</code>
+                </div>
+                <div className="sync-deletion-actions">
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    onClick={() => handleRestoreDeletion(item.note_id)}
+                    disabled={isBusy}
+                  >
+                    保留并重新导出
+                  </button>
+                  <button
+                    type="button"
+                    className="danger-action"
+                    onClick={() => handleConfirmDeletion(item.note_id)}
+                    disabled={isBusy}
+                  >
+                    确认删除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <footer className="sync-actions">
           <button type="button" className="secondary-action" onClick={handleTest} disabled={isBusy}>
             {testTarget.isPending ? '测试中' : '测试路径'}
           </button>
           <button type="button" className="secondary-action" onClick={handleSave} disabled={isBusy}>
             {saveTarget.isPending ? '保存中' : '保存设置'}
+          </button>
+          <button type="button" className="primary-action" onClick={handleSyncBidirectional} disabled={isBusy}>
+            {syncBoth.isPending ? '双向同步中' : '双向同步'}
           </button>
           <button type="button" className="primary-action" onClick={handleSyncAll} disabled={isBusy}>
             {syncAll.isPending ? '同步中' : '同步全部'}
