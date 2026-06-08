@@ -78,6 +78,9 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 		if strings.TrimSpace(state.ExternalPath) == "" || state.Status == "external_deleted" {
 			continue
 		}
+		if _, ok := handledNoteIDs[state.NoteID]; ok {
+			continue
+		}
 		if _, ok := notes[state.NoteID]; !ok {
 			continue
 		}

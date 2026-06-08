@@ -484,6 +484,44 @@ func TestSyncObsidianBidirectionalPullsWhenBothSidesChanged(t *testing.T) {
 	}
 }
 
+func TestSyncObsidianBidirectionalHandlesRenamedMarkdownFileWithSameID(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Rename Me", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+
+	newDir := filepath.Join(vault, target.BaseFolder, "Moved")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("create moved dir: %v", err)
+	}
+	newPath := filepath.Join(newDir, "Renamed.md")
+	if err := os.Rename(item.ExternalPath, newPath); err != nil {
+		t.Fatalf("rename external file: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Failed != 0 || result.ExternalDeleted != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Pulled != 1 && !hasSyncResultStatus(result.Items, note.ID, "synced") {
+		t.Fatalf("expected renamed file to pull or remain synced, got %+v", result)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if state.Status != "synced" || normalizedPath(state.ExternalPath) != normalizedPath(newPath) {
+		t.Fatalf("unexpected state after rename: %+v, want path %q", state, newPath)
+	}
+	if _, err := repository.GetNoteByID(note.ID); err != nil {
+		t.Fatalf("FlowSpace note should still exist after rename: %v", err)
+	}
+}
+
 func TestSyncObsidianBidirectionalPushesFlowSpaceOnlyChange(t *testing.T) {
 	openObsidianSyncTestDB(t)
 	vault := t.TempDir()
@@ -597,6 +635,15 @@ func createNoteForSyncTest(t *testing.T, title, body string) model.Note {
 
 func ptrString(value string) *string {
 	return &value
+}
+
+func hasSyncResultStatus(items []model.SyncResultItem, noteID, status string) bool {
+	for _, item := range items {
+		if item.NoteID == noteID && item.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func insertServiceSyncFixtures(t *testing.T, target *model.SyncTarget, note *model.Note) {
