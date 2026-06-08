@@ -789,6 +789,112 @@ func TestSyncObsidianBidirectionalMarksExternalDeletion(t *testing.T) {
 	}
 }
 
+func TestConfirmObsidianDeletionDeletesFlowSpaceNote(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Confirm Delete", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if err := os.Remove(item.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", result)
+	}
+
+	if err := ConfirmObsidianDeletion(note.ID); err != nil {
+		t.Fatalf("confirm deletion: %v", err)
+	}
+	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected note to be deleted, got err=%v", err)
+	}
+	if _, err := repository.GetSyncState(note.ID, target.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sync state to be deleted, got err=%v", err)
+	}
+}
+
+func TestRestoreObsidianDeletionReexportsFile(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Restore Delete", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if err := os.Remove(item.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", result)
+	}
+
+	restored, err := RestoreObsidianDeletion(note.ID)
+	if err != nil {
+		t.Fatalf("restore deletion: %v", err)
+	}
+	if restored.Status != "synced" {
+		t.Fatalf("unexpected restore result: %+v", restored)
+	}
+	if _, err := os.Stat(restored.ExternalPath); err != nil {
+		t.Fatalf("expected external file to exist: %v", err)
+	}
+}
+
+func TestRestoreObsidianDeletionReexportsMappedPath(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Restore Mapped", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	movedDir := filepath.Join(vault, target.BaseFolder, "Moved")
+	if err := os.MkdirAll(movedDir, 0755); err != nil {
+		t.Fatalf("create moved dir: %v", err)
+	}
+	mappedPath := filepath.Join(movedDir, "Renamed Restore.md")
+	if err := os.Rename(item.ExternalPath, mappedPath); err != nil {
+		t.Fatalf("rename external file: %v", err)
+	}
+	renamed := SyncObsidianBidirectional()
+	if renamed.Failed != 0 {
+		t.Fatalf("unexpected rename sync result: %+v", renamed)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get renamed state: %v", err)
+	}
+	if normalizedPath(state.ExternalPath) != normalizedPath(mappedPath) {
+		t.Fatalf("expected renamed state path %q, got %+v", mappedPath, state)
+	}
+
+	if err := os.Remove(mappedPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	deleted := SyncObsidianBidirectional()
+	if deleted.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", deleted)
+	}
+
+	restored, err := RestoreObsidianDeletion(note.ID)
+	if err != nil {
+		t.Fatalf("restore deletion: %v", err)
+	}
+	if restored.Status != "synced" || normalizedPath(restored.ExternalPath) != normalizedPath(mappedPath) {
+		t.Fatalf("unexpected restore result: %+v, want path %q", restored, mappedPath)
+	}
+	if _, err := os.Stat(mappedPath); err != nil {
+		t.Fatalf("expected mapped external file to exist: %v", err)
+	}
+}
+
 func openServiceTestDB(t *testing.T) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")

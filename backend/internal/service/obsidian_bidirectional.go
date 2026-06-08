@@ -180,6 +180,61 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 	return result
 }
 
+func ListObsidianDeletionCandidates() ([]model.ExternalDeletedNote, error) {
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		return nil, err
+	}
+	return repository.ListExternalDeletedSyncStates(target.ID)
+}
+
+func ConfirmObsidianDeletion(noteID string) error {
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		return err
+	}
+	state, err := repository.GetSyncState(noteID, target.ID)
+	if err != nil {
+		return err
+	}
+	if state.Status != "external_deleted" {
+		return errors.New("note is not marked as deleted in obsidian")
+	}
+	if err := repository.DeleteNote(noteID); err != nil {
+		return err
+	}
+	return repository.DeleteSyncState(noteID, target.ID)
+}
+
+func RestoreObsidianDeletion(noteID string) (*model.SyncResultItem, error) {
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		return nil, err
+	}
+	state, err := repository.GetSyncState(noteID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	if state.Status != "external_deleted" {
+		return nil, errors.New("note is not marked as deleted in obsidian")
+	}
+	note, err := repository.GetNoteByID(noteID)
+	if err != nil {
+		return nil, err
+	}
+	var item *model.SyncResultItem
+	if mappedPath, ok := validSyncStateExternalPath(*state, target); ok {
+		item, err = writeNoteToOutputPath(note, target, mappedPath)
+	} else {
+		item, err = writeNoteToTarget(note, target)
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.Status = "synced"
+	return item, nil
+}
+
 func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes map[string]model.Note, states map[string]model.SyncState) model.SyncResultItem {
 	if file.Note == nil {
 		return model.SyncResultItem{

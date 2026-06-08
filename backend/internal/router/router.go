@@ -28,6 +28,10 @@ func Setup() *gin.Engine {
 		api.POST("/sync/obsidian/notes/:id", handler.SyncObsidianNote)
 		api.POST("/sync/obsidian/folders/:folder_id", handler.SyncObsidianFolder)
 		api.POST("/sync/obsidian/all", handler.SyncObsidianAll)
+		api.POST("/sync/obsidian/bidirectional", handler.SyncObsidianBidirectional)
+		api.GET("/sync/obsidian/deletions", handler.ListObsidianDeletions)
+		api.POST("/sync/obsidian/deletions/:note_id/confirm", handler.ConfirmObsidianDeletion)
+		api.POST("/sync/obsidian/deletions/:note_id/restore", handler.RestoreObsidianDeletion)
 
 		api.GET("/tasks", handler.GetTasks)
 		api.POST("/tasks", handler.CreateTask)

@@ -98,6 +98,37 @@ func SyncObsidianAll(c *gin.Context) {
 	success(c, gin.H{"result": result})
 }
 
+func SyncObsidianBidirectional(c *gin.Context) {
+	result := service.SyncObsidianBidirectional()
+	success(c, gin.H{"result": result})
+}
+
+func ListObsidianDeletions(c *gin.Context) {
+	items, err := service.ListObsidianDeletionCandidates()
+	if err != nil {
+		internalError(c, err.Error())
+		return
+	}
+	success(c, gin.H{"items": items})
+}
+
+func ConfirmObsidianDeletion(c *gin.Context) {
+	if err := service.ConfirmObsidianDeletion(c.Param("note_id")); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	noContent(c)
+}
+
+func RestoreObsidianDeletion(c *gin.Context) {
+	item, err := service.RestoreObsidianDeletion(c.Param("note_id"))
+	if err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	success(c, gin.H{"item": item})
+}
+
 func GetNoteSyncState(c *gin.Context) {
 	target, err := repository.GetDefaultSyncTarget("obsidian")
 	if err == sql.ErrNoRows {
