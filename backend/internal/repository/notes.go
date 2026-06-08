@@ -102,8 +102,27 @@ func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
 }
 
 func ListAllNotes() ([]model.Note, error) {
-	notes, _, err := GetNotes("", "recent", 1, 100000)
-	return notes, err
+	rows, err := DB.Query(`
+		SELECT id, title, body, folder_id, tags, created_at, updated_at
+		FROM notes ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	notes := make([]model.Note, 0)
+	for rows.Next() {
+		var n model.Note
+		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.FolderID, &n.Tags, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return notes, nil
 }
 
 func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {

@@ -2,7 +2,10 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hujinrun/flowspace/internal/model"
@@ -74,31 +77,75 @@ func TestSyncTargetRoundTrip(t *testing.T) {
 }
 
 func TestInitDBAddsBidirectionalSyncColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.db")
+	createOldSyncStateDB(t, dbPath)
+	chdirBackendRoot(t)
+	t.Cleanup(func() {
+		if DB != nil {
+			DB.Close()
+			DB = nil
+		}
+	})
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	assertSyncStateColumns(t)
+
+	if err := DB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	DB = nil
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("init db again: %v", err)
+	}
+	assertSyncStateColumns(t)
+}
+
+func TestIsDuplicateColumnErrorMatchesSQLiteMessage(t *testing.T) {
+	if !isDuplicateColumnError(errors.New("SQL logic error: DUPLICATE COLUMN NAME: external_hash (1)")) {
+		t.Fatal("expected duplicate-column error to be detected case-insensitively")
+	}
+	if isDuplicateColumnError(errors.New("SQL logic error: duplicate column names are documented here (1)")) {
+		t.Fatal("expected non-SQLite duplicate-column message to be ignored")
+	}
+}
+
+func TestListAllNotesReturnsEveryNote(t *testing.T) {
 	openSyncTestDB(t)
 
-	rows, err := DB.Query(`PRAGMA table_info(note_sync_state)`)
+	const noteCount = 100001
+	tx, err := DB.Begin()
 	if err != nil {
-		t.Fatalf("table info: %v", err)
+		t.Fatalf("begin insert notes: %v", err)
 	}
-	defer rows.Close()
-
-	columns := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			t.Fatalf("scan column: %v", err)
+	stmt, err := tx.Prepare(`
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		t.Fatalf("prepare insert note: %v", err)
+	}
+	for i := 0; i < noteCount; i++ {
+		if _, err := stmt.Exec(fmt.Sprintf("note-%06d", i), fmt.Sprintf("Note %06d", i), "Body", "__uncategorized", "[]", int64(i), int64(i)); err != nil {
+			stmt.Close()
+			t.Fatalf("insert note %d: %v", i, err)
 		}
-		columns[name] = true
+	}
+	if err := stmt.Close(); err != nil {
+		t.Fatalf("close insert note statement: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit notes: %v", err)
 	}
 
-	for _, name := range []string{"external_hash", "external_mtime", "last_direction"} {
-		if !columns[name] {
-			t.Fatalf("expected note_sync_state.%s to exist", name)
-		}
+	notes, err := ListAllNotes()
+	if err != nil {
+		t.Fatalf("list all notes: %v", err)
+	}
+	if len(notes) != noteCount {
+		t.Fatalf("expected %d notes, got %d", noteCount, len(notes))
 	}
 }
 
@@ -128,6 +175,21 @@ func TestSyncStateRoundTripIncludesExternalMetadata(t *testing.T) {
 	}
 	if got.ExternalHash != "obsidian-hash" || got.ExternalMTime == nil || got.LastDirection != "pull" {
 		t.Fatalf("metadata was not persisted: %+v", got)
+	}
+
+	updatedMTime := now + 60
+	state.ExternalHash = "obsidian-hash-updated"
+	state.ExternalMTime = &updatedMTime
+	state.LastDirection = "push"
+	if err := UpsertSyncState(state); err != nil {
+		t.Fatalf("upsert updated state: %v", err)
+	}
+	got, err = GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get updated state: %v", err)
+	}
+	if got.ExternalHash != "obsidian-hash-updated" || got.ExternalMTime == nil || *got.ExternalMTime != updatedMTime || got.LastDirection != "push" {
+		t.Fatalf("metadata was not updated on conflict: %+v", got)
 	}
 }
 
@@ -187,4 +249,104 @@ func insertNoteForTest(t *testing.T, title string, body string) model.Note {
 		t.Fatalf("create note: %v", err)
 	}
 	return *note
+}
+
+func chdirBackendRoot(t *testing.T) {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir("../.."); err != nil {
+		t.Fatalf("chdir backend root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	})
+}
+
+func createOldSyncStateDB(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TABLE folders (
+			id TEXT PRIMARY KEY,
+			name TEXT UNIQUE NOT NULL,
+			sort_order REAL NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE notes (
+			rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+			id TEXT UNIQUE NOT NULL,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL DEFAULT '',
+			folder_id TEXT NOT NULL DEFAULT '__uncategorized' REFERENCES folders(id),
+			tags TEXT NOT NULL DEFAULT '[]',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE TABLE sync_targets (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			name TEXT NOT NULL,
+			vault_path TEXT NOT NULL,
+			base_folder TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			auto_sync INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE TABLE note_sync_state (
+			note_id TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			external_path TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			last_synced_at INTEGER,
+			status TEXT NOT NULL,
+			error_message TEXT,
+			PRIMARY KEY (note_id, target_id),
+			FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+			FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
+		);
+	`); err != nil {
+		t.Fatalf("create old db: %v", err)
+	}
+}
+
+func assertSyncStateColumns(t *testing.T) {
+	t.Helper()
+	rows, err := DB.Query(`PRAGMA table_info(note_sync_state)`)
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns: %v", err)
+	}
+
+	for _, name := range []string{"external_hash", "external_mtime", "last_direction"} {
+		if !columns[name] {
+			t.Fatalf("expected note_sync_state.%s to exist", name)
+		}
+	}
 }

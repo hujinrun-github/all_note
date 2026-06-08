@@ -58,9 +58,13 @@ func migrateDB() error {
 		`ALTER TABLE note_sync_state ADD COLUMN last_direction TEXT`,
 	}
 	for _, stmt := range statements {
-		if _, err := DB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		if _, err := DB.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name:")
 }
