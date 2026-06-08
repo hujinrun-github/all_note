@@ -44,13 +44,22 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 
 	notes := notesByID(notesList)
 	states := statesByNoteID(statesList)
+	statesByPath := statesByExternalPath(statesList)
 	scannedPaths := make(map[string]struct{}, len(files))
 	handledNoteIDs := make(map[string]struct{})
 
 	for _, failure := range scanFailures {
 		scannedPaths[normalizedPath(failure.Path)] = struct{}{}
+		noteID := ""
+		if state, ok := statesByPath[normalizedPath(failure.Path)]; ok {
+			noteID = state.NoteID
+			if noteID != "" {
+				handledNoteIDs[noteID] = struct{}{}
+			}
+		}
 		result.Failed++
 		result.Items = append(result.Items, model.SyncResultItem{
+			NoteID:       noteID,
 			Status:       "failed",
 			ExternalPath: failure.Path,
 			ErrorMessage: failure.Err.Error(),
@@ -184,8 +193,15 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 	if importedID := validImportedID(file.Note.ID); importedID != "" {
 		if note, ok := notes[importedID]; ok {
 			state, hasState := states[note.ID]
-			if hasState && normalizedPath(state.ExternalPath) == filePath && state.ExternalHash == file.Hash {
-				if state.Status == "external_deleted" {
+			if hasState && normalizedPath(state.ExternalPath) == filePath {
+				if shouldRetryFailedPush(state, file.Hash) {
+					return model.SyncResultItem{
+						NoteID:       note.ID,
+						Status:       bidirectionalPendingPushStatus,
+						ExternalPath: file.Path,
+					}
+				}
+				if state.ExternalHash != file.Hash || state.Status == "external_deleted" {
 					return pullObsidianIntoNote(note, file, target)
 				}
 				if markdownHash(renderObsidianMarkdown(&note)) == state.ContentHash && state.Status == "synced" {
@@ -223,6 +239,13 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 				Status:       "failed",
 				ExternalPath: file.Path,
 				ErrorMessage: "mapped FlowSpace note was not found",
+			}
+		}
+		if shouldRetryFailedPush(state, file.Hash) {
+			return model.SyncResultItem{
+				NoteID:       note.ID,
+				Status:       bidirectionalPendingPushStatus,
+				ExternalPath: file.Path,
 			}
 		}
 		if state.ExternalHash != file.Hash || state.Status == "external_deleted" {
@@ -435,6 +458,24 @@ func statesByNoteID(states []model.SyncState) map[string]model.SyncState {
 		}
 	}
 	return byNoteID
+}
+
+func statesByExternalPath(states []model.SyncState) map[string]model.SyncState {
+	byPath := make(map[string]model.SyncState, len(states))
+	for _, state := range states {
+		path := normalizedPath(state.ExternalPath)
+		if path != "" {
+			byPath[path] = state
+		}
+	}
+	return byPath
+}
+
+func shouldRetryFailedPush(state model.SyncState, externalHash string) bool {
+	if state.Status != "failed" {
+		return false
+	}
+	return state.ExternalHash == "" || state.ExternalHash == externalHash
 }
 
 func validImportedID(id string) string {

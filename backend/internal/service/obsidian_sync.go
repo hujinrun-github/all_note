@@ -203,15 +203,25 @@ func recordSyncFailure(note *model.Note, target *model.SyncTarget, outputPath, c
 		return nil
 	}
 	message := cause.Error()
-	return repository.UpsertSyncState(&model.SyncState{
-		NoteID:       note.ID,
-		TargetID:     target.ID,
-		ExternalPath: outputPath,
-		ContentHash:  contentHash,
-		LastSyncedAt: nil,
-		Status:       "failed",
-		ErrorMessage: &message,
-	})
+	state := model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  outputPath,
+		ContentHash:   contentHash,
+		LastDirection: "push",
+		LastSyncedAt:  nil,
+		Status:        "failed",
+		ErrorMessage:  &message,
+	}
+	if prior, err := repository.GetSyncState(note.ID, target.ID); err == nil && prior != nil {
+		if state.ExternalPath == "" {
+			state.ExternalPath = prior.ExternalPath
+		}
+		state.ExternalHash = prior.ExternalHash
+		state.ExternalMTime = prior.ExternalMTime
+		state.LastSyncedAt = prior.LastSyncedAt
+	}
+	return repository.UpsertSyncState(&state)
 }
 
 func renderObsidianMarkdown(note *model.Note) string {

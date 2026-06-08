@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -619,6 +620,58 @@ func TestSyncObsidianBidirectionalRetriesFailedStateWithMatchingContentHash(t *t
 	}
 }
 
+func TestSyncObsidianBidirectionalRetriesFailedPushWithoutPullingStaleExternal(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Failed Push", "Original body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	oldState, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get initial state: %v", err)
+	}
+
+	if _, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{Body: ptrString("Fresh local body\n")}); err != nil {
+		t.Fatalf("update note: %v", err)
+	}
+	updated, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get updated note: %v", err)
+	}
+	if err := recordSyncFailure(updated, &target, item.ExternalPath, markdownHash(renderObsidianMarkdown(updated)), errors.New("simulated push failure")); err != nil {
+		t.Fatalf("record failed push: %v", err)
+	}
+	failedState, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get failed state: %v", err)
+	}
+	if failedState.ExternalHash != oldState.ExternalHash || failedState.ExternalMTime == nil || oldState.ExternalMTime == nil || *failedState.ExternalMTime != *oldState.ExternalMTime {
+		t.Fatalf("expected failed push to preserve external metadata: failed=%+v old=%+v", failedState, oldState)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pushed != 1 || result.Pulled != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note after retry: %v", err)
+	}
+	if got.Body != "Fresh local body\n" {
+		t.Fatalf("expected local body to survive retry, got %q", got.Body)
+	}
+	raw, err := os.ReadFile(item.ExternalPath)
+	if err != nil {
+		t.Fatalf("read retried external file: %v", err)
+	}
+	if !strings.Contains(string(raw), "Fresh local body") {
+		t.Fatalf("expected retry to push fresh body, got %s", string(raw))
+	}
+}
+
 func TestSyncObsidianBidirectionalContinuesAfterMalformedMarkdownFile(t *testing.T) {
 	openObsidianSyncTestDB(t)
 	vault := t.TempDir()
@@ -644,6 +697,40 @@ func TestSyncObsidianBidirectionalContinuesAfterMalformedMarkdownFile(t *testing
 	}
 	if len(notes) != 1 || notes[0].Title != "Valid" || notes[0].Body != "Imported anyway\n" {
 		t.Fatalf("unexpected imported notes: %+v", notes)
+	}
+}
+
+func TestSyncObsidianBidirectionalDoesNotOverwriteMalformedMappedFile(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Malformed Mapped", "Original\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+
+	malformed := []byte("---\nid: [\n---\n\n# Malformed Mapped\n\nDo not overwrite\n")
+	if err := os.WriteFile(item.ExternalPath, malformed, 0644); err != nil {
+		t.Fatalf("write malformed mapped file: %v", err)
+	}
+	if _, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{Body: ptrString("Local change\n")}); err != nil {
+		t.Fatalf("update local note: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Failed < 1 || result.Pushed != 0 {
+		t.Fatalf("expected malformed mapped file to fail without push, got %+v", result)
+	}
+	if !hasSyncResultStatus(result.Items, note.ID, "failed") {
+		t.Fatalf("expected failure item to include mapped note id, got %+v", result.Items)
+	}
+	raw, err := os.ReadFile(item.ExternalPath)
+	if err != nil {
+		t.Fatalf("read malformed mapped file: %v", err)
+	}
+	if string(raw) != string(malformed) {
+		t.Fatalf("expected malformed file to remain untouched, got %s", string(raw))
 	}
 }
 
