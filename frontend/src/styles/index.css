@@ -2386,6 +2386,10 @@ body {
   color: #b91c1c;
 }
 
+.sync-card-status-external_deleted {
+  color: #9a382c;
+}
+
 .sync-card-status-pending,
 .sync-card-status-unsynced {
   color: var(--color-fs-accent);
