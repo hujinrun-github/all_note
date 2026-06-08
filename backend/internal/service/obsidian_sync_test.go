@@ -1057,6 +1057,59 @@ func TestRestoreObsidianDeletionReexportsMappedPath(t *testing.T) {
 	}
 }
 
+func TestRestoreObsidianDeletionRecreatesDeletedMappedFolder(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Restore Folder", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	nestedDir := filepath.Join(vault, target.BaseFolder, "Projects", "Archive")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("create nested dir: %v", err)
+	}
+	mappedPath := filepath.Join(nestedDir, "Nested Restore.md")
+	if err := os.Rename(item.ExternalPath, mappedPath); err != nil {
+		t.Fatalf("move external file: %v", err)
+	}
+	renamed := SyncObsidianBidirectional()
+	if renamed.Failed != 0 {
+		t.Fatalf("unexpected rename sync result: %+v", renamed)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get renamed state: %v", err)
+	}
+	if normalizedPath(state.ExternalPath) != normalizedPath(mappedPath) {
+		t.Fatalf("expected renamed state path %q, got %+v", mappedPath, state)
+	}
+
+	removedDir := filepath.Join(vault, target.BaseFolder, "Projects")
+	if err := os.RemoveAll(removedDir); err != nil {
+		t.Fatalf("remove mapped folder: %v", err)
+	}
+	deleted := SyncObsidianBidirectional()
+	if deleted.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", deleted)
+	}
+
+	restored, err := RestoreObsidianDeletion(note.ID)
+	if err != nil {
+		t.Fatalf("restore deletion: %v", err)
+	}
+	if restored.Status != "synced" || normalizedPath(restored.ExternalPath) != normalizedPath(mappedPath) {
+		t.Fatalf("unexpected restore result: %+v, want path %q", restored, mappedPath)
+	}
+	if info, err := os.Stat(mappedPath); err != nil || info.IsDir() {
+		t.Fatalf("expected restored mapped file, info=%+v err=%v", info, err)
+	}
+	if info, err := os.Stat(nestedDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected restored nested dir, info=%+v err=%v", info, err)
+	}
+}
+
 func TestListObsidianDeletionCandidatesReturnsExternalDeletedNotes(t *testing.T) {
 	openObsidianSyncTestDB(t)
 	vault := t.TempDir()

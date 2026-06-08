@@ -307,25 +307,60 @@ func validateObsidianDeletionActionPath(state *model.SyncState, target *model.Sy
 	if err != nil {
 		return "", fmt.Errorf("resolve real obsidian base folder: %w", err)
 	}
-	realParent, err := filepath.EvalSymlinks(filepath.Dir(outputPath))
-	if err != nil {
-		return "", fmt.Errorf("resolve real obsidian deletion parent: %w", err)
-	}
-	if !isPathWithin(realParent, realBase) {
-		return "", fmt.Errorf("%w: external path parent resolves outside obsidian base folder", ErrObsidianDeletionConflict)
-	}
-
-	info, err := os.Lstat(outputPath)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("%w: external path is a symlink; run bidirectional sync first", ErrObsidianDeletionConflict)
-		}
-		return "", fmt.Errorf("%w: external path exists; run bidirectional sync first", ErrObsidianDeletionConflict)
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("inspect obsidian deletion path: %w", err)
+	if err := validateObsidianDeletionPathComponents(outputPath, baseDir, realBase); err != nil {
+		return "", err
 	}
 	return outputPath, nil
+}
+
+func validateObsidianDeletionPathComponents(outputPath, baseDir, realBase string) error {
+	rel, err := filepath.Rel(baseDir, outputPath)
+	if err != nil {
+		return fmt.Errorf("resolve obsidian deletion relative path: %w", err)
+	}
+	components := splitRelativePath(rel)
+	if len(components) == 0 {
+		return fmt.Errorf("%w: external path is not a note file", ErrObsidianDeletionConflict)
+	}
+
+	current := baseDir
+	for i, component := range components {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect obsidian deletion path component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: external path component is a symlink; run bidirectional sync first", ErrObsidianDeletionConflict)
+		}
+
+		isFinalComponent := i == len(components)-1
+		if isFinalComponent {
+			return fmt.Errorf("%w: external path exists; run bidirectional sync first", ErrObsidianDeletionConflict)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%w: external path component is not a directory", ErrObsidianDeletionConflict)
+		}
+		realCurrent, err := filepath.EvalSymlinks(current)
+		if err != nil {
+			return fmt.Errorf("resolve real obsidian deletion path component: %w", err)
+		}
+		if !isPathWithin(realCurrent, realBase) {
+			return fmt.Errorf("%w: external path component resolves outside obsidian base folder", ErrObsidianDeletionConflict)
+		}
+	}
+	return nil
+}
+
+func splitRelativePath(path string) []string {
+	cleaned := filepath.Clean(path)
+	if cleaned == "." || cleaned == string(os.PathSeparator) {
+		return nil
+	}
+	return strings.Split(cleaned, string(os.PathSeparator))
 }
 
 func markObsidianRestoreSynced(noteID, targetID string) error {
