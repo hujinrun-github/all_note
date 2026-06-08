@@ -29,7 +29,7 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 		return failedObsidianBidirectionalResult(err)
 	}
 
-	files, err := scanObsidianMarkdownFiles(target)
+	files, scanFailures, err := scanObsidianMarkdownFilesWithFailures(target)
 	if err != nil {
 		return failedObsidianBidirectionalResult(fmt.Errorf("scan obsidian markdown files: %w", err))
 	}
@@ -46,6 +46,16 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 	states := statesByNoteID(statesList)
 	scannedPaths := make(map[string]struct{}, len(files))
 	handledNoteIDs := make(map[string]struct{})
+
+	for _, failure := range scanFailures {
+		scannedPaths[normalizedPath(failure.Path)] = struct{}{}
+		result.Failed++
+		result.Items = append(result.Items, model.SyncResultItem{
+			Status:       "failed",
+			ExternalPath: failure.Path,
+			ErrorMessage: failure.Err.Error(),
+		})
+	}
 
 	for _, file := range files {
 		scannedPaths[normalizedPath(file.Path)] = struct{}{}
@@ -75,7 +85,7 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 	}
 
 	for _, state := range statesList {
-		if strings.TrimSpace(state.ExternalPath) == "" || state.Status == "external_deleted" {
+		if state.Status != "synced" {
 			continue
 		}
 		if _, ok := handledNoteIDs[state.NoteID]; ok {
@@ -84,7 +94,11 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 		if _, ok := notes[state.NoteID]; !ok {
 			continue
 		}
-		if _, ok := scannedPaths[normalizedPath(state.ExternalPath)]; ok {
+		mappedPath, validMapping := validSyncStateExternalPath(state, target)
+		if !validMapping {
+			continue
+		}
+		if _, ok := scannedPaths[normalizedPath(mappedPath)]; ok {
 			continue
 		}
 
@@ -124,11 +138,19 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 		if hasState && state.Status == "external_deleted" {
 			continue
 		}
-		if hasState && markdownHash(renderObsidianMarkdown(&note)) == state.ContentHash {
+		mappedPath, validMapping := validSyncStateExternalPath(state, target)
+		currentHash := markdownHash(renderObsidianMarkdown(&note))
+		if hasState && state.Status == "synced" && validMapping && currentHash == state.ContentHash {
 			continue
 		}
 
-		item, err := writeNoteToTarget(&note, target)
+		var item *model.SyncResultItem
+		var err error
+		if hasState && validMapping {
+			item, err = writeNoteToOutputPath(&note, target, mappedPath)
+		} else {
+			item, err = writeNoteToTarget(&note, target)
+		}
 		if err != nil {
 			result.Failed++
 			result.Items = append(result.Items, model.SyncResultItem{
@@ -372,6 +394,27 @@ func normalizedPath(path string) string {
 		absPath = path
 	}
 	return strings.ToLower(filepath.Clean(absPath))
+}
+
+func validSyncStateExternalPath(state model.SyncState, target *model.SyncTarget) (string, bool) {
+	if strings.TrimSpace(state.ExternalPath) == "" {
+		return "", false
+	}
+	outputPath, err := filepath.Abs(state.ExternalPath)
+	if err != nil {
+		return "", false
+	}
+	baseDir, err := targetBaseDir(target)
+	if err != nil {
+		return "", false
+	}
+	if !isPathWithin(outputPath, baseDir) {
+		return "", false
+	}
+	if err := verifyRealBaseDir(target); err != nil {
+		return "", false
+	}
+	return outputPath, true
 }
 
 func notesByID(notes []model.Note) map[string]model.Note {

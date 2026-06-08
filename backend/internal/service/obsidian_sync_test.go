@@ -522,6 +522,131 @@ func TestSyncObsidianBidirectionalHandlesRenamedMarkdownFileWithSameID(t *testin
 	}
 }
 
+func TestSyncObsidianBidirectionalPushesTitleChangeToExistingMappedPath(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Old Title", "Old content\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	oldPath := item.ExternalPath
+
+	if _, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{
+		Title: ptrString("New Title"),
+		Body:  ptrString("New content\n"),
+	}); err != nil {
+		t.Fatalf("update note: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pushed != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if normalizedPath(state.ExternalPath) != normalizedPath(oldPath) {
+		t.Fatalf("expected mapped path to remain %q, got %+v", oldPath, state)
+	}
+	raw, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatalf("read old path: %v", err)
+	}
+	if !strings.Contains(string(raw), "# New Title") || !strings.Contains(string(raw), "New content") {
+		t.Fatalf("expected updated content at old path, got %s", string(raw))
+	}
+	duplicatePath := filepath.Join(vault, target.BaseFolder, "New Title.md")
+	if _, err := os.Stat(duplicatePath); !os.IsNotExist(err) {
+		t.Fatalf("expected no duplicate title-derived file at %q, stat err=%v", duplicatePath, err)
+	}
+
+	second := SyncObsidianBidirectional()
+	if second.Pulled != 0 || second.Failed != 0 {
+		t.Fatalf("expected second sync not to pull stale content, got %+v", second)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note after second sync: %v", err)
+	}
+	if got.Title != "New Title" || got.Body != "New content\n" {
+		t.Fatalf("expected FlowSpace note to keep new content, got %+v", got)
+	}
+}
+
+func TestSyncObsidianBidirectionalRetriesFailedStateWithMatchingContentHash(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Retry Failed", "Retry body\n")
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	mappedPath := filepath.Join(base, "Retry Failed.md")
+	contentHash := markdownHash(renderObsidianMarkdown(&note))
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  mappedPath,
+		ContentHash:   contentHash,
+		ExternalHash:  "",
+		LastDirection: "push",
+		Status:        "failed",
+	}); err != nil {
+		t.Fatalf("create failed state: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pushed != 1 || result.Failed != 0 || result.ExternalDeleted != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	raw, err := os.ReadFile(mappedPath)
+	if err != nil {
+		t.Fatalf("read retried file: %v", err)
+	}
+	if !strings.Contains(string(raw), "Retry body") {
+		t.Fatalf("expected retry to write note content, got %s", string(raw))
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if state.Status != "synced" || normalizedPath(state.ExternalPath) != normalizedPath(mappedPath) {
+		t.Fatalf("unexpected retried state: %+v", state)
+	}
+}
+
+func TestSyncObsidianBidirectionalContinuesAfterMalformedMarkdownFile(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "Bad.md"), []byte("---\nid: [\n---\n\n# Bad\n\nBroken\n"), 0644); err != nil {
+		t.Fatalf("write malformed markdown: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "Valid.md"), []byte("# Valid\n\nImported anyway\n"), 0644); err != nil {
+		t.Fatalf("write valid markdown: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Failed < 1 || result.Imported != 1 {
+		t.Fatalf("expected partial failure and valid import, got %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 || notes[0].Title != "Valid" || notes[0].Body != "Imported anyway\n" {
+		t.Fatalf("unexpected imported notes: %+v", notes)
+	}
+}
+
 func TestSyncObsidianBidirectionalPushesFlowSpaceOnlyChange(t *testing.T) {
 	openObsidianSyncTestDB(t)
 	vault := t.TempDir()

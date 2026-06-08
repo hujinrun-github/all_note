@@ -135,6 +135,22 @@ func writeNoteToTarget(note *model.Note, target *model.SyncTarget) (*model.SyncR
 		}
 		return nil, err
 	}
+
+	return writeNoteToOutputPath(note, target, outputPath)
+}
+
+func writeNoteToOutputPath(note *model.Note, target *model.SyncTarget, outputPath string) (*model.SyncResultItem, error) {
+	if note == nil {
+		return nil, errors.New("note is required")
+	}
+	if target == nil {
+		return nil, errors.New("sync target is required")
+	}
+
+	markdown := renderObsidianMarkdown(note)
+	sum := sha256.Sum256([]byte(markdown))
+	contentHash := hex.EncodeToString(sum[:])
+
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		wrapped := fmt.Errorf("create obsidian note folder: %w", err)
 		if recordErr := recordSyncFailure(note, target, outputPath, contentHash, wrapped); recordErr != nil {

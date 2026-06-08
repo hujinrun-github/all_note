@@ -18,19 +18,43 @@ type obsidianMarkdownFile struct {
 	Note  *obsidianParsedMarkdown
 }
 
+type obsidianMarkdownScanFailure struct {
+	Path string
+	Err  error
+}
+
 func scanObsidianMarkdownFiles(target *model.SyncTarget) ([]obsidianMarkdownFile, error) {
-	baseDir, err := targetBaseDir(target)
+	files, failures, err := scanObsidianMarkdownFilesWithFailures(target)
 	if err != nil {
 		return nil, err
 	}
+	if len(failures) > 0 {
+		return nil, failures[0].Err
+	}
+	return files, nil
+}
+
+func scanObsidianMarkdownFilesWithFailures(target *model.SyncTarget) ([]obsidianMarkdownFile, []obsidianMarkdownScanFailure, error) {
+	baseDir, err := targetBaseDir(target)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := verifyRealBaseDir(target); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	files := make([]obsidianMarkdownFile, 0)
+	failures := make([]obsidianMarkdownScanFailure, 0)
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			failures = append(failures, obsidianMarkdownScanFailure{
+				Path: path,
+				Err:  fmt.Errorf("walk obsidian markdown file: %w", walkErr),
+			})
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
@@ -47,23 +71,43 @@ func scanObsidianMarkdownFiles(target *model.SyncTarget) ([]obsidianMarkdownFile
 
 		absPath, err := filepath.Abs(path)
 		if err != nil {
-			return fmt.Errorf("resolve obsidian markdown file path: %w", err)
+			failures = append(failures, obsidianMarkdownScanFailure{
+				Path: path,
+				Err:  fmt.Errorf("resolve obsidian markdown file path: %w", err),
+			})
+			return nil
 		}
 		if !isPathWithin(absPath, baseDir) {
-			return fmt.Errorf("obsidian markdown file escapes base folder: %s", path)
+			failures = append(failures, obsidianMarkdownScanFailure{
+				Path: absPath,
+				Err:  fmt.Errorf("obsidian markdown file escapes base folder: %s", path),
+			})
+			return nil
 		}
 
 		info, err := entry.Info()
 		if err != nil {
-			return fmt.Errorf("stat obsidian markdown file: %w", err)
+			failures = append(failures, obsidianMarkdownScanFailure{
+				Path: absPath,
+				Err:  fmt.Errorf("stat obsidian markdown file: %w", err),
+			})
+			return nil
 		}
 		raw, err := os.ReadFile(absPath)
 		if err != nil {
-			return fmt.Errorf("read obsidian markdown file: %w", err)
+			failures = append(failures, obsidianMarkdownScanFailure{
+				Path: absPath,
+				Err:  fmt.Errorf("read obsidian markdown file: %w", err),
+			})
+			return nil
 		}
 		note, err := parseObsidianMarkdown(raw, entry.Name())
 		if err != nil {
-			return fmt.Errorf("parse obsidian markdown file: %w", err)
+			failures = append(failures, obsidianMarkdownScanFailure{
+				Path: absPath,
+				Err:  fmt.Errorf("parse obsidian markdown file: %w", err),
+			})
+			return nil
 		}
 
 		files = append(files, obsidianMarkdownFile{
@@ -76,10 +120,13 @@ func scanObsidianMarkdownFiles(target *model.SyncTarget) ([]obsidianMarkdownFile
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Path < files[j].Path
 	})
-	return files, nil
+	sort.Slice(failures, func(i, j int) bool {
+		return failures[i].Path < failures[j].Path
+	})
+	return files, failures, nil
 }
