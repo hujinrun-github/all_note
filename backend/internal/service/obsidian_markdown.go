@@ -149,6 +149,6 @@ func parseH1Line(line string) (string, bool) {
 	if !strings.HasPrefix(line, "# ") {
 		return "", false
 	}
-	title := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(strings.TrimPrefix(line, "# ")), "#"))
+	title := strings.TrimSpace(strings.TrimPrefix(line, "# "))
 	return title, title != ""
 }

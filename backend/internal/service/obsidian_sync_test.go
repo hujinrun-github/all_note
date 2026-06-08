@@ -1,9 +1,12 @@
 package service
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -96,7 +99,7 @@ func TestRenderObsidianMarkdownEscapesYamlStrings(t *testing.T) {
 }
 
 func TestParseObsidianMarkdownWithFlowSpaceFrontmatter(t *testing.T) {
-	raw := "---\nid: n01\nsource: flowspace\nfolder: \"__work\"\ntags:\n  - product\n---\n\n# Product Plan\n\nBody text\n"
+	raw := "---\nid: n01\nsource: flowspace\nfolder: \"__work\"\ntags:\n  - product\n  - \" \"\n  - design\n---\n\n# Product Plan\n\nBody text\n"
 	parsed, err := parseObsidianMarkdown([]byte(raw), "Product Plan.md")
 	if err != nil {
 		t.Fatalf("parse markdown: %v", err)
@@ -104,8 +107,12 @@ func TestParseObsidianMarkdownWithFlowSpaceFrontmatter(t *testing.T) {
 	if parsed.ID != "n01" || parsed.Title != "Product Plan" || parsed.FolderID != "__work" {
 		t.Fatalf("unexpected parsed metadata: %+v", parsed)
 	}
-	if parsed.Body != "Body text\n" || parsed.TagsJSON != `["product"]` {
+	if parsed.Body != "Body text\n" || parsed.TagsJSON != `["product","design"]` {
 		t.Fatalf("unexpected body or tags: body=%q tags=%s", parsed.Body, parsed.TagsJSON)
+	}
+	sum := sha256.Sum256([]byte(raw))
+	if parsed.Hash != hex.EncodeToString(sum[:]) {
+		t.Fatalf("unexpected hash: got %s", parsed.Hash)
 	}
 }
 
@@ -130,6 +137,17 @@ func TestParseObsidianMarkdownRemovesDuplicateHeading(t *testing.T) {
 		t.Fatalf("parse markdown: %v", err)
 	}
 	if parsed.Title != "Meeting" || parsed.Body != "Notes\n" {
+		t.Fatalf("unexpected parsed markdown: %+v", parsed)
+	}
+}
+
+func TestParseObsidianMarkdownPreservesTrailingHashInHeading(t *testing.T) {
+	raw := "# C#\n\nBody\n"
+	parsed, err := parseObsidianMarkdown([]byte(raw), "Language.md")
+	if err != nil {
+		t.Fatalf("parse markdown: %v", err)
+	}
+	if parsed.Title != "C#" || parsed.Body != "Body\n" {
 		t.Fatalf("unexpected parsed markdown: %+v", parsed)
 	}
 }
@@ -191,6 +209,40 @@ func TestScanObsidianMarkdownFilesOnlyReturnsBaseFolderMarkdown(t *testing.T) {
 	}
 	if len(files) != 2 {
 		t.Fatalf("expected 2 markdown files, got %+v", files)
+	}
+	got := scanRelativePaths(t, base, files)
+	want := []string{"Nested/Two.md", "One.md"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("markdown files = %+v, want %+v", got, want)
+	}
+}
+
+func TestScanObsidianMarkdownFilesSkipsSymlinkedMarkdown(t *testing.T) {
+	vault := t.TempDir()
+	base := filepath.Join(vault, "FlowSpace Notes")
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "One.md"), []byte("# One\n"), 0644); err != nil {
+		t.Fatalf("write one: %v", err)
+	}
+	outside := filepath.Join(vault, "Outside.md")
+	if err := os.WriteFile(outside, []byte("# Outside\n"), 0644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	link := filepath.Join(base, "Linked.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	files, err := scanObsidianMarkdownFiles(&model.SyncTarget{VaultPath: vault, BaseFolder: "FlowSpace Notes"})
+	if err != nil {
+		t.Fatalf("scan files: %v", err)
+	}
+	got := scanRelativePaths(t, base, files)
+	want := []string{"One.md"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("markdown files = %+v, want %+v", got, want)
 	}
 }
 
@@ -420,4 +472,18 @@ func insertServiceSyncFixtures(t *testing.T, target *model.SyncTarget, note *mod
 	if err != nil {
 		t.Fatalf("insert sync target: %v", err)
 	}
+}
+
+func scanRelativePaths(t *testing.T, base string, files []obsidianMarkdownFile) []string {
+	t.Helper()
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		rel, err := filepath.Rel(base, file.Path)
+		if err != nil {
+			t.Fatalf("relative path for %q: %v", file.Path, err)
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+	}
+	sort.Strings(paths)
+	return paths
 }

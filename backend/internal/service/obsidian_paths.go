@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
@@ -30,6 +31,9 @@ func scanObsidianMarkdownFiles(target *model.SyncTarget) ([]obsidianMarkdownFile
 	err = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
 		}
 		if entry.IsDir() {
 			if path != baseDir && strings.HasPrefix(entry.Name(), ".") {
@@ -74,5 +78,8 @@ func scanObsidianMarkdownFiles(target *model.SyncTarget) ([]obsidianMarkdownFile
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
 	return files, nil
 }
