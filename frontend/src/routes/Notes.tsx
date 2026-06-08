@@ -66,7 +66,7 @@ export default function Notes() {
 
         <div className="list-rows">
           {(notesQ.data?.notes ?? []).map((note) => (
-            <div key={note.id} className="rich-row group" onClick={() => navigate(`/editor/${note.id}`)}>
+            <div key={note.id} className="rich-row group" onClick={() => navigate(`/editor/${encodeURIComponent(note.id)}`)}>
               <div className="min-w-0">
                 <strong className="text-sm font-medium text-fs-text block truncate">{note.title}</strong>
                 <div className="text-fs-text-muted text-xs mt-1">

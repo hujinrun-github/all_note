@@ -151,6 +151,16 @@ func writeNoteToOutputPath(note *model.Note, target *model.SyncTarget, outputPat
 	sum := sha256.Sum256([]byte(markdown))
 	contentHash := hex.EncodeToString(sum[:])
 
+	validatedOutputPath, err := validateObsidianWritePath(outputPath, target)
+	if err != nil {
+		wrapped := fmt.Errorf("validate obsidian note path: %w", err)
+		if recordErr := recordSyncFailure(note, target, outputPath, contentHash, wrapped); recordErr != nil {
+			return nil, fmt.Errorf("%w; failed to record sync state: %v", wrapped, recordErr)
+		}
+		return nil, wrapped
+	}
+	outputPath = validatedOutputPath
+
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		wrapped := fmt.Errorf("create obsidian note folder: %w", err)
 		if recordErr := recordSyncFailure(note, target, outputPath, contentHash, wrapped); recordErr != nil {
@@ -319,6 +329,93 @@ func canUseOutputPath(note *model.Note, target *model.SyncTarget, outputPath str
 		return false
 	}
 	return strings.EqualFold(statePath, outputAbs)
+}
+
+func validateObsidianWritePath(outputPath string, target *model.SyncTarget) (string, error) {
+	if strings.TrimSpace(outputPath) == "" {
+		return "", errors.New("output path is required")
+	}
+	outputAbs, err := filepath.Abs(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve output path: %w", err)
+	}
+	baseDir, err := targetBaseDir(target)
+	if err != nil {
+		return "", err
+	}
+	if !isPathWithin(outputAbs, baseDir) {
+		return "", fmt.Errorf("output path escapes base folder: %s", outputPath)
+	}
+	if err := verifyRealBaseDir(target); err != nil {
+		return "", err
+	}
+
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return outputAbs, nil
+		}
+		return "", fmt.Errorf("resolve real obsidian base folder: %w", err)
+	}
+	baseInfo, err := os.Stat(realBase)
+	if err != nil {
+		return "", fmt.Errorf("stat real obsidian base folder: %w", err)
+	}
+	if !baseInfo.IsDir() {
+		return "", errors.New("obsidian base folder must be a directory")
+	}
+	if err := validateObsidianWritePathComponents(outputAbs, baseDir, realBase); err != nil {
+		return "", err
+	}
+	return outputAbs, nil
+}
+
+func validateObsidianWritePathComponents(outputPath, baseDir, realBase string) error {
+	rel, err := filepath.Rel(baseDir, outputPath)
+	if err != nil {
+		return fmt.Errorf("resolve output relative path: %w", err)
+	}
+	components := splitRelativePath(rel)
+	if len(components) == 0 {
+		return errors.New("output path is not a note file")
+	}
+
+	current := baseDir
+	for i, component := range components {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect output path component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("output path component is a symlink")
+		}
+
+		isFinalComponent := i == len(components)-1
+		if isFinalComponent {
+			if info.IsDir() {
+				return errors.New("output path is a directory")
+			}
+			if !info.Mode().IsRegular() {
+				return errors.New("output path is not a regular file")
+			}
+			return nil
+		}
+		if !info.IsDir() {
+			return errors.New("output path component is not a directory")
+		}
+		realCurrent, err := filepath.EvalSymlinks(current)
+		if err != nil {
+			return fmt.Errorf("resolve real output path component: %w", err)
+		}
+		if !isPathWithin(realCurrent, realBase) {
+			return errors.New("output path component resolves outside obsidian base folder")
+		}
+	}
+	return nil
 }
 
 func appendNoteIDToFileName(fileName, noteID string) string {

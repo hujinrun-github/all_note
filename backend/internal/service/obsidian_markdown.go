@@ -13,6 +13,7 @@ import (
 
 type obsidianParsedMarkdown struct {
 	ID       string
+	Source   string
 	Title    string
 	Body     string
 	FolderID string
@@ -61,6 +62,7 @@ func parseObsidianMarkdown(raw []byte, fileName string) (*obsidianParsedMarkdown
 
 	return &obsidianParsedMarkdown{
 		ID:       strings.TrimSpace(frontmatter.ID),
+		Source:   strings.TrimSpace(frontmatter.Source),
 		Title:    title,
 		Body:     body,
 		FolderID: folderID,

@@ -81,12 +81,12 @@ export async function testObsidianTarget(input: SaveSyncTargetInput): Promise<vo
 }
 
 export async function syncObsidianNote(id: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/notes/${id}`)
+  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/notes/${encodeURIComponent(id)}`)
   return res.data.item
 }
 
 export async function syncObsidianFolder(folderID: string): Promise<SyncBatchResult> {
-  const res = await api.post<{ result: SyncBatchResult }>(`/api/sync/obsidian/folders/${folderID}`)
+  const res = await api.post<{ result: SyncBatchResult }>(`/api/sync/obsidian/folders/${encodeURIComponent(folderID)}`)
   return res.data.result
 }
 
@@ -115,6 +115,6 @@ export async function restoreObsidianDeletion(noteID: string): Promise<SyncResul
 }
 
 export async function getNoteSyncState(id: string): Promise<SyncState | null> {
-  const res = await api.get<{ state: SyncState | null }>(`/api/notes/${id}/sync-state`)
+  const res = await api.get<{ state: SyncState | null }>(`/api/notes/${encodeURIComponent(id)}/sync-state`)
   return res.data.state
 }

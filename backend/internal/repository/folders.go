@@ -1,6 +1,10 @@
 package repository
 
-import "github.com/hujinrun/flowspace/internal/model"
+import (
+	"strings"
+
+	"github.com/hujinrun/flowspace/internal/model"
+)
 
 func GetFolders() ([]model.Folder, error) {
 	rows, err := DB.Query(`
@@ -15,7 +19,7 @@ func GetFolders() ([]model.Folder, error) {
 	}
 	defer rows.Close()
 
-		folders := make([]model.Folder, 0)
+	folders := make([]model.Folder, 0)
 	for rows.Next() {
 		var f model.Folder
 		if err := rows.Scan(&f.ID, &f.Name, &f.SortOrder, &f.NoteCount, &f.CreatedAt); err != nil {
@@ -24,4 +28,19 @@ func GetFolders() ([]model.Folder, error) {
 		folders = append(folders, f)
 	}
 	return folders, nil
+}
+
+func FolderExists(id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+
+	var exists int
+	if err := DB.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM folders WHERE id = ?)
+	`, id).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists == 1, nil
 }

@@ -62,6 +62,14 @@ func migrateDB() error {
 			return err
 		}
 	}
+	if _, err := DB.Exec(`
+		UPDATE note_sync_state
+		SET external_hash = content_hash
+		WHERE status = 'synced'
+			AND (external_hash IS NULL OR TRIM(external_hash) = '')
+	`); err != nil {
+		return err
+	}
 	return nil
 }
 

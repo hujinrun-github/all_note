@@ -103,6 +103,35 @@ func TestInitDBAddsBidirectionalSyncColumns(t *testing.T) {
 	assertSyncStateColumns(t)
 }
 
+func TestInitDBBackfillsLegacySyncedExternalHash(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.db")
+	createOldSyncStateDB(t, dbPath)
+	insertOldSyncStateRow(t, dbPath, "note-legacy", "target-legacy", "legacy-content-hash", "synced")
+	chdirBackendRoot(t)
+	t.Cleanup(func() {
+		if DB != nil {
+			DB.Close()
+			DB = nil
+		}
+	})
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	var externalHash sql.NullString
+	if err := DB.QueryRow(`
+		SELECT external_hash
+		FROM note_sync_state
+		WHERE note_id = 'note-legacy' AND target_id = 'target-legacy'
+	`).Scan(&externalHash); err != nil {
+		t.Fatalf("select external hash: %v", err)
+	}
+	if !externalHash.Valid || externalHash.String != "legacy-content-hash" {
+		t.Fatalf("external_hash = %#v, want legacy content hash", externalHash)
+	}
+}
+
 func TestIsDuplicateColumnErrorMatchesSQLiteMessage(t *testing.T) {
 	if !isDuplicateColumnError(errors.New("SQL logic error: DUPLICATE COLUMN NAME: external_hash (1)")) {
 		t.Fatal("expected duplicate-column error to be detected case-insensitively")
@@ -317,6 +346,40 @@ func createOldSyncStateDB(t *testing.T, dbPath string) {
 		);
 	`); err != nil {
 		t.Fatalf("create old db: %v", err)
+	}
+}
+
+func insertOldSyncStateRow(t *testing.T, dbPath, noteID, targetID, contentHash, status string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open old db for insert: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		INSERT INTO folders (id, name, sort_order, created_at)
+		VALUES ('__uncategorized', 'Uncategorized', 0, 1717200000)
+	`); err != nil {
+		t.Fatalf("insert old folder: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+		VALUES (?, 'Legacy', 'Legacy body', '__uncategorized', '[]', 1717200000, 1717200000)
+	`, noteID); err != nil {
+		t.Fatalf("insert old note: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_targets (id, type, name, vault_path, base_folder, enabled, auto_sync, created_at, updated_at)
+		VALUES (?, 'obsidian', 'Legacy Vault', 'D:\Vault', 'FlowSpace Notes', 1, 0, 1717200000, 1717200000)
+	`, targetID); err != nil {
+		t.Fatalf("insert old sync target: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO note_sync_state (note_id, target_id, external_path, content_hash, last_synced_at, status, error_message)
+		VALUES (?, ?, 'D:\Vault\FlowSpace Notes\Legacy.md', ?, 1717200000, ?, NULL)
+	`, noteID, targetID, contentHash, status); err != nil {
+		t.Fatalf("insert old sync state row: %v", err)
 	}
 }
 

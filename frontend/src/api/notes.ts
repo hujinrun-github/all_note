@@ -15,7 +15,7 @@ export async function getNotes(params: { folder_id?: string; sort?: string; page
 }
 
 export async function getNote(id: string) {
-  const res = await api.get<{ note: Note }>(`/api/notes/${id}`)
+  const res = await api.get<{ note: Note }>(`/api/notes/${encodeURIComponent(id)}`)
   return res.data.note
 }
 
@@ -25,10 +25,10 @@ export async function createNote(body: { title: string; body?: string; folder_id
 }
 
 export async function updateNote(id: string, body: Partial<Note>) {
-  const res = await api.patch<{ note: Note }>(`/api/notes/${id}`, body)
+  const res = await api.patch<{ note: Note }>(`/api/notes/${encodeURIComponent(id)}`, body)
   return res.data.note
 }
 
 export async function deleteNote(id: string) {
-  await api.del(`/api/notes/${id}`)
+  await api.del(`/api/notes/${encodeURIComponent(id)}`)
 }

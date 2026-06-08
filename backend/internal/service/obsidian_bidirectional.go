@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 )
 
 const bidirectionalPendingPushStatus = "pending_push"
+
+var flowspaceImportedIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var (
 	ErrObsidianDeletionNotFound     = errors.New("obsidian deletion candidate not found")
@@ -389,7 +392,7 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 	}
 
 	filePath := normalizedPath(file.Path)
-	if importedID := validImportedID(file.Note.ID); importedID != "" {
+	if importedID := validImportedID(file.Note); importedID != "" {
 		if note, ok := notes[importedID]; ok {
 			state, hasState := states[note.ID]
 			if hasState && normalizedPath(state.ExternalPath) == filePath {
@@ -400,7 +403,7 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 						ExternalPath: file.Path,
 					}
 				}
-				if state.ExternalHash != file.Hash || state.Status == "external_deleted" {
+				if effectiveExternalHash(state) != file.Hash || state.Status == "external_deleted" {
 					return pullObsidianIntoNote(note, file, target)
 				}
 				if markdownHash(renderObsidianMarkdown(&note)) == state.ContentHash && state.Status == "synced" {
@@ -447,7 +450,7 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 				ExternalPath: file.Path,
 			}
 		}
-		if state.ExternalHash != file.Hash || state.Status == "external_deleted" {
+		if effectiveExternalHash(state) != file.Hash || state.Status == "external_deleted" {
 			return pullObsidianIntoNote(note, file, target)
 		}
 		if markdownHash(renderObsidianMarkdown(&note)) == state.ContentHash && state.Status == "synced" {
@@ -476,11 +479,20 @@ func importObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget) mod
 		}
 	}
 
+	folderID, err := existingObsidianFolderID(file.Note.FolderID)
+	if err != nil {
+		return model.SyncResultItem{
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: err.Error(),
+		}
+	}
+
 	note, err := repository.CreateNoteWithID(&model.CreateNoteWithIDRequest{
-		ID:       validImportedID(file.Note.ID),
+		ID:       validImportedID(file.Note),
 		Title:    file.Note.Title,
 		Body:     file.Note.Body,
-		FolderID: file.Note.FolderID,
+		FolderID: folderID,
 		Tags:     file.Note.TagsJSON,
 	})
 	if err != nil {
@@ -516,10 +528,20 @@ func pullObsidianIntoNote(note model.Note, file obsidianMarkdownFile, target *mo
 		}
 	}
 
+	folderID, err := existingObsidianFolderID(file.Note.FolderID)
+	if err != nil {
+		return model.SyncResultItem{
+			NoteID:       note.ID,
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: err.Error(),
+		}
+	}
+
 	updated, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{
 		Title:    &file.Note.Title,
 		Body:     &file.Note.Body,
-		FolderID: &file.Note.FolderID,
+		FolderID: &folderID,
 		Tags:     &file.Note.TagsJSON,
 	})
 	if err != nil {
@@ -677,12 +699,40 @@ func shouldRetryFailedPush(state model.SyncState, externalHash string) bool {
 	return state.ExternalHash == "" || state.ExternalHash == externalHash
 }
 
-func validImportedID(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" || strings.ContainsRune(id, 0) || strings.ContainsAny(id, "\r\n") {
+func effectiveExternalHash(state model.SyncState) string {
+	if strings.TrimSpace(state.ExternalHash) != "" {
+		return state.ExternalHash
+	}
+	if state.Status == "synced" {
+		return state.ContentHash
+	}
+	return ""
+}
+
+func validImportedID(note *obsidianParsedMarkdown) string {
+	if note == nil || !strings.EqualFold(strings.TrimSpace(note.Source), "flowspace") {
+		return ""
+	}
+	id := strings.TrimSpace(note.ID)
+	if !flowspaceImportedIDPattern.MatchString(id) {
 		return ""
 	}
 	return id
+}
+
+func existingObsidianFolderID(folderID string) (string, error) {
+	folderID = strings.TrimSpace(folderID)
+	if folderID == "" {
+		return "__uncategorized", nil
+	}
+	exists, err := repository.FolderExists(folderID)
+	if err != nil {
+		return "", fmt.Errorf("validate obsidian folder: %w", err)
+	}
+	if !exists {
+		return "__uncategorized", nil
+	}
+	return folderID, nil
 }
 
 func refreshBidirectionalMaps(noteID, targetID string, notes map[string]model.Note, states map[string]model.SyncState) {

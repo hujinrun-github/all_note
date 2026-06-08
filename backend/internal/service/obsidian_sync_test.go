@@ -117,6 +117,93 @@ func TestParseObsidianMarkdownWithFlowSpaceFrontmatter(t *testing.T) {
 	}
 }
 
+func TestSyncObsidianBidirectionalPreservesFlowSpaceUUIDFrontmatterID(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	importedID := "12345678-1234-1234-1234-123456789abc"
+	markdown := "---\nid: " + importedID + "\nsource: flowspace\nfolder: \"__uncategorized\"\ntags: []\n---\n\n# Preserved\n\nBody\n"
+	if err := os.WriteFile(filepath.Join(base, "Preserved.md"), []byte(markdown), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Imported != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	note, err := repository.GetNoteByID(importedID)
+	if err != nil {
+		t.Fatalf("get imported note by flowspace id: %v", err)
+	}
+	if note.ID != importedID {
+		t.Fatalf("imported ID = %q, want %q", note.ID, importedID)
+	}
+}
+
+func TestSyncObsidianBidirectionalGeneratesIDForNonFlowSpaceFrontmatterID(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	foreignID := "12345678-1234-1234-1234-123456789abc"
+	markdown := "---\nid: " + foreignID + "\nsource: other-app\nfolder: \"__uncategorized\"\ntags: []\n---\n\n# Foreign\n\nBody\n"
+	if err := os.WriteFile(filepath.Join(base, "Foreign.md"), []byte(markdown), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Imported != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("expected one imported note, got %+v", notes)
+	}
+	if notes[0].ID == foreignID {
+		t.Fatalf("foreign frontmatter ID was preserved: %+v", notes[0])
+	}
+}
+
+func TestSyncObsidianBidirectionalGeneratesIDForUnsafeFlowSpaceFrontmatterID(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	unsafeID := "unsafe/id?with#chars%25"
+	markdown := "---\nid: \"" + unsafeID + "\"\nsource: flowspace\nfolder: \"__uncategorized\"\ntags: []\n---\n\n# Unsafe\n\nBody\n"
+	if err := os.WriteFile(filepath.Join(base, "Unsafe.md"), []byte(markdown), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Imported != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("expected one imported note, got %+v", notes)
+	}
+	if notes[0].ID == unsafeID || strings.ContainsAny(notes[0].ID, "/?#%") {
+		t.Fatalf("unsafe frontmatter ID was preserved: %+v", notes[0])
+	}
+}
+
 func TestParseObsidianMarkdownWithoutFrontmatterUsesFileName(t *testing.T) {
 	raw := "Loose note body\nSecond line\n"
 	parsed, err := parseObsidianMarkdown([]byte(raw), "Loose Note.md")
@@ -424,8 +511,102 @@ func TestWriteNoteToTargetRecordsFailedState(t *testing.T) {
 	if state.Status != "failed" {
 		t.Fatalf("expected failed state, got %q", state.Status)
 	}
-	if state.ErrorMessage == nil || !strings.Contains(*state.ErrorMessage, "create obsidian note folder") {
+	if state.ErrorMessage == nil || !strings.Contains(*state.ErrorMessage, "validate obsidian note path") {
 		t.Fatalf("expected write failure message, got %#v", state.ErrorMessage)
+	}
+}
+
+func TestWriteNoteToOutputPathRejectsFinalSymlink(t *testing.T) {
+	openServiceTestDB(t)
+	vault := t.TempDir()
+	baseDir := filepath.Join(vault, "FlowSpace Notes")
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		t.Fatalf("create base dir: %v", err)
+	}
+
+	target := &model.SyncTarget{
+		ID:         "sync-target-1",
+		Type:       "obsidian",
+		Name:       "Local Vault",
+		VaultPath:  vault,
+		BaseFolder: "FlowSpace Notes",
+		Enabled:    true,
+	}
+	note := &model.Note{
+		ID:        "note-1",
+		Title:     "Linked",
+		Body:      "body",
+		FolderID:  "__work",
+		Tags:      "[]",
+		CreatedAt: 1717200000,
+		UpdatedAt: 1717286400,
+	}
+	insertServiceSyncFixtures(t, target, note)
+
+	outsidePath := filepath.Join(vault, "outside.md")
+	outsideContent := []byte("outside original\n")
+	if err := os.WriteFile(outsidePath, outsideContent, 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	linkPath := filepath.Join(baseDir, "Linked.md")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	if _, err := writeNoteToOutputPath(note, target, linkPath); err == nil {
+		t.Fatal("expected symlink final output path to be rejected")
+	}
+	raw, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("read outside file: %v", err)
+	}
+	if string(raw) != string(outsideContent) {
+		t.Fatalf("symlink target was overwritten: %q", string(raw))
+	}
+}
+
+func TestWriteNoteToOutputPathRejectsSymlinkedDirectoryComponent(t *testing.T) {
+	openServiceTestDB(t)
+	vault := t.TempDir()
+	baseDir := filepath.Join(vault, "FlowSpace Notes")
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		t.Fatalf("create base dir: %v", err)
+	}
+
+	target := &model.SyncTarget{
+		ID:         "sync-target-1",
+		Type:       "obsidian",
+		Name:       "Local Vault",
+		VaultPath:  vault,
+		BaseFolder: "FlowSpace Notes",
+		Enabled:    true,
+	}
+	note := &model.Note{
+		ID:        "note-1",
+		Title:     "Nested Linked",
+		Body:      "body",
+		FolderID:  "__work",
+		Tags:      "[]",
+		CreatedAt: 1717200000,
+		UpdatedAt: 1717286400,
+	}
+	insertServiceSyncFixtures(t, target, note)
+
+	outsideDir := filepath.Join(vault, "outside-dir")
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatalf("create outside dir: %v", err)
+	}
+	linkDir := filepath.Join(baseDir, "LinkedDir")
+	if err := os.Symlink(outsideDir, linkDir); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+	outputPath := filepath.Join(linkDir, "Nested.md")
+
+	if _, err := writeNoteToOutputPath(note, target, outputPath); err == nil {
+		t.Fatal("expected symlinked directory component to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "Nested.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlinked directory target should not receive note file, stat err=%v", err)
 	}
 }
 
@@ -451,6 +632,32 @@ func TestSyncObsidianBidirectionalImportsNewMarkdownFile(t *testing.T) {
 	}
 	if len(notes) != 1 || notes[0].Title != "Imported" || notes[0].Body != "From Obsidian\n" {
 		t.Fatalf("unexpected imported notes: %+v", notes)
+	}
+}
+
+func TestSyncObsidianBidirectionalImportsUnknownFolderAsUncategorized(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	markdown := "---\nfolder: missing-folder\ntags: []\n---\n\n# Unknown Folder\n\nFrom Obsidian\n"
+	if err := os.WriteFile(filepath.Join(base, "Unknown Folder.md"), []byte(markdown), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Imported != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 || notes[0].FolderID != "__uncategorized" {
+		t.Fatalf("expected imported note to fall back to uncategorized, got %+v", notes)
 	}
 }
 
@@ -482,6 +689,34 @@ func TestSyncObsidianBidirectionalPullsWhenBothSidesChanged(t *testing.T) {
 	}
 	if got.Body != "Obsidian changed\n" {
 		t.Fatalf("expected Obsidian to win conflict, got %q", got.Body)
+	}
+}
+
+func TestSyncObsidianBidirectionalPullsUnknownFolderAsUncategorized(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Pull Unknown Folder", "Original\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+
+	obsidianBody := "---\nid: " + note.ID + "\nsource: flowspace\nfolder: missing-folder\ntags: []\n---\n\n# Pull Unknown Folder\n\nPulled body\n"
+	if err := os.WriteFile(item.ExternalPath, []byte(obsidianBody), 0644); err != nil {
+		t.Fatalf("write obsidian change: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pulled != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+	if got.Body != "Pulled body\n" || got.FolderID != "__uncategorized" {
+		t.Fatalf("expected pull to fall back to uncategorized, got %+v", got)
 	}
 }
 
@@ -757,6 +992,50 @@ func TestSyncObsidianBidirectionalPushesFlowSpaceOnlyChange(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "Changed in FlowSpace") {
 		t.Fatalf("expected pushed content, got %s", string(raw))
+	}
+}
+
+func TestSyncObsidianBidirectionalPushesLocalChangeForLegacyEmptyExternalHash(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Legacy Empty Hash", "Stale external body\n")
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	externalPath := filepath.Join(base, "Legacy Empty Hash.md")
+	staleMarkdown := renderObsidianMarkdown(&note)
+	if err := os.WriteFile(externalPath, []byte(staleMarkdown), 0644); err != nil {
+		t.Fatalf("write legacy external markdown: %v", err)
+	}
+	if _, err := repository.DB.Exec(`
+		INSERT INTO note_sync_state (note_id, target_id, external_path, content_hash, external_hash, last_direction, status)
+		VALUES (?, ?, ?, ?, NULL, 'push', 'synced')
+	`, note.ID, target.ID, externalPath, markdownHash(staleMarkdown)); err != nil {
+		t.Fatalf("insert legacy sync state: %v", err)
+	}
+	if _, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{Body: ptrString("Fresh FlowSpace body\n")}); err != nil {
+		t.Fatalf("update local note: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pushed != 1 || result.Pulled != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note after sync: %v", err)
+	}
+	if got.Body != "Fresh FlowSpace body\n" {
+		t.Fatalf("expected local body to survive sync, got %q", got.Body)
+	}
+	raw, err := os.ReadFile(externalPath)
+	if err != nil {
+		t.Fatalf("read external file: %v", err)
+	}
+	if !strings.Contains(string(raw), "Fresh FlowSpace body") || strings.Contains(string(raw), "Stale external body") {
+		t.Fatalf("expected fresh FlowSpace body to be pushed, got %s", string(raw))
 	}
 }
 
