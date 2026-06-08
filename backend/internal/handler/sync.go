@@ -2,6 +2,8 @@ package handler
 
 import (
 	"database/sql"
+	"errors"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
@@ -114,7 +116,7 @@ func ListObsidianDeletions(c *gin.Context) {
 
 func ConfirmObsidianDeletion(c *gin.Context) {
 	if err := service.ConfirmObsidianDeletion(c.Param("note_id")); err != nil {
-		badRequest(c, err.Error())
+		obsidianDeletionError(c, err)
 		return
 	}
 	noContent(c)
@@ -123,10 +125,23 @@ func ConfirmObsidianDeletion(c *gin.Context) {
 func RestoreObsidianDeletion(c *gin.Context) {
 	item, err := service.RestoreObsidianDeletion(c.Param("note_id"))
 	if err != nil {
-		badRequest(c, err.Error())
+		obsidianDeletionError(c, err)
 		return
 	}
 	success(c, gin.H{"item": item})
+}
+
+func obsidianDeletionError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrObsidianDeletionNotFound):
+		notFound(c, err.Error())
+	case errors.Is(err, service.ErrObsidianDeletionConflict):
+		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
+	case errors.Is(err, service.ErrObsidianDeletionInvalidState):
+		badRequest(c, err.Error())
+	default:
+		internalError(c, err.Error())
+	}
 }
 
 func GetNoteSyncState(c *gin.Context) {

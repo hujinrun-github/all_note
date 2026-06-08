@@ -2,9 +2,11 @@ package service
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +17,12 @@ import (
 )
 
 const bidirectionalPendingPushStatus = "pending_push"
+
+var (
+	ErrObsidianDeletionNotFound     = errors.New("obsidian deletion candidate not found")
+	ErrObsidianDeletionConflict     = errors.New("obsidian deletion conflict")
+	ErrObsidianDeletionInvalidState = errors.New("note is not marked as deleted in obsidian")
+)
 
 func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 	result := model.ObsidianBidirectionalResult{
@@ -189,50 +197,151 @@ func ListObsidianDeletionCandidates() ([]model.ExternalDeletedNote, error) {
 }
 
 func ConfirmObsidianDeletion(noteID string) error {
-	target, err := repository.GetDefaultSyncTarget("obsidian")
+	target, err := loadObsidianDeletionTarget()
 	if err != nil {
 		return err
 	}
-	state, err := repository.GetSyncState(noteID, target.ID)
+	state, err := loadObsidianExternalDeletedState(noteID, target.ID)
 	if err != nil {
 		return err
 	}
-	if state.Status != "external_deleted" {
-		return errors.New("note is not marked as deleted in obsidian")
+	if _, err := validateObsidianDeletionActionPath(state, target); err != nil {
+		return err
+	}
+	if _, err := loadObsidianDeletionNote(noteID); err != nil {
+		return err
 	}
 	if err := repository.DeleteNote(noteID); err != nil {
-		return err
+		return fmt.Errorf("delete note: %w", err)
 	}
-	return repository.DeleteSyncState(noteID, target.ID)
+	if err := repository.DeleteSyncState(noteID, target.ID); err != nil {
+		return fmt.Errorf("delete obsidian sync state: %w", err)
+	}
+	return nil
 }
 
 func RestoreObsidianDeletion(noteID string) (*model.SyncResultItem, error) {
-	target, err := repository.GetDefaultSyncTarget("obsidian")
+	target, err := loadObsidianDeletionTarget()
 	if err != nil {
 		return nil, err
 	}
-	state, err := repository.GetSyncState(noteID, target.ID)
+	state, err := loadObsidianExternalDeletedState(noteID, target.ID)
 	if err != nil {
 		return nil, err
 	}
-	if state.Status != "external_deleted" {
-		return nil, errors.New("note is not marked as deleted in obsidian")
-	}
-	note, err := repository.GetNoteByID(noteID)
+	mappedPath, err := validateObsidianDeletionActionPath(state, target)
 	if err != nil {
 		return nil, err
 	}
-	var item *model.SyncResultItem
-	if mappedPath, ok := validSyncStateExternalPath(*state, target); ok {
-		item, err = writeNoteToOutputPath(note, target, mappedPath)
-	} else {
-		item, err = writeNoteToTarget(note, target)
-	}
+	note, err := loadObsidianDeletionNote(noteID)
 	if err != nil {
+		return nil, err
+	}
+	item, err := writeNoteToOutputPath(note, target, mappedPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := markObsidianRestoreSynced(note.ID, target.ID); err != nil {
 		return nil, err
 	}
 	item.Status = "synced"
 	return item, nil
+}
+
+func loadObsidianDeletionTarget() (*model.SyncTarget, error) {
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: obsidian sync target not found", ErrObsidianDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load obsidian sync target: %w", err)
+	}
+	return target, nil
+}
+
+func loadObsidianExternalDeletedState(noteID, targetID string) (*model.SyncState, error) {
+	state, err := repository.GetSyncState(noteID, targetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: sync state not found", ErrObsidianDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load obsidian sync state: %w", err)
+	}
+	if state.Status != "external_deleted" {
+		return nil, ErrObsidianDeletionInvalidState
+	}
+	return state, nil
+}
+
+func loadObsidianDeletionNote(noteID string) (*model.Note, error) {
+	note, err := repository.GetNoteByID(noteID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: note not found", ErrObsidianDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load note: %w", err)
+	}
+	return note, nil
+}
+
+func validateObsidianDeletionActionPath(state *model.SyncState, target *model.SyncTarget) (string, error) {
+	if state == nil {
+		return "", fmt.Errorf("%w: sync state not found", ErrObsidianDeletionNotFound)
+	}
+	outputPath, err := filepath.Abs(state.ExternalPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve obsidian deletion path: %w", err)
+	}
+	baseDir, err := targetBaseDir(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve obsidian base folder: %w", err)
+	}
+	if strings.TrimSpace(state.ExternalPath) == "" || !isPathWithin(outputPath, baseDir) {
+		return "", fmt.Errorf("%w: external path is outside obsidian base folder", ErrObsidianDeletionConflict)
+	}
+	if err := verifyRealBaseDir(target); err != nil {
+		return "", fmt.Errorf("validate obsidian base folder: %w", err)
+	}
+
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve real obsidian base folder: %w", err)
+	}
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(outputPath))
+	if err != nil {
+		return "", fmt.Errorf("resolve real obsidian deletion parent: %w", err)
+	}
+	if !isPathWithin(realParent, realBase) {
+		return "", fmt.Errorf("%w: external path parent resolves outside obsidian base folder", ErrObsidianDeletionConflict)
+	}
+
+	info, err := os.Lstat(outputPath)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%w: external path is a symlink; run bidirectional sync first", ErrObsidianDeletionConflict)
+		}
+		return "", fmt.Errorf("%w: external path exists; run bidirectional sync first", ErrObsidianDeletionConflict)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect obsidian deletion path: %w", err)
+	}
+	return outputPath, nil
+}
+
+func markObsidianRestoreSynced(noteID, targetID string) error {
+	state, err := repository.GetSyncState(noteID, targetID)
+	if err != nil {
+		return fmt.Errorf("load restored obsidian sync state: %w", err)
+	}
+	now := time.Now().Unix()
+	state.LastDirection = "restore"
+	state.LastSyncedAt = &now
+	state.Status = "synced"
+	state.ErrorMessage = nil
+	if err := repository.UpsertSyncState(state); err != nil {
+		return fmt.Errorf("record restored obsidian sync state: %w", err)
+	}
+	return nil
 }
 
 func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes map[string]model.Note, states map[string]model.SyncState) model.SyncResultItem {

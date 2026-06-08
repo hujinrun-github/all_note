@@ -817,6 +817,53 @@ func TestConfirmObsidianDeletionDeletesFlowSpaceNote(t *testing.T) {
 	}
 }
 
+func TestConfirmObsidianDeletionRefusesReappearedExternalFile(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Confirm Reappeared", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if err := os.Remove(item.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", result)
+	}
+	if err := os.WriteFile(item.ExternalPath, []byte("reappeared external\n"), 0644); err != nil {
+		t.Fatalf("recreate external: %v", err)
+	}
+
+	err = ConfirmObsidianDeletion(note.ID)
+	if !errors.Is(err, ErrObsidianDeletionConflict) {
+		t.Fatalf("expected stale deletion conflict, got %v", err)
+	}
+	if _, err := repository.GetNoteByID(note.ID); err != nil {
+		t.Fatalf("FlowSpace note should remain after refused confirm: %v", err)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("sync state should remain after refused confirm: %v", err)
+	}
+	if state.Status != "external_deleted" {
+		t.Fatalf("expected external_deleted state to remain, got %+v", state)
+	}
+}
+
+func TestConfirmObsidianDeletionReturnsNotFoundForMissingState(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	saveObsidianTargetForTest(t, vault)
+
+	err := ConfirmObsidianDeletion("missing-note")
+	if !errors.Is(err, ErrObsidianDeletionNotFound) {
+		t.Fatalf("expected not found deletion error, got %v", err)
+	}
+}
+
 func TestRestoreObsidianDeletionReexportsFile(t *testing.T) {
 	openObsidianSyncTestDB(t)
 	vault := t.TempDir()
@@ -843,6 +890,121 @@ func TestRestoreObsidianDeletionReexportsFile(t *testing.T) {
 	}
 	if _, err := os.Stat(restored.ExternalPath); err != nil {
 		t.Fatalf("expected external file to exist: %v", err)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get restored state: %v", err)
+	}
+	if state.LastDirection != "restore" || state.Status != "synced" {
+		t.Fatalf("unexpected restored sync state: %+v", state)
+	}
+}
+
+func TestRestoreObsidianDeletionRefusesReappearedExternalFile(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Restore Reappeared", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if err := os.Remove(item.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", result)
+	}
+	reappeared := []byte("reappeared external\n")
+	if err := os.WriteFile(item.ExternalPath, reappeared, 0644); err != nil {
+		t.Fatalf("recreate external: %v", err)
+	}
+
+	restored, err := RestoreObsidianDeletion(note.ID)
+	if !errors.Is(err, ErrObsidianDeletionConflict) {
+		t.Fatalf("expected stale deletion conflict, got item=%+v err=%v", restored, err)
+	}
+	raw, err := os.ReadFile(item.ExternalPath)
+	if err != nil {
+		t.Fatalf("read reappeared external: %v", err)
+	}
+	if string(raw) != string(reappeared) {
+		t.Fatalf("restore should not overwrite reappeared file, got %q", string(raw))
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("sync state should remain after refused restore: %v", err)
+	}
+	if state.Status != "external_deleted" {
+		t.Fatalf("expected external_deleted state to remain, got %+v", state)
+	}
+}
+
+func TestRestoreObsidianDeletionRefusesReappearedExternalSymlink(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Restore Symlink", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if err := os.Remove(item.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", result)
+	}
+	outsidePath := filepath.Join(vault, "outside.md")
+	outsideContent := []byte("outside original\n")
+	if err := os.WriteFile(outsidePath, outsideContent, 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outsidePath, item.ExternalPath); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	restored, err := RestoreObsidianDeletion(note.ID)
+	if !errors.Is(err, ErrObsidianDeletionConflict) {
+		t.Fatalf("expected stale deletion conflict, got item=%+v err=%v", restored, err)
+	}
+	raw, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("read outside file: %v", err)
+	}
+	if string(raw) != string(outsideContent) {
+		t.Fatalf("restore should not overwrite symlink target, got %q", string(raw))
+	}
+}
+
+func TestRestoreObsidianDeletionReturnsNotFoundForMissingNote(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	mappedPath := filepath.Join(vault, target.BaseFolder, "Missing Note.md")
+	if err := os.MkdirAll(filepath.Dir(mappedPath), 0755); err != nil {
+		t.Fatalf("create base folder: %v", err)
+	}
+	if _, err := repository.DB.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("disable foreign keys: %v", err)
+	}
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        "missing-note",
+		TargetID:      target.ID,
+		ExternalPath:  mappedPath,
+		ContentHash:   "content",
+		ExternalHash:  "content",
+		LastDirection: "delete_detected",
+		Status:        "external_deleted",
+	}); err != nil {
+		t.Fatalf("insert external_deleted state: %v", err)
+	}
+
+	_, err := RestoreObsidianDeletion("missing-note")
+	if !errors.Is(err, ErrObsidianDeletionNotFound) {
+		t.Fatalf("expected not found deletion error, got %v", err)
 	}
 }
 
@@ -892,6 +1054,39 @@ func TestRestoreObsidianDeletionReexportsMappedPath(t *testing.T) {
 	}
 	if _, err := os.Stat(mappedPath); err != nil {
 		t.Fatalf("expected mapped external file to exist: %v", err)
+	}
+}
+
+func TestListObsidianDeletionCandidatesReturnsExternalDeletedNotes(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	deletedNote := createNoteForSyncTest(t, "List Deleted", "Body\n")
+	syncedNote := createNoteForSyncTest(t, "List Synced", "Body\n")
+	deletedItem, err := writeNoteToTarget(&deletedNote, &target)
+	if err != nil {
+		t.Fatalf("initial deleted push: %v", err)
+	}
+	if _, err := writeNoteToTarget(&syncedNote, &target); err != nil {
+		t.Fatalf("initial synced push: %v", err)
+	}
+	if err := os.Remove(deletedItem.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 {
+		t.Fatalf("expected external deletion: %+v", result)
+	}
+
+	items, err := ListObsidianDeletionCandidates()
+	if err != nil {
+		t.Fatalf("list deletion candidates: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one deletion candidate, got %+v", items)
+	}
+	if items[0].NoteID != deletedNote.ID || items[0].Title != deletedNote.Title || normalizedPath(items[0].ExternalPath) != normalizedPath(deletedItem.ExternalPath) {
+		t.Fatalf("unexpected deletion candidate: %+v", items[0])
 	}
 }
 
