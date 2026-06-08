@@ -2173,8 +2173,10 @@ body {
 
 .sync-panel {
   width: min(520px, 100%);
+  max-height: calc(100vh - 2rem);
   display: grid;
   gap: 1rem;
+  overflow-y: auto;
   border: 1px solid var(--color-fs-border);
   border-radius: var(--radius-lg);
   background: var(--color-fs-surface);
@@ -2305,8 +2307,13 @@ body {
   padding: 0.65rem;
 }
 
+.sync-deletion-copy {
+  min-width: 0;
+}
+
 .sync-deletion-item span {
   display: block;
+  overflow-wrap: anywhere;
   color: var(--color-fs-text);
   font-weight: 800;
   font-size: 0.84rem;
@@ -2421,6 +2428,7 @@ body {
 
   .sync-panel {
     width: 100%;
+    max-height: 92vh;
     border-right: 0;
     border-bottom: 0;
     border-left: 0;

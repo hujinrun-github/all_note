@@ -104,11 +104,25 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
   }
 
   async function handleConfirmDeletion(noteID: string) {
-    await confirmDeletion.mutateAsync(noteID)
+    setMessage(null)
+    try {
+      await confirmDeletion.mutateAsync(noteID)
+      setLastBidirectionalResult(null)
+      setMessage({ tone: 'success', text: '已确认删除该笔记' })
+    } catch {
+      setMessage({ tone: 'error', text: '操作失败，请重新执行双向同步后再处理' })
+    }
   }
 
   async function handleRestoreDeletion(noteID: string) {
-    await restoreDeletion.mutateAsync(noteID)
+    setMessage(null)
+    try {
+      await restoreDeletion.mutateAsync(noteID)
+      setLastBidirectionalResult(null)
+      setMessage({ tone: 'success', text: '已保留并重新导出该笔记' })
+    } catch {
+      setMessage({ tone: 'error', text: '操作失败，请重新执行双向同步后再处理' })
+    }
   }
 
   return (
@@ -166,7 +180,7 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
             <strong>Obsidian 已删除，等待确认</strong>
             {deletionsQ.data!.map((item) => (
               <div className="sync-deletion-item" key={item.note_id}>
-                <div>
+                <div className="sync-deletion-copy">
                   <span>{item.title}</span>
                   <code>{item.external_path}</code>
                 </div>
