@@ -428,6 +428,117 @@ func TestWriteNoteToTargetRecordsFailedState(t *testing.T) {
 	}
 }
 
+func TestSyncObsidianBidirectionalImportsNewMarkdownFile(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "Imported.md"), []byte("# Imported\n\nFrom Obsidian\n"), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Imported != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 || notes[0].Title != "Imported" || notes[0].Body != "From Obsidian\n" {
+		t.Fatalf("unexpected imported notes: %+v", notes)
+	}
+}
+
+func TestSyncObsidianBidirectionalPullsWhenBothSidesChanged(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Conflict", "FlowSpace original\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+
+	if _, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{Body: ptrString("FlowSpace changed\n")}); err != nil {
+		t.Fatalf("update local note: %v", err)
+	}
+	obsidianBody := "---\nid: " + note.ID + "\nsource: flowspace\nfolder: \"__uncategorized\"\ntags: []\n---\n\n# Conflict\n\nObsidian changed\n"
+	if err := os.WriteFile(item.ExternalPath, []byte(obsidianBody), 0644); err != nil {
+		t.Fatalf("write obsidian change: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pulled != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+	if got.Body != "Obsidian changed\n" {
+		t.Fatalf("expected Obsidian to win conflict, got %q", got.Body)
+	}
+}
+
+func TestSyncObsidianBidirectionalPushesFlowSpaceOnlyChange(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Push Me", "Initial\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if _, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{Body: ptrString("Changed in FlowSpace\n")}); err != nil {
+		t.Fatalf("update note: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.Pushed != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	raw, err := os.ReadFile(item.ExternalPath)
+	if err != nil {
+		t.Fatalf("read external: %v", err)
+	}
+	if !strings.Contains(string(raw), "Changed in FlowSpace") {
+		t.Fatalf("expected pushed content, got %s", string(raw))
+	}
+}
+
+func TestSyncObsidianBidirectionalMarksExternalDeletion(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createNoteForSyncTest(t, "Deleted Outside", "Body\n")
+	item, err := writeNoteToTarget(&note, &target)
+	if err != nil {
+		t.Fatalf("initial push: %v", err)
+	}
+	if err := os.Remove(item.ExternalPath); err != nil {
+		t.Fatalf("remove external: %v", err)
+	}
+
+	result := SyncObsidianBidirectional()
+	if result.ExternalDeleted != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if state.Status != "external_deleted" || state.LastDirection != "delete_detected" {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+	if _, err := repository.GetNoteByID(note.ID); err != nil {
+		t.Fatalf("FlowSpace note should still exist before confirmation: %v", err)
+	}
+}
+
 func openServiceTestDB(t *testing.T) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -447,6 +558,45 @@ func openServiceTestDB(t *testing.T) {
 		repository.DB = nil
 		db.Close()
 	})
+}
+
+func openObsidianSyncTestDB(t *testing.T) {
+	t.Helper()
+	openServiceTestDB(t)
+}
+
+func saveObsidianTargetForTest(t *testing.T, vault string) model.SyncTarget {
+	t.Helper()
+	target := model.SyncTarget{
+		ID:         "sync-target-1",
+		Type:       "obsidian",
+		Name:       "Local Vault",
+		VaultPath:  vault,
+		BaseFolder: "FlowSpace Notes",
+		Enabled:    true,
+	}
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save sync target: %v", err)
+	}
+	return target
+}
+
+func createNoteForSyncTest(t *testing.T, title, body string) model.Note {
+	t.Helper()
+	note, err := CreateNote(&model.CreateNoteRequest{
+		Title:    title,
+		Body:     body,
+		FolderID: "__uncategorized",
+		Tags:     "[]",
+	})
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	return *note
+}
+
+func ptrString(value string) *string {
+	return &value
 }
 
 func insertServiceSyncFixtures(t *testing.T, target *model.SyncTarget, note *model.Note) {
