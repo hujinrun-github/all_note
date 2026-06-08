@@ -21,13 +21,15 @@ export interface SaveSyncTargetInput {
   auto_sync: boolean
 }
 
+export type SyncStateStatus = 'synced' | 'pending' | 'failed' | 'external_deleted'
+
 export interface SyncState {
   note_id: string
   target_id: string
   external_path: string
   content_hash: string
   last_synced_at: number | null
-  status: 'synced' | 'pending' | 'failed'
+  status: SyncStateStatus
   error_message: string | null
 }
 
@@ -36,6 +38,22 @@ export interface SyncResultItem {
   status: string
   external_path?: string
   error_message?: string
+}
+
+export interface ObsidianBidirectionalResult {
+  pushed: number
+  pulled: number
+  imported: number
+  external_deleted: number
+  failed: number
+  items: SyncResultItem[]
+}
+
+export interface ExternalDeletedNote {
+  note_id: string
+  title: string
+  external_path: string
+  last_synced_at: number | null
 }
 
 export interface SyncBatchResult {
@@ -75,6 +93,25 @@ export async function syncObsidianFolder(folderID: string): Promise<SyncBatchRes
 export async function syncObsidianAll(): Promise<SyncBatchResult> {
   const res = await api.post<{ result: SyncBatchResult }>('/api/sync/obsidian/all')
   return res.data.result
+}
+
+export async function syncObsidianBidirectional(): Promise<ObsidianBidirectionalResult> {
+  const res = await api.post<{ result: ObsidianBidirectionalResult }>('/api/sync/obsidian/bidirectional')
+  return res.data.result
+}
+
+export async function getObsidianDeletions(): Promise<ExternalDeletedNote[]> {
+  const res = await api.get<{ items: ExternalDeletedNote[] }>('/api/sync/obsidian/deletions')
+  return res.data.items
+}
+
+export async function confirmObsidianDeletion(noteID: string): Promise<void> {
+  await api.post(`/api/sync/obsidian/deletions/${noteID}/confirm`)
+}
+
+export async function restoreObsidianDeletion(noteID: string): Promise<SyncResultItem> {
+  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/deletions/${noteID}/restore`)
+  return res.data.item
 }
 
 export async function getNoteSyncState(id: string): Promise<SyncState | null> {
