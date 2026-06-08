@@ -17,6 +17,14 @@ type CreateNoteRequest struct {
 	Tags     string `json:"tags"`
 }
 
+type CreateNoteWithIDRequest struct {
+	ID       string
+	Title    string
+	Body     string
+	FolderID string
+	Tags     string
+}
+
 type UpdateNoteRequest struct {
 	Title    *string `json:"title"`
 	Body     *string `json:"body"`

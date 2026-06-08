@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,7 +26,10 @@ func InitDB(dbPath string) error {
 		return err
 	}
 	_, err = DB.Exec(string(schema))
-	return err
+	if err != nil {
+		return err
+	}
+	return migrateDB()
 }
 
 func SeedDB() error {
@@ -45,4 +49,18 @@ func newUUID() string {
 
 func nowUnix() int64 {
 	return time.Now().Unix()
+}
+
+func migrateDB() error {
+	statements := []string{
+		`ALTER TABLE note_sync_state ADD COLUMN external_hash TEXT`,
+		`ALTER TABLE note_sync_state ADD COLUMN external_mtime INTEGER`,
+		`ALTER TABLE note_sync_state ADD COLUMN last_direction TEXT`,
+	}
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }

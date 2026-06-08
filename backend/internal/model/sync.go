@@ -13,13 +13,16 @@ type SyncTarget struct {
 }
 
 type SyncState struct {
-	NoteID       string  `json:"note_id"`
-	TargetID     string  `json:"target_id"`
-	ExternalPath string  `json:"external_path"`
-	ContentHash  string  `json:"content_hash"`
-	LastSyncedAt *int64  `json:"last_synced_at"`
-	Status       string  `json:"status"`
-	ErrorMessage *string `json:"error_message"`
+	NoteID        string  `json:"note_id"`
+	TargetID      string  `json:"target_id"`
+	ExternalPath  string  `json:"external_path"`
+	ContentHash   string  `json:"content_hash"`
+	ExternalHash  string  `json:"external_hash"`
+	ExternalMTime *int64  `json:"external_mtime"`
+	LastDirection string  `json:"last_direction"`
+	LastSyncedAt  *int64  `json:"last_synced_at"`
+	Status        string  `json:"status"`
+	ErrorMessage  *string `json:"error_message"`
 }
 
 type SaveSyncTargetRequest struct {
@@ -41,4 +44,20 @@ type SyncBatchResult struct {
 	Synced int              `json:"synced"`
 	Failed int              `json:"failed"`
 	Items  []SyncResultItem `json:"items"`
+}
+
+type ObsidianBidirectionalResult struct {
+	Pushed          int              `json:"pushed"`
+	Pulled          int              `json:"pulled"`
+	Imported        int              `json:"imported"`
+	ExternalDeleted int              `json:"external_deleted"`
+	Failed          int              `json:"failed"`
+	Items           []SyncResultItem `json:"items"`
+}
+
+type ExternalDeletedNote struct {
+	NoteID       string `json:"note_id"`
+	Title        string `json:"title"`
+	ExternalPath string `json:"external_path"`
+	LastSyncedAt *int64 `json:"last_synced_at"`
 }

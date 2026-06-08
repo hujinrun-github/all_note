@@ -77,6 +77,35 @@ func CreateNote(n *model.Note) error {
 	return err
 }
 
+func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		id = newUUID()
+	}
+	now := nowUnix()
+	folderID := req.FolderID
+	if folderID == "" {
+		folderID = "__uncategorized"
+	}
+	tags := req.Tags
+	if tags == "" {
+		tags = "[]"
+	}
+	_, err := DB.Exec(`
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, req.Title, req.Body, folderID, tags, now, now)
+	if err != nil {
+		return nil, err
+	}
+	return GetNoteByID(id)
+}
+
+func ListAllNotes() ([]model.Note, error) {
+	notes, _, err := GetNotes("", "recent", 1, 100000)
+	return notes, err
+}
+
 func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
