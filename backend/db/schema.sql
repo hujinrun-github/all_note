@@ -42,17 +42,34 @@ CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
   INSERT INTO notes_fts(rowid, title, body, tags) VALUES (new.rowid, new.title, new.body, new.tags);
 END;
 
+CREATE TABLE IF NOT EXISTS task_projects (
+  id TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  type TEXT NOT NULL DEFAULT 'regular',
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+INSERT OR IGNORE INTO task_projects (id, name, type, description, created_at, updated_at) VALUES
+  ('personal', '个人', 'personal', '默认个人任务项目', unixepoch(), unixepoch());
+
 CREATE TABLE IF NOT EXISTS tasks (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT UNIQUE NOT NULL,
   title TEXT NOT NULL,
   project TEXT,
+  project_id TEXT NOT NULL DEFAULT 'personal' REFERENCES task_projects(id) ON DELETE SET DEFAULT,
   due INTEGER,
+  planned_date TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
   done INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'open',
+  horizon TEXT NOT NULL DEFAULT 'week',
   scope TEXT NOT NULL DEFAULT 'daily',
   sort_order REAL NOT NULL DEFAULT 0,
   note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
+  roadmap_node_id TEXT REFERENCES roadmap_nodes(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -71,6 +88,55 @@ CREATE TRIGGER IF NOT EXISTS tasks_au AFTER UPDATE ON tasks BEGIN
   INSERT INTO tasks_fts(tasks_fts, rowid, title) VALUES ('delete', old.rowid, old.title);
   INSERT INTO tasks_fts(rowid, title) VALUES (new.rowid, new.title);
 END;
+
+CREATE TABLE IF NOT EXISTS learning_roadmaps (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL UNIQUE REFERENCES task_projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  goal TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_nodes (
+  id TEXT PRIMARY KEY,
+  roadmap_id TEXT NOT NULL REFERENCES learning_roadmaps(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES roadmap_nodes(id) ON DELETE CASCADE,
+  type TEXT NOT NULL DEFAULT 'task',
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  path_type TEXT NOT NULL DEFAULT 'required',
+  status TEXT NOT NULL DEFAULT 'todo',
+  deliverable TEXT NOT NULL DEFAULT '',
+  acceptance_criteria TEXT NOT NULL DEFAULT '',
+  x REAL NOT NULL DEFAULT 0,
+  y REAL NOT NULL DEFAULT 0,
+  order_index INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_edges (
+  id TEXT PRIMARY KEY,
+  roadmap_id TEXT NOT NULL REFERENCES learning_roadmaps(id) ON DELETE CASCADE,
+  source_node_id TEXT NOT NULL REFERENCES roadmap_nodes(id) ON DELETE CASCADE,
+  target_node_id TEXT NOT NULL REFERENCES roadmap_nodes(id) ON DELETE CASCADE,
+  style TEXT NOT NULL DEFAULT 'solid',
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_resources (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES roadmap_nodes(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT 'article',
+  added_by TEXT NOT NULL DEFAULT 'user',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS events (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,

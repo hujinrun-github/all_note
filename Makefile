@@ -1,42 +1,70 @@
 PORT ?= 8080
 FRONTEND_PORT ?= 5199
+DB_ENV ?= prod
+DB_PATH ?=
+TEST_PORT ?= 18080
+TEST_FRONTEND_PORT ?= 15199
+TEST_TAILSCALE_FRONTEND_PORT ?= 15198
+TEST_TAILSCALE_BASE ?= /all-note-test/
+TEST_TAILSCALE_SERVE_PATH ?= /all-note-test
+TEST_DB_PATH ?=
+BACKEND_CMD ?=
+FRONTEND_CMD ?=
 
-.PHONY: kill dev start-backend start-frontend
+START_FLAGS = --env $(DB_ENV) --backend-port $(PORT) --frontend-port $(FRONTEND_PORT)
+TEST_FLAGS = --env test --backend-port $(TEST_PORT) --frontend-port $(TEST_FRONTEND_PORT)
+TEST_TAILSCALE_FLAGS = --env test --backend-port $(TEST_PORT) --frontend-port $(TEST_TAILSCALE_FRONTEND_PORT) --frontend-base $(TEST_TAILSCALE_BASE)
+ifneq ($(strip $(DB_PATH)),)
+START_FLAGS += --db "$(DB_PATH)"
+endif
+ifneq ($(strip $(TEST_DB_PATH)),)
+TEST_FLAGS += --db "$(TEST_DB_PATH)"
+TEST_TAILSCALE_FLAGS += --db "$(TEST_DB_PATH)"
+endif
+ifneq ($(strip $(BACKEND_CMD)),)
+START_FLAGS += --backend-cmd "$(BACKEND_CMD)"
+TEST_FLAGS += --backend-cmd "$(BACKEND_CMD)"
+TEST_TAILSCALE_FLAGS += --backend-cmd "$(BACKEND_CMD)"
+endif
+ifneq ($(strip $(FRONTEND_CMD)),)
+START_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
+TEST_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
+TEST_TAILSCALE_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
+endif
 
-# === 一键启动（所有服务 nohup 后台运行） ===
-dev: kill
-	@echo "=== 编译后端 ==="
-	cd backend && go build -o server ./cmd/server
-	@echo "=== 后台启动后端 (端口 $(PORT)) ==="
-	@(cd backend && PORT=$(PORT) nohup ./server </dev/null >/tmp/flowspace-backend.log 2>&1) &
-	@sleep 1
-	@echo "  后端 PID: $$(lsof -ti:$(PORT))"
-	@echo "=== 后台启动前端 (端口 $(FRONTEND_PORT)) ==="
-	@(cd frontend && VITE_BACKEND_PORT=$(PORT) nohup npx vite --port $(FRONTEND_PORT) --host 127.0.0.1 </dev/null >/tmp/flowspace-frontend.log 2>&1) &
-	@sleep 3
-	@echo "  前端 PID: $$(lsof -ti:$(FRONTEND_PORT))"
-	@echo ""
-	@echo "=== 服务已后台运行 ==="
-	@echo "后端: http://localhost:$(PORT)    日志: /tmp/flowspace-backend.log"
-	@echo "前端: http://localhost:$(FRONTEND_PORT)   日志: /tmp/flowspace-frontend.log"
+.PHONY: dev dev-prod dev-test kill kill-test start-backend start-frontend start-test-backend start-test-frontend start-test-tailscale-frontend kill-test-tailscale-frontend serve-test-tailscale
 
-# === 杀掉旧进程 ===
+dev:
+	node scripts/start-flowspace.mjs $(START_FLAGS)
+
+dev-prod: dev
+
+dev-test:
+	node scripts/start-flowspace.mjs $(TEST_FLAGS)
+
 kill:
-	@echo "=== 清理旧进程 ==="
-	@lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true
-	@lsof -ti:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
-	@sleep 1
-	@echo "端口 $(PORT) / $(FRONTEND_PORT) 已释放"
+	node scripts/start-flowspace.mjs $(START_FLAGS) --kill-only
 
-# === 单独启动后端 ===
-start-backend: kill
-	cd backend && go build -o server ./cmd/server
-	@(cd backend && PORT=$(PORT) nohup ./server </dev/null >/tmp/flowspace-backend.log 2>&1) &
-	@sleep 1
-	@echo "后端已后台启动 (PID $$(lsof -ti:$(PORT)))"
+kill-test:
+	node scripts/start-flowspace.mjs $(TEST_FLAGS) --kill-only
 
-# === 单独启动前端 ===
+start-backend:
+	node scripts/start-flowspace.mjs $(START_FLAGS) --backend-only
+
 start-frontend:
-	@(cd frontend && VITE_BACKEND_PORT=$(PORT) nohup npx vite --port $(FRONTEND_PORT) --host 127.0.0.1 </dev/null >/tmp/flowspace-frontend.log 2>&1) &
-	@sleep 3
-	@echo "前端已后台启动 (PID $$(lsof -ti:$(FRONTEND_PORT)))"
+	node scripts/start-flowspace.mjs $(START_FLAGS) --frontend-only
+
+start-test-backend:
+	node scripts/start-flowspace.mjs $(TEST_FLAGS) --backend-only
+
+start-test-frontend:
+	node scripts/start-flowspace.mjs $(TEST_FLAGS) --frontend-only
+
+start-test-tailscale-frontend:
+	node scripts/start-flowspace.mjs $(TEST_TAILSCALE_FLAGS) --frontend-only
+
+kill-test-tailscale-frontend:
+	node scripts/start-flowspace.mjs $(TEST_TAILSCALE_FLAGS) --frontend-only --kill-only
+
+serve-test-tailscale:
+	tailscale funnel --bg --yes --set-path $(TEST_TAILSCALE_SERVE_PATH) http://127.0.0.1:$(TEST_TAILSCALE_FRONTEND_PORT)$(TEST_TAILSCALE_SERVE_PATH)

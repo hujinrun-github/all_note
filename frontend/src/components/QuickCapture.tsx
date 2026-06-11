@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useUIStore } from '../stores/ui'
+import { useCreateInboxItem } from '../hooks/useInbox'
 
 type Kind = 'note' | 'task' | 'event'
 
 export function QuickCapture() {
   const setCaptureOpen = useUIStore((s) => s.setCaptureOpen)
+  const createInboxItem = useCreateInboxItem()
   const [kind, setKind] = useState<Kind>('note')
   const [title, setTitle] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -27,13 +29,7 @@ export function QuickCapture() {
     setSubmitting(true)
     setError(null)
     try {
-      const apiBase = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '')
-      const res = await fetch(`${apiBase}/api/inbox`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind, title: title.trim() }),
-      })
-      if (!res.ok) throw new Error('创建失败')
+      await createInboxItem.mutateAsync({ kind, title: title.trim() })
       setTitle('')
       setCaptureOpen(false)
     } catch {

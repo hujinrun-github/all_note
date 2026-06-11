@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { getFolders } from '../api/folders'
 import { deleteNote, getNotes } from '../api/notes'
+import { useCreateNote } from '../hooks/useNotes'
 import { ObsidianSyncPanel } from '../components/sync/ObsidianSyncPanel'
 
 export default function Notes() {
@@ -10,12 +11,23 @@ export default function Notes() {
   const [folder, setFolder] = useState('')
   const [sort, setSort] = useState('recent')
   const [syncOpen, setSyncOpen] = useState(false)
+  const createNote = useCreateNote()
 
   const foldersQ = useQuery({ queryKey: ['folders'], queryFn: getFolders })
   const notesQ = useQuery({
     queryKey: ['notes', folder, sort],
     queryFn: () => getNotes({ folder_id: folder || undefined, sort }),
   })
+
+  async function handleCreateNote() {
+    const note = await createNote.mutateAsync({
+      title: '未命名笔记',
+      body: '',
+      folder_id: folder || undefined,
+      tags: '[]',
+    })
+    navigate(`/editor/${note.id}`)
+  }
 
   if (notesQ.isLoading) return <Skeleton />
   if (notesQ.error) {
@@ -60,7 +72,9 @@ export default function Notes() {
             <button onClick={() => setSort(sort === 'recent' ? 'az' : 'recent')} className="secondary-action">
               {sort === 'recent' ? '最近更新' : 'A-Z'}
             </button>
-            <button className="primary-action">新建笔记</button>
+            <button onClick={handleCreateNote} disabled={createNote.isPending} className="primary-action">
+              {createNote.isPending ? '创建中...' : '新建笔记'}
+            </button>
           </div>
         </div>
 

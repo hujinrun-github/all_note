@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { useInboxList } from '../../hooks/useInbox'
 
 const navItems = [
   { to: '/', label: '今日', icon: CalendarIcon },
@@ -10,6 +11,9 @@ const navItems = [
 ]
 
 export function Sidebar() {
+  const inboxQ = useInboxList({ page_size: 1 })
+  const inboxCount = inboxQ.data?.pagination.total ?? 0
+
   return (
     <aside className="workspace-sidebar">
       <div className="sidebar-brand">
@@ -21,7 +25,10 @@ export function Sidebar() {
       </div>
 
       <nav className="sidebar-nav">
-        {navItems.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => {
+          const showInboxBadge = to === '/inbox' && inboxCount > 0
+
+          return (
           <NavLink
             key={to}
             to={to}
@@ -32,8 +39,14 @@ export function Sidebar() {
           >
             <Icon />
             <span>{label}</span>
+            {showInboxBadge && (
+              <span className="sidebar-badge" aria-label={`${inboxCount} 条未整理`}>
+                {inboxCount > 99 ? '99+' : inboxCount}
+              </span>
+            )}
           </NavLink>
-        ))}
+          )
+        })}
       </nav>
 
       <div className="sidebar-status">

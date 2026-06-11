@@ -4,15 +4,17 @@ import (
 	"log"
 	"os"
 
+	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/router"
 )
 
 func main() {
-	if err := repository.InitDB("flowspace.db"); err != nil {
+	storage := config.LoadStorageConfig()
+	if err := repository.InitDB(storage.DBPath); err != nil {
 		log.Fatalf("failed to init database: %v", err)
 	}
-	log.Println("database initialized")
+	log.Printf("database initialized env=%s path=%s", storage.Environment, storage.DBPath)
 
 	port := os.Getenv("PORT")
 	if port == "" {

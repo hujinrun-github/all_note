@@ -56,6 +56,18 @@ export interface ExternalDeletedNote {
   last_synced_at: number | null
 }
 
+export interface LocalDirectoryEntry {
+  name: string
+  path: string
+  modified_at: number
+}
+
+export interface LocalDirectoryList {
+  current_path: string
+  parent_path?: string
+  entries: LocalDirectoryEntry[]
+}
+
 export interface SyncBatchResult {
   synced: number
   failed: number
@@ -67,6 +79,11 @@ export async function getSyncTargets(): Promise<SyncTarget[]> {
   return res.data.targets
 }
 
+export async function listLocalDirectories(path?: string): Promise<LocalDirectoryList> {
+  const res = await api.get<{ directory: LocalDirectoryList }>('/api/system/directories', path ? { path } : undefined)
+  return res.data.directory
+}
+
 export async function saveSyncTarget(input: SaveSyncTargetInput): Promise<SyncTarget> {
   const { id, ...body } = input
   const res = id
@@ -76,7 +93,13 @@ export async function saveSyncTarget(input: SaveSyncTargetInput): Promise<SyncTa
 }
 
 export async function testObsidianTarget(input: SaveSyncTargetInput): Promise<void> {
-  const { id: _id, ...body } = input
+  const body = {
+    name: input.name,
+    vault_path: input.vault_path,
+    base_folder: input.base_folder,
+    enabled: input.enabled,
+    auto_sync: input.auto_sync,
+  }
   await api.post<{ ok: boolean }>('/api/sync/obsidian/test', body)
 }
 

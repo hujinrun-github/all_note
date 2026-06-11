@@ -49,19 +49,112 @@ make dev
 PORT=9090 FRONTEND_PORT=5199 make dev
 ```
 
-Makefile 会自动：
-1. 杀掉占用端口的旧进程
-2. 编译并启动后端
-3. 启动前端开发服务器
+Makefile 会调用通用启动脚本 `scripts/start-flowspace.mjs`，自动释放配置端口并启动后端与前端。
+
+### 正式/测试两套并行
+
+```bash
+# 正式服务：prod DB + 旧入口
+make dev
+# http://127.0.0.1:5199
+# http://127.0.0.1:8080/api
+
+# 测试服务：test DB + 独立入口
+make dev-test
+# http://127.0.0.1:15199
+# http://127.0.0.1:18080/api
+
+# 单独停止测试服务
+make kill-test
+```
+
+### Tailscale 入口
+
+当前 Tailscale Funnel 域名：
+
+```text
+https://tylerhu-1.tail5cec87.ts.net/all-note/
+https://tylerhu-1.tail5cec87.ts.net/all-note-test/
+```
+
+`/all-note/` 使用正式后端 `8080`；`/all-note-test/` 使用测试后端 `18080`。
+
+如需重启测试域名前端或重新写入 Tailscale 映射：
+
+```bash
+make start-test-tailscale-frontend
+make serve-test-tailscale
+```
+
+### 通用启动脚本
+
+```bash
+# 正式库：backend/flowspace.db
+node scripts/start-flowspace.mjs --env prod
+
+# 测试库：backend/flowspace.test.db
+node scripts/start-flowspace.mjs --env test
+
+# 自定义 SQLite 文件
+node scripts/start-flowspace.mjs --db tmp/local-sandbox.db
+
+# 自定义启动命令
+node scripts/start-flowspace.mjs \
+  --backend-cmd "go run ./cmd/server" \
+  --frontend-cmd "npm run dev -- --host 127.0.0.1 --port 5199"
+```
+
+也可以通过 Makefile 传参：
+
+```bash
+DB_ENV=prod make dev
+DB_PATH=tmp/local-prod-sandbox.db make dev
+TEST_DB_PATH=tmp/local-test-sandbox.db make dev-test
+BACKEND_CMD="go run ./cmd/server" FRONTEND_CMD="npm run dev -- --host 127.0.0.1 --port 5199" make dev
+```
+
+Windows PowerShell 直接运行：
+
+```powershell
+node .\scripts\start-flowspace.mjs --env test
+node .\scripts\start-flowspace.mjs --db tmp/local-sandbox.db
+```
+
+Linux/macOS 使用 GNU Make 即可，Makefile 不依赖平台专属 shell 语法；端口释放会优先使用 `lsof`，没有时退到 `fuser`。如果两者都未安装，脚本会继续启动，但不会自动清理已占用端口。
 
 ### 端口配置
 
 | 服务 | 环境变量 | 默认值 | 说明 |
 |------|----------|--------|------|
 | 后端 | `PORT` | `8080` | Go 服务监听端口 |
+| 后端存储环境 | `FLOWSPACE_ENV` | `prod` | `prod` 使用正式库，`test` 使用测试库 |
+| 后端数据库路径 | `FLOWSPACE_DB_PATH` | 按环境决定 | 显式指定 SQLite 文件路径，优先级高于 `FLOWSPACE_ENV` |
 | 前端代理 | `VITE_BACKEND_PORT` | `8080` | Vite 将 `/api` 代理到后端端口 |
 
 如需本地固定后端端口，可在 `frontend/.env` 中写入 `VITE_BACKEND_PORT=8080`。
+
+### 数据库存储隔离
+
+后端默认使用正式数据库 `backend/flowspace.db`。如需使用测试存储，启动后端或 seed 时设置：
+
+```bash
+FLOWSPACE_ENV=test go run ./cmd/server
+```
+
+这会切换到 `backend/flowspace.test.db`。如需完全自定义 SQLite 文件路径：
+
+```bash
+FLOWSPACE_DB_PATH=tmp/local-sandbox.db go run ./cmd/server
+```
+
+PowerShell 写法：
+
+```powershell
+$env:FLOWSPACE_ENV = "test"; go run ./cmd/server
+$env:FLOWSPACE_DB_PATH = "tmp/local-sandbox.db"; go run ./cmd/server
+```
+
+`FLOWSPACE_DB_PATH` 优先级最高，适合临时验证或 CI；服务启动日志会打印当前环境和数据库路径。
 
 ### Obsidian 双向同步
 
@@ -87,6 +180,9 @@ go build -o server ./cmd/server
 
 # 自定义端口
 PORT=9090 ./server
+
+# 测试库
+FLOWSPACE_ENV=test ./server
 ```
 
 ### 2. 启动前端

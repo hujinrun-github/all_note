@@ -13,6 +13,7 @@ func Setup() *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/folders", handler.GetFolders)
+		api.GET("/system/directories", handler.ListLocalDirectories)
 
 		api.GET("/notes", handler.GetNotes)
 		api.GET("/notes/:id", handler.GetNote)
@@ -34,9 +35,20 @@ func Setup() *gin.Engine {
 		api.POST("/sync/obsidian/deletions/:note_id/restore", handler.RestoreObsidianDeletion)
 
 		api.GET("/tasks", handler.GetTasks)
+		api.GET("/tasks/projects", handler.GetTaskProjects)
 		api.POST("/tasks", handler.CreateTask)
 		api.PATCH("/tasks/:id", handler.UpdateTask)
 		api.DELETE("/tasks/:id", handler.DeleteTask)
+		api.GET("/task-projects", handler.ListTaskProjects)
+		api.POST("/task-projects", handler.CreateTaskProject)
+		api.PATCH("/task-projects/:id", handler.UpdateTaskProject)
+		api.POST("/task-projects/:id/roadmap/generate", handler.GenerateLearningRoadmap)
+		api.GET("/task-projects/:id/roadmap", handler.GetLearningRoadmap)
+		api.PATCH("/roadmap-nodes/:id", handler.UpdateRoadmapNode)
+		api.POST("/roadmap-nodes/:id/resources/search", handler.SearchRoadmapNodeResources)
+		api.POST("/roadmap-nodes/:id/resources", handler.AddRoadmapNodeResource)
+		api.PATCH("/roadmaps/:id/layout", handler.UpdateRoadmapLayout)
+		api.DELETE("/roadmap-resources/:id", handler.DeleteRoadmapResource)
 
 		api.GET("/events", handler.GetEvents)
 		api.POST("/events", handler.CreateEvent)

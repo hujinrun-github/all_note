@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useEventsList } from '../hooks/useEvents'
+import { useCreateEvent, useEventsList } from '../hooks/useEvents'
 import { EventChip } from '../components/ui/EventChip'
 import type { Event } from '../api/events'
 
@@ -10,6 +10,7 @@ export default function Calendar() {
 
   const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`
   const { data, isLoading } = useEventsList({ month: monthStr })
+  const createEvent = useCreateEvent()
 
   const firstDay = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -31,7 +32,21 @@ export default function Calendar() {
   })
 
   const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate())
+  const [newEventTitle, setNewEventTitle] = useState('')
   const selectedEvents = selectedDay ? eventsByDay[selectedDay] ?? [] : []
+
+  async function handleAddEvent() {
+    if (!selectedDay || !newEventTitle.trim()) return
+    const start = new Date(year, month, selectedDay, 9, 0, 0, 0)
+    const end = new Date(year, month, selectedDay, 10, 0, 0, 0)
+    await createEvent.mutateAsync({
+      title: newEventTitle.trim(),
+      start_time: Math.floor(start.getTime() / 1000),
+      end_time: Math.floor(end.getTime() / 1000),
+      kind: 'work',
+    })
+    setNewEventTitle('')
+  }
 
   return (
     <div className="calendar-workspace">
@@ -116,8 +131,15 @@ export default function Calendar() {
           </div>
         </div>
         <div className="inline-create is-stacked">
-          <input placeholder="新增日程" />
-          <button>添加</button>
+          <input
+            value={newEventTitle}
+            onChange={(event) => setNewEventTitle(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') handleAddEvent() }}
+            placeholder="新增日程"
+          />
+          <button onClick={handleAddEvent} disabled={!selectedDay || !newEventTitle.trim() || createEvent.isPending}>
+            {createEvent.isPending ? '添加中...' : '添加'}
+          </button>
         </div>
         <div className="inspector-section">
           <span>日程</span>

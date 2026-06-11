@@ -3,12 +3,15 @@
 .codegraph/
 .playwright-mcp/
 .superpowers/
+.codex-run/
 
 node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.env
 frontend/*.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
 
 backend/*.db
 backend/*.db-wal

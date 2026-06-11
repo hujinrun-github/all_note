@@ -1,9 +1,20 @@
+import { type FormEvent, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { getTaskProjects } from '../api/tasks'
 import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import { EventChip, type EventData } from '../components/ui/EventChip'
 import { NoteCard, type NoteData } from '../components/ui/NoteCard'
 import { MiniCalendar } from '../components/ui/MiniCalendar'
+import { useCreateTask, useUpdateTask } from '../hooks/useTasks'
+import {
+  DEFAULT_TASK_PROJECT,
+  dateInputToUnix,
+  mergeTaskProjects,
+  readStoredTaskProjects,
+  saveStoredTaskProjects,
+  todayDateInputValue,
+} from '../utils/taskForm'
 
 interface TodayData {
   todayTasks: TaskData[]
@@ -13,6 +24,13 @@ interface TodayData {
 }
 
 export default function Dashboard() {
+  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newTaskDate, setNewTaskDate] = useState(() => todayDateInputValue())
+  const [newTaskProject, setNewTaskProject] = useState(DEFAULT_TASK_PROJECT)
+  const [storedProjects, setStoredProjects] = useState(() => readStoredTaskProjects())
+  const createTask = useCreateTask()
+  const updateTask = useUpdateTask()
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['today'],
     queryFn: async () => {
@@ -20,6 +38,46 @@ export default function Dashboard() {
       return res.data
     },
   })
+
+  const { data: taskProjects = [] } = useQuery({
+    queryKey: ['task-projects'],
+    queryFn: getTaskProjects,
+  })
+
+  const projectOptions = useMemo(
+    () =>
+      mergeTaskProjects(
+        storedProjects,
+        taskProjects,
+        data?.todayTasks.map((task) => task.project),
+        data?.overdueTasks.map((task) => task.project),
+      ),
+    [data?.overdueTasks, data?.todayTasks, storedProjects, taskProjects],
+  )
+
+  async function handleAddTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const title = newTaskTitle.trim()
+    if (!title) return
+
+    const nextProjects = mergeTaskProjects(storedProjects, [newTaskProject])
+    setStoredProjects(nextProjects)
+    saveStoredTaskProjects(nextProjects)
+
+    await createTask.mutateAsync({
+      title,
+      project: newTaskProject,
+      due: dateInputToUnix(newTaskDate),
+      scope: 'daily',
+    })
+    setNewTaskTitle('')
+  }
+
+  async function handleToggleTask(id: string) {
+    const task = [...(data?.todayTasks ?? []), ...(data?.overdueTasks ?? [])].find((item) => item.id === id)
+    if (!task) return
+    await updateTask.mutateAsync({ id, done: task.done ? 0 : 1 })
+  }
 
   if (isLoading) {
     return (
@@ -65,10 +123,33 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="inline-add-row">
-          <span />
-          <p>新增任务</p>
-        </div>
+        <form className="inline-create task-create-form" onSubmit={handleAddTask}>
+          <input
+            className="task-title-input"
+            value={newTaskTitle}
+            onChange={(event) => setNewTaskTitle(event.target.value)}
+            placeholder="新增任务"
+          />
+          <select
+            value={newTaskProject}
+            onChange={(event) => setNewTaskProject(event.target.value)}
+            aria-label="任务项目"
+          >
+            {projectOptions.map((project) => (
+              <option key={project} value={project}>{project}</option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={newTaskDate}
+            onChange={(event) => setNewTaskDate(event.target.value)}
+            aria-label="任务日期"
+            required
+          />
+          <button type="submit" disabled={!newTaskTitle.trim() || createTask.isPending}>
+            {createTask.isPending ? '添加中...' : '添加'}
+          </button>
+        </form>
 
         {data.todayTasks.length === 0 && data.overdueTasks.length === 0 ? (
           <p className="empty-copy">今天还没有任务</p>
@@ -78,14 +159,14 @@ export default function Dashboard() {
               <div className="task-section">
                 <span>逾期</span>
                 <div className="row-stack">
-                  {data.overdueTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={() => {}} />)}
+                  {data.overdueTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
                 </div>
               </div>
             )}
             <div className="task-section">
               <span>今天</span>
               <div className="row-stack">
-                {data.todayTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={() => {}} />)}
+                {data.todayTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
               </div>
             </div>
           </>

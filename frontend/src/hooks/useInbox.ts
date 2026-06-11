@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as inboxApi from '../api/inbox'
 
-export function useInboxList(params: { kind?: string; page?: number }) {
+export function useInboxList(params: { kind?: string; page?: number; page_size?: number }) {
   return useQuery({
     queryKey: ['inbox', params],
     queryFn: () => inboxApi.getInbox(params),

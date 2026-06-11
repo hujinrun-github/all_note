@@ -16,7 +16,7 @@ function getMarkdown(editor: Editor | null): string {
 }
 
 function countWords(markdown: string): number {
-  const text = markdown.replace(/[#*`~>\-\n\[\]()!|]/g, ' ').trim()
+  const text = markdown.replace(/[#*`~>\n[\]()!|-]/g, ' ').trim()
   if (!text) return 0
   const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length
   const latin = text.replace(/[\u4e00-\u9fff]/g, ' ').split(/\s+/).filter(Boolean).length
