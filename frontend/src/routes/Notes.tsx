@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getFolders } from '../api/folders'
 import { deleteNote, getNotes } from '../api/notes'
 import { useCreateNote } from '../hooks/useNotes'
-import { ObsidianSyncPanel } from '../components/sync/ObsidianSyncPanel'
+import { SyncSettingsPanel } from '../components/sync/SyncSettingsPanel'
 
 export default function Notes() {
   const navigate = useNavigate()
@@ -106,7 +106,7 @@ export default function Notes() {
         {(notesQ.data?.notes ?? []).length === 0 && <p className="empty-copy">暂无笔记</p>}
       </section>
 
-      {syncOpen && <ObsidianSyncPanel onClose={() => setSyncOpen(false)} />}
+      {syncOpen && <SyncSettingsPanel onClose={() => setSyncOpen(false)} />}
     </div>
   )
 }

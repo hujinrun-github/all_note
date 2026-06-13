@@ -21,7 +21,12 @@ type SyncMessage = {
   text: string
 }
 
-export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
+type ObsidianSyncPanelProps = {
+  onClose?: () => void
+  embedded?: boolean
+}
+
+export function ObsidianSyncPanel({ onClose, embedded = false }: ObsidianSyncPanelProps) {
   const targetsQ = useSyncTargets()
   const saveTarget = useSaveSyncTarget()
   const testTarget = useTestObsidianTarget()
@@ -213,10 +218,10 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  return (
-    <div className="sync-overlay" onClick={onClose}>
-      <section className={`sync-panel${directoryPickerOpen ? ' sync-panel-wide' : ''}`} onClick={(event) => event.stopPropagation()}>
-        <header className="sync-panel-header">
+  const content = (
+    <>
+        {!embedded && (
+          <header className="sync-panel-header">
           <div>
             <span>Obsidian</span>
             <h2>本地 Vault 同步</h2>
@@ -224,7 +229,8 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
           <button type="button" aria-label="关闭同步面板" onClick={onClose}>
             ×
           </button>
-        </header>
+          </header>
+        )}
 
         <label className="sync-field">
           <span>目标名称</span>
@@ -439,6 +445,17 @@ export function ObsidianSyncPanel({ onClose }: { onClose: () => void }) {
             {syncAll.isPending ? '同步中' : '同步全部'}
           </button>
         </footer>
+    </>
+  )
+
+  if (embedded) return content
+
+  const close = onClose ?? (() => undefined)
+
+  return (
+    <div className="sync-overlay" onClick={close}>
+      <section className={`sync-panel${directoryPickerOpen ? ' sync-panel-wide' : ''}`} onClick={(event) => event.stopPropagation()}>
+        {content}
       </section>
     </div>
   )
