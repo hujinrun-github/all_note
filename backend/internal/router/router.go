@@ -33,6 +33,12 @@ func Setup() *gin.Engine {
 		api.GET("/sync/obsidian/deletions", handler.ListObsidianDeletions)
 		api.POST("/sync/obsidian/deletions/:note_id/confirm", handler.ConfirmObsidianDeletion)
 		api.POST("/sync/obsidian/deletions/:note_id/restore", handler.RestoreObsidianDeletion)
+		api.POST("/sync/notion/test", handler.TestNotionTarget)
+		api.POST("/sync/notion/bidirectional", handler.SyncNotionBidirectional)
+		api.POST("/sync/notion/notes/:id", handler.SyncNotionNote)
+		api.GET("/sync/notion/deletions", handler.ListNotionDeletions)
+		api.POST("/sync/notion/deletions/:note_id/confirm", handler.ConfirmNotionDeletion)
+		api.POST("/sync/notion/deletions/:note_id/restore", handler.RestoreNotionDeletion)
 
 		api.GET("/tasks", handler.GetTasks)
 		api.GET("/tasks/projects", handler.GetTaskProjects)

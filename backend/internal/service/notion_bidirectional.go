@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -45,8 +46,65 @@ type NotionSyncService struct {
 	gateway notionSyncGateway
 }
 
+var (
+	ErrNotionDeletionNotFound     = errors.New("notion deletion candidate not found")
+	ErrNotionDeletionConflict     = errors.New("notion deletion conflict")
+	ErrNotionDeletionInvalidState = errors.New("note is not marked as deleted in notion")
+)
+
 func NewNotionSyncService(gateway notionSyncGateway) *NotionSyncService {
 	return &NotionSyncService{gateway: gateway}
+}
+
+func TestNotionTarget(target *model.SyncTarget) error {
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return err
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return err
+	}
+	return gateway.TestDataSource(config)
+}
+
+func SyncNoteToNotion(noteID string) (*model.SyncResultItem, error) {
+	if strings.TrimSpace(noteID) == "" {
+		return nil, errors.New("note id is required")
+	}
+
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		return nil, fmt.Errorf("load notion sync target: %w", err)
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return nil, err
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	note, err := repository.GetNoteByID(noteID)
+	if err != nil {
+		return nil, fmt.Errorf("load note: %w", err)
+	}
+
+	var state model.SyncState
+	hasState := false
+	existing, err := repository.GetSyncState(noteID, target.ID)
+	if err == nil {
+		state = *existing
+		hasState = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("load notion sync state: %w", err)
+	}
+
+	item := NewNotionSyncService(gateway).pushNotionLocalNote(config, *target, *note, state, hasState)
+	if item.Status == "failed" {
+		return &item, errors.New(item.ErrorMessage)
+	}
+	return &item, nil
 }
 
 func SyncNotionBidirectional() model.NotionBidirectionalResult {
@@ -58,14 +116,145 @@ func SyncNotionBidirectional() model.NotionBidirectionalResult {
 	if err != nil {
 		return failedNotionBidirectionalResult(err)
 	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return failedNotionBidirectionalResult(err)
+	}
+	return NewNotionSyncService(gateway).SyncBidirectional(*target)
+}
+
+func ListNotionDeletionCandidates() ([]model.ExternalDeletedNote, error) {
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		return nil, err
+	}
+	return repository.ListExternalDeletedSyncStates(target.ID)
+}
+
+func ConfirmNotionDeletion(noteID string) error {
+	target, err := loadNotionDeletionTarget()
+	if err != nil {
+		return err
+	}
+	if _, err := loadNotionExternalDeletedState(noteID, target.ID); err != nil {
+		return err
+	}
+	if _, err := loadNotionDeletionNote(noteID); err != nil {
+		return err
+	}
+	if err := repository.DeleteNote(noteID); err != nil {
+		return fmt.Errorf("delete note: %w", err)
+	}
+	if err := repository.DeleteSyncState(noteID, target.ID); err != nil {
+		return fmt.Errorf("delete notion sync state: %w", err)
+	}
+	return nil
+}
+
+func RestoreNotionDeletion(noteID string) (*model.SyncResultItem, error) {
+	target, err := loadNotionDeletionTarget()
+	if err != nil {
+		return nil, err
+	}
+	state, err := loadNotionExternalDeletedState(noteID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	note, err := loadNotionDeletionNote(noteID)
+	if err != nil {
+		return nil, err
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return nil, err
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	remote, err := gateway.RestoreRemoteNote(config, note, notionStateSnapshot(*state))
+	if err != nil {
+		return nil, fmt.Errorf("%w: restore notion page: %v", ErrNotionDeletionConflict, err)
+	}
+	remote = withNotionRemoteDefaults(remote)
+	if remote.PageID == "" {
+		remote.PageID = notionStateExternalID(*state)
+	}
+	if remote.URL == "" {
+		remote.URL = state.ExternalURL
+	}
+	if err := recordSyncedNotionRemote(note, *target, remote, "restore"); err != nil {
+		return nil, fmt.Errorf("record restored notion sync state: %w", err)
+	}
+	return &model.SyncResultItem{
+		NoteID:       note.ID,
+		Status:       "synced",
+		ExternalPath: notionExternalPath(remote.PageID),
+		ExternalID:   remote.PageID,
+		ExternalURL:  remote.URL,
+	}, nil
+}
+
+func notionGatewayForConfig(config notionTargetConfig) (notionSyncGateway, error) {
 	token := ""
 	if !notionMockProviderEnabled() {
-		token, err = notionToken(config)
+		loaded, err := notionToken(config)
 		if err != nil {
-			return failedNotionBidirectionalResult(err)
+			return nil, err
 		}
+		token = loaded
 	}
-	return NewNotionSyncService(notionGatewayFromEnv(token)).SyncBidirectional(*target)
+	return notionGatewayFromEnv(token), nil
+}
+
+func loadNotionDeletionTarget() (*model.SyncTarget, error) {
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: notion sync target not found", ErrNotionDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load notion sync target: %w", err)
+	}
+	return target, nil
+}
+
+func loadNotionExternalDeletedState(noteID, targetID string) (*model.SyncState, error) {
+	state, err := repository.GetSyncState(noteID, targetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: sync state not found", ErrNotionDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load notion sync state: %w", err)
+	}
+	if state.Status != "external_deleted" {
+		return nil, ErrNotionDeletionInvalidState
+	}
+	return state, nil
+}
+
+func loadNotionDeletionNote(noteID string) (*model.Note, error) {
+	note, err := repository.GetNoteByID(noteID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: note not found", ErrNotionDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load note: %w", err)
+	}
+	return note, nil
+}
+
+func notionStateSnapshot(state model.SyncState) notionSyncStateSnapshot {
+	return notionSyncStateSnapshot{
+		NoteID:        state.NoteID,
+		TargetID:      state.TargetID,
+		ExternalPath:  state.ExternalPath,
+		ExternalID:    state.ExternalID,
+		ExternalURL:   state.ExternalURL,
+		ContentHash:   state.ContentHash,
+		ExternalHash:  state.ExternalHash,
+		ExternalMTime: state.ExternalMTime,
+	}
 }
 
 func (svc *NotionSyncService) SyncBidirectional(target model.SyncTarget) model.NotionBidirectionalResult {

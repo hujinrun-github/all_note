@@ -80,8 +80,34 @@ func TestObsidianTarget(c *gin.Context) {
 	success(c, gin.H{"ok": true})
 }
 
+func TestNotionTarget(c *gin.Context) {
+	var req model.SaveSyncTargetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, "invalid sync target")
+		return
+	}
+
+	target := syncTargetFromRequest(&req)
+	target.Type = "notion"
+	target.Enabled = true
+	if err := service.TestNotionTarget(target); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	success(c, gin.H{"ok": true})
+}
+
 func SyncObsidianNote(c *gin.Context) {
 	item, err := service.SyncNoteToObsidian(c.Param("id"))
+	if err != nil {
+		internalError(c, err.Error())
+		return
+	}
+	success(c, gin.H{"item": item})
+}
+
+func SyncNotionNote(c *gin.Context) {
+	item, err := service.SyncNoteToNotion(c.Param("id"))
 	if err != nil {
 		internalError(c, err.Error())
 		return
@@ -114,8 +140,22 @@ func SyncObsidianBidirectional(c *gin.Context) {
 	success(c, gin.H{"result": result})
 }
 
+func SyncNotionBidirectional(c *gin.Context) {
+	result := service.SyncNotionBidirectional()
+	success(c, gin.H{"result": result})
+}
+
 func ListObsidianDeletions(c *gin.Context) {
 	items, err := service.ListObsidianDeletionCandidates()
+	if err != nil {
+		internalError(c, err.Error())
+		return
+	}
+	success(c, gin.H{"items": items})
+}
+
+func ListNotionDeletions(c *gin.Context) {
+	items, err := service.ListNotionDeletionCandidates()
 	if err != nil {
 		internalError(c, err.Error())
 		return
@@ -131,10 +171,27 @@ func ConfirmObsidianDeletion(c *gin.Context) {
 	noContent(c)
 }
 
+func ConfirmNotionDeletion(c *gin.Context) {
+	if err := service.ConfirmNotionDeletion(c.Param("note_id")); err != nil {
+		notionDeletionError(c, err)
+		return
+	}
+	noContent(c)
+}
+
 func RestoreObsidianDeletion(c *gin.Context) {
 	item, err := service.RestoreObsidianDeletion(c.Param("note_id"))
 	if err != nil {
 		obsidianDeletionError(c, err)
+		return
+	}
+	success(c, gin.H{"item": item})
+}
+
+func RestoreNotionDeletion(c *gin.Context) {
+	item, err := service.RestoreNotionDeletion(c.Param("note_id"))
+	if err != nil {
+		notionDeletionError(c, err)
 		return
 	}
 	success(c, gin.H{"item": item})
@@ -147,6 +204,19 @@ func obsidianDeletionError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrObsidianDeletionConflict):
 		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, service.ErrObsidianDeletionInvalidState):
+		badRequest(c, err.Error())
+	default:
+		internalError(c, err.Error())
+	}
+}
+
+func notionDeletionError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrNotionDeletionNotFound):
+		notFound(c, err.Error())
+	case errors.Is(err, service.ErrNotionDeletionConflict):
+		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
+	case errors.Is(err, service.ErrNotionDeletionInvalidState):
 		badRequest(c, err.Error())
 	default:
 		internalError(c, err.Error())
