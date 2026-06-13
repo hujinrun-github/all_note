@@ -107,9 +107,14 @@ func SyncObsidianNote(c *gin.Context) {
 }
 
 func SyncNotionNote(c *gin.Context) {
-	item, err := service.SyncNoteToNotion(c.Param("id"))
+	noteID := strings.TrimSpace(c.Param("id"))
+	if noteID == "" {
+		badRequest(c, "note id is required")
+		return
+	}
+	item, err := service.SyncNoteToNotion(noteID)
 	if err != nil {
-		internalError(c, err.Error())
+		notionNoteSyncError(c, err)
 		return
 	}
 	success(c, gin.H{"item": item})
@@ -157,7 +162,7 @@ func ListObsidianDeletions(c *gin.Context) {
 func ListNotionDeletions(c *gin.Context) {
 	items, err := service.ListNotionDeletionCandidates()
 	if err != nil {
-		internalError(c, err.Error())
+		notionDeletionError(c, err)
 		return
 	}
 	success(c, gin.H{"items": items})
@@ -218,6 +223,15 @@ func notionDeletionError(c *gin.Context, err error) {
 		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, service.ErrNotionDeletionInvalidState):
 		badRequest(c, err.Error())
+	default:
+		internalError(c, err.Error())
+	}
+}
+
+func notionNoteSyncError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		notFound(c, err.Error())
 	default:
 		internalError(c, err.Error())
 	}

@@ -50,6 +50,7 @@ var (
 	ErrNotionDeletionNotFound     = errors.New("notion deletion candidate not found")
 	ErrNotionDeletionConflict     = errors.New("notion deletion conflict")
 	ErrNotionDeletionInvalidState = errors.New("note is not marked as deleted in notion")
+	notionGatewayFactory          = notionGatewayFromEnv
 )
 
 func NewNotionSyncService(gateway notionSyncGateway) *NotionSyncService {
@@ -124,7 +125,7 @@ func SyncNotionBidirectional() model.NotionBidirectionalResult {
 }
 
 func ListNotionDeletionCandidates() ([]model.ExternalDeletedNote, error) {
-	target, err := repository.GetDefaultSyncTarget("notion")
+	target, err := loadNotionDeletionTarget()
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +176,7 @@ func RestoreNotionDeletion(noteID string) (*model.SyncResultItem, error) {
 
 	remote, err := gateway.RestoreRemoteNote(config, note, notionStateSnapshot(*state))
 	if err != nil {
-		return nil, fmt.Errorf("%w: restore notion page: %v", ErrNotionDeletionConflict, err)
+		return nil, fmt.Errorf("restore notion page: %w", err)
 	}
 	remote = withNotionRemoteDefaults(remote)
 	if remote.PageID == "" {
@@ -205,7 +206,7 @@ func notionGatewayForConfig(config notionTargetConfig) (notionSyncGateway, error
 		}
 		token = loaded
 	}
-	return notionGatewayFromEnv(token), nil
+	return notionGatewayFactory(token), nil
 }
 
 func loadNotionDeletionTarget() (*model.SyncTarget, error) {

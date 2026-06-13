@@ -2,6 +2,7 @@ package service
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 
@@ -11,10 +12,11 @@ import (
 )
 
 type fakeNotionGateway struct {
-	pages    []notionRemoteNote
-	created  []string
-	updated  []string
-	restored []string
+	pages      []notionRemoteNote
+	created    []string
+	updated    []string
+	restored   []string
+	restoreErr error
 }
 
 func (fake *fakeNotionGateway) TestDataSource(config notionTargetConfig) error { return nil }
@@ -50,6 +52,9 @@ func (fake *fakeNotionGateway) UpdateRemoteNote(config notionTargetConfig, pageI
 }
 
 func (fake *fakeNotionGateway) RestoreRemoteNote(config notionTargetConfig, note *model.Note, previous notionSyncStateSnapshot) (notionRemoteNote, error) {
+	if fake.restoreErr != nil {
+		return notionRemoteNote{}, fake.restoreErr
+	}
 	fake.restored = append(fake.restored, note.ID)
 	return fake.CreateRemoteNote(config, note)
 }
@@ -273,6 +278,49 @@ func TestSyncNotionBidirectionalUsesMockProviderWithoutToken(t *testing.T) {
 	}
 	if len(notes) != 1 || notes[0].Title != "Mock Notion Note" || notes[0].Body != "Imported from mock Notion.\n" {
 		t.Fatalf("notes = %+v", notes)
+	}
+}
+
+func TestNotionRestoreGatewayFailureIsNotDeletionConflict(t *testing.T) {
+	openServiceSyncTestDB(t)
+	t.Setenv("NOTION_PROVIDER", "mock")
+	target := saveNotionTargetForTest(t)
+	note := insertServiceNoteForTest(t, "Restore Provider Failure", "Body\n")
+	lastSync := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-restore-fails",
+		ExternalID:    "page-restore-fails",
+		ExternalURL:   "https://www.notion.so/page-restore-fails",
+		ContentHash:   notionTitleBodyHash("Restore Provider Failure", "Body\n"),
+		ExternalHash:  notionTitleBodyHash("Restore Provider Failure", "Body\n"),
+		ExternalMTime: &lastSync,
+		LastSyncedAt:  &lastSync,
+		LastDirection: "delete_detected",
+		Status:        "external_deleted",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+	providerErr := errors.New("notion API error 503: unavailable")
+	originalFactory := notionGatewayFactory
+	notionGatewayFactory = func(token string) notionSyncGateway {
+		return &fakeNotionGateway{restoreErr: providerErr}
+	}
+	t.Cleanup(func() {
+		notionGatewayFactory = originalFactory
+	})
+
+	_, err := RestoreNotionDeletion(note.ID)
+
+	if err == nil {
+		t.Fatal("expected restore error")
+	}
+	if errors.Is(err, ErrNotionDeletionConflict) {
+		t.Fatalf("restore provider error was classified as conflict: %v", err)
+	}
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("error = %v, want provider error", err)
 	}
 }
 

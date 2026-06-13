@@ -192,6 +192,37 @@ func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
 	}
 }
 
+func TestSyncNotionNoteMissingNoteReturnsNotFound(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	t.Setenv("NOTION_PROVIDER", "mock")
+	saveHandlerNotionTarget(t)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: "missing-note"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/missing-note", nil)
+
+	SyncNotionNote(c)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+}
+
+func TestSyncNotionNoteEmptyIDReturnsBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: ""}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/", nil)
+
+	SyncNotionNote(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+}
+
 func TestListNotionDeletionsReturnsExternalDeletedStates(t *testing.T) {
 	openHandlerSyncTestDB(t)
 	target := saveHandlerNotionTarget(t)
@@ -217,6 +248,20 @@ func TestListNotionDeletionsReturnsExternalDeletedStates(t *testing.T) {
 	}
 	if len(body.Data.Items) != 1 || body.Data.Items[0].NoteID != note.ID || body.Data.Items[0].ExternalPath != "notion:page-deleted" {
 		t.Fatalf("items = %+v", body.Data.Items)
+	}
+}
+
+func TestListNotionDeletionsWithoutTargetReturnsNotFound(t *testing.T) {
+	openHandlerSyncTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/sync/notion/deletions", nil)
+
+	ListNotionDeletions(c)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
 	}
 }
 
