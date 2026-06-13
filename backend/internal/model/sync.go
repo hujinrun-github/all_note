@@ -42,6 +42,8 @@ type SyncResultItem struct {
 	NoteID       string `json:"note_id"`
 	Status       string `json:"status"`
 	ExternalPath string `json:"external_path,omitempty"`
+	ExternalID   string `json:"external_id,omitempty"`
+	ExternalURL  string `json:"external_url,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 }
 
@@ -56,6 +58,17 @@ type ObsidianBidirectionalResult struct {
 	Pulled          int              `json:"pulled"`
 	Imported        int              `json:"imported"`
 	ExternalDeleted int              `json:"external_deleted"`
+	Failed          int              `json:"failed"`
+	Items           []SyncResultItem `json:"items"`
+}
+
+type NotionBidirectionalResult struct {
+	Pushed          int              `json:"pushed"`
+	Pulled          int              `json:"pulled"`
+	ConflictPulled  int              `json:"conflict_pulled"`
+	Imported        int              `json:"imported"`
+	ExternalDeleted int              `json:"external_deleted"`
+	Unsupported     int              `json:"unsupported"`
 	Failed          int              `json:"failed"`
 	Items           []SyncResultItem `json:"items"`
 }
