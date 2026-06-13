@@ -29,9 +29,11 @@ type SyncState struct {
 }
 
 type SaveSyncTargetRequest struct {
+	Type       string `json:"type"`
 	Name       string `json:"name" binding:"required"`
-	VaultPath  string `json:"vault_path" binding:"required"`
-	BaseFolder string `json:"base_folder" binding:"required"`
+	VaultPath  string `json:"vault_path"`
+	BaseFolder string `json:"base_folder"`
+	ConfigJSON string `json:"config_json"`
 	Enabled    bool   `json:"enabled"`
 	AutoSync   bool   `json:"auto_sync"`
 }

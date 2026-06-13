@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
@@ -168,11 +169,20 @@ func GetNoteSyncState(c *gin.Context) {
 }
 
 func syncTargetFromRequest(req *model.SaveSyncTargetRequest) *model.SyncTarget {
+	syncType := strings.TrimSpace(req.Type)
+	if syncType == "" {
+		syncType = "obsidian"
+	}
+	configJSON := strings.TrimSpace(req.ConfigJSON)
+	if configJSON == "" {
+		configJSON = "{}"
+	}
 	return &model.SyncTarget{
-		Type:       "obsidian",
+		Type:       syncType,
 		Name:       req.Name,
 		VaultPath:  req.VaultPath,
 		BaseFolder: req.BaseFolder,
+		ConfigJSON: configJSON,
 		Enabled:    req.Enabled,
 		AutoSync:   req.AutoSync,
 	}
