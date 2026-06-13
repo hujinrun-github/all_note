@@ -37,7 +37,7 @@ func (gateway *mockNotionGateway) QueryRemoteNotes(config notionTargetConfig) ([
 			URL:          "https://www.notion.so/mock-page-1",
 			Title:        "Mock Notion Note",
 			Markdown:     markdown,
-			Hash:         notionMarkdownHash(markdown),
+			Hash:         notionTitleBodyHash("Mock Notion Note", markdown),
 			LastEditedAt: 1900000000,
 		},
 	}, nil
@@ -87,12 +87,13 @@ func (gateway *realNotionSyncGateway) QueryRemoteNotes(config notionTargetConfig
 			return nil, err
 		}
 		converted := notionBlocksToMarkdown(blocks)
+		title := notionPageTitle(page, config)
 		notes = append(notes, notionRemoteNote{
 			PageID:           page.ID,
 			URL:              page.URL,
-			Title:            notionPageTitle(page, config),
+			Title:            title,
 			Markdown:         converted.Markdown,
-			Hash:             notionMarkdownHash(converted.Markdown),
+			Hash:             notionTitleBodyHash(title, converted.Markdown),
 			LastEditedAt:     notionPageEditedUnix(page.LastEditedTime),
 			FlowSpaceID:      notionPageRichTextProperty(page, config.FlowSpaceIDProperty),
 			UnsupportedTypes: converted.UnsupportedTypes,
@@ -154,7 +155,7 @@ func notionRemoteFromLocalNote(pageID string, note *model.Note, editedAt int64) 
 		URL:          "https://www.notion.so/" + pageID,
 		Title:        note.Title,
 		Markdown:     note.Body,
-		Hash:         notionMarkdownHash(note.Body),
+		Hash:         notionTitleBodyHash(note.Title, note.Body),
 		LastEditedAt: editedAt,
 		FlowSpaceID:  note.ID,
 	}

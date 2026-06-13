@@ -17,7 +17,7 @@ import (
 
 const (
 	notionAPIBaseURL = "https://api.notion.com"
-	notionVersion    = "2022-06-28"
+	notionVersion    = "2025-09-03"
 )
 
 type notionHTTPClient struct {
@@ -137,6 +137,7 @@ func (client *notionHTTPClient) CreatePage(config notionTargetConfig, note *mode
 	}
 	body := map[string]any{
 		"parent": map[string]any{
+			"type":           "data_source_id",
 			"data_source_id": strings.TrimSpace(config.DataSourceID),
 		},
 		"properties": notionNotePropertyPayload(config, note),

@@ -452,14 +452,11 @@ func notionStateExternalID(state model.SyncState) string {
 }
 
 func notionLocalContentHash(note model.Note) string {
-	return notionMarkdownHash(note.Body)
+	return notionTitleBodyHash(note.Title, note.Body)
 }
 
 func notionRemoteHash(remote notionRemoteNote) string {
-	if hash := strings.TrimSpace(remote.Hash); hash != "" {
-		return hash
-	}
-	return notionMarkdownHash(remote.Markdown)
+	return notionTitleBodyHash(notionRemoteTitle(remote), remote.Markdown)
 }
 
 func withNotionRemoteDefaults(remote notionRemoteNote) notionRemoteNote {
@@ -467,9 +464,15 @@ func withNotionRemoteDefaults(remote notionRemoteNote) notionRemoteNote {
 	remote.URL = strings.TrimSpace(remote.URL)
 	remote.FlowSpaceID = strings.TrimSpace(remote.FlowSpaceID)
 	if strings.TrimSpace(remote.Hash) == "" {
-		remote.Hash = notionMarkdownHash(remote.Markdown)
+		remote.Hash = notionRemoteHash(remote)
 	}
 	return remote
+}
+
+func notionTitleBodyHash(title, markdown string) string {
+	title = strings.TrimSpace(title)
+	body := canonicalNotionMarkdown(markdown)
+	return notionMarkdownHash(fmt.Sprintf("title:%d:%s\nbody:%d:%s", len(title), title, len(body), body))
 }
 
 func notionRemoteTitle(remote notionRemoteNote) string {

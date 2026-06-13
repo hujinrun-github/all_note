@@ -58,8 +58,8 @@ func TestNotionClientQueryDataSourceSendsHeadersAndPaginates(t *testing.T) {
 	if authHeader != "Bearer secret-token" {
 		t.Fatalf("authorization header = %q", authHeader)
 	}
-	if notionVersion == "" {
-		t.Fatal("expected Notion-Version header")
+	if notionVersion != "2025-09-03" {
+		t.Fatalf("notion version = %q, want 2025-09-03", notionVersion)
 	}
 	if secondCursor != "cursor-2" {
 		t.Fatalf("second request start_cursor = %q", secondCursor)

@@ -81,7 +81,7 @@ func TestNotionRealGatewayQueryRemoteNotesLoadsBlocksAndProperties(t *testing.T)
 		t.Fatalf("remote properties = %+v", got)
 	}
 	wantMarkdown := "# Heading\n\nRemote paragraph\n"
-	if got.Markdown != wantMarkdown || got.Hash != notionMarkdownHash(wantMarkdown) {
+	if got.Markdown != wantMarkdown || got.Hash != notionTitleBodyHash("Remote Title", wantMarkdown) {
 		t.Fatalf("markdown = %q hash = %q", got.Markdown, got.Hash)
 	}
 	if len(got.UnsupportedTypes) != 0 {
@@ -116,6 +116,7 @@ func TestNotionRealGatewayCreateRemoteNoteSendsPagePayload(t *testing.T) {
 	if remote.PageID != "page-created" || remote.URL != "https://www.notion.so/page-created" {
 		t.Fatalf("remote = %+v", remote)
 	}
+	assertStringAt(t, payload, "data_source_id", "parent", "type")
 	assertStringAt(t, payload, "ds-123", "parent", "data_source_id")
 	assertStringAt(t, payload, "Created Title", "properties", "Name", "title", "0", "text", "content")
 	assertStringAt(t, payload, "note-create", "properties", "FlowSpace ID", "rich_text", "0", "text", "content")

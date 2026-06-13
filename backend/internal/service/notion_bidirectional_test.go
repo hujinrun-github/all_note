@@ -30,7 +30,7 @@ func (fake *fakeNotionGateway) CreateRemoteNote(config notionTargetConfig, note 
 		URL:          "https://www.notion.so/created-" + note.ID,
 		Title:        note.Title,
 		Markdown:     note.Body,
-		Hash:         notionMarkdownHash(note.Body),
+		Hash:         notionTitleBodyHash(note.Title, note.Body),
 		LastEditedAt: 1900000000,
 		FlowSpaceID:  note.ID,
 	}, nil
@@ -43,7 +43,7 @@ func (fake *fakeNotionGateway) UpdateRemoteNote(config notionTargetConfig, pageI
 		URL:          "https://www.notion.so/" + pageID,
 		Title:        note.Title,
 		Markdown:     note.Body,
-		Hash:         notionMarkdownHash(note.Body),
+		Hash:         notionTitleBodyHash(note.Title, note.Body),
 		LastEditedAt: 1900000001,
 		FlowSpaceID:  note.ID,
 	}, nil
@@ -63,7 +63,7 @@ func TestSyncNotionImportsNewRemotePage(t *testing.T) {
 			URL:          "https://www.notion.so/page-1",
 			Title:        "Remote Only",
 			Markdown:     "Remote body\n",
-			Hash:         notionMarkdownHash("Remote body\n"),
+			Hash:         notionTitleBodyHash("Remote Only", "Remote body\n"),
 			LastEditedAt: 1800000000,
 		}},
 	}
@@ -93,8 +93,8 @@ func TestSyncNotionPullsRemoteChangeOverLocalChange(t *testing.T) {
 		ExternalPath:  "notion:page-1",
 		ExternalID:    "page-1",
 		ExternalURL:   "https://www.notion.so/page-1",
-		ContentHash:   notionMarkdownHash("Old local\n"),
-		ExternalHash:  notionMarkdownHash("Old remote\n"),
+		ContentHash:   notionTitleBodyHash("Local Title", "Old local\n"),
+		ExternalHash:  notionTitleBodyHash("Old Remote", "Old remote\n"),
 		ExternalMTime: &lastSync,
 		LastSyncedAt:  &lastSync,
 		LastDirection: "push",
@@ -108,7 +108,7 @@ func TestSyncNotionPullsRemoteChangeOverLocalChange(t *testing.T) {
 			URL:          "https://www.notion.so/page-1",
 			Title:        "Remote Wins",
 			Markdown:     "Remote changed\n",
-			Hash:         notionMarkdownHash("Remote changed\n"),
+			Hash:         notionTitleBodyHash("Remote Wins", "Remote changed\n"),
 			LastEditedAt: 1800000000,
 			FlowSpaceID:  note.ID,
 		}},
@@ -128,19 +128,72 @@ func TestSyncNotionPullsRemoteChangeOverLocalChange(t *testing.T) {
 	}
 }
 
+func TestSyncNotionPullsRemoteTitleOnlyChangeBeforeLocalPush(t *testing.T) {
+	openServiceSyncTestDB(t)
+	target := saveNotionTargetForTest(t)
+	note := insertServiceNoteForTest(t, "Local Title", "Same body\n")
+	lastSync := int64(1700000000)
+	bodyOnlyHash := notionMarkdownHash("Same body\n")
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-title",
+		ExternalID:    "page-title",
+		ExternalURL:   "https://www.notion.so/page-title",
+		ContentHash:   bodyOnlyHash,
+		ExternalHash:  bodyOnlyHash,
+		ExternalMTime: &lastSync,
+		LastSyncedAt:  &lastSync,
+		LastDirection: "pull",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+	gateway := &fakeNotionGateway{
+		pages: []notionRemoteNote{{
+			PageID:       "page-title",
+			URL:          "https://www.notion.so/page-title",
+			Title:        "Remote Title",
+			Markdown:     "Same body\n",
+			LastEditedAt: 1800000000,
+			FlowSpaceID:  note.ID,
+		}},
+	}
+
+	result := NewNotionSyncService(gateway).SyncBidirectional(target)
+
+	if result.Pulled != 1 || result.ConflictPulled != 1 || result.Pushed != 0 || len(gateway.updated) != 0 {
+		t.Fatalf("result = %+v updated = %#v", result, gateway.updated)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+	if got.Title != "Remote Title" || got.Body != "Same body\n" {
+		t.Fatalf("note = %+v", got)
+	}
+	state, err := repository.GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if state.ContentHash == bodyOnlyHash || state.ExternalHash == bodyOnlyHash {
+		t.Fatalf("state hashes should include title, got %+v", state)
+	}
+}
+
 func TestSyncNotionPushesLocalChangeWhenRemoteUnchanged(t *testing.T) {
 	openServiceSyncTestDB(t)
 	target := saveNotionTargetForTest(t)
 	note := insertServiceNoteForTest(t, "Local Push", "Local changed\n")
 	lastSync := int64(1700000000)
-	remoteHash := notionMarkdownHash("Old body\n")
+	remoteHash := notionTitleBodyHash("Local Push", "Old body\n")
 	if err := repository.UpsertSyncState(&model.SyncState{
 		NoteID:        note.ID,
 		TargetID:      target.ID,
 		ExternalPath:  "notion:page-1",
 		ExternalID:    "page-1",
 		ExternalURL:   "https://www.notion.so/page-1",
-		ContentHash:   notionMarkdownHash("Old body\n"),
+		ContentHash:   notionTitleBodyHash("Local Push", "Old body\n"),
 		ExternalHash:  remoteHash,
 		ExternalMTime: &lastSync,
 		LastSyncedAt:  &lastSync,
@@ -179,8 +232,8 @@ func TestSyncNotionMarksMissingRemoteAsExternalDeleted(t *testing.T) {
 		ExternalPath:  "notion:page-deleted",
 		ExternalID:    "page-deleted",
 		ExternalURL:   "https://www.notion.so/page-deleted",
-		ContentHash:   notionMarkdownHash("Body\n"),
-		ExternalHash:  notionMarkdownHash("Body\n"),
+		ContentHash:   notionTitleBodyHash("Deleted Remote", "Body\n"),
+		ExternalHash:  notionTitleBodyHash("Deleted Remote", "Body\n"),
 		ExternalMTime: &lastSync,
 		LastSyncedAt:  &lastSync,
 		LastDirection: "push",
