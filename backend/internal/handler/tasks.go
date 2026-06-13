@@ -69,6 +69,14 @@ func UpdateTaskProject(c *gin.Context) {
 	success(c, gin.H{"project": project})
 }
 
+func DeleteTaskProject(c *gin.Context) {
+	if err := service.DeleteTaskProject(c.Param("id")); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	noContent(c)
+}
+
 func CreateTask(c *gin.Context) {
 	var req model.CreateTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -76,7 +76,7 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 		WHERE %s
 		ORDER BY
 			CASE WHEN t.planned_date IS NULL THEN 1 ELSE 0 END ASC,
-			t.planned_date ASC,
+			t.planned_date DESC,
 			t.sort_order ASC,
 			t.created_at DESC
 		LIMIT ? OFFSET ?
@@ -184,6 +184,27 @@ func UpdateTaskProject(id string, req *model.UpdateTaskProjectRequest) (*model.T
 		return nil, err
 	}
 	return GetTaskProjectByID(id)
+}
+
+func DeleteTaskProject(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("project id is required")
+	}
+	if id == "personal" {
+		return fmt.Errorf("personal project cannot be deleted")
+	}
+	if _, err := GetTaskProjectByID(id); err != nil {
+		return err
+	}
+	result, err := DB.Exec(`DELETE FROM task_projects WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func GetTaskProjectByID(id string) (*model.TaskProject, error) {

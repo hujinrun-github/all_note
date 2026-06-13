@@ -130,6 +130,30 @@ func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	return &roadmap, nil
 }
 
+func GetLearningRoadmapByID(roadmapID string) (*model.LearningRoadmap, error) {
+	var roadmap model.LearningRoadmap
+	err := DB.QueryRow(`
+		SELECT id, project_id, title, goal, status, created_at, updated_at
+		FROM learning_roadmaps
+		WHERE id = ?
+	`, roadmapID).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &roadmap.CreatedAt, &roadmap.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	nodes, err := ListRoadmapNodes(roadmap.ID)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := ListRoadmapEdges(roadmap.ID)
+	if err != nil {
+		return nil, err
+	}
+	roadmap.Nodes = nodes
+	roadmap.Edges = edges
+	return &roadmap, nil
+}
+
 func ListRoadmapNodes(roadmapID string) ([]model.RoadmapNode, error) {
 	rows, err := DB.Query(`
 		SELECT id, roadmap_id, parent_id, type, title, description, path_type, status,
@@ -212,6 +236,68 @@ func GetRoadmapNode(nodeID string) (*model.RoadmapNode, error) {
 	return &node, nil
 }
 
+func CreateRoadmapNode(node *model.RoadmapNode, edge *model.RoadmapEdge) (*model.RoadmapNode, error) {
+	if node.ID == "" {
+		node.ID = newUUID()
+	}
+	now := nowUnix()
+	node.CreatedAt = now
+	node.UpdatedAt = now
+	if node.Status == "" {
+		node.Status = "todo"
+	}
+	if node.PathType == "" {
+		node.PathType = "required"
+	}
+	if node.Type == "" {
+		node.Type = "task"
+	}
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		INSERT INTO roadmap_nodes (
+			id, roadmap_id, parent_id, type, title, description, path_type, status,
+			deliverable, acceptance_criteria, x, y, order_index, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, node.ID, node.RoadmapID, node.ParentID, normalizeRoadmapNodeType(node.Type), strings.TrimSpace(node.Title),
+		strings.TrimSpace(node.Description), normalizePathType(node.PathType), normalizeNodeStatus(node.Status),
+		strings.TrimSpace(node.Deliverable), strings.TrimSpace(node.AcceptanceCriteria), node.X, node.Y, node.OrderIndex, now, now); err != nil {
+		return nil, err
+	}
+
+	if edge != nil {
+		if edge.ID == "" {
+			edge.ID = newUUID()
+		}
+		if edge.RoadmapID == "" {
+			edge.RoadmapID = node.RoadmapID
+		}
+		if edge.TargetNodeID == "" {
+			edge.TargetNodeID = node.ID
+		}
+		if edge.Style == "" {
+			edge.Style = "solid"
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, normalizeEdgeStyle(edge.Style), now); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return GetRoadmapNode(node.ID)
+}
+
 func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
@@ -258,6 +344,17 @@ func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.R
 		return nil, sql.ErrNoRows
 	}
 	return GetRoadmapNode(id)
+}
+
+func DeleteRoadmapNode(id string) error {
+	result, err := DB.Exec(`DELETE FROM roadmap_nodes WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func UpdateRoadmapNodeStatus(id, status string) error {
@@ -364,4 +461,24 @@ func normalizeNodeStatus(value string) string {
 	default:
 		return "todo"
 	}
+}
+
+func normalizeRoadmapNodeType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "phase":
+		return "phase"
+	case "module":
+		return "module"
+	case "choice":
+		return "choice"
+	default:
+		return "task"
+	}
+}
+
+func normalizeEdgeStyle(value string) string {
+	if strings.ToLower(strings.TrimSpace(value)) == "dotted" {
+		return "dotted"
+	}
+	return "solid"
 }
