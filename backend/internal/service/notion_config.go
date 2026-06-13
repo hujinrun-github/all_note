@@ -70,7 +70,7 @@ func notionToken(config notionTargetConfig) (string, error) {
 }
 
 func isApprovedNotionTokenEnv(name string) bool {
-	return name == "FLOWSPACE_NOTION_TOKEN" || (strings.HasPrefix(name, "FLOWSPACE_") && strings.Contains(name, "NOTION_TOKEN"))
+	return name == "FLOWSPACE_NOTION_TOKEN" || (strings.HasPrefix(name, "FLOWSPACE_") && strings.HasSuffix(name, "NOTION_TOKEN"))
 }
 
 func defaultString(value, fallback string) string {

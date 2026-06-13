@@ -96,3 +96,13 @@ func TestLoadNotionTokenRejectsUnapprovedEnvName(t *testing.T) {
 		t.Fatalf("expected unapproved env error, got %v", err)
 	}
 }
+
+func TestLoadNotionTokenRejectsApprovedPrefixWithWrongSuffix(t *testing.T) {
+	t.Setenv("FLOWSPACE_NOTION_TOKEN_BACKUP", "backup-token")
+
+	config := notionTargetConfig{TokenEnv: "FLOWSPACE_NOTION_TOKEN_BACKUP"}
+	_, err := notionToken(config)
+	if err == nil || !strings.Contains(err.Error(), "notion token env must be FLOWSPACE_NOTION_TOKEN or a FLOWSPACE_*NOTION_TOKEN variable") {
+		t.Fatalf("expected wrong suffix env error, got %v", err)
+	}
+}
