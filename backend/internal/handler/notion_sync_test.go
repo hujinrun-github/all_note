@@ -359,6 +359,68 @@ func TestConfirmNotionDeletionRejectsNonDeletedState(t *testing.T) {
 	}
 }
 
+func TestGetNoteSyncStateDefaultsToObsidianTarget(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	obsidianTarget := saveHandlerObsidianTarget(t)
+	notionTarget := saveHandlerNotionTarget(t)
+	note := insertHandlerNoteForTest(t, "Default Sync State", "Body\n")
+	now := int64(1800000000)
+
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      obsidianTarget.ID,
+		ExternalPath:  "FlowSpace Notes/Default Sync State.md",
+		ContentHash:   "obsidian-content",
+		ExternalHash:  "obsidian-external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert obsidian state: %v", err)
+	}
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      notionTarget.ID,
+		ExternalPath:  "notion:page-default",
+		ExternalID:    "page-default",
+		ExternalURL:   "https://www.notion.so/page-default",
+		ContentHash:   "notion-content",
+		ExternalHash:  "notion-external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "pull",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert notion state: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: note.ID}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-state", nil)
+
+	GetNoteSyncState(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			State *model.SyncState `json:"state"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.State == nil {
+		t.Fatalf("state = nil; body = %s", recorder.Body.String())
+	}
+	if body.Data.State.TargetID != obsidianTarget.ID || body.Data.State.ExternalPath != "FlowSpace Notes/Default Sync State.md" {
+		t.Fatalf("state = %+v, want obsidian target %s", body.Data.State, obsidianTarget.ID)
+	}
+}
+
 func TestGetNoteSyncStateHonorsNotionTargetQuery(t *testing.T) {
 	openHandlerSyncTestDB(t)
 	obsidianTarget := saveHandlerObsidianTarget(t)
