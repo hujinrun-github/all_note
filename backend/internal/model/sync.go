@@ -6,6 +6,7 @@ type SyncTarget struct {
 	Name       string `json:"name"`
 	VaultPath  string `json:"vault_path"`
 	BaseFolder string `json:"base_folder"`
+	ConfigJSON string `json:"config_json"`
 	Enabled    bool   `json:"enabled"`
 	AutoSync   bool   `json:"auto_sync"`
 	CreatedAt  int64  `json:"created_at"`
@@ -16,6 +17,8 @@ type SyncState struct {
 	NoteID        string  `json:"note_id"`
 	TargetID      string  `json:"target_id"`
 	ExternalPath  string  `json:"external_path"`
+	ExternalID    string  `json:"external_id"`
+	ExternalURL   string  `json:"external_url"`
 	ContentHash   string  `json:"content_hash"`
 	ExternalHash  string  `json:"external_hash"`
 	ExternalMTime *int64  `json:"external_mtime"`

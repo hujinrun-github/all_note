@@ -103,6 +103,94 @@ func TestInitDBAddsBidirectionalSyncColumns(t *testing.T) {
 	assertSyncStateColumns(t)
 }
 
+func TestInitDBAddsNotionSyncColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.db")
+	createOldSyncStateDB(t, dbPath)
+	chdirBackendRoot(t)
+	t.Cleanup(func() {
+		if DB != nil {
+			DB.Close()
+			DB = nil
+		}
+	})
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	assertTableColumns(t, "sync_targets", []string{"config_json"})
+	assertTableColumns(t, "note_sync_state", []string{"external_id", "external_url"})
+}
+
+func TestSyncTargetRoundTripIncludesConfigJSON(t *testing.T) {
+	openSyncTestDB(t)
+
+	target := &model.SyncTarget{
+		Type:       "notion",
+		Name:       "Personal Notion",
+		VaultPath:  "",
+		BaseFolder: "",
+		ConfigJSON: `{"data_source_id":"ds-123","title_property":"Name"}`,
+		Enabled:    true,
+		AutoSync:   false,
+	}
+
+	if err := SaveSyncTarget(target); err != nil {
+		t.Fatalf("save sync target: %v", err)
+	}
+
+	got, err := GetDefaultSyncTarget("notion")
+	if err != nil {
+		t.Fatalf("get default notion target: %v", err)
+	}
+	if got.Type != "notion" {
+		t.Fatalf("type = %q, want notion", got.Type)
+	}
+	if got.ConfigJSON != `{"data_source_id":"ds-123","title_property":"Name"}` {
+		t.Fatalf("config_json = %q", got.ConfigJSON)
+	}
+}
+
+func TestSyncStateRoundTripIncludesExternalIDAndURL(t *testing.T) {
+	openSyncTestDB(t)
+	target := &model.SyncTarget{
+		Type:       "notion",
+		Name:       "Personal Notion",
+		ConfigJSON: `{"data_source_id":"ds-123"}`,
+		Enabled:    true,
+	}
+	if err := SaveSyncTarget(target); err != nil {
+		t.Fatalf("save target: %v", err)
+	}
+	note := insertNoteForTest(t, "Notion State", "Body")
+	now := nowUnix()
+
+	state := &model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-123",
+		ExternalID:    "page-123",
+		ExternalURL:   "https://www.notion.so/page-123",
+		ContentHash:   "flow-hash",
+		ExternalHash:  "notion-hash",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "pull",
+		Status:        "synced",
+	}
+
+	if err := UpsertSyncState(state); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+	got, err := GetSyncState(note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if got.ExternalID != "page-123" || got.ExternalURL != "https://www.notion.so/page-123" {
+		t.Fatalf("notion metadata was not persisted: %+v", got)
+	}
+}
+
 func TestInitDBBackfillsLegacySyncedExternalHash(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "flowspace.db")
 	createOldSyncStateDB(t, dbPath)
@@ -380,6 +468,36 @@ func insertOldSyncStateRow(t *testing.T, dbPath, noteID, targetID, contentHash, 
 		VALUES (?, ?, 'D:\Vault\FlowSpace Notes\Legacy.md', ?, 1717200000, ?, NULL)
 	`, noteID, targetID, contentHash, status); err != nil {
 		t.Fatalf("insert old sync state row: %v", err)
+	}
+}
+
+func assertTableColumns(t *testing.T, table string, names []string) {
+	t.Helper()
+	rows, err := DB.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("table info %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns: %v", err)
+	}
+	for _, name := range names {
+		if !columns[name] {
+			t.Fatalf("expected %s.%s to exist", table, name)
+		}
 	}
 }
 
