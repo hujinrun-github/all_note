@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 type notionBlock struct {
@@ -115,7 +116,7 @@ func markdownToNotionBlocks(markdown string) []notionBlock {
 			continue
 		}
 
-		if text, ok := unescapeMarkdownParagraph(trimmed); ok {
+		if text, ok := unescapeMarkdownParagraph(line); ok {
 			blocks = append(blocks, notionTextMarkdownBlock("paragraph", text))
 			continue
 		}
@@ -222,45 +223,66 @@ func escapeMarkdownParagraph(text string) string {
 }
 
 func escapeMarkdownParagraphLine(text string) string {
-	if strings.HasPrefix(text, "# ") || strings.HasPrefix(text, "## ") || strings.HasPrefix(text, "### ") {
-		return `\` + text
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return text
 	}
-	if text == "---" {
-		return `\` + text
+	markerStart := firstNonSpaceIndex(text)
+	prefix := text[:markerStart]
+	suffix := text[markerStart:]
+
+	if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+		return prefix + `\` + suffix
 	}
-	if strings.HasPrefix(text, "- ") {
-		return `\` + text
+	if trimmed == "---" {
+		return prefix + `\` + suffix
 	}
-	if numberedListPattern.MatchString(text) {
-		return strings.Replace(text, ".", `\.`, 1)
+	if strings.HasPrefix(trimmed, "- ") {
+		return prefix + `\` + suffix
 	}
-	if strings.HasPrefix(text, "> ") {
-		return `\` + text
+	if numberedListPattern.MatchString(trimmed) {
+		return prefix + strings.Replace(suffix, ".", `\.`, 1)
 	}
-	if fence, _, ok := markdownCodeFence(text); ok && strings.HasPrefix(text, fence) {
-		return `\` + text
+	if strings.HasPrefix(trimmed, "> ") {
+		return prefix + `\` + suffix
+	}
+	if fence, _, ok := markdownCodeFence(trimmed); ok && strings.HasPrefix(trimmed, fence) {
+		return prefix + `\` + suffix
 	}
 	return text
 }
 
 func unescapeMarkdownParagraph(line string) (string, bool) {
-	if strings.HasPrefix(line, `\#`) ||
-		strings.HasPrefix(line, `\---`) ||
-		strings.HasPrefix(line, `\- `) ||
-		strings.HasPrefix(line, `\> `) ||
-		strings.HasPrefix(line, "\\```") {
-		return line[1:], true
+	markerStart := firstNonSpaceIndex(line)
+	prefix := line[:markerStart]
+	suffix := line[markerStart:]
+
+	if strings.HasPrefix(suffix, `\#`) ||
+		strings.HasPrefix(suffix, `\---`) ||
+		strings.HasPrefix(suffix, `\- `) ||
+		strings.HasPrefix(suffix, `\> `) ||
+		strings.HasPrefix(suffix, "\\```") {
+		return prefix + suffix[1:], true
 	}
 
-	for i := 0; i < len(line); i++ {
-		if line[i] < '0' || line[i] > '9' {
-			if i > 0 && strings.HasPrefix(line[i:], `\. `) {
-				return line[:i] + "." + line[i+2:], true
+	for i := 0; i < len(suffix); i++ {
+		if suffix[i] < '0' || suffix[i] > '9' {
+			if i > 0 && strings.HasPrefix(suffix[i:], `\. `) {
+				return prefix + suffix[:i] + "." + suffix[i+2:], true
 			}
 			return "", false
 		}
 	}
 	return "", false
+}
+
+func firstNonSpaceIndex(text string) int {
+	for i, char := range text {
+		if !unicode.IsSpace(char) {
+			return i
+		}
+	}
+	return len(text)
 }
 
 func notionCodeFence(code string) string {
