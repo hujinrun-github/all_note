@@ -125,6 +125,85 @@ func TestNotionParagraphMarkdownBlockMarkersRoundTripAsParagraphs(t *testing.T) 
 	}
 }
 
+func TestNotionMultilineParagraphEscapesLeadingMarkerLine(t *testing.T) {
+	blocks := []notionBlock{{
+		Type: "paragraph",
+		Paragraph: notionTextBlock{RichText: []notionRichText{{
+			PlainText: "---\nstill paragraph",
+		}}},
+	}}
+
+	converted := notionBlocksToMarkdown(blocks)
+
+	wantMarkdown := strings.Join([]string{
+		`\---`,
+		"still paragraph",
+		"",
+	}, "\n")
+	if converted.Markdown != wantMarkdown {
+		t.Fatalf("escaped markdown mismatch\nwant:\n%q\ngot:\n%q", wantMarkdown, converted.Markdown)
+	}
+
+	roundTripped := markdownToNotionBlocks(converted.Markdown)
+	wantTexts := []string{"---", "still paragraph"}
+	if len(roundTripped) != len(wantTexts) {
+		t.Fatalf("round-tripped block count = %d, want %d: %#v", len(roundTripped), len(wantTexts), roundTripped)
+	}
+	for i, block := range roundTripped {
+		if block.Type != "paragraph" {
+			t.Fatalf("block %d type = %q, want paragraph", i, block.Type)
+		}
+		if got := block.Paragraph.RichText[0].PlainText; got != wantTexts[i] {
+			t.Fatalf("block %d text = %q, want %q", i, got, wantTexts[i])
+		}
+	}
+}
+
+func TestNotionMultilineParagraphEscapesLaterMarkerLines(t *testing.T) {
+	blocks := []notionBlock{{
+		Type: "paragraph",
+		Paragraph: notionTextBlock{RichText: []notionRichText{{
+			PlainText: strings.Join([]string{
+				"intro",
+				"- item",
+				"> quote",
+				"1. number",
+				"- [x] task",
+				"```go",
+			}, "\n"),
+		}}},
+	}}
+
+	converted := notionBlocksToMarkdown(blocks)
+
+	wantMarkdown := strings.Join([]string{
+		"intro",
+		`\- item`,
+		`\> quote`,
+		`1\. number`,
+		`\- [x] task`,
+		"\\```go",
+		"",
+	}, "\n")
+	if converted.Markdown != wantMarkdown {
+		t.Fatalf("escaped markdown mismatch\nwant:\n%q\ngot:\n%q", wantMarkdown, converted.Markdown)
+	}
+
+	roundTripped := markdownToNotionBlocks(converted.Markdown)
+	wantTexts := []string{"intro", "- item", "> quote", "1. number", "- [x] task", "```go"}
+	if len(roundTripped) != len(wantTexts) {
+		t.Fatalf("round-tripped block count = %d, want %d: %#v", len(roundTripped), len(wantTexts), roundTripped)
+	}
+	for i, block := range roundTripped {
+		if block.Type != "paragraph" {
+			t.Fatalf("block %d type = %q, want paragraph", i, block.Type)
+		}
+		if got := block.Paragraph.RichText[0].PlainText; got != wantTexts[i] {
+			t.Fatalf("block %d text = %q, want %q", i, got, wantTexts[i])
+		}
+	}
+}
+
 func TestMarkdownToNotionBlocksCoversSupportedMarkdown(t *testing.T) {
 	markdown := strings.Join([]string{
 		"# Title",

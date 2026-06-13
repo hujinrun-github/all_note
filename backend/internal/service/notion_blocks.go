@@ -212,6 +212,16 @@ func notionPlainText(text []notionRichText) string {
 }
 
 func escapeMarkdownParagraph(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = escapeMarkdownParagraphLine(lines[i])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func escapeMarkdownParagraphLine(text string) string {
 	if strings.HasPrefix(text, "# ") || strings.HasPrefix(text, "## ") || strings.HasPrefix(text, "### ") {
 		return `\` + text
 	}
