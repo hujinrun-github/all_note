@@ -59,11 +59,18 @@ func notionToken(config notionTargetConfig) (string, error) {
 	if envName == "" {
 		envName = "FLOWSPACE_NOTION_TOKEN"
 	}
+	if !isApprovedNotionTokenEnv(envName) {
+		return "", errors.New("notion token env must be FLOWSPACE_NOTION_TOKEN or a FLOWSPACE_*NOTION_TOKEN variable")
+	}
 	token := strings.TrimSpace(os.Getenv(envName))
 	if token == "" {
 		return "", fmt.Errorf("%s is required", envName)
 	}
 	return token, nil
+}
+
+func isApprovedNotionTokenEnv(name string) bool {
+	return name == "FLOWSPACE_NOTION_TOKEN" || (strings.HasPrefix(name, "FLOWSPACE_") && strings.Contains(name, "NOTION_TOKEN"))
 }
 
 func defaultString(value, fallback string) string {

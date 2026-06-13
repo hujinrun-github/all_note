@@ -78,9 +78,21 @@ func TestLoadNotionTokenFromConfiguredEnv(t *testing.T) {
 }
 
 func TestLoadNotionTokenRejectsEmptyEnv(t *testing.T) {
+	t.Setenv("FLOWSPACE_EMPTY_NOTION_TOKEN", "")
+
 	config := notionTargetConfig{TokenEnv: "FLOWSPACE_EMPTY_NOTION_TOKEN"}
 	_, err := notionToken(config)
 	if err == nil || !strings.Contains(err.Error(), "FLOWSPACE_EMPTY_NOTION_TOKEN is required") {
 		t.Fatalf("expected missing token error, got %v", err)
+	}
+}
+
+func TestLoadNotionTokenRejectsUnapprovedEnvName(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "not-a-notion-token")
+
+	config := notionTargetConfig{TokenEnv: "OPENAI_API_KEY"}
+	_, err := notionToken(config)
+	if err == nil || !strings.Contains(err.Error(), "notion token env must be FLOWSPACE_NOTION_TOKEN or a FLOWSPACE_*NOTION_TOKEN variable") {
+		t.Fatalf("expected unapproved env error, got %v", err)
 	}
 }
