@@ -109,3 +109,24 @@ func TestNotionClientReturnsUsefulHTTPError(t *testing.T) {
 		t.Fatalf("expected useful 403 error, got %v", err)
 	}
 }
+
+func TestNotionClientDoesNotLeakAuthorizationTokenInErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "bad token secret-token"})
+	}))
+	defer server.Close()
+
+	client := newNotionHTTPClient("secret-token", server.URL)
+	_, err := client.QueryDataSource("ds-123")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("error leaked token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("error did not include redaction marker: %v", err)
+	}
+}

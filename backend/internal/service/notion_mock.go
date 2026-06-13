@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"os"
 	"strings"
 	"time"
@@ -10,10 +9,14 @@ import (
 )
 
 func notionGatewayFromEnv(token string) notionSyncGateway {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("NOTION_PROVIDER")), "mock") {
+	if notionMockProviderEnabled() {
 		return newMockNotionGateway()
 	}
 	return newRealNotionGateway(token)
+}
+
+func notionMockProviderEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("NOTION_PROVIDER")), "mock")
 }
 
 type mockNotionGateway struct{}
@@ -79,28 +82,70 @@ func (gateway *realNotionSyncGateway) QueryRemoteNotes(config notionTargetConfig
 		if page.Archived || page.InTrash {
 			continue
 		}
+		blocks, err := gateway.client.RetrievePageBlocks(page.ID)
+		if err != nil {
+			return nil, err
+		}
+		converted := notionBlocksToMarkdown(blocks)
 		notes = append(notes, notionRemoteNote{
 			PageID:           page.ID,
 			URL:              page.URL,
-			Title:            page.ID,
-			Hash:             notionMarkdownHash(""),
+			Title:            notionPageTitle(page, config),
+			Markdown:         converted.Markdown,
+			Hash:             notionMarkdownHash(converted.Markdown),
 			LastEditedAt:     notionPageEditedUnix(page.LastEditedTime),
-			UnsupportedTypes: []string{"page_blocks_not_loaded"},
+			FlowSpaceID:      notionPageRichTextProperty(page, config.FlowSpaceIDProperty),
+			UnsupportedTypes: converted.UnsupportedTypes,
 		})
 	}
 	return notes, nil
 }
 
 func (gateway *realNotionSyncGateway) CreateRemoteNote(config notionTargetConfig, note *model.Note) (notionRemoteNote, error) {
-	return notionRemoteNote{}, errors.New("real Notion page creation is not implemented")
+	blocks := markdownToNotionBlocks(note.Body)
+	page, err := gateway.client.CreatePage(config, note, blocks)
+	if err != nil {
+		return notionRemoteNote{}, err
+	}
+	return notionRemoteFromPageAndLocalNote(page, note), nil
 }
 
 func (gateway *realNotionSyncGateway) UpdateRemoteNote(config notionTargetConfig, pageID string, note *model.Note) (notionRemoteNote, error) {
-	return notionRemoteNote{}, errors.New("real Notion page update is not implemented")
+	page, err := gateway.client.UpdatePage(config, pageID, note)
+	if err != nil {
+		return notionRemoteNote{}, err
+	}
+	children, err := gateway.client.RetrievePageBlocks(pageID)
+	if err != nil {
+		return notionRemoteNote{}, err
+	}
+	for _, child := range children {
+		if strings.TrimSpace(child.ID) == "" {
+			continue
+		}
+		if err := gateway.client.ArchiveBlock(child.ID); err != nil {
+			return notionRemoteNote{}, err
+		}
+	}
+	if err := gateway.client.AppendBlockChildren(pageID, markdownToNotionBlocks(note.Body)); err != nil {
+		return notionRemoteNote{}, err
+	}
+	return notionRemoteFromPageAndLocalNote(page, note), nil
 }
 
 func (gateway *realNotionSyncGateway) RestoreRemoteNote(config notionTargetConfig, note *model.Note, previous notionSyncStateSnapshot) (notionRemoteNote, error) {
-	return notionRemoteNote{}, errors.New("real Notion page restore is not implemented")
+	pageID := strings.TrimSpace(previous.ExternalID)
+	if pageID == "" {
+		pageID = strings.TrimPrefix(strings.TrimSpace(previous.ExternalPath), "notion:")
+	}
+	if pageID == "" {
+		return gateway.CreateRemoteNote(config, note)
+	}
+	page, err := gateway.client.RestorePage(pageID)
+	if err != nil {
+		return notionRemoteNote{}, err
+	}
+	return notionRemoteFromPageAndLocalNote(page, note), nil
 }
 
 func notionRemoteFromLocalNote(pageID string, note *model.Note, editedAt int64) notionRemoteNote {
@@ -113,6 +158,60 @@ func notionRemoteFromLocalNote(pageID string, note *model.Note, editedAt int64) 
 		LastEditedAt: editedAt,
 		FlowSpaceID:  note.ID,
 	}
+}
+
+func notionRemoteFromPageAndLocalNote(page notionPage, note *model.Note) notionRemoteNote {
+	remote := notionRemoteFromLocalNote(page.ID, note, notionPageEditedUnix(page.LastEditedTime))
+	remote.URL = page.URL
+	if remote.PageID == "" {
+		remote.PageID = strings.TrimSpace(page.ID)
+	}
+	return remote
+}
+
+func notionPageTitle(page notionPage, config notionTargetConfig) string {
+	if title := notionPageTextProperty(page, config.TitleProperty, "title"); title != "" {
+		return title
+	}
+	return page.ID
+}
+
+func notionPageRichTextProperty(page notionPage, propertyName string) string {
+	return notionPageTextProperty(page, propertyName, "rich_text")
+}
+
+func notionPageTextProperty(page notionPage, propertyName, listKey string) string {
+	propertyName = strings.TrimSpace(propertyName)
+	if propertyName == "" || page.Properties == nil {
+		return ""
+	}
+	raw, ok := page.Properties[propertyName]
+	if !ok {
+		return ""
+	}
+	property, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	rawText, ok := property[listKey]
+	if !ok {
+		return ""
+	}
+	parts, ok := rawText.([]any)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		item, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := item["plain_text"].(string); ok {
+			b.WriteString(text)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func notionPageEditedUnix(value string) int64 {

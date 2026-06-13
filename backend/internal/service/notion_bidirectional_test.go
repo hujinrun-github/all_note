@@ -203,6 +203,26 @@ func TestSyncNotionMarksMissingRemoteAsExternalDeleted(t *testing.T) {
 	}
 }
 
+func TestSyncNotionBidirectionalUsesMockProviderWithoutToken(t *testing.T) {
+	openServiceSyncTestDB(t)
+	saveNotionTargetForTest(t)
+	t.Setenv("NOTION_PROVIDER", "mock")
+	t.Setenv("FLOWSPACE_NOTION_TOKEN", "")
+
+	result := SyncNotionBidirectional()
+
+	if result.Imported != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 || notes[0].Title != "Mock Notion Note" || notes[0].Body != "Imported from mock Notion.\n" {
+		t.Fatalf("notes = %+v", notes)
+	}
+}
+
 func openServiceSyncTestDB(t *testing.T) {
 	t.Helper()
 	repositoryTestDB(t)

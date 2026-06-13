@@ -58,9 +58,12 @@ func SyncNotionBidirectional() model.NotionBidirectionalResult {
 	if err != nil {
 		return failedNotionBidirectionalResult(err)
 	}
-	token, err := notionToken(config)
-	if err != nil {
-		return failedNotionBidirectionalResult(err)
+	token := ""
+	if !notionMockProviderEnabled() {
+		token, err = notionToken(config)
+		if err != nil {
+			return failedNotionBidirectionalResult(err)
+		}
 	}
 	return NewNotionSyncService(notionGatewayFromEnv(token)).SyncBidirectional(*target)
 }
