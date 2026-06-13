@@ -20,9 +20,9 @@ type SyncMessage = {
 }
 
 type NotionConfig = {
-  data_source_id?: string
-  token_env?: string
-  title_property?: string
+  data_source_id: string
+  token_env: string
+  title_property: string
 }
 
 export function NotionSyncPanel() {
@@ -243,11 +243,22 @@ function buildPayload({
 }
 
 function parseNotionConfig(raw: string | undefined): NotionConfig {
-  if (!raw) return {}
+  const defaults = {
+    data_source_id: '',
+    token_env: DEFAULT_TOKEN_ENV,
+    title_property: DEFAULT_TITLE_PROPERTY,
+  }
+  if (!raw) return defaults
   try {
-    const parsed = JSON.parse(raw) as NotionConfig
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return defaults
+    const config = parsed as Record<string, unknown>
+    return {
+      data_source_id: typeof config.data_source_id === 'string' ? config.data_source_id : defaults.data_source_id,
+      token_env: typeof config.token_env === 'string' ? config.token_env : defaults.token_env,
+      title_property: typeof config.title_property === 'string' ? config.title_property : defaults.title_property,
+    }
   } catch {
-    return {}
+    return defaults
   }
 }

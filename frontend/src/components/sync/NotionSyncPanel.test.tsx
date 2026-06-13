@@ -89,6 +89,45 @@ describe('NotionSyncPanel', () => {
     expect(payload).not.toHaveProperty('token')
   })
 
+  it('normalizes non-string config fields from an existing notion target', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'target-bad-config',
+        type: 'notion',
+        name: 'Malformed Notion',
+        vault_path: '',
+        base_folder: '',
+        config_json: JSON.stringify({
+          data_source_id: 123,
+          token_env: {},
+          title_property: [],
+        }),
+        enabled: true,
+        auto_sync: false,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    renderPanel()
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(screen.getByLabelText('Target name')).toHaveValue('Malformed Notion'))
+    expect(screen.getByLabelText('Data Source ID')).toHaveValue('')
+    expect(screen.getByLabelText('Token environment variable')).toHaveValue('FLOWSPACE_NOTION_TOKEN')
+    expect(screen.getByLabelText('Title property')).toHaveValue('Name')
+
+    await user.click(screen.getByRole('button', { name: 'Save Notion settings' }))
+
+    await waitFor(() => expect(syncApi.saveSyncTarget).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(syncApi.saveSyncTarget).mock.calls[0][0]
+    expect(payload.id).toBe('target-bad-config')
+    expect(JSON.parse(payload.config_json ?? '{}')).toEqual({
+      data_source_id: '',
+      token_env: 'FLOWSPACE_NOTION_TOKEN',
+      title_property: 'Name',
+    })
+  })
+
   it('runs notion bidirectional sync and shows summary counts', async () => {
     renderPanel()
     const user = userEvent.setup()
