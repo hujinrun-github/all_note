@@ -1,11 +1,14 @@
 import { api } from './client'
 
+export type SyncTargetType = 'obsidian' | 'notion'
+
 export interface SyncTarget {
   id: string
-  type: 'obsidian'
+  type: SyncTargetType
   name: string
   vault_path: string
   base_folder: string
+  config_json: string
   enabled: boolean
   auto_sync: boolean
   created_at: number
@@ -14,9 +17,11 @@ export interface SyncTarget {
 
 export interface SaveSyncTargetInput {
   id?: string
+  type?: SyncTargetType
   name: string
   vault_path: string
   base_folder: string
+  config_json?: string
   enabled: boolean
   auto_sync: boolean
 }
@@ -27,7 +32,12 @@ export interface SyncState {
   note_id: string
   target_id: string
   external_path: string
+  external_id: string
+  external_url: string
   content_hash: string
+  external_hash: string
+  external_mtime: number | null
+  last_direction: string
   last_synced_at: number | null
   status: SyncStateStatus
   error_message: string | null
@@ -37,6 +47,8 @@ export interface SyncResultItem {
   note_id: string
   status: string
   external_path?: string
+  external_id?: string
+  external_url?: string
   error_message?: string
 }
 
@@ -45,6 +57,17 @@ export interface ObsidianBidirectionalResult {
   pulled: number
   imported: number
   external_deleted: number
+  failed: number
+  items: SyncResultItem[]
+}
+
+export interface NotionBidirectionalResult {
+  pushed: number
+  pulled: number
+  conflict_pulled: number
+  imported: number
+  external_deleted: number
+  unsupported: number
   failed: number
   items: SyncResultItem[]
 }
@@ -103,6 +126,10 @@ export async function testObsidianTarget(input: SaveSyncTargetInput): Promise<vo
   await api.post<{ ok: boolean }>('/api/sync/obsidian/test', body)
 }
 
+export async function testNotionTarget(input: SaveSyncTargetInput): Promise<void> {
+  await api.post<{ ok: boolean }>('/api/sync/notion/test', input)
+}
+
 export async function syncObsidianNote(id: string): Promise<SyncResultItem> {
   const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/notes/${encodeURIComponent(id)}`)
   return res.data.item
@@ -123,8 +150,18 @@ export async function syncObsidianBidirectional(): Promise<ObsidianBidirectional
   return res.data.result
 }
 
+export async function syncNotionBidirectional(): Promise<NotionBidirectionalResult> {
+  const res = await api.post<{ result: NotionBidirectionalResult }>('/api/sync/notion/bidirectional')
+  return res.data.result
+}
+
 export async function getObsidianDeletions(): Promise<ExternalDeletedNote[]> {
   const res = await api.get<{ items: ExternalDeletedNote[] }>('/api/sync/obsidian/deletions')
+  return res.data.items
+}
+
+export async function getNotionDeletions(): Promise<ExternalDeletedNote[]> {
+  const res = await api.get<{ items: ExternalDeletedNote[] }>('/api/sync/notion/deletions')
   return res.data.items
 }
 
@@ -132,12 +169,24 @@ export async function confirmObsidianDeletion(noteID: string): Promise<void> {
   await api.post(`/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/confirm`)
 }
 
+export async function confirmNotionDeletion(noteID: string): Promise<void> {
+  await api.post(`/api/sync/notion/deletions/${encodeURIComponent(noteID)}/confirm`)
+}
+
 export async function restoreObsidianDeletion(noteID: string): Promise<SyncResultItem> {
   const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/restore`)
   return res.data.item
 }
 
-export async function getNoteSyncState(id: string): Promise<SyncState | null> {
-  const res = await api.get<{ state: SyncState | null }>(`/api/notes/${encodeURIComponent(id)}/sync-state`)
+export async function restoreNotionDeletion(noteID: string): Promise<SyncResultItem> {
+  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/notion/deletions/${encodeURIComponent(noteID)}/restore`)
+  return res.data.item
+}
+
+export async function getNoteSyncState(id: string, target?: SyncTargetType): Promise<SyncState | null> {
+  const res = await api.get<{ state: SyncState | null }>(
+    `/api/notes/${encodeURIComponent(id)}/sync-state`,
+    target ? { target } : undefined,
+  )
   return res.data.state
 }
