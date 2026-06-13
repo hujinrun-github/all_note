@@ -73,7 +73,7 @@ func notionBlocksToMarkdown(blocks []notionBlock) notionMarkdownConversion {
 		case "heading_3":
 			lines = append(lines, "### "+notionRichTextToMarkdown(block.Heading3.RichText), "")
 		case "paragraph":
-			lines = append(lines, notionRichTextToMarkdown(block.Paragraph.RichText), "")
+			lines = append(lines, escapeMarkdownParagraph(notionRichTextToMarkdown(block.Paragraph.RichText)), "")
 		case "bulleted_list_item":
 			lines = append(lines, "- "+notionRichTextToMarkdown(block.BulletedListItem.RichText))
 		case "numbered_list_item":
@@ -87,7 +87,9 @@ func notionBlocksToMarkdown(blocks []notionBlock) notionMarkdownConversion {
 		case "quote":
 			lines = append(lines, "> "+notionRichTextToMarkdown(block.Quote.RichText), "")
 		case "code":
-			lines = append(lines, "```"+strings.TrimSpace(block.Code.Language), notionPlainText(block.Code.RichText), "```", "")
+			code := notionPlainText(block.Code.RichText)
+			fence := notionCodeFence(code)
+			lines = append(lines, fence+strings.TrimSpace(block.Code.Language), code, fence, "")
 		case "divider":
 			lines = append(lines, "---", "")
 		default:
@@ -113,11 +115,15 @@ func markdownToNotionBlocks(markdown string) []notionBlock {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, "```") {
-			language := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+		if text, ok := unescapeMarkdownParagraph(trimmed); ok {
+			blocks = append(blocks, notionTextMarkdownBlock("paragraph", text))
+			continue
+		}
+
+		if fence, language, ok := markdownCodeFence(trimmed); ok {
 			codeLines := make([]string, 0)
 			for i++; i < len(lines); i++ {
-				if strings.TrimSpace(lines[i]) == "```" {
+				if strings.TrimSpace(lines[i]) == fence {
 					break
 				}
 				codeLines = append(codeLines, lines[i])
@@ -159,8 +165,18 @@ func markdownToNotionBlocks(markdown string) []notionBlock {
 }
 
 func notionMarkdownHash(markdown string) string {
-	sum := sha256.Sum256([]byte(markdown))
+	sum := sha256.Sum256([]byte(canonicalNotionMarkdown(markdown)))
 	return hex.EncodeToString(sum[:])
+}
+
+func canonicalNotionMarkdown(markdown string) string {
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	markdown = strings.ReplaceAll(markdown, "\r", "\n")
+	markdown = strings.TrimRight(markdown, "\n")
+	if markdown == "" {
+		return ""
+	}
+	return markdown + "\n"
 }
 
 func notionRichTextToMarkdown(text []notionRichText) string {
@@ -193,6 +209,81 @@ func notionPlainText(text []notionRichText) string {
 		b.WriteString(part.PlainText)
 	}
 	return b.String()
+}
+
+func escapeMarkdownParagraph(text string) string {
+	if strings.HasPrefix(text, "# ") || strings.HasPrefix(text, "## ") || strings.HasPrefix(text, "### ") {
+		return `\` + text
+	}
+	if text == "---" {
+		return `\` + text
+	}
+	if strings.HasPrefix(text, "- ") {
+		return `\` + text
+	}
+	if numberedListPattern.MatchString(text) {
+		return strings.Replace(text, ".", `\.`, 1)
+	}
+	if strings.HasPrefix(text, "> ") {
+		return `\` + text
+	}
+	if fence, _, ok := markdownCodeFence(text); ok && strings.HasPrefix(text, fence) {
+		return `\` + text
+	}
+	return text
+}
+
+func unescapeMarkdownParagraph(line string) (string, bool) {
+	if strings.HasPrefix(line, `\#`) ||
+		strings.HasPrefix(line, `\---`) ||
+		strings.HasPrefix(line, `\- `) ||
+		strings.HasPrefix(line, `\> `) ||
+		strings.HasPrefix(line, "\\```") {
+		return line[1:], true
+	}
+
+	for i := 0; i < len(line); i++ {
+		if line[i] < '0' || line[i] > '9' {
+			if i > 0 && strings.HasPrefix(line[i:], `\. `) {
+				return line[:i] + "." + line[i+2:], true
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func notionCodeFence(code string) string {
+	longestRun := 0
+	currentRun := 0
+	for _, char := range code {
+		if char == '`' {
+			currentRun++
+			if currentRun > longestRun {
+				longestRun = currentRun
+			}
+			continue
+		}
+		currentRun = 0
+	}
+	if longestRun < 3 {
+		longestRun = 2
+	}
+	return strings.Repeat("`", longestRun+1)
+}
+
+func markdownCodeFence(line string) (string, string, bool) {
+	if !strings.HasPrefix(line, "```") {
+		return "", "", false
+	}
+	count := 0
+	for count < len(line) && line[count] == '`' {
+		count++
+	}
+	if count < 3 {
+		return "", "", false
+	}
+	return line[:count], strings.TrimSpace(line[count:]), true
 }
 
 func notionTextMarkdownBlock(blockType, text string) notionBlock {

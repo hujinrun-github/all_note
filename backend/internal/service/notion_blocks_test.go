@@ -62,6 +62,69 @@ func TestNotionBlocksToMarkdownMarksUnsupportedBlocks(t *testing.T) {
 	}
 }
 
+func TestNotionParagraphMarkdownBlockMarkersRoundTripAsParagraphs(t *testing.T) {
+	texts := []string{
+		"# Title",
+		"## Subtitle",
+		"### Section",
+		"---",
+		"- item",
+		"1. item",
+		"> quote",
+		"- [ ] task",
+		"- [x] done",
+		"```go",
+	}
+	blocks := make([]notionBlock, 0, len(texts))
+	for _, text := range texts {
+		blocks = append(blocks, notionBlock{
+			Type:      "paragraph",
+			Paragraph: notionTextBlock{RichText: []notionRichText{{PlainText: text}}},
+		})
+	}
+
+	converted := notionBlocksToMarkdown(blocks)
+
+	wantMarkdown := strings.Join([]string{
+		`\# Title`,
+		"",
+		`\## Subtitle`,
+		"",
+		`\### Section`,
+		"",
+		`\---`,
+		"",
+		`\- item`,
+		"",
+		`1\. item`,
+		"",
+		`\> quote`,
+		"",
+		`\- [ ] task`,
+		"",
+		`\- [x] done`,
+		"",
+		"\\```go",
+		"",
+	}, "\n")
+	if converted.Markdown != wantMarkdown {
+		t.Fatalf("escaped markdown mismatch\nwant:\n%q\ngot:\n%q", wantMarkdown, converted.Markdown)
+	}
+
+	roundTripped := markdownToNotionBlocks(converted.Markdown)
+	if len(roundTripped) != len(texts) {
+		t.Fatalf("round-tripped block count = %d, want %d: %#v", len(roundTripped), len(texts), roundTripped)
+	}
+	for i, block := range roundTripped {
+		if block.Type != "paragraph" {
+			t.Fatalf("block %d type = %q, want paragraph", i, block.Type)
+		}
+		if got := block.Paragraph.RichText[0].PlainText; got != texts[i] {
+			t.Fatalf("block %d text = %q, want %q", i, got, texts[i])
+		}
+	}
+}
+
 func TestMarkdownToNotionBlocksCoversSupportedMarkdown(t *testing.T) {
 	markdown := strings.Join([]string{
 		"# Title",
@@ -90,6 +153,64 @@ func TestMarkdownToNotionBlocksCoversSupportedMarkdown(t *testing.T) {
 	want := []string{"heading_1", "paragraph", "bulleted_list_item", "numbered_list_item", "to_do", "to_do", "quote", "code", "divider"}
 	if strings.Join(types, ",") != strings.Join(want, ",") {
 		t.Fatalf("types = %#v, want %#v", types, want)
+	}
+}
+
+func TestNotionMarkdownHashNormalizesEquivalentNewlines(t *testing.T) {
+	want := notionMarkdownHash("Paragraph\n")
+	variants := []string{
+		"Paragraph",
+		"Paragraph\n\n",
+		"Paragraph\r\n",
+		"Paragraph\r\n\r\n",
+	}
+
+	for _, variant := range variants {
+		if got := notionMarkdownHash(variant); got != want {
+			t.Fatalf("hash for %q = %q, want %q", variant, got, want)
+		}
+	}
+}
+
+func TestNotionCodeBlockUsesFenceThatDoesNotCollideWithContent(t *testing.T) {
+	code := strings.Join([]string{
+		"fmt.Println(\"before\")",
+		"```",
+		"fmt.Println(\"after\")",
+	}, "\n")
+	blocks := []notionBlock{{
+		Type: "code",
+		Code: notionCodeBlock{
+			Language: "go",
+			RichText: []notionRichText{{
+				PlainText: code,
+			}},
+		},
+	}}
+
+	converted := notionBlocksToMarkdown(blocks)
+
+	wantMarkdown := strings.Join([]string{
+		"````go",
+		"fmt.Println(\"before\")",
+		"```",
+		"fmt.Println(\"after\")",
+		"````",
+		"",
+	}, "\n")
+	if converted.Markdown != wantMarkdown {
+		t.Fatalf("code markdown mismatch\nwant:\n%q\ngot:\n%q", wantMarkdown, converted.Markdown)
+	}
+
+	roundTripped := markdownToNotionBlocks(converted.Markdown)
+	if len(roundTripped) != 1 {
+		t.Fatalf("round-tripped block count = %d, want 1: %#v", len(roundTripped), roundTripped)
+	}
+	if roundTripped[0].Type != "code" {
+		t.Fatalf("round-tripped type = %q, want code", roundTripped[0].Type)
+	}
+	if got := roundTripped[0].Code.RichText[0].PlainText; got != code {
+		t.Fatalf("round-tripped code = %q, want %q", got, code)
 	}
 }
 
