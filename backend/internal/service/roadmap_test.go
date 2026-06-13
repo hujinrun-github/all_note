@@ -65,6 +65,13 @@ func TestGenerateLearningRoadmapWithMockAI(t *testing.T) {
 	if !hasDeliverable {
 		t.Fatal("expected project-practice roadmap nodes to include deliverables")
 	}
+	for index := range roadmap.Nodes {
+		for next := index + 1; next < len(roadmap.Nodes); next++ {
+			if roadmapNodesOverlap(roadmap.Nodes[index], roadmap.Nodes[next]) {
+				t.Fatalf("generated roadmap nodes overlap: %+v and %+v", roadmap.Nodes[index], roadmap.Nodes[next])
+			}
+		}
+	}
 }
 
 func TestGenerateLearningRoadmapAutomaticallyAttachesArticleResources(t *testing.T) {
@@ -125,6 +132,271 @@ func TestEnsureRoadmapBranchingAddsChoiceBranchesToLinearDraft(t *testing.T) {
 		_ = sourceID
 	}
 	t.Fatalf("expected one source node to fan out into at least two dotted branch edges, got %+v", branchFanOut)
+}
+
+func TestNormalizeGeneratedRoadmapLayoutSeparatesOverlappingNodes(t *testing.T) {
+	draft := &roadmapDraft{
+		Title: "重叠路线",
+		Goal:  "验证布局避让",
+		Nodes: []model.RoadmapNode{
+			{ID: "a", Type: "phase", Title: "A", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
+			{ID: "b", Type: "module", Title: "B", PathType: "required", X: 20, Y: 10, OrderIndex: 1},
+			{ID: "c", Type: "choice", Title: "C", PathType: "recommended", X: 30, Y: 20, OrderIndex: 2},
+			{ID: "d", Type: "choice", Title: "D", PathType: "alternative", X: 40, Y: 30, OrderIndex: 3},
+		},
+	}
+
+	normalizeGeneratedRoadmapLayout(draft)
+
+	for index := range draft.Nodes {
+		for next := index + 1; next < len(draft.Nodes); next++ {
+			if roadmapNodesOverlap(draft.Nodes[index], draft.Nodes[next]) {
+				t.Fatalf("nodes still overlap after layout normalization: %+v and %+v", draft.Nodes[index], draft.Nodes[next])
+			}
+		}
+	}
+}
+
+func TestNormalizeGeneratedRoadmapLayoutSpreadsFanOutBranches(t *testing.T) {
+	const minBranchGap = 300.0
+	const minJoinGapY = 120.0
+
+	draft := &roadmapDraft{
+		Title: "branching layout",
+		Goal:  "avoid branch edges being hidden by nodes",
+		Nodes: []model.RoadmapNode{
+			{ID: "source", Type: "choice", Title: "Choose serving framework", PathType: "required", X: 0, Y: 500, OrderIndex: 0},
+			{ID: "left", Type: "task", Title: "Deploy Triton", PathType: "alternative", X: -2, Y: 650, OrderIndex: 1},
+			{ID: "right", Type: "task", Title: "Deploy TensorFlow Serving", PathType: "alternative", X: 2, Y: 780, OrderIndex: 2},
+			{ID: "join", Type: "task", Title: "Deploy on Kubernetes", PathType: "required", X: 0, Y: 940, OrderIndex: 3},
+		},
+		Edges: []model.RoadmapEdge{
+			{ID: "edge-source-left", SourceNodeID: "source", TargetNodeID: "left", Style: "dotted"},
+			{ID: "edge-source-right", SourceNodeID: "source", TargetNodeID: "right", Style: "dotted"},
+			{ID: "edge-left-join", SourceNodeID: "left", TargetNodeID: "join", Style: "solid"},
+			{ID: "edge-right-join", SourceNodeID: "right", TargetNodeID: "join", Style: "solid"},
+		},
+	}
+
+	normalizeGeneratedRoadmapLayout(draft)
+
+	source := roadmapTestNodeByID(t, draft.Nodes, "source")
+	left := roadmapTestNodeByID(t, draft.Nodes, "left")
+	right := roadmapTestNodeByID(t, draft.Nodes, "right")
+	join := roadmapTestNodeByID(t, draft.Nodes, "join")
+
+	if left.X >= source.X-minBranchGap {
+		t.Fatalf("left fan-out node x = %.1f, want at least %.1f left of source %.1f", left.X, minBranchGap, source.X)
+	}
+	if right.X <= source.X+minBranchGap {
+		t.Fatalf("right fan-out node x = %.1f, want at least %.1f right of source %.1f", right.X, minBranchGap, source.X)
+	}
+	if absFloat(left.Y-right.Y) > 1 {
+		t.Fatalf("fan-out sibling nodes should share a row, got y %.1f and %.1f", left.Y, right.Y)
+	}
+	if join.Y <= left.Y+minJoinGapY || join.Y <= right.Y+minJoinGapY {
+		t.Fatalf("fan-in join node y = %.1f, want below branch row %.1f/%.1f", join.Y, left.Y, right.Y)
+	}
+}
+
+func TestNormalizeGeneratedRoadmapLayoutKeepsBranchesBelowShiftedSource(t *testing.T) {
+	draft := &roadmapDraft{
+		Title: "shifted source branches",
+		Goal:  "fan-out rows follow source nodes after overlap avoidance",
+		Nodes: []model.RoadmapNode{
+			{ID: "start", Type: "phase", Title: "Start", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
+			{ID: "step-1", Type: "task", Title: "Step 1", PathType: "required", X: 0, Y: 5, OrderIndex: 1},
+			{ID: "step-2", Type: "task", Title: "Step 2", PathType: "required", X: 0, Y: 10, OrderIndex: 2},
+			{ID: "step-3", Type: "task", Title: "Step 3", PathType: "required", X: 0, Y: 15, OrderIndex: 3},
+			{ID: "source", Type: "choice", Title: "Choose framework", PathType: "required", X: 0, Y: 20, OrderIndex: 4},
+			{ID: "left", Type: "task", Title: "Left branch", PathType: "alternative", X: -2, Y: 25, OrderIndex: 5},
+			{ID: "right", Type: "task", Title: "Right branch", PathType: "alternative", X: 2, Y: 30, OrderIndex: 6},
+		},
+		Edges: []model.RoadmapEdge{
+			{ID: "edge-start-step-1", SourceNodeID: "start", TargetNodeID: "step-1", Style: "solid"},
+			{ID: "edge-step-1-step-2", SourceNodeID: "step-1", TargetNodeID: "step-2", Style: "solid"},
+			{ID: "edge-step-2-step-3", SourceNodeID: "step-2", TargetNodeID: "step-3", Style: "solid"},
+			{ID: "edge-step-3-source", SourceNodeID: "step-3", TargetNodeID: "source", Style: "solid"},
+			{ID: "edge-source-left", SourceNodeID: "source", TargetNodeID: "left", Style: "dotted"},
+			{ID: "edge-source-right", SourceNodeID: "source", TargetNodeID: "right", Style: "dotted"},
+		},
+	}
+
+	normalizeGeneratedRoadmapLayout(draft)
+
+	source := roadmapTestNodeByID(t, draft.Nodes, "source")
+	left := roadmapTestNodeByID(t, draft.Nodes, "left")
+	right := roadmapTestNodeByID(t, draft.Nodes, "right")
+
+	if left.Y <= source.Y || right.Y <= source.Y {
+		t.Fatalf("fan-out branch row should stay below shifted source: source %.1f, left %.1f, right %.1f", source.Y, left.Y, right.Y)
+	}
+}
+
+func roadmapTestNodeByID(t *testing.T, nodes []model.RoadmapNode, id string) model.RoadmapNode {
+	t.Helper()
+	for _, node := range nodes {
+		if node.ID == id {
+			return node
+		}
+	}
+	t.Fatalf("node %q not found in %+v", id, nodes)
+	return model.RoadmapNode{}
+}
+
+func TestGetLearningRoadmapNormalizesPersistedOverlappingNodesForDisplay(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	project := createLearningProjectForTest(t, "重叠展示")
+	_, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
+		ProjectID: project.ID,
+		Title:     "重叠展示路线",
+		Goal:      "验证历史布局展示避让",
+		Status:    "ready",
+		Nodes: []model.RoadmapNode{
+			{ID: "node-a", Type: "phase", Title: "A", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
+			{ID: "node-b", Type: "module", Title: "B", PathType: "required", X: 10, Y: 10, OrderIndex: 1},
+		},
+		Edges: []model.RoadmapEdge{
+			{ID: "edge-a-b", SourceNodeID: "node-a", TargetNodeID: "node-b", Style: "solid"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save overlapping roadmap: %v", err)
+	}
+
+	roadmap, err := GetLearningRoadmap(project.ID)
+	if err != nil {
+		t.Fatalf("get roadmap: %v", err)
+	}
+
+	if len(roadmap.Nodes) != 2 {
+		t.Fatalf("nodes = %d, want 2", len(roadmap.Nodes))
+	}
+	if roadmapNodesOverlap(roadmap.Nodes[0], roadmap.Nodes[1]) {
+		t.Fatalf("persisted overlapping nodes should be separated for display: %+v", roadmap.Nodes)
+	}
+}
+
+func TestOptimizeRoadmapLayoutPersistsImprovedCoordinates(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	project := createLearningProjectForTest(t, "layout optimize")
+	saved, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
+		ProjectID: project.ID,
+		Title:     "layout optimize roadmap",
+		Goal:      "persist optimized coordinates",
+		Status:    "ready",
+		Nodes: []model.RoadmapNode{
+			{ID: "source", Type: "choice", Title: "Source", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
+			{ID: "left", Type: "task", Title: "Left", PathType: "recommended", X: 1, Y: 10, OrderIndex: 1},
+			{ID: "right", Type: "task", Title: "Right", PathType: "alternative", X: 2, Y: 12, OrderIndex: 2},
+			{ID: "join", Type: "task", Title: "Join", PathType: "required", X: 3, Y: 14, OrderIndex: 3},
+		},
+		Edges: []model.RoadmapEdge{
+			{ID: "edge-source-left", SourceNodeID: "source", TargetNodeID: "left", Style: "dotted"},
+			{ID: "edge-source-right", SourceNodeID: "source", TargetNodeID: "right", Style: "dotted"},
+			{ID: "edge-left-join", SourceNodeID: "left", TargetNodeID: "join", Style: "solid"},
+			{ID: "edge-right-join", SourceNodeID: "right", TargetNodeID: "join", Style: "solid"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save roadmap: %v", err)
+	}
+
+	optimized, err := OptimizeRoadmapLayout(saved.ID)
+	if err != nil {
+		t.Fatalf("optimize roadmap layout: %v", err)
+	}
+
+	source := roadmapTestNodeByID(t, optimized.Nodes, "source")
+	left := roadmapTestNodeByID(t, optimized.Nodes, "left")
+	right := roadmapTestNodeByID(t, optimized.Nodes, "right")
+	join := roadmapTestNodeByID(t, optimized.Nodes, "join")
+	if left.X >= source.X-300 || right.X <= source.X+300 {
+		t.Fatalf("branch nodes were not spread horizontally: source %.1f left %.1f right %.1f", source.X, left.X, right.X)
+	}
+	if left.Y <= source.Y || right.Y <= source.Y || join.Y <= left.Y || join.Y <= right.Y {
+		t.Fatalf("optimized branch flow should progress downward: source %.1f left %.1f right %.1f join %.1f", source.Y, left.Y, right.Y, join.Y)
+	}
+
+	persisted, err := repository.GetLearningRoadmap(project.ID)
+	if err != nil {
+		t.Fatalf("get persisted roadmap: %v", err)
+	}
+	persistedLeft := roadmapTestNodeByID(t, persisted.Nodes, "left")
+	persistedRight := roadmapTestNodeByID(t, persisted.Nodes, "right")
+	if persistedLeft.X == 1 || persistedRight.X == 2 {
+		t.Fatalf("optimized coordinates were not persisted: left %.1f right %.1f", persistedLeft.X, persistedRight.X)
+	}
+}
+
+func TestCreateAndDeleteRoadmapNodeMutatesRoadmapGraph(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	project := createLearningProjectForTest(t, "manual node editing")
+	rootID := "root-node"
+	saved, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
+		ProjectID: project.ID,
+		Title:     "manual node editing roadmap",
+		Goal:      "allow editing graph nodes",
+		Status:    "ready",
+		Nodes: []model.RoadmapNode{
+			{ID: rootID, Type: "phase", Title: "Root", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save roadmap: %v", err)
+	}
+
+	created, err := CreateRoadmapNode(saved.ID, &model.CreateRoadmapNodeRequest{
+		ParentID:  &rootID,
+		Title:     "Manual practice branch",
+		Type:      "task",
+		PathType:  "optional",
+		EdgeStyle: "dotted",
+	})
+	if err != nil {
+		t.Fatalf("create roadmap node: %v", err)
+	}
+	if created.ID == "" || created.RoadmapID != saved.ID {
+		t.Fatalf("created node was not bound to roadmap: %+v", created)
+	}
+	if created.ParentID == nil || *created.ParentID != rootID {
+		t.Fatalf("created node parent = %+v, want %q", created.ParentID, rootID)
+	}
+
+	roadmap, err := repository.GetLearningRoadmapByID(saved.ID)
+	if err != nil {
+		t.Fatalf("reload roadmap: %v", err)
+	}
+	if roadmapTestNodeByID(t, roadmap.Nodes, created.ID).Title != "Manual practice branch" {
+		t.Fatalf("created node not found in roadmap: %+v", roadmap.Nodes)
+	}
+	foundEdge := false
+	for _, edge := range roadmap.Edges {
+		if edge.SourceNodeID == rootID && edge.TargetNodeID == created.ID && edge.Style == "dotted" {
+			foundEdge = true
+		}
+	}
+	if !foundEdge {
+		t.Fatalf("expected dotted edge from root to created node, got %+v", roadmap.Edges)
+	}
+
+	if err := DeleteRoadmapNode(created.ID); err != nil {
+		t.Fatalf("delete roadmap node: %v", err)
+	}
+	updated, err := repository.GetLearningRoadmapByID(saved.ID)
+	if err != nil {
+		t.Fatalf("reload updated roadmap: %v", err)
+	}
+	for _, node := range updated.Nodes {
+		if node.ID == created.ID {
+			t.Fatalf("deleted node still present: %+v", node)
+		}
+	}
+	for _, edge := range updated.Edges {
+		if edge.SourceNodeID == created.ID || edge.TargetNodeID == created.ID {
+			t.Fatalf("deleted node edge still present: %+v", edge)
+		}
+	}
 }
 
 func TestRoadmapPromptRequestsBranchingAndOnlineArticles(t *testing.T) {

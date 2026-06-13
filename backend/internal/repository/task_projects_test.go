@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,6 +55,75 @@ func TestCreateTaskDefaultsToPersonalWeekTask(t *testing.T) {
 	}
 	if got.Status != "open" || got.Done != 0 {
 		t.Fatalf("status/done = %q/%d, want open/0", got.Status, got.Done)
+	}
+}
+
+func TestDeleteTaskProjectReassignsTasksToPersonal(t *testing.T) {
+	openTestDB(t)
+
+	project, err := CreateTaskProject(&model.CreateTaskProjectRequest{Name: "短期项目", Type: "regular"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &model.Task{Title: "项目任务", ProjectID: &project.ID}
+	if err := CreateTask(task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if err := DeleteTaskProject(project.ID); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+
+	if _, err := GetTaskProjectByID(project.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted project lookup error = %v, want sql.ErrNoRows", err)
+	}
+	got, err := GetTaskByID(task.ID)
+	if err != nil {
+		t.Fatalf("get task after project delete: %v", err)
+	}
+	if got.ProjectID == nil || *got.ProjectID != "personal" {
+		t.Fatalf("task project_id = %v, want personal", got.ProjectID)
+	}
+	if got.Project == nil || *got.Project != "个人" {
+		t.Fatalf("task project = %v, want 个人", got.Project)
+	}
+}
+
+func TestDeleteTaskProjectRefusesPersonalProject(t *testing.T) {
+	openTestDB(t)
+
+	if err := DeleteTaskProject("personal"); err == nil {
+		t.Fatal("expected deleting personal project to fail")
+	}
+
+	if _, err := GetTaskProjectByID("personal"); err != nil {
+		t.Fatalf("personal project should remain: %v", err)
+	}
+}
+
+func TestGetTasksOrdersNewestPlannedTasksFirst(t *testing.T) {
+	openTestDB(t)
+
+	olderDate := "2026-06-11"
+	newerDate := "2026-06-13"
+	older := &model.Task{Title: "older planned task", PlannedDate: &olderDate, Horizon: "week"}
+	if err := CreateTask(older); err != nil {
+		t.Fatalf("create older task: %v", err)
+	}
+	newer := &model.Task{Title: "newest planned task", PlannedDate: &newerDate, Horizon: "week"}
+	if err := CreateTask(newer); err != nil {
+		t.Fatalf("create newer task: %v", err)
+	}
+
+	tasks, _, err := GetTasks("", "all", "", "week", "", "", 1, 20)
+	if err != nil {
+		t.Fatalf("get tasks: %v", err)
+	}
+	if len(tasks) < 2 {
+		t.Fatalf("expected at least 2 tasks, got %d", len(tasks))
+	}
+	if tasks[0].ID != newer.ID {
+		t.Fatalf("first task = %q, want newest planned task %q", tasks[0].Title, newer.Title)
 	}
 }
 

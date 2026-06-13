@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,14 +30,19 @@ type roadmapDraft struct {
 }
 
 const (
-	defaultAIProvider       = "deepseek"
-	defaultAIBaseURL        = "https://api.deepseek.com"
-	defaultAIModel          = "deepseek-v4-pro"
-	defaultAIRequestTimeout = 120 * time.Second
-	defaultArticleProvider  = "duckduckgo"
-	minArticleSearchResults = 10
-	maxArticleSearchResults = 20
-	autoResourceNodeLimit   = 6
+	defaultAIProvider          = "deepseek"
+	defaultAIBaseURL           = "https://api.deepseek.com"
+	defaultAIModel             = "deepseek-v4-pro"
+	defaultAIRequestTimeout    = 120 * time.Second
+	defaultArticleProvider     = "duckduckgo"
+	roadmapNodeMinGapX         = 250
+	roadmapNodeMinGapY         = 95
+	roadmapLayoutStepY         = 130
+	roadmapBranchHorizontalGap = 340
+	roadmapBranchVerticalGap   = 145
+	minArticleSearchResults    = 10
+	maxArticleSearchResults    = 20
+	autoResourceNodeLimit      = 6
 )
 
 type articleSearchSource struct {
@@ -73,6 +80,7 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	}
 
 	ensureRoadmapBranching(draft, *project)
+	normalizeGeneratedRoadmapLayout(draft)
 
 	roadmap := &model.LearningRoadmap{
 		ProjectID: project.ID,
@@ -93,19 +101,116 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	if err != nil {
 		return saved, nil
 	}
+	normalizeRoadmapDisplayLayout(withResources)
 	return withResources, nil
 }
 
 func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
-	return repository.GetLearningRoadmap(projectID)
+	roadmap, err := repository.GetLearningRoadmap(projectID)
+	if err != nil {
+		return nil, err
+	}
+	normalizeRoadmapDisplayLayout(roadmap)
+	return roadmap, nil
 }
 
 func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
 	return repository.UpdateRoadmapNode(id, req)
 }
 
+func CreateRoadmapNode(roadmapID string, req *model.CreateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	if req == nil {
+		return nil, errors.New("request body is required")
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return nil, errors.New("title is required")
+	}
+
+	roadmap, err := repository.GetLearningRoadmapByID(roadmapID)
+	if err != nil {
+		return nil, err
+	}
+
+	pathType := normalizeRoadmapNodePathType(req.PathType)
+	nodeType := normalizeRoadmapNodeType(req.Type)
+	status := normalizeRoadmapNodeStatus(req.Status)
+	orderIndex, x, y := nextRoadmapNodePlacement(roadmap)
+
+	var parentID *string
+	var edge *model.RoadmapEdge
+	if req.ParentID != nil && strings.TrimSpace(*req.ParentID) != "" {
+		trimmedParentID := strings.TrimSpace(*req.ParentID)
+		parentNode, ok := roadmapNodeByID(roadmap.Nodes, trimmedParentID)
+		if !ok {
+			return nil, sql.ErrNoRows
+		}
+		parentID = &trimmedParentID
+		x, y = childRoadmapNodePlacement(parentNode, pathType)
+		edge = &model.RoadmapEdge{
+			RoadmapID:    roadmap.ID,
+			SourceNodeID: trimmedParentID,
+			Style:        normalizeRoadmapEdgeStyle(req.EdgeStyle, pathType),
+		}
+	}
+
+	if req.X != nil {
+		x = *req.X
+	}
+	if req.Y != nil {
+		y = *req.Y
+	}
+
+	return repository.CreateRoadmapNode(&model.RoadmapNode{
+		RoadmapID:          roadmap.ID,
+		ParentID:           parentID,
+		Type:               nodeType,
+		Title:              title,
+		Description:        strings.TrimSpace(req.Description),
+		PathType:           pathType,
+		Status:             status,
+		Deliverable:        strings.TrimSpace(req.Deliverable),
+		AcceptanceCriteria: strings.TrimSpace(req.AcceptanceCriteria),
+		X:                  x,
+		Y:                  y,
+		OrderIndex:         orderIndex,
+	}, edge)
+}
+
+func DeleteRoadmapNode(id string) error {
+	return repository.DeleteRoadmapNode(id)
+}
+
 func UpdateRoadmapLayout(roadmapID string, nodes []model.RoadmapLayoutNode) error {
 	return repository.UpdateRoadmapLayout(roadmapID, nodes)
+}
+
+func OptimizeRoadmapLayout(roadmapID string) (*model.LearningRoadmap, error) {
+	roadmap, err := repository.GetLearningRoadmapByID(roadmapID)
+	if err != nil {
+		return nil, err
+	}
+	draft := &roadmapDraft{
+		Title: roadmap.Title,
+		Goal:  roadmap.Goal,
+		Nodes: roadmap.Nodes,
+		Edges: roadmap.Edges,
+	}
+	optimizeRoadmapDraftLayout(draft)
+
+	layoutNodes := make([]model.RoadmapLayoutNode, 0, len(draft.Nodes))
+	for _, node := range draft.Nodes {
+		layoutNodes = append(layoutNodes, model.RoadmapLayoutNode{ID: node.ID, X: node.X, Y: node.Y})
+	}
+	if err := repository.UpdateRoadmapLayout(roadmap.ID, layoutNodes); err != nil {
+		return nil, err
+	}
+	optimized, err := repository.GetLearningRoadmapByID(roadmap.ID)
+	if err != nil {
+		return nil, err
+	}
+	normalizeRoadmapDisplayLayout(optimized)
+	return optimized, nil
 }
 
 func SearchRoadmapNodeResources(nodeID string, req *model.SearchRoadmapResourcesRequest) ([]model.RoadmapResource, error) {
@@ -366,6 +471,270 @@ func ensureRoadmapBranching(draft *roadmapDraft, project model.TaskProject) {
 		model.RoadmapEdge{ID: randomLocalID("edge"), SourceNodeID: source.ID, TargetNodeID: leftID, Style: "dotted"},
 		model.RoadmapEdge{ID: randomLocalID("edge"), SourceNodeID: source.ID, TargetNodeID: rightID, Style: "dotted"},
 	)
+}
+
+func normalizeGeneratedRoadmapLayout(draft *roadmapDraft) {
+	if draft == nil || len(draft.Nodes) < 2 {
+		return
+	}
+
+	separateRoadmapNodeOverlaps(draft.Nodes)
+	normalizeRoadmapBranchRows(draft)
+	separateRoadmapNodeOverlaps(draft.Nodes)
+}
+
+func optimizeRoadmapDraftLayout(draft *roadmapDraft) {
+	if draft == nil || len(draft.Nodes) == 0 {
+		return
+	}
+	order := make([]int, len(draft.Nodes))
+	for index := range draft.Nodes {
+		order[index] = index
+	}
+	sort.SliceStable(order, func(left, right int) bool {
+		leftNode := draft.Nodes[order[left]]
+		rightNode := draft.Nodes[order[right]]
+		if leftNode.OrderIndex != rightNode.OrderIndex {
+			return leftNode.OrderIndex < rightNode.OrderIndex
+		}
+		return leftNode.ID < rightNode.ID
+	})
+	for row, nodeIndex := range order {
+		draft.Nodes[nodeIndex].X = 0
+		draft.Nodes[nodeIndex].Y = float64(row * roadmapBranchVerticalGap)
+	}
+
+	normalizeRoadmapBranchRows(draft)
+	separateRoadmapNodeOverlaps(draft.Nodes)
+}
+
+func nextRoadmapNodePlacement(roadmap *model.LearningRoadmap) (int, float64, float64) {
+	if roadmap == nil || len(roadmap.Nodes) == 0 {
+		return 0, 0, 0
+	}
+	maxOrder := roadmap.Nodes[0].OrderIndex
+	maxY := roadmap.Nodes[0].Y
+	for _, node := range roadmap.Nodes {
+		if node.OrderIndex > maxOrder {
+			maxOrder = node.OrderIndex
+		}
+		if node.Y > maxY {
+			maxY = node.Y
+		}
+	}
+	return maxOrder + 1, 0, maxY + roadmapBranchVerticalGap
+}
+
+func childRoadmapNodePlacement(parent model.RoadmapNode, pathType string) (float64, float64) {
+	x := parent.X
+	switch pathType {
+	case "recommended", "optional":
+		x = parent.X - roadmapBranchHorizontalGap
+	case "alternative":
+		x = parent.X + roadmapBranchHorizontalGap
+	}
+	return x, parent.Y + roadmapBranchVerticalGap
+}
+
+func roadmapNodeByID(nodes []model.RoadmapNode, id string) (model.RoadmapNode, bool) {
+	for _, node := range nodes {
+		if node.ID == id {
+			return node, true
+		}
+	}
+	return model.RoadmapNode{}, false
+}
+
+func normalizeRoadmapNodeType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "phase":
+		return "phase"
+	case "module":
+		return "module"
+	case "choice":
+		return "choice"
+	default:
+		return "task"
+	}
+}
+
+func normalizeRoadmapNodePathType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "recommended":
+		return "recommended"
+	case "optional":
+		return "optional"
+	case "alternative":
+		return "alternative"
+	default:
+		return "required"
+	}
+}
+
+func normalizeRoadmapNodeStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "active":
+		return "active"
+	case "done":
+		return "done"
+	case "skipped":
+		return "skipped"
+	default:
+		return "todo"
+	}
+}
+
+func normalizeRoadmapEdgeStyle(value string, pathType string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "solid":
+		return "solid"
+	case "dotted":
+		return "dotted"
+	}
+	if pathType == "required" {
+		return "solid"
+	}
+	return "dotted"
+}
+
+func separateRoadmapNodeOverlaps(nodes []model.RoadmapNode) {
+	maxAttempts := len(nodes) * len(nodes)
+	for index := range nodes {
+		attempts := 0
+		for roadmapNodeOverlapsPrevious(nodes, index) && attempts < maxAttempts {
+			nodes[index].Y += roadmapLayoutStepY
+			attempts++
+		}
+	}
+}
+
+func normalizeRoadmapBranchRows(draft *roadmapDraft) {
+	if len(draft.Edges) < 2 {
+		return
+	}
+
+	nodeIndexByID := map[string]int{}
+	for index, node := range draft.Nodes {
+		nodeIndexByID[node.ID] = index
+	}
+
+	outgoing := map[string][]model.RoadmapEdge{}
+	incoming := map[string][]model.RoadmapEdge{}
+	for _, edge := range draft.Edges {
+		if _, ok := nodeIndexByID[edge.SourceNodeID]; !ok {
+			continue
+		}
+		if _, ok := nodeIndexByID[edge.TargetNodeID]; !ok {
+			continue
+		}
+		outgoing[edge.SourceNodeID] = append(outgoing[edge.SourceNodeID], edge)
+		incoming[edge.TargetNodeID] = append(incoming[edge.TargetNodeID], edge)
+	}
+
+	for sourceID, edges := range outgoing {
+		if len(edges) < 2 {
+			continue
+		}
+		source := draft.Nodes[nodeIndexByID[sourceID]]
+		sort.SliceStable(edges, func(left, right int) bool {
+			leftNode := draft.Nodes[nodeIndexByID[edges[left].TargetNodeID]]
+			rightNode := draft.Nodes[nodeIndexByID[edges[right].TargetNodeID]]
+			if leftRank, rightRank := roadmapBranchTargetRank(leftNode), roadmapBranchTargetRank(rightNode); leftRank != rightRank {
+				return leftRank < rightRank
+			}
+			if leftNode.OrderIndex != rightNode.OrderIndex {
+				return leftNode.OrderIndex < rightNode.OrderIndex
+			}
+			return leftNode.ID < rightNode.ID
+		})
+		branchY := source.Y + roadmapBranchVerticalGap
+		for slot, edge := range edges {
+			targetIndex := nodeIndexByID[edge.TargetNodeID]
+			draft.Nodes[targetIndex].X = source.X + roadmapBranchSlotOffset(slot, len(edges))*roadmapBranchHorizontalGap
+			draft.Nodes[targetIndex].Y = branchY
+		}
+	}
+
+	for targetID, edges := range incoming {
+		if len(edges) < 2 {
+			continue
+		}
+		var sourceXTotal float64
+		var maxSourceY float64
+		for index, edge := range edges {
+			source := draft.Nodes[nodeIndexByID[edge.SourceNodeID]]
+			sourceXTotal += source.X
+			if index == 0 || source.Y > maxSourceY {
+				maxSourceY = source.Y
+			}
+		}
+		targetIndex := nodeIndexByID[targetID]
+		draft.Nodes[targetIndex].X = sourceXTotal / float64(len(edges))
+		minTargetY := maxSourceY + roadmapBranchVerticalGap
+		if draft.Nodes[targetIndex].Y < minTargetY {
+			draft.Nodes[targetIndex].Y = minTargetY
+		}
+	}
+}
+
+func roadmapBranchTargetRank(node model.RoadmapNode) int {
+	switch node.PathType {
+	case "recommended", "optional":
+		return 0
+	case "required":
+		return 1
+	case "alternative":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func roadmapBranchSlotOffset(slot int, total int) float64 {
+	if total == 2 {
+		if slot == 0 {
+			return -1
+		}
+		return 1
+	}
+	return float64(slot) - (float64(total)-1)/2
+}
+
+func normalizeRoadmapDisplayLayout(roadmap *model.LearningRoadmap) {
+	if roadmap == nil || len(roadmap.Nodes) < 2 {
+		return
+	}
+	draft := &roadmapDraft{
+		Title: roadmap.Title,
+		Goal:  roadmap.Goal,
+		Nodes: roadmap.Nodes,
+		Edges: roadmap.Edges,
+	}
+	normalizeGeneratedRoadmapLayout(draft)
+	roadmap.Nodes = draft.Nodes
+}
+
+func roadmapNodeOverlapsPrevious(nodes []model.RoadmapNode, index int) bool {
+	if index <= 0 || index >= len(nodes) {
+		return false
+	}
+	for previous := 0; previous < index; previous++ {
+		if roadmapNodesOverlap(nodes[index], nodes[previous]) {
+			return true
+		}
+	}
+	return false
+}
+
+func roadmapNodesOverlap(left, right model.RoadmapNode) bool {
+	return absFloat(left.X-right.X) < roadmapNodeMinGapX && absFloat(left.Y-right.Y) < roadmapNodeMinGapY
+}
+
+func absFloat(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func hasRoadmapBranching(draft *roadmapDraft) bool {

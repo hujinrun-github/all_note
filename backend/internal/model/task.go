@@ -131,6 +131,20 @@ type SearchRoadmapResourcesRequest struct {
 	Sources []string `json:"sources"`
 }
 
+type CreateRoadmapNodeRequest struct {
+	ParentID           *string  `json:"parent_id"`
+	Title              string   `json:"title" binding:"required"`
+	Type               string   `json:"type"`
+	Description        string   `json:"description"`
+	PathType           string   `json:"path_type"`
+	Status             string   `json:"status"`
+	Deliverable        string   `json:"deliverable"`
+	AcceptanceCriteria string   `json:"acceptance_criteria"`
+	X                  *float64 `json:"x"`
+	Y                  *float64 `json:"y"`
+	EdgeStyle          string   `json:"edge_style"`
+}
+
 type UpdateRoadmapNodeRequest struct {
 	Title              *string  `json:"title"`
 	Description        *string  `json:"description"`
