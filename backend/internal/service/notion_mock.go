@@ -116,22 +116,29 @@ func (gateway *realNotionSyncGateway) UpdateRemoteNote(config notionTargetConfig
 	if err != nil {
 		return notionRemoteNote{}, err
 	}
+	if err := gateway.replaceRemoteBlocks(pageID, note); err != nil {
+		return notionRemoteNote{}, err
+	}
+	return notionRemoteFromPageAndLocalNote(page, note), nil
+}
+
+func (gateway *realNotionSyncGateway) replaceRemoteBlocks(pageID string, note *model.Note) error {
 	children, err := gateway.client.RetrievePageBlocks(pageID)
 	if err != nil {
-		return notionRemoteNote{}, err
+		return err
+	}
+	if err := gateway.client.AppendBlockChildren(pageID, markdownToNotionBlocks(note.Body)); err != nil {
+		return err
 	}
 	for _, child := range children {
 		if strings.TrimSpace(child.ID) == "" {
 			continue
 		}
 		if err := gateway.client.ArchiveBlock(child.ID); err != nil {
-			return notionRemoteNote{}, err
+			return err
 		}
 	}
-	if err := gateway.client.AppendBlockChildren(pageID, markdownToNotionBlocks(note.Body)); err != nil {
-		return notionRemoteNote{}, err
-	}
-	return notionRemoteFromPageAndLocalNote(page, note), nil
+	return nil
 }
 
 func (gateway *realNotionSyncGateway) RestoreRemoteNote(config notionTargetConfig, note *model.Note, previous notionSyncStateSnapshot) (notionRemoteNote, error) {
@@ -142,11 +149,10 @@ func (gateway *realNotionSyncGateway) RestoreRemoteNote(config notionTargetConfi
 	if pageID == "" {
 		return gateway.CreateRemoteNote(config, note)
 	}
-	page, err := gateway.client.RestorePage(pageID)
-	if err != nil {
+	if _, err := gateway.client.RestorePage(pageID); err != nil {
 		return notionRemoteNote{}, err
 	}
-	return notionRemoteFromPageAndLocalNote(page, note), nil
+	return gateway.UpdateRemoteNote(config, pageID, note)
 }
 
 func notionRemoteFromLocalNote(pageID string, note *model.Note, editedAt int64) notionRemoteNote {

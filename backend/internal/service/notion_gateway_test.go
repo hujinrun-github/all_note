@@ -177,7 +177,7 @@ func TestNotionRealGatewayUpdateRemoteNoteReplacesChildren(t *testing.T) {
 	if remote.PageID != "page-1" || remote.Markdown != "# Updated\n" {
 		t.Fatalf("remote = %+v", remote)
 	}
-	if strings.Join(requests, ",") != "PATCH /v1/pages/page-1,GET /v1/blocks/page-1/children,PATCH /v1/blocks/block-old,PATCH /v1/blocks/page-1/children" {
+	if strings.Join(requests, ",") != "PATCH /v1/pages/page-1,GET /v1/blocks/page-1/children,PATCH /v1/blocks/page-1/children,PATCH /v1/blocks/block-old" {
 		t.Fatalf("requests = %#v", requests)
 	}
 	if len(archived) != 1 || archived[0] != "block-old" {
@@ -188,21 +188,92 @@ func TestNotionRealGatewayUpdateRemoteNoteReplacesChildren(t *testing.T) {
 	assertStringAt(t, appendPayload, "Updated", "children", "0", "heading_1", "rich_text", "0", "text", "content")
 }
 
-func TestNotionRealGatewayRestoreRemoteNoteClearsTrashFlags(t *testing.T) {
-	var payload map[string]any
+func TestNotionRealGatewayUpdateRemoteNoteDoesNotArchiveWhenAppendFails(t *testing.T) {
+	archiveRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.Path != "/v1/pages/page-restore" {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/pages/page-append-fails":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":               "page-append-fails",
+				"url":              "https://www.notion.so/page-append-fails",
+				"last_edited_time": "2026-06-13T03:00:00.000Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/blocks/page-append-fails/children":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results":  []map[string]any{{"id": "block-old", "type": "paragraph"}},
+				"has_more": false,
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/blocks/page-append-fails/children":
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "append failed"})
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/blocks/block-old":
+			archiveRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "block-old", "archived": true})
+		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode restore body: %v", err)
-		}
+	}))
+	defer server.Close()
+
+	note := &model.Note{ID: "note-append-fails", Title: "Updated Title", Body: "Updated body\n"}
+	_, err := newTestRealNotionGateway(server.URL).UpdateRemoteNote(testNotionGatewayConfig(), "page-append-fails", note)
+	if err == nil || !strings.Contains(err.Error(), "append failed") {
+		t.Fatalf("expected append error, got %v", err)
+	}
+	if archiveRequests != 0 {
+		t.Fatalf("archive requests = %d, want 0", archiveRequests)
+	}
+}
+
+func TestNotionRealGatewayRestoreRemoteNoteClearsTrashAndRewritesContent(t *testing.T) {
+	requests := make([]string, 0)
+	var restorePayload map[string]any
+	var updatePayload map[string]any
+	var appendPayload map[string]any
+	archived := make([]string, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":               "page-restore",
-			"url":              "https://www.notion.so/page-restore",
-			"last_edited_time": "2026-06-13T04:00:00.000Z",
-		})
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/pages/page-restore":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode page patch body: %v", err)
+			}
+			if _, ok := body["properties"]; ok {
+				updatePayload = body
+			} else {
+				restorePayload = body
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":               "page-restore",
+				"url":              "https://www.notion.so/page-restore",
+				"last_edited_time": "2026-06-13T04:00:00.000Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/blocks/page-restore/children":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results":  []map[string]any{{"id": "block-stale", "type": "paragraph"}},
+				"has_more": false,
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/blocks/page-restore/children":
+			if err := json.NewDecoder(r.Body).Decode(&appendPayload); err != nil {
+				t.Fatalf("decode append body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{}})
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/blocks/block-stale":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode archive body: %v", err)
+			}
+			if body["archived"] != true {
+				t.Fatalf("archive body = %#v", body)
+			}
+			archived = append(archived, "block-stale")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "block-stale", "archived": true})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
 	}))
 	defer server.Close()
 
@@ -212,8 +283,17 @@ func TestNotionRealGatewayRestoreRemoteNoteClearsTrashFlags(t *testing.T) {
 		t.Fatalf("restore remote note: %v", err)
 	}
 
-	if payload["archived"] != false || payload["in_trash"] != false {
-		t.Fatalf("restore payload = %#v", payload)
+	if strings.Join(requests, ",") != "PATCH /v1/pages/page-restore,PATCH /v1/pages/page-restore,GET /v1/blocks/page-restore/children,PATCH /v1/blocks/page-restore/children,PATCH /v1/blocks/block-stale" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if restorePayload["archived"] != false || restorePayload["in_trash"] != false {
+		t.Fatalf("restore payload = %#v", restorePayload)
+	}
+	assertStringAt(t, updatePayload, "Restore Me", "properties", "Name", "title", "0", "text", "content")
+	assertStringAt(t, appendPayload, "paragraph", "children", "0", "type")
+	assertStringAt(t, appendPayload, "Restored body", "children", "0", "paragraph", "rich_text", "0", "text", "content")
+	if len(archived) != 1 || archived[0] != "block-stale" {
+		t.Fatalf("archived = %#v", archived)
 	}
 	if remote.PageID != "page-restore" || remote.Markdown != "Restored body\n" || remote.FlowSpaceID != "note-restore" {
 		t.Fatalf("remote = %+v", remote)
