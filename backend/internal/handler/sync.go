@@ -29,6 +29,10 @@ func SaveSyncTarget(c *gin.Context) {
 	}
 
 	target := syncTargetFromRequest(&req)
+	if err := validateSyncTargetRequest(target); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		internalError(c, "failed to save sync target")
 		return
@@ -47,6 +51,10 @@ func UpdateSyncTarget(c *gin.Context) {
 	target.ID = c.Param("id")
 	if target.ID == "" {
 		badRequest(c, "sync target id is required")
+		return
+	}
+	if err := validateSyncTargetRequest(target); err != nil {
+		badRequest(c, err.Error())
 		return
 	}
 	if err := repository.SaveSyncTarget(target); err != nil {
@@ -186,4 +194,11 @@ func syncTargetFromRequest(req *model.SaveSyncTargetRequest) *model.SyncTarget {
 		Enabled:    req.Enabled,
 		AutoSync:   req.AutoSync,
 	}
+}
+
+func validateSyncTargetRequest(target *model.SyncTarget) error {
+	if target.Type == "obsidian" && (strings.TrimSpace(target.VaultPath) == "" || strings.TrimSpace(target.BaseFolder) == "") {
+		return errors.New("obsidian sync target requires vault_path and base_folder")
+	}
+	return nil
 }
