@@ -108,7 +108,8 @@ export async function listLocalDirectories(path?: string): Promise<LocalDirector
 }
 
 export async function saveSyncTarget(input: SaveSyncTargetInput): Promise<SyncTarget> {
-  const { id, ...body } = input
+  const { id } = input
+  const body = syncTargetPayload(input)
   const res = id
     ? await api.patch<{ target: SyncTarget }>(`/api/sync/targets/${id}`, body)
     : await api.post<{ target: SyncTarget }>('/api/sync/targets', body)
@@ -127,7 +128,7 @@ export async function testObsidianTarget(input: SaveSyncTargetInput): Promise<vo
 }
 
 export async function testNotionTarget(input: SaveSyncTargetInput): Promise<void> {
-  await api.post<{ ok: boolean }>('/api/sync/notion/test', input)
+  await api.post<{ ok: boolean }>('/api/sync/notion/test', syncTargetPayload(input))
 }
 
 export async function syncObsidianNote(id: string): Promise<SyncResultItem> {
@@ -189,4 +190,16 @@ export async function getNoteSyncState(id: string, target?: SyncTargetType): Pro
     target ? { target } : undefined,
   )
   return res.data.state
+}
+
+function syncTargetPayload(input: SaveSyncTargetInput) {
+  return {
+    type: input.type,
+    name: input.name,
+    vault_path: input.vault_path,
+    base_folder: input.base_folder,
+    config_json: input.config_json,
+    enabled: input.enabled,
+    auto_sync: input.auto_sync,
+  }
 }

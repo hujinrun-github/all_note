@@ -56,6 +56,75 @@ describe('notion sync api', () => {
     expect(String(init?.body)).not.toContain('secret')
   })
 
+  it('allowlists save target payload fields', async () => {
+    await saveSyncTarget({
+      id: 'target-1',
+      type: 'notion',
+      name: 'Personal Notion',
+      vault_path: '',
+      base_folder: '',
+      config_json: JSON.stringify({ data_source_id: 'ds-123', token_env: 'FLOWSPACE_NOTION_TOKEN' }),
+      enabled: true,
+      auto_sync: false,
+      token: 'secret-token',
+      secret: 'secret-value',
+    } as Parameters<typeof saveSyncTarget>[0] & { token: string; secret: string })
+
+    const fetchMock = vi.mocked(fetch)
+    const [input, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String(init?.body))
+
+    expect(String(input)).toContain('/api/sync/targets/target-1')
+    expect(init?.method).toBe('PATCH')
+    expect(body).toEqual({
+      type: 'notion',
+      name: 'Personal Notion',
+      vault_path: '',
+      base_folder: '',
+      config_json: JSON.stringify({ data_source_id: 'ds-123', token_env: 'FLOWSPACE_NOTION_TOKEN' }),
+      enabled: true,
+      auto_sync: false,
+    })
+    expect(body).not.toHaveProperty('id')
+    expect(body).not.toHaveProperty('token')
+    expect(body).not.toHaveProperty('secret')
+    expect(String(init?.body)).not.toContain('secret-token')
+    expect(String(init?.body)).not.toContain('secret-value')
+  })
+
+  it('allowlists test notion target payload fields', async () => {
+    await testNotionTarget({
+      type: 'notion',
+      name: 'Personal Notion',
+      vault_path: '',
+      base_folder: '',
+      config_json: JSON.stringify({ data_source_id: 'ds-123' }),
+      enabled: true,
+      auto_sync: false,
+      token: 'secret-token',
+      secret: 'secret-value',
+    } as Parameters<typeof testNotionTarget>[0] & { token: string; secret: string })
+
+    const fetchMock = vi.mocked(fetch)
+    const [input, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String(init?.body))
+
+    expect(String(input)).toContain('/api/sync/notion/test')
+    expect(body).toEqual({
+      type: 'notion',
+      name: 'Personal Notion',
+      vault_path: '',
+      base_folder: '',
+      config_json: JSON.stringify({ data_source_id: 'ds-123' }),
+      enabled: true,
+      auto_sync: false,
+    })
+    expect(body).not.toHaveProperty('token')
+    expect(body).not.toHaveProperty('secret')
+    expect(String(init?.body)).not.toContain('secret-token')
+    expect(String(init?.body)).not.toContain('secret-value')
+  })
+
   it('calls notion endpoints with encoded ids', async () => {
     await testNotionTarget({
       type: 'notion',

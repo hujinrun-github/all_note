@@ -238,7 +238,16 @@ func notionNoteSyncError(c *gin.Context, err error) {
 }
 
 func GetNoteSyncState(c *gin.Context) {
-	target, err := repository.GetDefaultSyncTarget("obsidian")
+	targetType := strings.TrimSpace(c.Query("target"))
+	if targetType == "" {
+		targetType = "obsidian"
+	}
+	if targetType != "obsidian" && targetType != "notion" {
+		badRequest(c, "unsupported sync target")
+		return
+	}
+
+	target, err := repository.GetDefaultSyncTarget(targetType)
 	if err == sql.ErrNoRows {
 		success(c, gin.H{"state": nil})
 		return

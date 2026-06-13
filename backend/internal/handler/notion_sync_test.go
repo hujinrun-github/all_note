@@ -359,6 +359,86 @@ func TestConfirmNotionDeletionRejectsNonDeletedState(t *testing.T) {
 	}
 }
 
+func TestGetNoteSyncStateHonorsNotionTargetQuery(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	obsidianTarget := saveHandlerObsidianTarget(t)
+	notionTarget := saveHandlerNotionTarget(t)
+	note := insertHandlerNoteForTest(t, "Targeted Sync State", "Body\n")
+	now := int64(1800000000)
+
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      obsidianTarget.ID,
+		ExternalPath:  "FlowSpace Notes/Targeted Sync State.md",
+		ContentHash:   "obsidian-content",
+		ExternalHash:  "obsidian-external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert obsidian state: %v", err)
+	}
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      notionTarget.ID,
+		ExternalPath:  "notion:page-1",
+		ExternalID:    "page-1",
+		ExternalURL:   "https://www.notion.so/page-1",
+		ContentHash:   "notion-content",
+		ExternalHash:  "notion-external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "pull",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert notion state: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: note.ID}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-state?target=notion", nil)
+
+	GetNoteSyncState(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			State *model.SyncState `json:"state"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.State == nil {
+		t.Fatalf("state = nil; body = %s", recorder.Body.String())
+	}
+	if body.Data.State.TargetID != notionTarget.ID || body.Data.State.ExternalID != "page-1" {
+		t.Fatalf("state = %+v, want notion target %s", body.Data.State, notionTarget.ID)
+	}
+}
+
+func TestGetNoteSyncStateRejectsUnsupportedTarget(t *testing.T) {
+	openHandlerSyncTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: "note-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/notes/note-1/sync-state?target=dropbox", nil)
+
+	GetNoteSyncState(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "unsupported sync target") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
 func openHandlerSyncTestDB(t *testing.T) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -395,6 +475,22 @@ func saveHandlerNotionTarget(t *testing.T) model.SyncTarget {
 	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		t.Fatalf("save target: %v", err)
+	}
+	return *target
+}
+
+func saveHandlerObsidianTarget(t *testing.T) model.SyncTarget {
+	t.Helper()
+	target := &model.SyncTarget{
+		Type:       "obsidian",
+		Name:       "Local Vault",
+		VaultPath:  "D:\\Vault",
+		BaseFolder: "FlowSpace Notes",
+		ConfigJSON: "{}",
+		Enabled:    true,
+	}
+	if err := repository.SaveSyncTarget(target); err != nil {
+		t.Fatalf("save obsidian target: %v", err)
 	}
 	return *target
 }

@@ -24,10 +24,10 @@ export function useTestNotionTarget() {
   return useMutation({ mutationFn: (input: syncApi.SaveSyncTargetInput) => syncApi.testNotionTarget(input) })
 }
 
-export function useNoteSyncState(noteID: string | undefined) {
+export function useNoteSyncState(noteID: string | undefined, target?: syncApi.SyncTargetType) {
   return useQuery({
-    queryKey: ['note-sync-state', noteID],
-    queryFn: () => syncApi.getNoteSyncState(noteID!),
+    queryKey: ['note-sync-state', noteID, target ?? 'obsidian'],
+    queryFn: () => syncApi.getNoteSyncState(noteID!, target),
     enabled: Boolean(noteID),
   })
 }

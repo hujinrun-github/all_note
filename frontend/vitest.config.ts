@@ -8,6 +8,7 @@ export default defineConfig({
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],
     exclude: [...defaultExclude, 'tests/e2e/**'],
+    maxWorkers: 1,
     setupFiles: './src/test/setup.ts',
   },
 })

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as syncApi from '../api/sync'
 import {
   useConfirmNotionDeletion,
+  useNoteSyncState,
   useNotionDeletions,
   useRestoreNotionDeletion,
   useSyncNotionBidirectional,
@@ -80,6 +81,33 @@ describe('notion sync hooks', () => {
 
     await waitFor(() => expect(result.current.data).toEqual(items))
     expect(syncApi.getNotionDeletions).toHaveBeenCalled()
+  })
+
+  it('keys note sync state by target and passes the target to the api', async () => {
+    vi.mocked(syncApi.getNoteSyncState).mockResolvedValue({
+      note_id: 'note-1',
+      target_id: 'notion-1',
+      external_path: 'notion:page-1',
+      external_id: 'page-1',
+      external_url: 'https://www.notion.so/page-1',
+      content_hash: 'flow',
+      external_hash: 'notion',
+      external_mtime: 1800000000,
+      last_direction: 'pull',
+      last_synced_at: 1800000000,
+      status: 'synced',
+      error_message: null,
+    })
+    const queryClient = createQueryClient()
+
+    const { result } = renderHook(() => useNoteSyncState('note-1', 'notion'), {
+      wrapper: createWrapper(queryClient),
+    })
+
+    await waitFor(() => expect(result.current.data?.external_id).toBe('page-1'))
+    expect(syncApi.getNoteSyncState).toHaveBeenCalledWith('note-1', 'notion')
+    expect(queryClient.getQueryData(['note-sync-state', 'note-1', 'notion'])).toEqual(result.current.data)
+    expect(queryClient.getQueryData(['note-sync-state', 'note-1'])).toBeUndefined()
   })
 
   it('invalidates notion sync queries after mutations', async () => {
