@@ -51,13 +51,13 @@ interface RoadmapNodeData extends Record<string, unknown> {
 
 const tabLabels: Record<TaskTab, string> = {
   week: '本周',
-  long: '长期项目',
+  long: '长期任务',
   roadmap: '学习 Roadmap',
 }
 
 const projectTypeLabels: Record<TaskProject['type'], string> = {
   personal: '个人',
-  regular: '普通项目',
+  regular: '任务项目',
   learning: '学习项目',
 }
 
@@ -464,7 +464,7 @@ export default function Tasks() {
               value={projectType}
               onChange={(event) => setProjectType(event.target.value as TaskProject['type'])}
             >
-              <option value="regular">普通项目</option>
+              <option value="regular">任务项目</option>
               <option value="learning">学习项目</option>
             </select>
           </label>
@@ -544,7 +544,7 @@ export default function Tasks() {
         <div className="panel-heading">
           <div>
             <span>任务工作台</span>
-            <h2>短期推进、长期项目和学习路线</h2>
+            <h2>短期推进、长期任务和学习路线</h2>
           </div>
           <div className="segmented-tabs" role="tablist" aria-label="任务视图">
             {(Object.keys(tabLabels) as TaskTab[]).map((tab) => (
@@ -787,7 +787,7 @@ function LongTaskView({
             onChange={(event) => onTitleChange(event.target.value)}
             placeholder="添加长期任务"
           />
-          <select aria-label="长期项目" value={selectedProjectID} onChange={(event) => onProjectChange(event.target.value)}>
+          <select aria-label="任务项目" value={selectedProjectID} onChange={(event) => onProjectChange(event.target.value)}>
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
@@ -801,9 +801,9 @@ function LongTaskView({
       )}
 
       {projects.length === 0 ? (
-        <p className="empty-copy">先在左侧新增一个普通项目</p>
+        <p className="empty-copy">先在左侧新增一个任务项目</p>
       ) : tasksByProject.length === 0 ? (
-        <p className="empty-copy">长期项目还没有任务</p>
+        <p className="empty-copy">还没有长期任务</p>
       ) : (
         tasksByProject.map(([project, projectTasks]) => (
           <div key={project} className="task-section">

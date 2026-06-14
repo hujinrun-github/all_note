@@ -31,10 +31,10 @@ test('deletes a regular project from the project list', async ({ page }, testInf
   await page.getByLabel('项目类型').selectOption('regular')
   await page.getByRole('button', { name: '新增项目' }).click()
 
-  await expect(page.getByRole('button', { name: `${projectName} 普通项目` })).toBeVisible()
+  await expect(page.getByRole('button', { name: `${projectName} 任务项目` })).toBeVisible()
   await page.getByRole('button', { name: `删除项目 ${projectName}` }).click()
   await page.getByRole('button', { name: `确认删除 ${projectName}` }).click()
-  await expect(page.getByRole('button', { name: `${projectName} 普通项目` })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: `${projectName} 任务项目` })).toHaveCount(0)
 })
 
 test('generates a learning roadmap, attaches resources, and creates a weekly task from a node', async ({ page }, testInfo) => {
