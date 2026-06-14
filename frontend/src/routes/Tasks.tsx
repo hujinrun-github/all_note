@@ -778,25 +778,27 @@ function LongTaskView({
 
   return (
     <div className="task-tab-panel">
-      <form className="inline-create task-create-form" onSubmit={onSubmit}>
-        <input
-          className="task-title-input"
-          aria-label="长期任务内容"
-          value={title}
-          onChange={(event) => onTitleChange(event.target.value)}
-          placeholder="添加长期任务"
-        />
-        <select aria-label="长期项目" value={selectedProjectID} onChange={(event) => onProjectChange(event.target.value)}>
-          {projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-        <button type="submit" disabled={!title.trim() || !selectedProjectID || isPending}>
-          添加长期任务
-        </button>
-      </form>
+      {projects.length > 0 && (
+        <form className="inline-create task-create-form" onSubmit={onSubmit}>
+          <input
+            className="task-title-input"
+            aria-label="长期任务内容"
+            value={title}
+            onChange={(event) => onTitleChange(event.target.value)}
+            placeholder="添加长期任务"
+          />
+          <select aria-label="长期项目" value={selectedProjectID} onChange={(event) => onProjectChange(event.target.value)}>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+          <button type="submit" disabled={!title.trim() || !selectedProjectID || isPending}>
+            添加长期任务
+          </button>
+        </form>
+      )}
 
       {projects.length === 0 ? (
         <p className="empty-copy">先在左侧新增一个普通项目</p>
