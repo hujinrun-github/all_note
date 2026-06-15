@@ -6,6 +6,7 @@ type SyncTarget struct {
 	Name       string `json:"name"`
 	VaultPath  string `json:"vault_path"`
 	BaseFolder string `json:"base_folder"`
+	ConfigJSON string `json:"config_json"`
 	Enabled    bool   `json:"enabled"`
 	AutoSync   bool   `json:"auto_sync"`
 	CreatedAt  int64  `json:"created_at"`
@@ -16,6 +17,8 @@ type SyncState struct {
 	NoteID        string  `json:"note_id"`
 	TargetID      string  `json:"target_id"`
 	ExternalPath  string  `json:"external_path"`
+	ExternalID    string  `json:"external_id"`
+	ExternalURL   string  `json:"external_url"`
 	ContentHash   string  `json:"content_hash"`
 	ExternalHash  string  `json:"external_hash"`
 	ExternalMTime *int64  `json:"external_mtime"`
@@ -26,9 +29,11 @@ type SyncState struct {
 }
 
 type SaveSyncTargetRequest struct {
+	Type       string `json:"type"`
 	Name       string `json:"name" binding:"required"`
-	VaultPath  string `json:"vault_path" binding:"required"`
-	BaseFolder string `json:"base_folder" binding:"required"`
+	VaultPath  string `json:"vault_path"`
+	BaseFolder string `json:"base_folder"`
+	ConfigJSON string `json:"config_json"`
 	Enabled    bool   `json:"enabled"`
 	AutoSync   bool   `json:"auto_sync"`
 }
@@ -37,6 +42,8 @@ type SyncResultItem struct {
 	NoteID       string `json:"note_id"`
 	Status       string `json:"status"`
 	ExternalPath string `json:"external_path,omitempty"`
+	ExternalID   string `json:"external_id,omitempty"`
+	ExternalURL  string `json:"external_url,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 }
 
@@ -51,6 +58,17 @@ type ObsidianBidirectionalResult struct {
 	Pulled          int              `json:"pulled"`
 	Imported        int              `json:"imported"`
 	ExternalDeleted int              `json:"external_deleted"`
+	Failed          int              `json:"failed"`
+	Items           []SyncResultItem `json:"items"`
+}
+
+type NotionBidirectionalResult struct {
+	Pushed          int              `json:"pushed"`
+	Pulled          int              `json:"pulled"`
+	ConflictPulled  int              `json:"conflict_pulled"`
+	Imported        int              `json:"imported"`
+	ExternalDeleted int              `json:"external_deleted"`
+	Unsupported     int              `json:"unsupported"`
 	Failed          int              `json:"failed"`
 	Items           []SyncResultItem `json:"items"`
 }

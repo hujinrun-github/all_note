@@ -56,6 +56,7 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 		SELECT
 			t.id,
 			t.title,
+			COALESCE(t.content, ''),
 			COALESCE(p.name, t.project),
 			t.project_id,
 			p.type,
@@ -76,7 +77,7 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 		WHERE %s
 		ORDER BY
 			CASE WHEN t.planned_date IS NULL THEN 1 ELSE 0 END ASC,
-			t.planned_date ASC,
+			t.planned_date DESC,
 			t.sort_order ASC,
 			t.created_at DESC
 		LIMIT ? OFFSET ?
@@ -186,6 +187,27 @@ func UpdateTaskProject(id string, req *model.UpdateTaskProjectRequest) (*model.T
 	return GetTaskProjectByID(id)
 }
 
+func DeleteTaskProject(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("project id is required")
+	}
+	if id == "personal" {
+		return fmt.Errorf("personal project cannot be deleted")
+	}
+	if _, err := GetTaskProjectByID(id); err != nil {
+		return err
+	}
+	result, err := DB.Exec(`DELETE FROM task_projects WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func GetTaskProjectByID(id string) (*model.TaskProject, error) {
 	var project model.TaskProject
 	err := DB.QueryRow(`
@@ -221,10 +243,10 @@ func CreateTask(t *model.Task) error {
 
 	_, err := DB.Exec(`
 		INSERT INTO tasks (
-			id, title, project, project_id, due, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, created_at, updated_at
+			id, title, content, project, project_id, due, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, t.ID, t.Title, t.Project, t.ProjectID, t.Due, t.PlannedDate, t.Priority, t.Done, t.Status, t.Horizon, t.Scope, t.SortOrder, t.NoteID, t.RoadmapNodeID, t.CreatedAt, t.UpdatedAt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, t.ID, t.Title, t.Content, t.Project, t.ProjectID, t.Due, t.PlannedDate, t.Priority, t.Done, t.Status, t.Horizon, t.Scope, t.SortOrder, t.NoteID, t.RoadmapNodeID, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
@@ -235,6 +257,10 @@ func UpdateTask(id string, req *model.UpdateTaskRequest) (*model.Task, error) {
 	if req.Title != nil {
 		sets = append(sets, "title = ?")
 		args = append(args, strings.TrimSpace(*req.Title))
+	}
+	if req.Content != nil {
+		sets = append(sets, "content = ?")
+		args = append(args, strings.TrimSpace(*req.Content))
 	}
 	if req.ProjectID != nil {
 		project, err := GetTaskProjectByID(*req.ProjectID)
@@ -326,6 +352,7 @@ func GetTaskByID(id string) (*model.Task, error) {
 		SELECT
 			t.id,
 			t.title,
+			COALESCE(t.content, ''),
 			COALESCE(p.name, t.project),
 			t.project_id,
 			p.type,
@@ -358,17 +385,30 @@ func DeleteTask(id string) error {
 }
 
 func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []model.Task, error) {
+	todayDate := time.Unix(todayStart, 0).In(time.Local).Format("2006-01-02")
+	overdueCutoffDate := time.Unix(overdueCutoff, 0).In(time.Local).Format("2006-01-02")
+
 	rows, err := DB.Query(`
 		SELECT
-			t.id, t.title, COALESCE(p.name, t.project), t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
+			t.id, t.title, COALESCE(t.content, ''), COALESCE(p.name, t.project), t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
 			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
-		WHERE t.done = 0 AND t.due >= ? AND t.due < ?
+		WHERE t.done = 0 AND (
+			(t.due >= ? AND t.due < ?)
+			OR (
+				COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long'
+				AND t.planned_date = ?
+			)
+			OR (
+				COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) = 'long'
+				AND COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END) = 'active'
+			)
+		)
 		ORDER BY t.sort_order ASC, t.created_at DESC
-	`, todayStart, todayEnd)
+	`, todayStart, todayEnd, todayDate)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -380,15 +420,25 @@ func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []m
 
 	rows2, err := DB.Query(`
 		SELECT
-			t.id, t.title, COALESCE(p.name, t.project), t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
+			t.id, t.title, COALESCE(t.content, ''), COALESCE(p.name, t.project), t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
 			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
-		WHERE t.done = 0 AND t.due < ? AND t.due >= ?
+		WHERE t.done = 0
+			AND COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long'
+			AND (
+				(t.due < ? AND t.due >= ?)
+				OR (t.due IS NULL AND t.planned_date < ? AND t.planned_date >= ?)
+			)
+			AND (t.planned_date IS NULL OR t.planned_date <> ?)
+			AND NOT (
+				COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) = 'long'
+				AND COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END) = 'active'
+			)
 		ORDER BY t.due ASC LIMIT 10
-	`, todayStart, overdueCutoff)
+	`, todayStart, overdueCutoff, todayDate, overdueCutoffDate, todayDate)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -490,6 +540,10 @@ func normalizeHorizon(value string) string {
 
 func normalizeTaskStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "active":
+		return "active"
+	case "blocked":
+		return "blocked"
 	case "done":
 		return "done"
 	case "migrated":
@@ -521,6 +575,7 @@ func scanTaskRow(row rowScanner) (*model.Task, error) {
 	err := row.Scan(
 		&task.ID,
 		&task.Title,
+		&task.Content,
 		&task.Project,
 		&task.ProjectID,
 		&task.ProjectType,

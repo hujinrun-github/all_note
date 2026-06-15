@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { useInboxList } from '../../hooks/useInbox'
 
 const navItems = [
@@ -11,6 +12,7 @@ const navItems = [
 ]
 
 export function Sidebar() {
+  const queryClient = useQueryClient()
   const inboxQ = useInboxList({ page_size: 1 })
   const inboxCount = inboxQ.data?.pagination.total ?? 0
 
@@ -33,6 +35,9 @@ export function Sidebar() {
             key={to}
             to={to}
             end={to === '/'}
+            onClick={() => {
+              void queryClient.invalidateQueries()
+            }}
             className={({ isActive }) =>
               `sidebar-link ${isActive ? 'is-active' : ''}`
             }

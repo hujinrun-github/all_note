@@ -24,6 +24,7 @@ export function useCreateTask() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] })
       qc.invalidateQueries({ queryKey: ['task-projects'] })
+      qc.invalidateQueries({ queryKey: ['task-project-names'] })
       qc.invalidateQueries({ queryKey: ['today'] })
     },
   })

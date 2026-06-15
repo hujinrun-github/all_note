@@ -3,6 +3,7 @@ import { APIError, api } from './client'
 export interface Task {
   id: string
   title: string
+  content: string
   project?: string
   project_id?: string
   project_type?: string
@@ -129,8 +130,13 @@ export async function updateTaskProject(id: string, body: Partial<Pick<TaskProje
   return res.data.project
 }
 
+export async function deleteTaskProject(id: string) {
+  await api.del(`/api/task-projects/${id}`)
+}
+
 export async function createTask(body: {
   title: string
+  content?: string
   project?: string
   project_id?: string
   due?: number
@@ -173,8 +179,35 @@ export async function updateRoadmapNode(id: string, body: Partial<RoadmapNode>) 
   return res.data.node
 }
 
+export async function createRoadmapNode(
+  roadmapID: string,
+  body: {
+    parent_id?: string
+    title: string
+    type?: RoadmapNode['type']
+    description?: string
+    path_type?: RoadmapNode['path_type']
+    status?: RoadmapNode['status']
+    deliverable?: string
+    acceptance_criteria?: string
+    edge_style?: 'solid' | 'dotted'
+  },
+) {
+  const res = await api.post<{ node: RoadmapNode }>(`/api/roadmaps/${roadmapID}/nodes`, body)
+  return res.data.node
+}
+
+export async function deleteRoadmapNode(id: string) {
+  await api.del(`/api/roadmap-nodes/${id}`)
+}
+
 export async function saveRoadmapLayout(roadmapID: string, nodes: Array<{ id: string; x: number; y: number }>) {
   await api.patch(`/api/roadmaps/${roadmapID}/layout`, { nodes })
+}
+
+export async function optimizeRoadmapLayout(roadmapID: string) {
+  const res = await api.post<{ roadmap: LearningRoadmap }>(`/api/roadmaps/${roadmapID}/layout/optimize`)
+  return res.data.roadmap
 }
 
 export async function searchRoadmapNodeResources(nodeID: string, body: { sources?: string[] } = {}) {

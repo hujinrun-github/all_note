@@ -25,9 +25,14 @@ func UpdateTaskProject(id string, req *model.UpdateTaskProjectRequest) (*model.T
 	return repository.UpdateTaskProject(id, req)
 }
 
+func DeleteTaskProject(id string) error {
+	return repository.DeleteTaskProject(id)
+}
+
 func CreateTask(req *model.CreateTaskRequest) (*model.Task, error) {
 	task := &model.Task{
 		Title:         req.Title,
+		Content:       req.Content,
 		Project:       req.Project,
 		ProjectID:     req.ProjectID,
 		Due:           req.Due,
