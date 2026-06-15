@@ -3,6 +3,7 @@ package model
 type Task struct {
 	ID            string  `json:"id"`
 	Title         string  `json:"title"`
+	Content       string  `json:"content"`
 	Project       *string `json:"project"`
 	ProjectID     *string `json:"project_id"`
 	ProjectType   *string `json:"project_type,omitempty"`
@@ -22,6 +23,7 @@ type Task struct {
 
 type CreateTaskRequest struct {
 	Title         string  `json:"title" binding:"required"`
+	Content       string  `json:"content"`
 	Project       *string `json:"project"`
 	ProjectID     *string `json:"project_id"`
 	Due           *int64  `json:"due"`
@@ -34,6 +36,7 @@ type CreateTaskRequest struct {
 
 type UpdateTaskRequest struct {
 	Title         *string  `json:"title"`
+	Content       *string  `json:"content"`
 	Project       *string  `json:"project"`
 	ProjectID     *string  `json:"project_id"`
 	Due           *int64   `json:"due"`

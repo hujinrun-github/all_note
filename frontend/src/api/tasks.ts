@@ -3,6 +3,7 @@ import { APIError, api } from './client'
 export interface Task {
   id: string
   title: string
+  content: string
   project?: string
   project_id?: string
   project_type?: string
@@ -135,6 +136,7 @@ export async function deleteTaskProject(id: string) {
 
 export async function createTask(body: {
   title: string
+  content?: string
   project?: string
   project_id?: string
   due?: number

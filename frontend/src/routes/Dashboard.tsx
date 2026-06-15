@@ -40,7 +40,7 @@ export default function Dashboard() {
   })
 
   const { data: taskProjects = [] } = useQuery({
-    queryKey: ['task-projects'],
+    queryKey: ['task-project-names'],
     queryFn: getTaskProjects,
   })
 

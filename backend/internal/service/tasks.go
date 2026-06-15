@@ -32,6 +32,7 @@ func DeleteTaskProject(id string) error {
 func CreateTask(req *model.CreateTaskRequest) (*model.Task, error) {
 	task := &model.Task{
 		Title:         req.Title,
+		Content:       req.Content,
 		Project:       req.Project,
 		ProjectID:     req.ProjectID,
 		Due:           req.Due,

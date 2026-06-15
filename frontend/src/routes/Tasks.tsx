@@ -38,9 +38,10 @@ import {
   type TaskProject,
 } from '../api/tasks'
 import { TaskRow } from '../components/ui/TaskRow'
-import { dateInputToUnix, todayDateInputValue } from '../utils/taskForm'
+import { dateInputToUnix, dateToInputValue, todayDateInputValue } from '../utils/taskForm'
 
 type TaskTab = 'week' | 'long' | 'roadmap'
+type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
 
 interface RoadmapNodeData extends Record<string, unknown> {
   node: RoadmapNode
@@ -80,6 +81,15 @@ const nodeStatusLabels: Record<RoadmapNode['status'], string> = {
   active: '学习中',
   done: '已完成',
   skipped: '已跳过',
+}
+
+const longTaskStatusOrder: LongTaskStatus[] = ['active', 'blocked', 'open', 'done']
+
+const longTaskStatusLabels: Record<LongTaskStatus, string> = {
+  active: '进行中',
+  blocked: '阻塞',
+  open: '未开始',
+  done: '完成',
 }
 
 const articleSearchSourceOptions = [
@@ -213,12 +223,11 @@ export default function Tasks() {
     mutationFn: createTask,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
     },
   })
 
   const updateTaskMutation = useMutation({
-    mutationFn: ({ id, done }: { id: string; done: number }) => updateTask(id, { done }),
+    mutationFn: ({ id, body }: { id: string; body: Partial<Task> }) => updateTask(id, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
@@ -363,7 +372,15 @@ export default function Tasks() {
   }
 
   async function handleToggleTask(task: Task) {
-    await updateTaskMutation.mutateAsync({ id: task.id, done: task.done ? 0 : 1 })
+    await updateTaskMutation.mutateAsync({ id: task.id, body: { done: task.done ? 0 : 1 } })
+  }
+
+  async function handleUpdateLongTaskStatus(task: Task, status: LongTaskStatus) {
+    await updateTaskMutation.mutateAsync({ id: task.id, body: { status } })
+  }
+
+  async function handleUpdateTaskContent(task: Task, content: string) {
+    await updateTaskMutation.mutateAsync({ id: task.id, body: { content } })
   }
 
   function handleToggleResourceCandidate(candidateID: string) {
@@ -416,12 +433,26 @@ export default function Tasks() {
 
   async function handleAddNodeToWeek(node: RoadmapNode) {
     if (!selectedLearningProjectID) return
+    const plannedDate = todayDateInputValue()
+    const linkedNodeTasks = (weekTasksQuery.data?.tasks ?? []).filter(
+      (task) =>
+        task.roadmap_node_id === node.id &&
+        (!task.project_id || task.project_id === selectedLearningProjectID),
+    )
+    const hasExistingTaskToday = linkedNodeTasks.some(
+      (task) =>
+        isTaskPlannedOnDate(task, plannedDate),
+    )
+    if (hasExistingTaskToday) {
+      setSelectedNodeID(node.id)
+      return
+    }
     await createTaskMutation.mutateAsync({
-      title: node.title,
+      title: formatRoadmapTaskTitle(node.title, linkedNodeTasks.length + 1),
       project_id: selectedLearningProjectID,
       roadmap_node_id: node.id,
-      planned_date: todayDateInputValue(),
-      due: dateInputToUnix(todayDateInputValue()),
+      planned_date: plannedDate,
+      due: dateInputToUnix(plannedDate),
       horizon: 'week',
       scope: 'daily',
     })
@@ -589,6 +620,8 @@ export default function Tasks() {
             onTitleChange={setLongTitle}
             onSubmit={handleAddLongTask}
             onToggle={handleToggleTask}
+            onStatusChange={handleUpdateLongTaskStatus}
+            isUpdating={updateTaskMutation.isPending}
           />
         )}
 
@@ -665,6 +698,7 @@ export default function Tasks() {
           onDelete={handleDeleteRoadmapNode}
           onAddNodeToWeek={handleAddNodeToWeek}
           onToggleTask={handleToggleTask}
+          onSaveTaskContent={handleUpdateTaskContent}
         />
       )}
     </div>
@@ -756,6 +790,8 @@ function LongTaskView({
   onTitleChange,
   onSubmit,
   onToggle,
+  onStatusChange,
+  isUpdating,
 }: {
   tasks: Task[]
   projects: TaskProject[]
@@ -766,14 +802,18 @@ function LongTaskView({
   onTitleChange: (value: string) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
   onToggle: (task: Task) => void
+  onStatusChange: (task: Task, status: LongTaskStatus) => void
+  isUpdating: boolean
 }) {
-  const tasksByProject = useMemo(() => {
-    const grouped = new Map<string, Task[]>()
+  const tasksByStatus = useMemo(() => {
+    const grouped = new Map<LongTaskStatus, Task[]>(longTaskStatusOrder.map((status) => [status, []]))
     for (const task of tasks) {
-      const key = task.project || '未命名项目'
-      grouped.set(key, [...(grouped.get(key) ?? []), task])
+      const status = normalizeLongTaskStatus(task)
+      grouped.set(status, [...(grouped.get(status) ?? []), task])
     }
-    return [...grouped.entries()]
+    return longTaskStatusOrder
+      .map((status) => ({ status, tasks: grouped.get(status) ?? [] }))
+      .filter((group) => group.tasks.length > 0)
   }, [tasks])
 
   return (
@@ -802,22 +842,135 @@ function LongTaskView({
 
       {projects.length === 0 ? (
         <p className="empty-copy">先在左侧新增一个任务项目</p>
-      ) : tasksByProject.length === 0 ? (
+      ) : tasksByStatus.length === 0 ? (
         <p className="empty-copy">还没有长期任务</p>
       ) : (
-        tasksByProject.map(([project, projectTasks]) => (
-          <div key={project} className="task-section">
-            <span>{project}</span>
-            <div className="row-stack">
-              {projectTasks.map((task) => (
-                <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
-              ))}
-            </div>
-          </div>
-        ))
+        <div className="long-task-status-groups" data-testid="long-task-status-groups">
+          {tasksByStatus.map(({ status, tasks: statusTasks }) => (
+            <section
+              key={status}
+              className="task-section long-task-section"
+              data-testid={`long-task-status-${status}`}
+            >
+              <div className="long-task-section-heading">
+                <h3>{longTaskStatusLabels[status]}</h3>
+                <span>{statusTasks.length}</span>
+              </div>
+              <div className="row-stack">
+                {statusTasks.map((task) => (
+                  <LongTaskRow
+                    key={task.id}
+                    task={task}
+                    isUpdating={isUpdating}
+                    onToggle={() => onToggle(task)}
+                    onStatusChange={(nextStatus) => onStatusChange(task, nextStatus)}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       )}
     </div>
   )
+}
+
+function LongTaskRow({
+  task,
+  isUpdating,
+  onToggle,
+  onStatusChange,
+}: {
+  task: Task
+  isUpdating: boolean
+  onToggle: () => void
+  onStatusChange: (status: LongTaskStatus) => void
+}) {
+  const status = normalizeLongTaskStatus(task)
+  const project = task.project || '未命名项目'
+
+  return (
+    <div className={`task-row long-task-row long-task-row-${status}`}>
+      <button
+        type="button"
+        className="long-task-done-toggle"
+        aria-label={task.done ? `重新打开 ${task.title}` : `完成 ${task.title}`}
+        onClick={onToggle}
+      >
+        {status === 'done' ? '✓' : ''}
+      </button>
+      <div className="long-task-copy">
+        <strong className={status === 'done' ? 'is-done' : ''}>{task.title}</strong>
+        <small>
+          {project} · 最近进展 {formatLongTaskUpdatedAt(task.updated_at)}
+        </small>
+      </div>
+      <select
+        className="long-task-status-select"
+        aria-label={`更新长期任务状态：${task.title}`}
+        value={status}
+        disabled={isUpdating}
+        onChange={(event) => onStatusChange(event.target.value as LongTaskStatus)}
+      >
+        {longTaskStatusOrder.map((value) => (
+          <option key={value} value={value}>
+            {longTaskStatusLabels[value]}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+function normalizeLongTaskStatus(task: Task): LongTaskStatus {
+  if (task.done === 1 || task.status === 'done') return 'done'
+  if (task.status === 'active') return 'active'
+  if (task.status === 'blocked') return 'blocked'
+  return 'open'
+}
+
+function formatLongTaskUpdatedAt(updatedAt: number) {
+  if (!updatedAt) return '未知'
+  return new Date(updatedAt * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+function getTaskPlannedDate(task: Task) {
+  if (task.planned_date) return task.planned_date
+  if (!task.due) return ''
+  return dateToInputValue(new Date(task.due * 1000))
+}
+
+function isTaskPlannedOnDate(task: Task, plannedDate: string) {
+  return getTaskPlannedDate(task) === plannedDate
+}
+
+function compareRoadmapLinkedTasks(a: Task, b: Task) {
+  const dateCompare = getTaskPlannedDate(a).localeCompare(getTaskPlannedDate(b))
+  if (dateCompare !== 0) return dateCompare
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at
+  return a.id.localeCompare(b.id)
+}
+
+function formatRoadmapTaskStatus(task: Task) {
+  if (task.done === 1 || task.status === 'done') return '已完成'
+  if (task.status === 'active') return '进行中'
+  if (task.status === 'blocked') return '阻塞'
+  return '未完成'
+}
+
+function formatRoadmapTaskCreatedAt(createdAt: number) {
+  if (!createdAt) return '未知时间'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(createdAt * 1000))
+}
+
+function formatRoadmapTaskTitle(baseTitle: string, sequence: number) {
+  if (/第\s*\d+\s*次推进/.test(baseTitle)) return baseTitle
+  return `${baseTitle} · 第 ${sequence} 次推进`
 }
 
 function RoadmapTaskView({
@@ -1311,6 +1464,7 @@ function RoadmapNodeDialog({
   onDelete,
   onAddNodeToWeek,
   onToggleTask,
+  onSaveTaskContent,
 }: {
   node: RoadmapNode
   tasks: Task[]
@@ -1323,6 +1477,7 @@ function RoadmapNodeDialog({
   onDelete: (nodeID: string) => Promise<void>
   onAddNodeToWeek: (node: RoadmapNode) => Promise<void>
   onToggleTask: (task: Task) => Promise<void>
+  onSaveTaskContent: (task: Task, content: string) => Promise<void>
 }) {
   const [title, setTitle] = useState(node.title)
   const [description, setDescription] = useState(node.description)
@@ -1342,6 +1497,7 @@ function RoadmapNodeDialog({
 
   const doneCount = tasks.filter((task) => task.done === 1 || task.status === 'done').length
   const progressPercent = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0
+  const linkedTasks = useMemo(() => [...tasks].sort(compareRoadmapLinkedTasks), [tasks])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1459,15 +1615,88 @@ function RoadmapNodeDialog({
           {tasks.length === 0 ? (
             <p className="empty-copy">暂无关联任务</p>
           ) : (
-            tasks.map((task) => (
-              <TaskRow key={task.id} task={task} onToggle={() => {
-                if (!isUpdatingTask) onToggleTask(task)
-              }} />
+            linkedTasks.map((task, index) => (
+              <RoadmapLinkedTaskRow
+                key={task.id}
+                task={task}
+                sequence={index + 1}
+                isUpdating={isUpdatingTask}
+                onToggle={() => onToggleTask(task)}
+                onSaveContent={(content) => onSaveTaskContent(task, content)}
+              />
             ))
           )}
         </div>
       </section>
     </div>
+  )
+}
+
+function RoadmapLinkedTaskRow({
+  task,
+  sequence,
+  isUpdating,
+  onToggle,
+  onSaveContent,
+}: {
+  task: Task
+  sequence: number
+  isUpdating: boolean
+  onToggle: () => void
+  onSaveContent: (content: string) => Promise<void>
+}) {
+  const [content, setContent] = useState(task.content ?? '')
+  const isDone = task.done === 1 || task.status === 'done'
+  const plannedDate = getTaskPlannedDate(task)
+  const title = formatRoadmapTaskTitle(task.title, sequence)
+  const actionLabel = isDone ? `重新打开 ${title}` : `完成 ${title}`
+  const isDirty = content.trim() !== (task.content ?? '').trim()
+
+  useEffect(() => {
+    setContent(task.content ?? '')
+  }, [task.content, task.id])
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await onSaveContent(content)
+  }
+
+  return (
+    <article className={`roadmap-linked-task-row${isDone ? ' is-done' : ''}${isUpdating ? ' is-updating' : ''}`}>
+      <button
+        type="button"
+        className="roadmap-linked-task-check"
+        aria-label={actionLabel}
+        disabled={isUpdating}
+        onClick={onToggle}
+      >
+        {isDone ? '✓' : ''}
+      </button>
+      <div className="roadmap-linked-task-copy">
+        <strong>{title}</strong>
+        <small className="roadmap-linked-task-meta">
+          <span>第 {sequence} 次</span>
+          {plannedDate && <span>{plannedDate}</span>}
+          <span>{formatRoadmapTaskStatus(task)}</span>
+          <span>创建 {formatRoadmapTaskCreatedAt(task.created_at)}</span>
+          {task.project && <span>{task.project}</span>}
+        </small>
+        <form className="roadmap-linked-task-content-form" onSubmit={handleSubmit}>
+          <label>
+            <span>具体任务内容</span>
+            <textarea
+              aria-label={`任务内容：${title}`}
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder="写下这次推进要完成的具体步骤、材料或验收点"
+            />
+          </label>
+          <button type="submit" disabled={isUpdating || !isDirty}>
+            保存任务内容
+          </button>
+        </form>
+      </div>
+    </article>
   )
 }
 
