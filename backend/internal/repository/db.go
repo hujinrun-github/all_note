@@ -52,6 +52,10 @@ func nowUnix() int64 {
 }
 
 func migrateDB() error {
+	return RunLegacySQLiteMigrations(DB)
+}
+
+func RunLegacySQLiteMigrations(db *sql.DB) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS task_projects (
 			id TEXT PRIMARY KEY,
@@ -120,11 +124,11 @@ func migrateDB() error {
 		`ALTER TABLE note_sync_state ADD COLUMN last_direction TEXT`,
 	}
 	for _, stmt := range statements {
-		if _, err := DB.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
+		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}
 	}
-	if _, err := DB.Exec(`
+	if _, err := db.Exec(`
 		UPDATE note_sync_state
 		SET external_hash = content_hash
 		WHERE status = 'synced'
@@ -132,7 +136,7 @@ func migrateDB() error {
 	`); err != nil {
 		return err
 	}
-	return migrateTaskProjects()
+	return migrateTaskProjectsWithDB(db)
 }
 
 func isDuplicateColumnError(err error) bool {
@@ -140,15 +144,19 @@ func isDuplicateColumnError(err error) bool {
 }
 
 func migrateTaskProjects() error {
+	return migrateTaskProjectsWithDB(DB)
+}
+
+func migrateTaskProjectsWithDB(db *sql.DB) error {
 	now := nowUnix()
-	if _, err := DB.Exec(`
+	if _, err := db.Exec(`
 		INSERT OR IGNORE INTO task_projects (id, name, type, description, created_at, updated_at)
 		VALUES ('personal', '个人', 'personal', '默认个人任务项目', ?, ?)
 	`, now, now); err != nil {
 		return err
 	}
 
-	rows, err := DB.Query(`
+	rows, err := db.Query(`
 		SELECT DISTINCT TRIM(project)
 		FROM tasks
 		WHERE project IS NOT NULL AND TRIM(project) <> ''
@@ -183,7 +191,7 @@ func migrateTaskProjects() error {
 			projects = append(projects, legacyProject{id: "personal", name: name})
 			continue
 		}
-		id, err := ensureTaskProjectByName(name, "regular")
+		id, err := ensureTaskProjectByNameWithDB(db, name, "regular")
 		if err != nil {
 			return err
 		}
@@ -191,7 +199,7 @@ func migrateTaskProjects() error {
 	}
 
 	for _, project := range projects {
-		if _, err := DB.Exec(`
+		if _, err := db.Exec(`
 			UPDATE tasks
 			SET project_id = ?
 			WHERE project IS NOT NULL AND TRIM(project) = ?
@@ -201,7 +209,7 @@ func migrateTaskProjects() error {
 		}
 	}
 
-	_, err = DB.Exec(`
+	_, err = db.Exec(`
 		UPDATE tasks
 		SET
 			project_id = COALESCE(NULLIF(TRIM(project_id), ''), 'personal'),
@@ -221,4 +229,42 @@ func migrateTaskProjects() error {
 			OR planned_date IS NULL
 	`)
 	return err
+}
+
+func ensureTaskProjectByNameWithDB(db *sql.DB, name string, projectType string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "personal", nil
+	}
+	if trimmed == "个人" || strings.EqualFold(trimmed, "personal") {
+		return "personal", nil
+	}
+
+	var id string
+	err := db.QueryRow(`SELECT id FROM task_projects WHERE name = ?`, trimmed).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+
+	projectType = normalizeProjectType(projectType)
+	id = "project-" + newUUID()
+	now := nowUnix()
+	if _, err := db.Exec(`
+		INSERT INTO task_projects (id, name, type, description, created_at, updated_at)
+		VALUES (?, ?, ?, '', ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			type = excluded.type,
+			updated_at = excluded.updated_at
+	`, id, trimmed, projectType, now, now); err != nil {
+		return "", err
+	}
+
+	err = db.QueryRow(`SELECT id FROM task_projects WHERE name = ?`, trimmed).Scan(&id)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
