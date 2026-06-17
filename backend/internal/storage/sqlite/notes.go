@@ -194,3 +194,75 @@ func scanSQLiteNotes(rows *sql.Rows) ([]model.Note, error) {
 	}
 	return notes, rows.Err()
 }
+
+// setNoteProjectLinks merges project links for a note using merge strategy:
+// inserts new links, deletes removed ones, keeps existing (preserving created_at).
+func setNoteProjectLinks(ctx context.Context, runner sqliteRunner, noteID string, projectIDs []string) error {
+	if projectIDs == nil {
+		return nil // nil means don't modify
+	}
+	if len(projectIDs) == 0 {
+		_, err := runner.ExecContext(ctx,
+			`DELETE FROM note_project_links WHERE note_id = ?`, noteID)
+		return err
+	}
+	// Build placeholders for the NOT IN clause
+	placeholders := make([]string, len(projectIDs))
+	args := make([]interface{}, 0, len(projectIDs)+1)
+	args = append(args, noteID)
+	for i, pid := range projectIDs {
+		placeholders[i] = "?"
+		args = append(args, pid)
+	}
+	// Delete links not in the new set
+	query := fmt.Sprintf(
+		`DELETE FROM note_project_links WHERE note_id = ? AND project_id NOT IN (%s)`,
+		strings.Join(placeholders, ","))
+	if _, err := runner.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	// Insert new links (INSERT OR IGNORE keeps original created_at for existing)
+	for _, pid := range projectIDs {
+		_, err := runner.ExecContext(ctx,
+			`INSERT OR IGNORE INTO note_project_links (note_id, project_id, created_at)
+			 VALUES (?, ?, ?)`, noteID, pid, nowUnix())
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// getNotesProjects fetches project info for a batch of note IDs.
+func getNotesProjects(ctx context.Context, runner sqliteRunner, noteIDs []string) (map[string][]model.NoteProject, error) {
+	if len(noteIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(noteIDs))
+	args := make([]interface{}, len(noteIDs))
+	for i, id := range noteIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT npl.note_id, tp.id, tp.name, tp.type
+		 FROM note_project_links npl
+		 JOIN task_projects tp ON tp.id = npl.project_id
+		 WHERE npl.note_id IN (%s)
+		 ORDER BY tp.name ASC`, strings.Join(placeholders, ","))
+	rows, err := runner.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]model.NoteProject)
+	for rows.Next() {
+		var noteID string
+		var np model.NoteProject
+		if err := rows.Scan(&noteID, &np.ID, &np.Name, &np.Type); err != nil {
+			return nil, err
+		}
+		result[noteID] = append(result[noteID], np)
+	}
+	return result, rows.Err()
+}
