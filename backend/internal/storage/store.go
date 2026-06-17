@@ -105,7 +105,23 @@ type InboxRepository interface {
 	BatchArchive(context.Context, []string) (int64, error)
 	BatchDelete(context.Context, []string) (int64, error)
 }
-type RoadmapRepository interface{}
+type RoadmapRepository interface {
+	ReplaceLearningRoadmap(context.Context, *model.LearningRoadmap) (*model.LearningRoadmap, error)
+	SaveFailedLearningRoadmap(context.Context, string, string, string) (*model.LearningRoadmap, error)
+	GetLearningRoadmap(context.Context, string) (*model.LearningRoadmap, error)
+	GetLearningRoadmapByID(context.Context, string) (*model.LearningRoadmap, error)
+	ListRoadmapNodes(context.Context, string) ([]model.RoadmapNode, error)
+	ListRoadmapEdges(context.Context, string) ([]model.RoadmapEdge, error)
+	GetRoadmapNode(context.Context, string) (*model.RoadmapNode, error)
+	CreateRoadmapNode(context.Context, *model.RoadmapNode, *model.RoadmapEdge) (*model.RoadmapNode, error)
+	UpdateRoadmapNode(context.Context, string, *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error)
+	DeleteRoadmapNode(context.Context, string) error
+	UpdateRoadmapNodeStatus(context.Context, string, string) error
+	UpdateRoadmapLayout(context.Context, string, []model.RoadmapLayoutNode) error
+	ListRoadmapResources(context.Context, string) ([]model.RoadmapResource, error)
+	AddRoadmapResource(context.Context, *model.RoadmapResource) error
+	DeleteRoadmapResource(context.Context, string) error
+}
 type SyncRepository interface{}
 type SearchRepository interface {
 	Search(context.Context, string, int, int) ([]model.SearchResult, int, error)

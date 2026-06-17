@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS roadmap_nodes (
   x REAL NOT NULL DEFAULT 0,
   y REAL NOT NULL DEFAULT 0,
   order_index INTEGER NOT NULL DEFAULT 0,
+  article_search_queries TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

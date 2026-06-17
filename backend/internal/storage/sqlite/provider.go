@@ -158,7 +158,7 @@ func (s *store) Inbox() storage.InboxRepository {
 }
 
 func (s *store) Roadmaps() storage.RoadmapRepository {
-	panic("sqlite roadmap repository is not implemented yet")
+	return roadmapRepository{db: s.db}
 }
 
 func (s *store) Sync() storage.SyncRepository {
@@ -196,4 +196,8 @@ func (s *storeTx) Events() storage.EventRepository {
 
 func (s *storeTx) Inbox() storage.InboxRepository {
 	return inboxRepository{db: s.tx}
+}
+
+func (s *storeTx) Roadmaps() storage.RoadmapRepository {
+	return roadmapRepository{db: s.tx}
 }

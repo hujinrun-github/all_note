@@ -88,6 +88,7 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 			x REAL NOT NULL DEFAULT 0,
 			y REAL NOT NULL DEFAULT 0,
 			order_index INTEGER NOT NULL DEFAULT 0,
+			article_search_queries TEXT NOT NULL DEFAULT '[]',
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -116,6 +117,7 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 		`ALTER TABLE tasks ADD COLUMN horizon TEXT NOT NULL DEFAULT 'week'`,
 		`ALTER TABLE tasks ADD COLUMN roadmap_node_id TEXT`,
 		`ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE roadmap_nodes ADD COLUMN article_search_queries TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE sync_targets ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_id TEXT`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_url TEXT`,
