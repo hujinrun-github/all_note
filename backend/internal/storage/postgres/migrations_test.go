@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -161,6 +162,37 @@ func TestRunPostgresMigrationsWaitsForAdvisoryLockBeforeBootstrap(t *testing.T) 
 		t.Fatalf("run migrations after releasing advisory lock: %v", err)
 	}
 	assertRowCount(t, db, `SELECT COUNT(*) FROM schema_migrations WHERE version = '0001_init_postgres.sql'`, 1)
+}
+
+func TestRunPostgresMigrationsContextTimesOutWaitingForAdvisoryLock(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_context_lock_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+
+	lockConn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("open lock connection: %v", err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtext('flowspace_schema_migrations'))`); err != nil {
+		t.Fatalf("hold advisory lock: %v", err)
+	}
+	defer func() {
+		_, _ = lockConn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtext('flowspace_schema_migrations'))`)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	err = RunPostgresMigrationsContext(ctx, db)
+	elapsed := time.Since(startedAt)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected migration lock wait to honor context promptly, took %s", elapsed)
+	}
+	assertRowCount(t, db, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'schema_migrations'`, 0)
 }
 
 func TestRunPostgresMigrationsFromDirUsesSQLFiles(t *testing.T) {

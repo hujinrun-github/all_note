@@ -23,20 +23,27 @@ type postgresMigration struct {
 }
 
 func RunPostgresMigrations(db *sql.DB) error {
+	return RunPostgresMigrationsContext(context.Background(), db)
+}
+
+func RunPostgresMigrationsContext(ctx context.Context, db *sql.DB) error {
 	dir, err := findPostgresMigrationsDir()
 	if err != nil {
 		return err
 	}
-	return RunPostgresMigrationsFromDir(db, dir)
+	return RunPostgresMigrationsFromDirContext(ctx, db, dir)
 }
 
 func RunPostgresMigrationsFromDir(db *sql.DB, dir string) error {
+	return RunPostgresMigrationsFromDirContext(context.Background(), db, dir)
+}
+
+func RunPostgresMigrationsFromDirContext(ctx context.Context, db *sql.DB, dir string) error {
 	migrations, err := loadPostgresMigrationsFromDir(dir)
 	if err != nil {
 		return err
 	}
 
-	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("open migration connection: %w", err)
@@ -69,7 +76,7 @@ func RunPostgresMigrationsFromDir(db *sql.DB, dir string) error {
 		}
 	}
 
-	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_unlock(`+migrationLockSQL+`)`); err != nil {
+	if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(`+migrationLockSQL+`)`); err != nil {
 		return fmt.Errorf("unlock migration runner: %w", err)
 	}
 	locked = false
