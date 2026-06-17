@@ -76,6 +76,7 @@ func Setup() *gin.Engine {
 
 		api.GET("/search", handler.Search)
 		api.GET("/today", handler.GetToday)
+		api.GET("/summary", handler.GetSummary)
 	}
 
 	return r
