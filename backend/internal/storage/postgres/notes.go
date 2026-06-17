@@ -292,3 +292,60 @@ func upsertNoteSearchIndex(ctx context.Context, tx *sql.Tx, note *model.Note, ta
 	`, note.ID, note.Title, note.Body, pq.Array(tags), unixToTime(note.UpdatedAt))
 	return err
 }
+
+// setNoteProjectLinks merges project links for a note using merge strategy.
+// nil projectIDs = no-op, empty = delete all, non-empty = merge.
+func setNoteProjectLinks(ctx context.Context, runner postgresRunner, noteID string, projectIDs []string) error {
+	if projectIDs == nil {
+		return nil
+	}
+	if len(projectIDs) == 0 {
+		_, err := runner.ExecContext(ctx,
+			`DELETE FROM note_project_links WHERE note_id = $1`, noteID)
+		return err
+	}
+	// Delete links not in the new set
+	_, err := runner.ExecContext(ctx,
+		`DELETE FROM note_project_links WHERE note_id = $1 AND project_id != ALL($2::text[])`,
+		noteID, pq.Array(projectIDs))
+	if err != nil {
+		return err
+	}
+	// Insert new links (ON CONFLICT DO NOTHING keeps original created_at)
+	for _, pid := range projectIDs {
+		_, err := runner.ExecContext(ctx,
+			`INSERT INTO note_project_links (note_id, project_id)
+			 VALUES ($1, $2) ON CONFLICT DO NOTHING`, noteID, pid)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// getNotesProjects fetches project info for a batch of note IDs.
+func getNotesProjects(ctx context.Context, runner postgresRunner, noteIDs []string) (map[string][]model.NoteProject, error) {
+	if len(noteIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := runner.QueryContext(ctx,
+		`SELECT npl.note_id, tp.id, tp.name, tp.type
+		 FROM note_project_links npl
+		 JOIN task_projects tp ON tp.id = npl.project_id
+		 WHERE npl.note_id = ANY($1::text[])
+		 ORDER BY tp.name ASC`, pq.Array(noteIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]model.NoteProject)
+	for rows.Next() {
+		var noteID string
+		var np model.NoteProject
+		if err := rows.Scan(&noteID, &np.ID, &np.Name, &np.Type); err != nil {
+			return nil, err
+		}
+		result[noteID] = append(result[noteID], np)
+	}
+	return result, rows.Err()
+}
