@@ -21,20 +21,35 @@ type noteRepository struct {
 }
 
 func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]model.Note, int, error) {
-	where := "1=1"
-	args := []interface{}{}
+	var where []string
+	var args []interface{}
+
 	if strings.TrimSpace(filter.FolderID) != "" {
-		where = "n.folder_id = ?"
+		where = append(where, "n.folder_id = ?")
 		args = append(args, filter.FolderID)
+	}
+	if filter.ProjectID != "" {
+		where = append(where,
+			`EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id AND npl.project_id = ?)`)
+		args = append(args, filter.ProjectID)
+	}
+	if filter.Unassigned {
+		where = append(where,
+			`NOT EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id)`)
+	}
+
+	whereClause := "1=1"
+	if len(where) > 0 {
+		whereClause = strings.Join(where, " AND ")
 	}
 
 	var total int
-	if err := r.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", where), args...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", whereClause), args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	order := "n.created_at DESC"
-	if filter.Query == "az" {
+	if filter.Sort == "az" {
 		order = "n.title ASC"
 	}
 
@@ -50,10 +65,13 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 	query := fmt.Sprintf(`
 		SELECT n.id, n.title, n.body, n.folder_id, n.tags, n.created_at, n.updated_at
 		FROM notes n WHERE %s ORDER BY %s LIMIT ? OFFSET ?
-	`, where, order)
-	args = append(args, pageSize, offset)
+	`, whereClause, order)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	selectArgs := make([]interface{}, len(args))
+	copy(selectArgs, args)
+	selectArgs = append(selectArgs, pageSize, offset)
+
+	rows, err := r.db.QueryContext(ctx, query, selectArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -63,6 +81,20 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 	if err != nil {
 		return nil, 0, err
 	}
+
+	// Batch load projects for the notes on this page.
+	noteIDs := make([]string, len(notes))
+	for i, n := range notes {
+		noteIDs[i] = n.ID
+	}
+	projectsMap, err := getNotesProjects(ctx, r.db, noteIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range notes {
+		notes[i].Projects = projectsMap[notes[i].ID]
+	}
+
 	return notes, total, nil
 }
 
@@ -75,6 +107,14 @@ func (r noteRepository) GetByID(ctx context.Context, id string) (*model.Note, er
 	if err != nil {
 		return nil, err
 	}
+
+	// Load projects for this note.
+	projectsMap, err := getNotesProjects(ctx, r.db, []string{note.ID})
+	if err != nil {
+		return nil, err
+	}
+	note.Projects = projectsMap[note.ID]
+
 	return &note, nil
 }
 
@@ -196,7 +236,26 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 		return nil, err
 	}
 	defer rows.Close()
-	return scanSQLiteNotes(rows)
+
+	notes, err := scanSQLiteNotes(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Batch load projects for recent notes.
+	noteIDs := make([]string, len(notes))
+	for i, n := range notes {
+		noteIDs[i] = n.ID
+	}
+	projectsMap, err := getNotesProjects(ctx, r.db, noteIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range notes {
+		notes[i].Projects = projectsMap[notes[i].ID]
+	}
+
+	return notes, nil
 }
 
 func scanSQLiteNotes(rows *sql.Rows) ([]model.Note, error) {
