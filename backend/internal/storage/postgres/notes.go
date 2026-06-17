@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,20 +24,35 @@ type noteRepository struct {
 }
 
 func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]model.Note, int, error) {
-	where := "1=1"
+	var where []string
 	args := []interface{}{}
+
 	if strings.TrimSpace(filter.FolderID) != "" {
-		where = "n.folder_id = $1"
+		where = append(where, "n.folder_id = $1")
 		args = append(args, filter.FolderID)
+	}
+	if filter.ProjectID != "" {
+		where = append(where,
+			`EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id AND npl.project_id = $`+strconv.Itoa(len(args)+1)+`)`)
+		args = append(args, filter.ProjectID)
+	}
+	if filter.Unassigned {
+		where = append(where,
+			`NOT EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id)`)
+	}
+
+	whereClause := "1=1"
+	if len(where) > 0 {
+		whereClause = strings.Join(where, " AND ")
 	}
 
 	var total int
-	if err := r.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", where), args...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", whereClause), args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	order := "n.created_at DESC"
-	if filter.Query == "az" {
+	if filter.Sort == "az" {
 		order = "n.title ASC"
 	}
 	page := filter.Page
@@ -48,15 +64,19 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 		pageSize = 20
 	}
 	offset := (page - 1) * pageSize
-	limitPlaceholder := pgPlaceholder(len(args) + 1)
-	offsetPlaceholder := pgPlaceholder(len(args) + 2)
+
+	selectArgs := make([]interface{}, len(args))
+	copy(selectArgs, args)
+	limitPlaceholder := pgPlaceholder(len(selectArgs) + 1)
+	offsetPlaceholder := pgPlaceholder(len(selectArgs) + 2)
+	selectArgs = append(selectArgs, pageSize, offset)
+
 	query := fmt.Sprintf(`
 		SELECT n.id, n.title, n.body, n.folder_id, n.tags, n.created_at, n.updated_at
 		FROM notes n WHERE %s ORDER BY %s LIMIT %s OFFSET %s
-	`, where, order, limitPlaceholder, offsetPlaceholder)
-	args = append(args, pageSize, offset)
+	`, whereClause, order, limitPlaceholder, offsetPlaceholder)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, query, selectArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -66,6 +86,20 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 	if err != nil {
 		return nil, 0, err
 	}
+
+	// Batch load projects for the notes on this page.
+	noteIDs := make([]string, len(notes))
+	for i, n := range notes {
+		noteIDs[i] = n.ID
+	}
+	projectsMap, err := getNotesProjects(ctx, r.db, noteIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range notes {
+		notes[i].Projects = projectsMap[notes[i].ID]
+	}
+
 	return notes, total, nil
 }
 
@@ -74,7 +108,19 @@ func (r noteRepository) GetByID(ctx context.Context, id string) (*model.Note, er
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
 		FROM notes WHERE id = $1
 	`, id)
-	return scanPostgresNote(row)
+	note, err := scanPostgresNote(row)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load projects for this note.
+	projectsMap, err := getNotesProjects(ctx, r.db, []string{note.ID})
+	if err != nil {
+		return nil, err
+	}
+	note.Projects = projectsMap[note.ID]
+
+	return note, nil
 }
 
 func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest) (*model.Note, error) {
@@ -87,6 +133,14 @@ func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest
 	}
 	if err := r.CreateWithID(ctx, note); err != nil {
 		return nil, err
+	}
+	// Insert project links if provided.
+	if len(req.ProjectIDs) > 0 {
+		if err := r.withTx(ctx, func(tx *sql.Tx) error {
+			return setNoteProjectLinks(ctx, tx, note.ID, req.ProjectIDs)
+		}); err != nil {
+			return nil, fmt.Errorf("insert project links: %w", err)
+		}
 	}
 	return r.GetByID(ctx, note.ID)
 }
@@ -170,6 +224,12 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 		if err := upsertNoteSearchIndex(ctx, tx, note, tags); err != nil {
 			return err
 		}
+		// Merge project links if provided.
+		if req.ProjectIDs != nil {
+			if err := setNoteProjectLinks(ctx, tx, id, *req.ProjectIDs); err != nil {
+				return fmt.Errorf("update project links: %w", err)
+			}
+		}
 		updated = note
 		return nil
 	})
@@ -210,7 +270,26 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 		return nil, err
 	}
 	defer rows.Close()
-	return scanPostgresNotes(rows)
+
+	notes, err := scanPostgresNotes(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Batch load projects for recent notes.
+	noteIDs := make([]string, len(notes))
+	for i, n := range notes {
+		noteIDs[i] = n.ID
+	}
+	projectsMap, err := getNotesProjects(ctx, r.db, noteIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range notes {
+		notes[i].Projects = projectsMap[notes[i].ID]
+	}
+
+	return notes, nil
 }
 
 func (r noteRepository) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
