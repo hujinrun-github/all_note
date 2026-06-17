@@ -112,6 +112,37 @@ func CreateNote(n *model.Note) error {
 	return err
 }
 
+// CreateNoteWithProjectIDs creates a note with project links.
+// Uses the store's Create method which handles project_ids in the same flow.
+func CreateNoteWithProjectIDs(req *model.CreateNoteRequest) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Create(context.Background(), req)
+	}
+	// Legacy SQLite path: create note, then insert project links
+	id := newUUID()
+	now := nowUnix()
+	folderID := req.FolderID
+	if folderID == "" {
+		folderID = "__uncategorized"
+	}
+	tags := req.Tags
+	if tags == "" {
+		tags = "[]"
+	}
+	_, err := DB.Exec(`
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, req.Title, req.Body, folderID, tags, now, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, pid := range req.ProjectIDs {
+		DB.Exec(`INSERT OR IGNORE INTO note_project_links (note_id, project_id, created_at)
+			VALUES (?, ?, ?)`, id, pid, now)
+	}
+	return GetNoteByID(id)
+}
+
 func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
 	if store := CurrentStore(); store != nil {
 		note := &model.Note{

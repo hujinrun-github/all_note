@@ -19,16 +19,7 @@ func CreateNote(req *model.CreateNoteRequest) (*model.Note, error) {
 	if req.Tags == "" {
 		req.Tags = "[]"
 	}
-	note := &model.Note{
-		Title:    req.Title,
-		Body:     req.Body,
-		FolderID: req.FolderID,
-		Tags:     req.Tags,
-	}
-	if err := repository.CreateNote(note); err != nil {
-		return nil, err
-	}
-	return note, nil
+	return repository.CreateNoteWithProjectIDs(req)
 }
 
 func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {

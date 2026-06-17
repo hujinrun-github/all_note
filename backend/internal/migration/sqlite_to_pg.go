@@ -237,7 +237,8 @@ func ensurePostgresMigrationTargetEmpty(db *sql.DB) error {
 
 	tables := []string{
 		"notes", "tasks", "events", "inbox", "learning_roadmaps", "roadmap_nodes",
-		"roadmap_edges", "roadmap_resources", "sync_targets", "note_sync_state", "search_index",
+		"roadmap_edges", "roadmap_resources", "sync_targets", "note_sync_state",
+	"note_project_links", "search_index",
 	}
 	for _, table := range tables {
 		var count int

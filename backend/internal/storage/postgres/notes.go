@@ -124,25 +124,61 @@ func (r noteRepository) GetByID(ctx context.Context, id string) (*model.Note, er
 }
 
 func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest) (*model.Note, error) {
-	note := &model.Note{
-		ID:       newID(),
-		Title:    req.Title,
-		Body:     req.Body,
-		FolderID: req.FolderID,
-		Tags:     req.Tags,
-	}
-	if err := r.CreateWithID(ctx, note); err != nil {
-		return nil, err
-	}
-	// Insert project links if provided.
-	if len(req.ProjectIDs) > 0 {
-		if err := r.withTx(ctx, func(tx *sql.Tx) error {
-			return setNoteProjectLinks(ctx, tx, note.ID, req.ProjectIDs)
-		}); err != nil {
-			return nil, fmt.Errorf("insert project links: %w", err)
-		}
-	}
-	return r.GetByID(ctx, note.ID)
+    note := &model.Note{
+        ID:       newID(),
+        Title:    req.Title,
+        Body:     req.Body,
+        FolderID: req.FolderID,
+        Tags:     req.Tags,
+    }
+    // Use a single transaction for note insert + search index + project links
+    if err := r.withTx(ctx, func(tx *sql.Tx) error {
+        if err := createNoteInTx(ctx, tx, note); err != nil {
+            return err
+        }
+        if len(req.ProjectIDs) > 0 {
+            if err := setNoteProjectLinks(ctx, tx, note.ID, req.ProjectIDs); err != nil {
+                return fmt.Errorf("insert project links: %w", err)
+            }
+        }
+        return nil
+    }); err != nil {
+        return nil, err
+    }
+    return r.GetByID(ctx, note.ID)
+}
+
+// createNoteInTx inserts a note and its search_index entry within a transaction.
+func createNoteInTx(ctx context.Context, tx *sql.Tx, note *model.Note) error {
+    if note == nil {
+        return fmt.Errorf("note is nil")
+    }
+    if strings.TrimSpace(note.ID) == "" {
+        note.ID = newID()
+    }
+    if strings.TrimSpace(note.FolderID) == "" {
+        note.FolderID = "__uncategorized"
+    }
+    tags, err := tagsJSONStringToArray(note.Tags)
+    if err != nil {
+        return fmt.Errorf("parse tags: %w", err)
+    }
+    if note.CreatedAt == 0 {
+        note.CreatedAt = nowUnix()
+    }
+    if note.UpdatedAt == 0 {
+        note.UpdatedAt = nowUnix()
+    }
+    note.Tags = tagsArrayToJSONString(tags)
+    _, err = tx.ExecContext(ctx,
+        `INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5::text[], $6, $7)`,
+        note.ID, note.Title, note.Body, note.FolderID,
+        pq.Array(tags), unixToTime(note.CreatedAt), unixToTime(note.UpdatedAt))
+    if err != nil {
+        return fmt.Errorf("insert note: %w", err)
+    }
+    return upsertNoteSearchIndex(ctx, tx, note, tags)
 }
 
 func (r noteRepository) CreateWithID(ctx context.Context, note *model.Note) error {
@@ -155,27 +191,14 @@ func (r noteRepository) CreateWithID(ctx context.Context, note *model.Note) erro
 	if strings.TrimSpace(note.FolderID) == "" {
 		note.FolderID = "__uncategorized"
 	}
-	tags, err := tagsJSONStringToArray(note.Tags)
-	if err != nil {
-		return err
-	}
-	now := nowUnix()
 	if note.CreatedAt == 0 {
-		note.CreatedAt = now
+		note.CreatedAt = nowUnix()
 	}
 	if note.UpdatedAt == 0 {
-		note.UpdatedAt = now
+		note.UpdatedAt = nowUnix()
 	}
-	note.Tags = tagsArrayToJSONString(tags)
-
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5::text[], $6, $7)
-		`, note.ID, note.Title, note.Body, note.FolderID, pq.Array(tags), unixToTime(note.CreatedAt), unixToTime(note.UpdatedAt)); err != nil {
-			return err
-		}
-		return upsertNoteSearchIndex(ctx, tx, note, tags)
+		return createNoteInTx(ctx, tx, note)
 	})
 }
 
