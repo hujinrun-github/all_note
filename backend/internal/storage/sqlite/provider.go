@@ -150,11 +150,11 @@ func (s *store) Tasks() storage.TaskRepository {
 }
 
 func (s *store) Events() storage.EventRepository {
-	panic("sqlite event repository is not implemented yet")
+	return eventRepository{db: s.db}
 }
 
 func (s *store) Inbox() storage.InboxRepository {
-	panic("sqlite inbox repository is not implemented yet")
+	return inboxRepository{db: s.db}
 }
 
 func (s *store) Roadmaps() storage.RoadmapRepository {
@@ -188,4 +188,12 @@ func (s *storeTx) Search() storage.SearchRepository {
 
 func (s *storeTx) Tasks() storage.TaskRepository {
 	return taskRepository{db: s.tx}
+}
+
+func (s *storeTx) Events() storage.EventRepository {
+	return eventRepository{db: s.tx}
+}
+
+func (s *storeTx) Inbox() storage.InboxRepository {
+	return inboxRepository{db: s.tx}
 }

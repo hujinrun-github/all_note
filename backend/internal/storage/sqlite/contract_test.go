@@ -56,3 +56,19 @@ func TestSQLiteTaskContract(t *testing.T) {
 		return store
 	})
 }
+
+func TestSQLiteEventInboxContract(t *testing.T) {
+	contracttest.RunEventInboxSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+
+		store, err := (Provider{}).Open(context.Background(), storage.Config{
+			Env:        "test",
+			Driver:     storage.DriverSQLite,
+			SQLitePath: filepath.Join(t.TempDir(), "flowspace.test.db"),
+		})
+		if err != nil {
+			t.Fatalf("open sqlite store: %v", err)
+		}
+		return store
+	})
+}

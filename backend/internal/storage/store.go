@@ -87,8 +87,24 @@ type TaskRepository interface {
 	Delete(context.Context, string) error
 	Today(context.Context, int64, int64, int64) ([]model.Task, []model.Task, error)
 }
-type EventRepository interface{}
-type InboxRepository interface{}
+type EventRepository interface {
+	List(context.Context, int64, int64, int, int) ([]model.Event, int, error)
+	Create(context.Context, *model.Event) error
+	Update(context.Context, string, *model.UpdateEventRequest) (*model.Event, error)
+	GetByID(context.Context, string) (*model.Event, error)
+	Delete(context.Context, string) error
+	Today(context.Context, int64, int64) ([]model.Event, error)
+}
+
+type InboxRepository interface {
+	List(context.Context, string, int, int) ([]model.InboxItem, int, error)
+	Create(context.Context, *model.InboxItem) error
+	GetByID(context.Context, string) (*model.InboxItem, error)
+	MarkConverted(context.Context, string, string) error
+	Delete(context.Context, string) error
+	BatchArchive(context.Context, []string) (int64, error)
+	BatchDelete(context.Context, []string) (int64, error)
+}
 type RoadmapRepository interface{}
 type SyncRepository interface{}
 type SearchRepository interface {

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,10 @@ import (
 )
 
 func GetEvents(monthStart, monthEnd int64, page, pageSize int) ([]model.Event, int, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Events().List(context.Background(), monthStart, monthEnd, page, pageSize)
+	}
+
 	var total int
 	DB.QueryRow(`
 		SELECT COUNT(*) FROM events
@@ -26,7 +31,7 @@ func GetEvents(monthStart, monthEnd int64, page, pageSize int) ([]model.Event, i
 	}
 	defer rows.Close()
 
-		events := make([]model.Event, 0)
+	events := make([]model.Event, 0)
 	for rows.Next() {
 		var e model.Event
 		if err := rows.Scan(&e.ID, &e.Title, &e.StartTime, &e.EndTime, &e.Location, &e.Kind, &e.NoteID, &e.CreatedAt, &e.UpdatedAt); err != nil {
@@ -38,6 +43,10 @@ func GetEvents(monthStart, monthEnd int64, page, pageSize int) ([]model.Event, i
 }
 
 func CreateEvent(e *model.Event) error {
+	if store := CurrentStore(); store != nil {
+		return store.Events().Create(context.Background(), e)
+	}
+
 	e.ID = newUUID()
 	now := nowUnix()
 	e.CreatedAt = now
@@ -53,6 +62,10 @@ func CreateEvent(e *model.Event) error {
 }
 
 func UpdateEvent(id string, req *model.UpdateEventRequest) (*model.Event, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Events().Update(context.Background(), id, req)
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -86,6 +99,10 @@ func UpdateEvent(id string, req *model.UpdateEventRequest) (*model.Event, error)
 }
 
 func GetEventByID(id string) (*model.Event, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Events().GetByID(context.Background(), id)
+	}
+
 	var e model.Event
 	err := DB.QueryRow(`
 		SELECT id, title, start_time, end_time, location, kind, note_id, created_at, updated_at
@@ -98,11 +115,19 @@ func GetEventByID(id string) (*model.Event, error) {
 }
 
 func DeleteEvent(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Events().Delete(context.Background(), id)
+	}
+
 	_, err := DB.Exec("DELETE FROM events WHERE id = ?", id)
 	return err
 }
 
 func GetTodayEvents(todayStart, todayEnd int64) ([]model.Event, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Events().Today(context.Background(), todayStart, todayEnd)
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, title, start_time, end_time, location, kind, note_id, created_at, updated_at
 		FROM events WHERE start_time < ? AND end_time > ? ORDER BY start_time ASC
@@ -112,7 +137,7 @@ func GetTodayEvents(todayStart, todayEnd int64) ([]model.Event, error) {
 	}
 	defer rows.Close()
 
-		events := make([]model.Event, 0)
+	events := make([]model.Event, 0)
 	for rows.Next() {
 		var e model.Event
 		rows.Scan(&e.ID, &e.Title, &e.StartTime, &e.EndTime, &e.Location, &e.Kind, &e.NoteID, &e.CreatedAt, &e.UpdatedAt)
