@@ -45,10 +45,13 @@ type FolderRepository interface {
 }
 
 type NoteFilter struct {
-	FolderID string
-	Query    string
-	Page     int
-	PageSize int
+	FolderID   string
+	ProjectID  string
+	Unassigned bool
+	Query      string
+	Sort       string // "recent" | "az"
+	Page       int
+	PageSize   int
 }
 
 type NoteRepository interface {
