@@ -382,7 +382,8 @@ func createOldTaskDB(t *testing.T, dbPath string) {
 			sort_order REAL NOT NULL DEFAULT 0,
 			note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
 			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
+			updated_at INTEGER NOT NULL,
+			completed_at INTEGER
 		);
 		CREATE VIRTUAL TABLE tasks_fts USING fts5(
 			title, content='tasks', content_rowid='rowid'

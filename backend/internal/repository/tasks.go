@@ -86,7 +86,8 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 			t.note_id,
 			t.roadmap_node_id,
 			t.created_at,
-			t.updated_at
+			t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 		WHERE %s
@@ -298,6 +299,20 @@ func UpdateTask(id string, req *model.UpdateTaskRequest) (*model.Task, error) {
 		return store.Tasks().Update(context.Background(), id, req)
 	}
 
+	tx, err := DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var currentDone int
+	if err := tx.QueryRow(`SELECT done FROM tasks WHERE id = ?`, id).Scan(&currentDone); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
+		return nil, err
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -337,15 +352,34 @@ func UpdateTask(id string, req *model.UpdateTaskRequest) (*model.Task, error) {
 		sets = append(sets, "priority = ?")
 		args = append(args, *req.Priority)
 	}
-	if req.Done != nil {
+	// Branch A: req.Done directly set
+	if req.Done != nil && req.Status == nil {
 		status := "open"
 		if *req.Done == 1 {
 			status = "done"
 		}
 		sets = append(sets, "done = ?", "status = ?")
 		args = append(args, *req.Done, status)
+		// TOCTOU: completed_at set/clear
+		if *req.Done == 1 && currentDone == 0 {
+			sets = append(sets, "completed_at = ?")
+			args = append(args, nowUnix())
+		} else if *req.Done == 0 && currentDone == 1 {
+			sets = append(sets, "completed_at = NULL")
+		}
 	}
+	// Branch B: req.Status indirectly changes done
 	if req.Status != nil {
+		newStatus := strings.ToLower(normalizeTaskStatus(*req.Status))
+		isCurrentlyDone := (currentDone == 1)
+		isBecomingDone := (newStatus == "done" && !isCurrentlyDone)
+		isBecomingUndone := (newStatus != "done" && isCurrentlyDone)
+		if isBecomingDone {
+			sets = append(sets, "completed_at = ?")
+			args = append(args, nowUnix())
+		} else if isBecomingUndone {
+			sets = append(sets, "completed_at = NULL")
+		}
 		status := normalizeTaskStatus(*req.Status)
 		done := 0
 		if status == "done" {
@@ -372,12 +406,16 @@ func UpdateTask(id string, req *model.UpdateTaskRequest) (*model.Task, error) {
 	}
 
 	args = append(args, id)
-	result, err := DB.Exec(fmt.Sprintf("UPDATE tasks SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
+	result, err := tx.Exec(fmt.Sprintf("UPDATE tasks SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
 	if err != nil {
 		return nil, err
 	}
 	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 		return nil, sql.ErrNoRows
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 
 	task, err := GetTaskByID(id)
@@ -418,7 +456,8 @@ func GetTaskByID(id string) (*model.Task, error) {
 			t.note_id,
 			t.roadmap_node_id,
 			t.created_at,
-			t.updated_at
+			t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 		WHERE t.id = ?
@@ -452,7 +491,8 @@ func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []m
 			t.id, t.title, COALESCE(t.content, ''), COALESCE(p.name, t.project), t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
-			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
+			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 		WHERE t.done = 0 AND (
@@ -482,7 +522,8 @@ func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []m
 			t.id, t.title, COALESCE(t.content, ''), COALESCE(p.name, t.project), t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
-			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
+			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 		WHERE t.done = 0
@@ -650,6 +691,7 @@ func scanTaskRow(row rowScanner) (*model.Task, error) {
 		&task.RoadmapNodeID,
 		&task.CreatedAt,
 		&task.UpdatedAt,
+		&task.CompletedAt,
 	)
 	if err != nil {
 		return nil, err
