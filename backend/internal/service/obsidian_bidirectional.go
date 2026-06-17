@@ -191,6 +191,123 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 	return result
 }
 
+func SyncObsidianPull() model.ObsidianBidirectionalResult {
+	result := model.ObsidianBidirectionalResult{
+		Items: make([]model.SyncResultItem, 0),
+	}
+
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		return failedObsidianBidirectionalResult(fmt.Errorf("load obsidian sync target: %w", err))
+	}
+	if err := TestObsidianTarget(target); err != nil {
+		return failedObsidianBidirectionalResult(err)
+	}
+	requiredTags := requiredSyncTagsFromTarget(target)
+	if len(requiredTags) == 0 {
+		return result
+	}
+
+	files, scanFailures, err := scanObsidianMarkdownFilesWithFailures(target)
+	if err != nil {
+		return failedObsidianBidirectionalResult(fmt.Errorf("scan obsidian markdown files: %w", err))
+	}
+	statesList, err := repository.ListSyncStatesByTarget(target.ID)
+	if err != nil {
+		return failedObsidianBidirectionalResult(fmt.Errorf("load obsidian sync states: %w", err))
+	}
+	notesList, err := repository.ListAllNotes()
+	if err != nil {
+		return failedObsidianBidirectionalResult(fmt.Errorf("load notes: %w", err))
+	}
+
+	notes := notesByID(notesList)
+	states := statesByNoteID(statesList)
+	statesByPath := statesByExternalPath(statesList)
+	scannedPaths := make(map[string]struct{}, len(files))
+	handledNoteIDs := make(map[string]struct{})
+
+	for _, failure := range scanFailures {
+		scannedPaths[normalizedPath(failure.Path)] = struct{}{}
+		noteID := ""
+		if state, ok := statesByPath[normalizedPath(failure.Path)]; ok {
+			noteID = state.NoteID
+			if noteID != "" {
+				handledNoteIDs[noteID] = struct{}{}
+			}
+		}
+		result.Failed++
+		result.Items = append(result.Items, model.SyncResultItem{
+			NoteID:       noteID,
+			Status:       "failed",
+			ExternalPath: failure.Path,
+			ErrorMessage: failure.Err.Error(),
+		})
+	}
+
+	for _, file := range files {
+		scannedPaths[normalizedPath(file.Path)] = struct{}{}
+		if file.Note != nil && !tagsMatchRequiredSyncTags(parseTags(file.Note.TagsJSON), requiredTags) {
+			continue
+		}
+		item := syncObsidianFile(file, target, notes, states)
+		switch item.Status {
+		case "imported":
+			result.Imported++
+			result.Items = append(result.Items, item)
+			handledNoteIDs[item.NoteID] = struct{}{}
+			refreshBidirectionalMaps(item.NoteID, target.ID, notes, states)
+		case "pulled":
+			result.Pulled++
+			result.Items = append(result.Items, item)
+			handledNoteIDs[item.NoteID] = struct{}{}
+			refreshBidirectionalMaps(item.NoteID, target.ID, notes, states)
+		case "failed":
+			result.Failed++
+			result.Items = append(result.Items, item)
+			if item.NoteID != "" {
+				handledNoteIDs[item.NoteID] = struct{}{}
+			}
+		case "synced", bidirectionalPendingPushStatus:
+			if item.NoteID != "" {
+				handledNoteIDs[item.NoteID] = struct{}{}
+			}
+		}
+	}
+
+	for _, state := range statesList {
+		if state.Status != "synced" {
+			continue
+		}
+		if _, ok := handledNoteIDs[state.NoteID]; ok {
+			continue
+		}
+		if _, ok := notes[state.NoteID]; !ok {
+			continue
+		}
+		mappedPath, validMapping := validSyncStateExternalPath(state, target)
+		if !validMapping {
+			continue
+		}
+		if _, ok := scannedPaths[normalizedPath(mappedPath)]; ok {
+			continue
+		}
+
+		item := markExternalDeleted(state, target)
+		if item.Status == "failed" {
+			result.Failed++
+		} else {
+			result.ExternalDeleted++
+		}
+		result.Items = append(result.Items, item)
+		if item.NoteID != "" {
+			handledNoteIDs[item.NoteID] = struct{}{}
+		}
+	}
+
+	return result
+}
+
 func ListObsidianDeletionCandidates() ([]model.ExternalDeletedNote, error) {
 	target, err := repository.GetDefaultSyncTarget("obsidian")
 	if err != nil {

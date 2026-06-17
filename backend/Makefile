@@ -1,7 +1,15 @@
-.PHONY: dev build test lint seed
+PORT ?= 8080
+TEST_PORT ?= 18080
 
-dev:
-	go run ./cmd/server/main.go
+.PHONY: dev dev-test dev-prod build test lint seed
+
+dev: dev-test
+
+dev-test:
+	FLOWSPACE_ENV=test PORT=$(TEST_PORT) go run ./cmd/server/main.go
+
+dev-prod:
+	FLOWSPACE_ENV=prod PORT=$(PORT) go run ./cmd/server/main.go
 
 build:
 	CGO_ENABLED=0 go build -o bin/server ./cmd/server/main.go

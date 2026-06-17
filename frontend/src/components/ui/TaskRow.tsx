@@ -32,12 +32,16 @@ export function TaskRow({ task, onToggle }: { task: TaskData; onToggle: (id: str
           {task.title}
         </strong>
         {(task.due || task.planned_date || task.project) && (
-          <small className="text-fs-text-muted text-xs flex gap-1.5 items-center">
+          <small className="task-row-meta text-fs-text-muted text-xs flex gap-1.5 items-center">
             {task.planned_date && <span>{task.planned_date}</span>}
             {!task.planned_date && task.due && (
               <span>{new Date(task.due * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</span>
             )}
-            {task.project && <span>· {task.project}</span>}
+            {task.project && (
+              <span className="task-project-tag" aria-label={`所属项目：${task.project}`}>
+                {task.project}
+              </span>
+            )}
             {task.done ? <span>· 已完成</span> : null}
           </small>
         )}

@@ -79,6 +79,6 @@ describe('Dashboard task project cache', () => {
 
     const row = await screen.findByRole('button', { name: '完成 读完故事这本书' })
     expect(within(row).getByText('读完故事这本书')).toBeVisible()
-    expect(within(row).getByText(/学习写小说/)).toBeVisible()
+    expect(within(row).getByLabelText('所属项目：学习写小说')).toBeVisible()
   })
 })

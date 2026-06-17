@@ -146,8 +146,23 @@ export async function syncObsidianAll(): Promise<SyncBatchResult> {
   return res.data.result
 }
 
+export async function syncObsidianPull(): Promise<ObsidianBidirectionalResult> {
+  const res = await api.post<{ result: ObsidianBidirectionalResult }>('/api/sync/obsidian/pull')
+  return res.data.result
+}
+
 export async function syncObsidianBidirectional(): Promise<ObsidianBidirectionalResult> {
   const res = await api.post<{ result: ObsidianBidirectionalResult }>('/api/sync/obsidian/bidirectional')
+  return res.data.result
+}
+
+export async function syncNotionAll(): Promise<SyncBatchResult> {
+  const res = await api.post<{ result: SyncBatchResult }>('/api/sync/notion/all')
+  return res.data.result
+}
+
+export async function syncNotionPull(): Promise<NotionBidirectionalResult> {
+  const res = await api.post<{ result: NotionBidirectionalResult }>('/api/sync/notion/pull')
   return res.data.result
 }
 

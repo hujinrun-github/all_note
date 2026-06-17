@@ -233,7 +233,8 @@ func (client *notionHTTPClient) doJSON(method, path string, body any, out any) e
 func notionNotePropertyPayload(config notionTargetConfig, note *model.Note) map[string]any {
 	titleProperty := defaultString(config.TitleProperty, "Name")
 	flowSpaceIDProperty := defaultString(config.FlowSpaceIDProperty, "FlowSpace ID")
-	return map[string]any{
+	tagsProperty := defaultString(config.TagsProperty, "Tags")
+	payload := map[string]any{
 		titleProperty: map[string]any{
 			"title": []map[string]any{notionTextRequest(note.Title)},
 		},
@@ -241,6 +242,21 @@ func notionNotePropertyPayload(config notionTargetConfig, note *model.Note) map[
 			"rich_text": []map[string]any{notionTextRequest(note.ID)},
 		},
 	}
+	if strings.TrimSpace(tagsProperty) != "" {
+		payload[tagsProperty] = map[string]any{
+			"multi_select": notionMultiSelectRequest(parseTags(note.Tags)),
+		}
+	}
+	return payload
+}
+
+func notionMultiSelectRequest(tags []string) []map[string]any {
+	cleaned := cleanSyncTags(tags)
+	items := make([]map[string]any, 0, len(cleaned))
+	for _, tag := range cleaned {
+		items = append(items, map[string]any{"name": tag})
+	}
+	return items
 }
 
 func notionBlockChildrenPayload(blocks []notionBlock) []map[string]any {

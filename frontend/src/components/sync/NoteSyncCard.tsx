@@ -17,11 +17,11 @@ function obsidianStatusLabel(status: string | undefined) {
 }
 
 function notionStatusLabel(status: string | undefined) {
-  if (status === 'synced') return 'Synced'
-  if (status === 'failed') return 'Sync failed'
-  if (status === 'external_deleted') return 'Notion deleted'
-  if (status === 'pending') return 'Pending sync'
-  return 'Not synced'
+  if (status === 'synced') return '已同步'
+  if (status === 'failed') return '同步失败'
+  if (status === 'external_deleted') return 'Notion 已删除'
+  if (status === 'pending') return '待同步'
+  return '未同步'
 }
 
 export function NoteSyncCard({ noteID }: { noteID: string }) {
@@ -112,7 +112,7 @@ function NotionSyncCard({ noteID, target }: { noteID: string; target: SyncTarget
     try {
       await restoreDeletion.mutateAsync(noteID)
     } catch {
-      setRestoreError('Restore to Notion failed. Run bidirectional sync and try again.')
+      setRestoreError('恢复到 Notion 失败，请先执行手动拉取后再试')
     }
   }
 
@@ -127,9 +127,9 @@ function NotionSyncCard({ noteID, target }: { noteID: string; target: SyncTarget
       {state?.error_message && <em>{state.error_message}</em>}
       {isExternalDeleted && (
         <>
-          <p>This note was deleted in Notion. FlowSpace is waiting for deletion confirmation.</p>
+          <p>这篇笔记在 Notion 中已删除，FlowSpace 正在等待确认。</p>
           <button type="button" className="secondary-action" onClick={handleRestore} disabled={restoreDeletion.isPending}>
-            {restoreDeletion.isPending ? 'Restoring to Notion' : 'Restore to Notion'}
+            {restoreDeletion.isPending ? '正在恢复到 Notion' : '恢复到 Notion'}
           </button>
           {restoreError && <em>{restoreError}</em>}
         </>
@@ -146,7 +146,7 @@ function NotionExternalReference({ state }: { state: SyncState | null | undefine
       {state.external_path && <code>{state.external_path}</code>}
       {state.external_url && (
         <a href={state.external_url} target="_blank" rel="noreferrer">
-          Open Notion page
+          打开 Notion 页面
         </a>
       )}
     </>

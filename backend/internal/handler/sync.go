@@ -140,6 +140,21 @@ func SyncObsidianAll(c *gin.Context) {
 	success(c, gin.H{"result": result})
 }
 
+func SyncNotionAll(c *gin.Context) {
+	result := service.SyncNotionAll()
+	success(c, gin.H{"result": result})
+}
+
+func SyncObsidianPull(c *gin.Context) {
+	result := service.SyncObsidianPull()
+	success(c, gin.H{"result": result})
+}
+
+func SyncNotionPull(c *gin.Context) {
+	result := service.SyncNotionPull()
+	success(c, gin.H{"result": result})
+}
+
 func SyncObsidianBidirectional(c *gin.Context) {
 	result := service.SyncObsidianBidirectional()
 	success(c, gin.H{"result": result})

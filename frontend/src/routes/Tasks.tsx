@@ -145,6 +145,8 @@ export default function Tasks() {
   const learningProjects = projects.filter((project) => project.type === 'learning')
   const weekProjects = projects.filter((project) => project.type !== 'learning')
   const selectedLearningProject = learningProjects.find((project) => project.id === selectedLearningProjectID)
+  const activeProjectID =
+    activeTab === 'week' ? weekProjectID : activeTab === 'long' ? longProjectID : selectedLearningProjectID
 
   useEffect(() => {
     if (!projects.length) return
@@ -517,11 +519,7 @@ export default function Tasks() {
             <div className="task-project-item" key={project.id}>
               <button
                 type="button"
-                className={
-                  project.id === weekProjectID || project.id === longProjectID || project.id === selectedLearningProjectID
-                    ? 'task-project-select is-active'
-                    : 'task-project-select'
-                }
+                className={project.id === activeProjectID ? 'task-project-select is-active' : 'task-project-select'}
                 onClick={() => {
                   if (project.type === 'learning') {
                     setSelectedLearningProjectID(project.id)

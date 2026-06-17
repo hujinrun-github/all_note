@@ -12,15 +12,15 @@ export function SyncSettingsPanel({ onClose }: { onClose: () => void }) {
       <section className="sync-panel sync-panel-wide" onClick={(event) => event.stopPropagation()}>
         <header className="sync-panel-header">
           <div>
-            <span>Sync</span>
-            <h2>Sync settings</h2>
+            <span>同步</span>
+            <h2>同步设置</h2>
           </div>
-          <button type="button" aria-label="Close sync settings panel" onClick={onClose}>
-            x
+          <button type="button" aria-label="关闭同步设置面板" onClick={onClose}>
+            ×
           </button>
         </header>
 
-        <div className="sync-actions" role="tablist" aria-label="Sync target">
+        <div className="sync-actions" role="tablist" aria-label="同步目标">
           <button
             type="button"
             role="tab"
@@ -41,7 +41,7 @@ export function SyncSettingsPanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div role="tabpanel" aria-label={activeTab === 'obsidian' ? 'Obsidian sync settings' : 'Notion sync settings'}>
+        <div role="tabpanel" aria-label={activeTab === 'obsidian' ? 'Obsidian 同步设置' : 'Notion 同步设置'}>
           {activeTab === 'obsidian' ? <ObsidianSyncPanel embedded /> : <NotionSyncPanel />}
         </div>
       </section>

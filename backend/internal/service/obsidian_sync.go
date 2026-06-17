@@ -79,6 +79,12 @@ func SyncNoteToObsidian(noteID string) (*model.SyncResultItem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load note: %w", err)
 	}
+	if !noteMatchesRequiredSyncTags(*note, requiredSyncTagsFromTarget(target)) {
+		return &model.SyncResultItem{
+			NoteID: note.ID,
+			Status: "skipped",
+		}, nil
+	}
 	return writeNoteToTarget(note, target)
 }
 
@@ -94,7 +100,11 @@ func SyncNotesToObsidian(notes []model.Note) model.SyncBatchResult {
 	result := model.SyncBatchResult{
 		Items: make([]model.SyncResultItem, 0, len(notes)),
 	}
+	requiredTags := requiredSyncTagsFromTarget(target)
 	for i := range notes {
+		if !noteMatchesRequiredSyncTags(notes[i], requiredTags) {
+			continue
+		}
 		item, err := writeNoteToTarget(&notes[i], target)
 		if err != nil {
 			result.Failed++

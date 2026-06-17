@@ -93,8 +93,8 @@ describe('NoteSyncCard', () => {
     renderCard()
 
     expect(await screen.findByText('Notion')).toBeVisible()
-    expect(await screen.findByText('Synced')).toBeVisible()
-    expect(await screen.findByRole('link', { name: 'Open Notion page' })).toHaveAttribute(
+    expect(await screen.findByText('已同步')).toBeVisible()
+    expect(await screen.findByRole('link', { name: '打开 Notion 页面' })).toHaveAttribute(
       'href',
       'https://www.notion.so/page-1',
     )
@@ -123,9 +123,9 @@ describe('NoteSyncCard', () => {
 
     renderCard()
 
-    expect(await screen.findByText('Notion deleted')).toBeVisible()
+    expect(await screen.findByText('Notion 已删除')).toBeVisible()
     expect(screen.getByText('Obsidian')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Restore to Notion' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '恢复到 Notion' })).toBeVisible()
   })
 
   it('loads sync state separately for obsidian and notion targets', async () => {

@@ -65,6 +65,19 @@ export function useSyncObsidianAll() {
   return useMutation({ mutationFn: syncApi.syncObsidianAll })
 }
 
+export function useSyncObsidianPull() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: syncApi.syncObsidianPull,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['note'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['obsidian-deletions'] })
+    },
+  })
+}
+
 export function useSyncObsidianBidirectional() {
   const qc = useQueryClient()
   return useMutation({
@@ -74,6 +87,23 @@ export function useSyncObsidianBidirectional() {
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
       qc.invalidateQueries({ queryKey: ['obsidian-deletions'] })
+    },
+  })
+}
+
+export function useSyncNotionAll() {
+  return useMutation({ mutationFn: () => syncApi.syncNotionAll() })
+}
+
+export function useSyncNotionPull() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => syncApi.syncNotionPull(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['note'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['notion-deletions'] })
     },
   })
 }

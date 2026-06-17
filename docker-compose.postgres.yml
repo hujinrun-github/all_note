@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flowspace-postgres
+    environment:
+      POSTGRES_USER: flowspace
+      POSTGRES_PASSWORD: flowspace
+      POSTGRES_DB: postgres
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowspace -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - ./docker/postgres/init-flowspace.sql:/docker-entrypoint-initdb.d/010-flowspace.sql:ro
+      - flowspace_pg_data:/var/lib/postgresql/data
+
+volumes:
+  flowspace_pg_data:

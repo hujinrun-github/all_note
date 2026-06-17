@@ -157,7 +157,11 @@ func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
 	openHandlerSyncTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	target := saveHandlerNotionTarget(t)
-	note := insertHandlerNoteForTest(t, "Local Notion", "Local body\n")
+	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	note := insertHandlerTaggedNoteForTest(t, "Local Notion", "Local body\n", `["sync"]`)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -559,7 +563,12 @@ func saveHandlerObsidianTarget(t *testing.T) model.SyncTarget {
 
 func insertHandlerNoteForTest(t *testing.T, title, body string) model.Note {
 	t.Helper()
-	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: "[]"}
+	return insertHandlerTaggedNoteForTest(t, title, body, "[]")
+}
+
+func insertHandlerTaggedNoteForTest(t *testing.T, title, body, tags string) model.Note {
+	t.Helper()
+	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: tags}
 	if err := repository.CreateNote(note); err != nil {
 		t.Fatalf("create note: %v", err)
 	}

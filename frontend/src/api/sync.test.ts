@@ -5,7 +5,9 @@ import {
   getNotionDeletions,
   restoreNotionDeletion,
   saveSyncTarget,
+  syncNotionAll,
   syncNotionBidirectional,
+  syncNotionPull,
   testNotionTarget,
 } from './sync'
 
@@ -136,6 +138,8 @@ describe('notion sync api', () => {
       auto_sync: false,
     })
     await syncNotionBidirectional()
+    await syncNotionAll()
+    await syncNotionPull()
     await getNotionDeletions()
     await confirmNotionDeletion('note/1')
     await restoreNotionDeletion('note/1')
@@ -144,6 +148,8 @@ describe('notion sync api', () => {
     const paths = vi.mocked(fetch).mock.calls.map(([input]) => String(input))
     expect(paths.some((path) => path.includes('/api/sync/notion/test'))).toBe(true)
     expect(paths.some((path) => path.includes('/api/sync/notion/bidirectional'))).toBe(true)
+    expect(paths.some((path) => path.includes('/api/sync/notion/all'))).toBe(true)
+    expect(paths.some((path) => path.includes('/api/sync/notion/pull'))).toBe(true)
     expect(paths.some((path) => path.includes('/api/sync/notion/deletions'))).toBe(true)
     expect(paths.some((path) => path.includes('/api/sync/notion/deletions/note%2F1/confirm'))).toBe(true)
     expect(paths.some((path) => path.includes('/api/sync/notion/deletions/note%2F1/restore'))).toBe(true)

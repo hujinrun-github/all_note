@@ -173,6 +173,34 @@ describe('Tasks long task tracking', () => {
     vi.mocked(tasksApi.updateTask).mockResolvedValue(task({ id: 'long-blocked', status: 'active' }))
   })
 
+  it('shows only the active tab project as selected in the project list', async () => {
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([...projects, learningProject])
+    vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(roadmap)
+    const { container } = renderTasks()
+    const user = userEvent.setup()
+
+    await screen.findByText('AI Infra工程师')
+    const projectButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.task-project-select'))
+    expect(projectButtons).toHaveLength(3)
+    const [personalProjectButton, regularProjectButton, learningProjectButton] = projectButtons
+
+    expect(personalProjectButton).toHaveClass('is-active')
+    expect(regularProjectButton).not.toHaveClass('is-active')
+    expect(learningProjectButton).not.toHaveClass('is-active')
+
+    await user.click(screen.getByRole('tab', { name: '长期任务' }))
+
+    expect(personalProjectButton).not.toHaveClass('is-active')
+    expect(regularProjectButton).toHaveClass('is-active')
+    expect(learningProjectButton).not.toHaveClass('is-active')
+
+    await user.click(screen.getByRole('tab', { name: '学习 Roadmap' }))
+
+    expect(personalProjectButton).not.toHaveClass('is-active')
+    expect(regularProjectButton).not.toHaveClass('is-active')
+    expect(learningProjectButton).toHaveClass('is-active')
+  })
+
   it('groups long tasks by tracking status and updates status from the row select', async () => {
     renderTasks()
     const user = userEvent.setup()

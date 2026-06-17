@@ -20,6 +20,7 @@ type notionRemoteNote struct {
 	Hash             string
 	LastEditedAt     int64
 	FlowSpaceID      string
+	Tags             []string
 	UnsupportedTypes []string
 }
 
@@ -82,13 +83,19 @@ func SyncNoteToNotion(noteID string) (*model.SyncResultItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	gateway, err := notionGatewayForConfig(config)
-	if err != nil {
-		return nil, err
-	}
 	note, err := repository.GetNoteByID(noteID)
 	if err != nil {
 		return nil, fmt.Errorf("load note: %w", err)
+	}
+	if !noteMatchesRequiredSyncTags(*note, config.RequiredTags) {
+		return &model.SyncResultItem{
+			NoteID: note.ID,
+			Status: "skipped",
+		}, nil
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return nil, err
 	}
 
 	var state model.SyncState
@@ -122,6 +129,44 @@ func SyncNotionBidirectional() model.NotionBidirectionalResult {
 		return failedNotionBidirectionalResult(err)
 	}
 	return NewNotionSyncService(gateway).SyncBidirectional(*target)
+}
+
+func SyncNotionAll() model.SyncBatchResult {
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		return failedNotionBatchResult(fmt.Errorf("load notion sync target: %w", err))
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return failedNotionBatchResult(err)
+	}
+	if len(config.RequiredTags) == 0 {
+		return model.SyncBatchResult{Items: []model.SyncResultItem{}}
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return failedNotionBatchResult(err)
+	}
+	return NewNotionSyncService(gateway).PushAll(*target)
+}
+
+func SyncNotionPull() model.NotionBidirectionalResult {
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		return failedNotionBidirectionalResult(fmt.Errorf("load notion sync target: %w", err))
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return failedNotionBidirectionalResult(err)
+	}
+	if len(config.RequiredTags) == 0 {
+		return model.NotionBidirectionalResult{Items: []model.SyncResultItem{}}
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return failedNotionBidirectionalResult(err)
+	}
+	return NewNotionSyncService(gateway).PullRemote(*target)
 }
 
 func ListNotionDeletionCandidates() ([]model.ExternalDeletedNote, error) {
@@ -417,6 +462,194 @@ func (svc *NotionSyncService) SyncBidirectional(target model.SyncTarget) model.N
 	return result
 }
 
+func (svc *NotionSyncService) PullRemote(target model.SyncTarget) model.NotionBidirectionalResult {
+	result := model.NotionBidirectionalResult{
+		Items: make([]model.SyncResultItem, 0),
+	}
+	if svc == nil || svc.gateway == nil {
+		return failedNotionBidirectionalResult(errors.New("notion sync gateway is required"))
+	}
+
+	config, err := parseNotionTargetConfig(&target)
+	if err != nil {
+		return failedNotionBidirectionalResult(err)
+	}
+	if len(config.RequiredTags) == 0 {
+		return result
+	}
+	if err := svc.gateway.TestDataSource(config); err != nil {
+		return failedNotionBidirectionalResult(fmt.Errorf("test notion data source: %w", err))
+	}
+
+	remoteNotes, err := svc.gateway.QueryRemoteNotes(config)
+	if err != nil {
+		return failedNotionBidirectionalResult(fmt.Errorf("query notion notes: %w", err))
+	}
+	statesList, err := repository.ListSyncStatesByTarget(target.ID)
+	if err != nil {
+		return failedNotionBidirectionalResult(fmt.Errorf("load notion sync states: %w", err))
+	}
+	notesList, err := repository.ListAllNotes()
+	if err != nil {
+		return failedNotionBidirectionalResult(fmt.Errorf("load notes: %w", err))
+	}
+
+	notes := notesByID(notesList)
+	statesByNote := statesByNoteID(statesList)
+	statesByExternal := notionStatesByExternalID(statesList)
+	remoteExternalIDs := make(map[string]struct{}, len(remoteNotes))
+	handledNoteIDs := make(map[string]struct{})
+
+	sort.Slice(remoteNotes, func(i, j int) bool {
+		return remoteNotes[i].PageID < remoteNotes[j].PageID
+	})
+	for _, remote := range remoteNotes {
+		remote = withNotionRemoteDefaults(remote)
+		if strings.TrimSpace(remote.PageID) == "" {
+			addNotionFailure(&result, model.SyncResultItem{
+				Status:       "failed",
+				ErrorMessage: "notion page id is required",
+			})
+			continue
+		}
+
+		remoteExternalIDs[remote.PageID] = struct{}{}
+		if !tagsMatchRequiredSyncTags(remote.Tags, config.RequiredTags) {
+			continue
+		}
+		state, hasState := matchNotionSyncState(remote, statesByNote, statesByExternal)
+		note, hasNote := matchNotionLocalNote(remote, state, hasState, notes)
+
+		if len(remote.UnsupportedTypes) > 0 {
+			if hasNote {
+				handledNoteIDs[note.ID] = struct{}{}
+			}
+			result.Unsupported++
+			result.Items = append(result.Items, model.SyncResultItem{
+				NoteID:       notionMatchedNoteID(remote, state, hasState),
+				Status:       "unsupported",
+				ExternalPath: notionExternalPath(remote.PageID),
+				ExternalID:   remote.PageID,
+				ExternalURL:  remote.URL,
+				ErrorMessage: "unsupported Notion block types: " + strings.Join(remote.UnsupportedTypes, ", "),
+			})
+			continue
+		}
+
+		if !hasNote {
+			item := importNotionRemoteNote(remote, target)
+			if item.Status == "failed" {
+				result.Failed++
+			} else {
+				result.Imported++
+				handledNoteIDs[item.NoteID] = struct{}{}
+			}
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		if !hasState || notionRemoteHash(remote) != state.ExternalHash || state.Status == "external_deleted" {
+			conflict := hasState && notionLocalContentHash(note) != state.ContentHash
+			item := pullNotionRemoteIntoNote(note, remote, target)
+			if item.Status == "failed" {
+				result.Failed++
+			} else {
+				result.Pulled++
+				if conflict {
+					result.ConflictPulled++
+				}
+				handledNoteIDs[note.ID] = struct{}{}
+			}
+			result.Items = append(result.Items, item)
+		}
+	}
+
+	for _, state := range statesList {
+		if state.Status != "synced" {
+			continue
+		}
+		externalID := notionStateExternalID(state)
+		if externalID == "" {
+			continue
+		}
+		if _, ok := remoteExternalIDs[externalID]; ok {
+			continue
+		}
+		if _, ok := notes[state.NoteID]; !ok {
+			continue
+		}
+		if _, ok := handledNoteIDs[state.NoteID]; ok {
+			continue
+		}
+		item := markNotionExternalDeleted(state, target)
+		if item.Status == "failed" {
+			result.Failed++
+		} else {
+			result.ExternalDeleted++
+			handledNoteIDs[state.NoteID] = struct{}{}
+		}
+		result.Items = append(result.Items, item)
+	}
+
+	return result
+}
+
+func (svc *NotionSyncService) PushAll(target model.SyncTarget) model.SyncBatchResult {
+	result := model.SyncBatchResult{
+		Items: make([]model.SyncResultItem, 0),
+	}
+	if svc == nil || svc.gateway == nil {
+		return failedNotionBatchResult(errors.New("notion sync gateway is required"))
+	}
+
+	config, err := parseNotionTargetConfig(&target)
+	if err != nil {
+		return failedNotionBatchResult(err)
+	}
+	if len(config.RequiredTags) == 0 {
+		return result
+	}
+	if err := svc.gateway.TestDataSource(config); err != nil {
+		return failedNotionBatchResult(fmt.Errorf("test notion data source: %w", err))
+	}
+	notesList, err := repository.ListAllNotes()
+	if err != nil {
+		return failedNotionBatchResult(fmt.Errorf("load notes: %w", err))
+	}
+	statesList, err := repository.ListSyncStatesByTarget(target.ID)
+	if err != nil {
+		return failedNotionBatchResult(fmt.Errorf("load notion sync states: %w", err))
+	}
+	statesByNote := statesByNoteID(statesList)
+
+	sort.Slice(notesList, func(i, j int) bool {
+		return notesList[i].ID < notesList[j].ID
+	})
+	for i := range notesList {
+		note := notesList[i]
+		if !noteMatchesRequiredSyncTags(note, config.RequiredTags) {
+			continue
+		}
+		state, hasState := statesByNote[note.ID]
+		if hasState && state.Status == "external_deleted" {
+			continue
+		}
+		if hasState && notionLocalContentHash(note) == state.ContentHash {
+			continue
+		}
+
+		item := svc.pushNotionLocalNote(config, target, note, state, hasState)
+		if item.Status == "failed" {
+			result.Failed++
+		} else {
+			result.Synced++
+		}
+		result.Items = append(result.Items, item)
+	}
+
+	return result
+}
+
 func (svc *NotionSyncService) pushNotionLocalNote(config notionTargetConfig, target model.SyncTarget, note model.Note, state model.SyncState, hasState bool) model.SyncResultItem {
 	var remote notionRemoteNote
 	var err error
@@ -467,7 +700,7 @@ func importNotionRemoteNote(remote notionRemoteNote, target model.SyncTarget) mo
 		Title:    notionRemoteTitle(remote),
 		Body:     remote.Markdown,
 		FolderID: "__uncategorized",
-		Tags:     "[]",
+		Tags:     syncTagsJSON(remote.Tags),
 	})
 	if err != nil {
 		return model.SyncResultItem{
@@ -500,9 +733,11 @@ func importNotionRemoteNote(remote notionRemoteNote, target model.SyncTarget) mo
 func pullNotionRemoteIntoNote(note model.Note, remote notionRemoteNote, target model.SyncTarget) model.SyncResultItem {
 	title := notionRemoteTitle(remote)
 	body := remote.Markdown
+	tags := syncTagsJSON(remote.Tags)
 	updated, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{
 		Title: &title,
 		Body:  &body,
+		Tags:  &tags,
 	})
 	if err != nil {
 		return model.SyncResultItem{
@@ -653,6 +888,7 @@ func withNotionRemoteDefaults(remote notionRemoteNote) notionRemoteNote {
 	remote.PageID = strings.TrimSpace(remote.PageID)
 	remote.URL = strings.TrimSpace(remote.URL)
 	remote.FlowSpaceID = strings.TrimSpace(remote.FlowSpaceID)
+	remote.Tags = cleanSyncTags(remote.Tags)
 	if strings.TrimSpace(remote.Hash) == "" {
 		remote.Hash = notionRemoteHash(remote)
 	}
@@ -693,6 +929,22 @@ func failedNotionBidirectionalResult(err error) model.NotionBidirectionalResult 
 		message = err.Error()
 	}
 	return model.NotionBidirectionalResult{
+		Failed: 1,
+		Items: []model.SyncResultItem{
+			{
+				Status:       "failed",
+				ErrorMessage: message,
+			},
+		},
+	}
+}
+
+func failedNotionBatchResult(err error) model.SyncBatchResult {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	return model.SyncBatchResult{
 		Failed: 1,
 		Items: []model.SyncResultItem{
 			{

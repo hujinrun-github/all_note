@@ -3,9 +3,13 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
 
+const TAILSCALE_ALLOWED_HOSTS = ['tylerhu-1.king-shiner.ts.net', 'tylerhu-1.tail5cec87.ts.net']
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const BACKEND_HOST = env.VITE_BACKEND_HOST || 'localhost'
   const BACKEND_PORT = env.VITE_BACKEND_PORT || '8080'
+  const BACKEND_TARGET = `http://${BACKEND_HOST}:${BACKEND_PORT}`
   const APP_BASE = env.VITE_APP_BASE || '/'
   const appBasePath = APP_BASE === '/' ? '' : APP_BASE.replace(/\/$/, '')
 
@@ -16,13 +20,13 @@ export default defineConfig(({ mode }) => {
       alias: { '@': path.resolve(__dirname, 'src') },
     },
     preview: {
-      allowedHosts: ['tylerhu-1.tail5cec87.ts.net'],
+      allowedHosts: TAILSCALE_ALLOWED_HOSTS,
       proxy: {
-        '/api': `http://localhost:${BACKEND_PORT}`,
+        '/api': BACKEND_TARGET,
         ...(appBasePath
           ? {
               [`${appBasePath}/api`]: {
-                target: `http://localhost:${BACKEND_PORT}`,
+                target: BACKEND_TARGET,
                 changeOrigin: true,
                 rewrite: (requestPath) => requestPath.replace(`${appBasePath}/api`, '/api'),
               },
@@ -31,13 +35,13 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      allowedHosts: ['tylerhu-1.tail5cec87.ts.net'],
+      allowedHosts: TAILSCALE_ALLOWED_HOSTS,
       proxy: {
-        '/api': `http://localhost:${BACKEND_PORT}`,
+        '/api': BACKEND_TARGET,
         ...(appBasePath
           ? {
               [`${appBasePath}/api`]: {
-                target: `http://localhost:${BACKEND_PORT}`,
+                target: BACKEND_TARGET,
                 changeOrigin: true,
                 rewrite: (requestPath) => requestPath.replace(`${appBasePath}/api`, '/api'),
               },
