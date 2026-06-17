@@ -1,7 +1,7 @@
-# 每日总结页面设计（v8）
+# 每日总结页面设计（v9）
 
 **日期**: 2026-06-17 | **分支**: feat/note-project-links  
-**审查**: R1:12 / R2:12 / R3:14 / R4:14 / R5:13 / R6:12 / R7:5 — 已修正
+**审查**: R1–R8 累计 85 项 — 已修正
 
 ---
 
@@ -77,21 +77,24 @@ type SummaryParams struct {
 ```go
 func (s *SQLiteTaskStore) GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
     var total int
-    s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE completed_at >= ? AND completed_at < ?`, from, to).Scan(&total)
+    if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE completed_at >= ? AND completed_at < ?`, from, to).Scan(&total); err != nil {
+        return nil, 0, err
+    }
     offset := (page - 1) * pageSize
-    rows, _ := s.db.QueryContext(ctx,
+    rows, err := s.db.QueryContext(ctx,
         `SELECT t.id, t.title, t.done, t.planned_date, t.due, t.completed_at, t.note_id, p.id, p.name, p.type
          FROM tasks t LEFT JOIN task_projects p ON t.project_id = p.id
          WHERE t.completed_at >= ? AND t.completed_at < ?
          ORDER BY t.completed_at DESC LIMIT ? OFFSET ?`,
         from, to, pageSize, offset)
+    if err != nil { return nil, 0, err }
     defer rows.Close()
     // scan → []model.TaskSummary（自定义 scan，非 scanSQLiteTaskRow）
     return summaries, total, nil
 }
 ```
 
-**storage/postgres/tasks.go** — 同逻辑，`$1` 占位符 + `ANY($1)` 无变化。
+**storage/postgres/tasks.go** — 同逻辑，`$1` 占位符。注意：添加 `completed_at` 后 `scanPostgresTaskRow` 的 Scan 参数从 18 变为 19，列序必须与 `postgresTaskSelectSQL()` 精确一致。
 
 **repository/tasks.go fallback** — 同逻辑，用 `DB.Query(...)` 包级变量。
 
@@ -108,13 +111,17 @@ done 可以通过两条路径变更：
 
 ```go
 // req.Status != nil && req.Done == nil 时
+// 注意：status 值需要规范化比较 — repository/tasks.go:42 使用 COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END)
+// 同理此处：判断“变为 done”和“从 done 变为非 done”
 if req.Status != nil {
-    becomingDone := (*req.Status == "done" && currentDone == 0)
-    becomingUndone := (*req.Status != "done" && currentDone == 1)
-    if becomingDone {
+    newStatus := strings.ToLower(*req.Status)
+    isCurrentlyDone := (currentDone == 1) // 或 current status 包含 "done"
+    isBecomingDone := (newStatus == "done" && !isCurrentlyDone)
+    isBecomingUndone := (newStatus != "done" && isCurrentlyDone)
+    if isBecomingDone {
         sets = append(sets, "completed_at = ?")
         args = append(args, nowUnix())
-    } else if becomingUndone {
+    } else if isBecomingUndone {
         sets = append(sets, "completed_at = NULL")
     }
 }
@@ -147,9 +154,10 @@ type NoteRepository interface {
 
 ```go
 func GetSummary(c *gin.Context) {
-    fromTime, err := time.ParseInLocation("2006-01-02", c.DefaultQuery("from", ""), time.UTC)
+    // 使用 time.Local 与 GetToday（service/today.go）和 completed_at 设置（time.Now()）保持一致
+    fromTime, err := time.ParseInLocation("2006-01-02", c.DefaultQuery("from", ""), time.Local)
     if err != nil { badRequest(c, "日期格式无效，需要 YYYY-MM-DD"); return }
-    toTime, err := time.ParseInLocation("2006-01-02", c.DefaultQuery("to", ""), time.UTC)
+    toTime, err := time.ParseInLocation("2006-01-02", c.DefaultQuery("to", ""), time.Local)
     if err != nil { badRequest(c, "日期格式无效，需要 YYYY-MM-DD"); return }
     if !fromTime.Before(toTime) { badRequest(c, "起始日期必须早于结束日期"); return }
     toTime = toTime.Add(24 * time.Hour)
@@ -181,7 +189,7 @@ func GetSummaryStats(from, to int64) (activeDays int, projectCount int, err erro
         return store.Tasks().GetSummaryStats(context.Background(), from, to)
     }
     // fallback: SQLite（DATE 需要 'unixepoch' 修饰符）— 单次查询取两个聚合值
-    DB.QueryRow(
+    err = DB.QueryRow(
         `SELECT COUNT(DISTINCT DATE(completed_at, 'unixepoch')),
                 COUNT(DISTINCT project_id)
          FROM tasks WHERE completed_at >= ? AND completed_at < ?`,
@@ -248,8 +256,17 @@ export interface SummaryResponse {
   project_count: number
 }
 
+export interface Pagination {
+  page: number; page_size: number; total: number
+}
+
+export interface SummaryResult {
+  summary: SummaryResponse
+  pagination: Pagination
+}
+
 // 返回 { summary, pagination }，与 getNotes 的 { notes, pagination } 模式一致
-export async function getSummary(from: string, to: string, page: number, pageSize = 50) {
+export async function getSummary(from: string, to: string, page: number, pageSize = 50): Promise<SummaryResult> {
   const res = await api.get<SummaryResponse>('/api/summary', {
     from, to, page: String(page), page_size: String(pageSize),
   })
@@ -313,7 +330,7 @@ export function useSummary(from: string, to: string, page: number) {
 
 ---
 
-## 文件清单（v8）
+## 文件清单（v9）
 
 ### 新建
 
