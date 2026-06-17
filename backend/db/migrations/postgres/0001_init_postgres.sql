@@ -211,6 +211,16 @@ CREATE INDEX note_sync_target_note_idx ON note_sync_state (target_id, note_id);
 CREATE INDEX note_sync_external_id_idx ON note_sync_state (target_id, external_id);
 CREATE INDEX note_sync_metadata_idx ON note_sync_state USING GIN (external_metadata);
 
+CREATE TABLE note_project_links (
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (note_id, project_id)
+);
+
+CREATE INDEX note_project_links_project_note_idx
+    ON note_project_links (project_id, note_id);
+
 CREATE TABLE search_index (
   entity_type TEXT NOT NULL CHECK (entity_type IN ('note', 'task', 'event')),
   entity_id TEXT NOT NULL,
