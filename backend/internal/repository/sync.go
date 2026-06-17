@@ -1,8 +1,16 @@
 package repository
 
-import "github.com/hujinrun/flowspace/internal/model"
+import (
+	"context"
+
+	"github.com/hujinrun/flowspace/internal/model"
+)
 
 func SaveSyncTarget(target *model.SyncTarget) error {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().SaveTarget(context.Background(), target)
+	}
+
 	now := nowUnix()
 	if target.ID == "" {
 		target.ID = newUUID()
@@ -28,6 +36,10 @@ func SaveSyncTarget(target *model.SyncTarget) error {
 }
 
 func GetDefaultSyncTarget(syncType string) (*model.SyncTarget, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().GetDefaultTarget(context.Background(), syncType)
+	}
+
 	var target model.SyncTarget
 	var enabled int
 	var autoSync int
@@ -47,6 +59,10 @@ func GetDefaultSyncTarget(syncType string) (*model.SyncTarget, error) {
 }
 
 func ListSyncTargets() ([]model.SyncTarget, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().ListTargets(context.Background())
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, created_at, updated_at
 		FROM sync_targets
@@ -76,6 +92,10 @@ func ListSyncTargets() ([]model.SyncTarget, error) {
 }
 
 func UpsertSyncState(state *model.SyncState) error {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().UpsertState(context.Background(), state)
+	}
+
 	_, err := DB.Exec(`
 		INSERT INTO note_sync_state (
 			note_id, target_id, external_path, external_id, external_url, content_hash, external_hash, external_mtime,
@@ -98,6 +118,10 @@ func UpsertSyncState(state *model.SyncState) error {
 }
 
 func GetSyncState(noteID, targetID string) (*model.SyncState, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().GetState(context.Background(), noteID, targetID)
+	}
+
 	var state model.SyncState
 	err := DB.QueryRow(`
 		SELECT note_id, target_id, external_path, COALESCE(external_id, ''), COALESCE(external_url, ''), content_hash, COALESCE(external_hash, ''), external_mtime,
@@ -125,6 +149,10 @@ func GetSyncState(noteID, targetID string) (*model.SyncState, error) {
 }
 
 func ListSyncStatesByTarget(targetID string) ([]model.SyncState, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().ListStatesByTarget(context.Background(), targetID)
+	}
+
 	rows, err := DB.Query(`
 		SELECT note_id, target_id, external_path, COALESCE(external_id, ''), COALESCE(external_url, ''), content_hash, COALESCE(external_hash, ''), external_mtime,
 			COALESCE(last_direction, ''), last_synced_at, status, error_message
@@ -165,6 +193,10 @@ func ListSyncStatesByTarget(targetID string) ([]model.SyncState, error) {
 }
 
 func DeleteSyncState(noteID, targetID string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().DeleteState(context.Background(), noteID, targetID)
+	}
+
 	_, err := DB.Exec(`
 		DELETE FROM note_sync_state
 		WHERE note_id = ? AND target_id = ?
@@ -173,6 +205,10 @@ func DeleteSyncState(noteID, targetID string) error {
 }
 
 func ListExternalDeletedSyncStates(targetID string) ([]model.ExternalDeletedNote, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Sync().ListExternalDeletedStates(context.Background(), targetID)
+	}
+
 	rows, err := DB.Query(`
 		SELECT s.note_id, n.title, s.external_path, s.last_synced_at
 		FROM note_sync_state s

@@ -122,7 +122,16 @@ type RoadmapRepository interface {
 	AddRoadmapResource(context.Context, *model.RoadmapResource) error
 	DeleteRoadmapResource(context.Context, string) error
 }
-type SyncRepository interface{}
+type SyncRepository interface {
+	SaveTarget(context.Context, *model.SyncTarget) error
+	GetDefaultTarget(context.Context, string) (*model.SyncTarget, error)
+	ListTargets(context.Context) ([]model.SyncTarget, error)
+	UpsertState(context.Context, *model.SyncState) error
+	GetState(context.Context, string, string) (*model.SyncState, error)
+	ListStatesByTarget(context.Context, string) ([]model.SyncState, error)
+	DeleteState(context.Context, string, string) error
+	ListExternalDeletedStates(context.Context, string) ([]model.ExternalDeletedNote, error)
+}
 type SearchRepository interface {
 	Search(context.Context, string, int, int) ([]model.SearchResult, int, error)
 }

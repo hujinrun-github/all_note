@@ -143,7 +143,7 @@ func (s *store) Roadmaps() storage.RoadmapRepository {
 }
 
 func (s *store) Sync() storage.SyncRepository {
-	panic("postgres sync repository is not implemented yet")
+	return syncRepository{db: s.db}
 }
 
 func (s *store) Search() storage.SearchRepository {
@@ -181,4 +181,8 @@ func (s *storeTx) Inbox() storage.InboxRepository {
 
 func (s *storeTx) Roadmaps() storage.RoadmapRepository {
 	return roadmapRepository{db: s.tx}
+}
+
+func (s *storeTx) Sync() storage.SyncRepository {
+	return syncRepository{db: s.tx}
 }

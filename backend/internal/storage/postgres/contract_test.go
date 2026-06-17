@@ -104,3 +104,22 @@ func TestPostgresRoadmapContract(t *testing.T) {
 		return store
 	})
 }
+
+func TestPostgresSyncContract(t *testing.T) {
+	contracttest.RunSyncSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+
+		schema := fmt.Sprintf("fs_test_sync_contract_%d", time.Now().UnixNano())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		store, err := (Provider{}).Open(ctx, storage.Config{
+			Env:    "test",
+			Driver: storage.DriverPostgres,
+			URL:    createPostgresTestSchema(t, schema),
+		})
+		if err != nil {
+			t.Fatalf("open postgres store: %v", err)
+		}
+		return store
+	})
+}
