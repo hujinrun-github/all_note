@@ -37,6 +37,9 @@ func GetSummary(params model.SummaryParams) (*model.SummaryData, error) {
 	}
 
 	groups := groupByDate(tasks)
+	if groups == nil {
+		groups = []model.DateGroup{}
+	}
 	activeDays, projectCount, err := repository.GetSummaryStats(params.From, params.To)
 	if err != nil {
 		activeDays, projectCount = 0, 0

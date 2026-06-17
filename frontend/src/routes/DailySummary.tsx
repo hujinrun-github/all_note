@@ -7,11 +7,12 @@ function getMonday(d: Date = new Date()): string {
   const day = d.getDay()
   const diff = d.getDate() - day + (day === 0 ? -6 : 1)
   const monday = new Date(d.getFullYear(), d.getMonth(), diff)
-  return monday.toISOString().slice(0, 10)
+  return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`
 }
 
 function todayDateInputValue(): string {
-  return new Date().toISOString().slice(0, 10)
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function getMonthStart(): string {
@@ -115,7 +116,7 @@ export default function DailySummary() {
 
         {/* Task list */}
         <div className="summary-task-list">
-          {summary.groups.length === 0 ? (
+          {!summary.groups || summary.groups.length === 0 ? (
             <p className="empty-copy">这个时间段还没有完成的任务，试试调整日期范围</p>
           ) : (
             summary.groups.map((group: DateGroup) => (
