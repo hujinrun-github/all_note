@@ -105,7 +105,7 @@ func (r taskRepository) ListProjects(ctx context.Context) ([]model.TaskProject, 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, type, description, created_at, updated_at
 		FROM task_projects
-		ORDER BY CASE WHEN id = 'personal' THEN 0 ELSE 1 END, lower(name) ASC
+		ORDER BY CASE WHEN id = 'personal' THEN 0 ELSE 1 END, updated_at DESC, lower(name) ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -298,6 +298,9 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		if err := upsertTaskSearchIndex(ctx, tx, task); err != nil {
 			return err
 		}
+		if err := r.syncRoadmapNodeStatus(ctx, tx, task); err != nil {
+			return err
+		}
 		updated = task
 		return nil
 	})
@@ -433,6 +436,27 @@ func (r taskRepository) ensureTaskProjectByName(ctx context.Context, name, proje
 		return "", err
 	}
 	return created.ID, nil
+}
+
+func (r taskRepository) syncRoadmapNodeStatus(ctx context.Context, tx *sql.Tx, task *model.Task) error {
+	if task.RoadmapNodeID == nil {
+		return nil
+	}
+	status := ""
+	if task.Done == 1 || task.Status == "done" {
+		status = "done"
+	} else if task.Status == "open" {
+		status = "active"
+	}
+	if status == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE roadmap_nodes
+		SET status = $1, updated_at = $2
+		WHERE id = $3
+	`, status, time.Now().UTC(), *task.RoadmapNodeID)
+	return err
 }
 
 func (r taskRepository) withTx(ctx context.Context, fn func(*sql.Tx) error) error {

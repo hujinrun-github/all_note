@@ -105,7 +105,7 @@ func (r taskRepository) ListProjects(ctx context.Context) ([]model.TaskProject, 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, type, description, created_at, updated_at
 		FROM task_projects
-		ORDER BY CASE WHEN id = 'personal' THEN 0 ELSE 1 END, lower(name) ASC
+		ORDER BY CASE WHEN id = 'personal' THEN 0 ELSE 1 END, updated_at DESC, lower(name) ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -301,7 +301,14 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 		return nil, sql.ErrNoRows
 	}
-	return r.GetByID(ctx, id)
+	task, err := r.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.syncRoadmapNodeStatus(ctx, task); err != nil {
+		return nil, err
+	}
+	return task, nil
 }
 
 func (r taskRepository) GetByID(ctx context.Context, id string) (*model.Task, error) {
@@ -425,6 +432,27 @@ func (r taskRepository) ensureTaskProjectByName(ctx context.Context, name, proje
 		return "", err
 	}
 	return created.ID, nil
+}
+
+func (r taskRepository) syncRoadmapNodeStatus(ctx context.Context, task *model.Task) error {
+	if task.RoadmapNodeID == nil {
+		return nil
+	}
+	status := ""
+	if task.Done == 1 || task.Status == "done" {
+		status = "done"
+	} else if task.Status == "open" {
+		status = "active"
+	}
+	if status == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE roadmap_nodes
+		SET status = ?, updated_at = ?
+		WHERE id = ?
+	`, status, nowUnix(), *task.RoadmapNodeID)
+	return err
 }
 
 func normalizeProjectType(value string) string {

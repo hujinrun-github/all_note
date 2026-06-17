@@ -58,11 +58,17 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		defer store.Close()
 
 		ctx := context.Background()
-		if _, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "beta", Type: "regular"}); err != nil {
-			t.Fatalf("create beta: %v", err)
-		}
 		if _, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Alpha", Type: "regular"}); err != nil {
 			t.Fatalf("create alpha: %v", err)
+		}
+		beta, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "beta", Type: "regular"})
+		if err != nil {
+			t.Fatalf("create beta: %v", err)
+		}
+		time.Sleep(1100 * time.Millisecond)
+		description := "recently touched"
+		if _, err := store.Tasks().UpdateProject(ctx, beta.ID, &model.UpdateTaskProjectRequest{Description: &description}); err != nil {
+			t.Fatalf("update beta: %v", err)
 		}
 
 		projects, err := store.Tasks().ListProjects(ctx)
@@ -72,8 +78,8 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		if len(projects) < 3 || projects[0].ID != "personal" {
 			t.Fatalf("expected personal first, got %+v", projects)
 		}
-		if projects[1].Name != "Alpha" || projects[2].Name != "beta" {
-			t.Fatalf("expected Alpha then beta, got %+v", projects)
+		if projects[1].Name != "beta" || projects[2].Name != "Alpha" {
+			t.Fatalf("expected recently updated beta before Alpha, got %+v", projects)
 		}
 	})
 
