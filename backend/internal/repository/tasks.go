@@ -1,15 +1,30 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 func GetTasks(project, status, scope, horizon, projectID, plannedDate string, page, pageSize int) ([]model.Task, int, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().List(context.Background(), storage.TaskFilter{
+			Project:     project,
+			Status:      status,
+			Scope:       scope,
+			Horizon:     horizon,
+			ProjectID:   projectID,
+			PlannedDate: plannedDate,
+			Page:        page,
+			PageSize:    pageSize,
+		})
+	}
+
 	where := []string{"1=1"}
 	args := []interface{}{}
 
@@ -98,6 +113,10 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 }
 
 func ListTaskProjects() ([]model.TaskProject, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().ListProjects(context.Background())
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, name, type, description, created_at, updated_at
 		FROM task_projects
@@ -132,6 +151,10 @@ func GetTaskProjects() ([]string, error) {
 }
 
 func CreateTaskProject(req *model.CreateTaskProjectRequest) (*model.TaskProject, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().CreateProject(context.Background(), req)
+	}
+
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, fmt.Errorf("project name is required")
@@ -160,6 +183,10 @@ func CreateTaskProject(req *model.CreateTaskProjectRequest) (*model.TaskProject,
 }
 
 func UpdateTaskProject(id string, req *model.UpdateTaskProjectRequest) (*model.TaskProject, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().UpdateProject(context.Background(), id, req)
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -188,6 +215,10 @@ func UpdateTaskProject(id string, req *model.UpdateTaskProjectRequest) (*model.T
 }
 
 func DeleteTaskProject(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().DeleteProject(context.Background(), id)
+	}
+
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("project id is required")
@@ -209,6 +240,10 @@ func DeleteTaskProject(id string) error {
 }
 
 func GetTaskProjectByID(id string) (*model.TaskProject, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().GetProjectByID(context.Background(), id)
+	}
+
 	var project model.TaskProject
 	err := DB.QueryRow(`
 		SELECT id, name, type, description, created_at, updated_at
@@ -222,6 +257,10 @@ func GetTaskProjectByID(id string) (*model.TaskProject, error) {
 }
 
 func GetTaskProjectByName(name string) (*model.TaskProject, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().GetProjectByName(context.Background(), name)
+	}
+
 	var project model.TaskProject
 	err := DB.QueryRow(`
 		SELECT id, name, type, description, created_at, updated_at
@@ -235,6 +274,10 @@ func GetTaskProjectByName(name string) (*model.TaskProject, error) {
 }
 
 func CreateTask(t *model.Task) error {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().Create(context.Background(), t)
+	}
+
 	t.ID = newUUID()
 	now := nowUnix()
 	t.CreatedAt = now
@@ -251,6 +294,10 @@ func CreateTask(t *model.Task) error {
 }
 
 func UpdateTask(id string, req *model.UpdateTaskRequest) (*model.Task, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().Update(context.Background(), id, req)
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -348,6 +395,10 @@ func UpdateTask(id string, req *model.UpdateTaskRequest) (*model.Task, error) {
 }
 
 func GetTaskByID(id string) (*model.Task, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().GetByID(context.Background(), id)
+	}
+
 	row := DB.QueryRow(`
 		SELECT
 			t.id,
@@ -380,11 +431,19 @@ func GetTaskByID(id string) (*model.Task, error) {
 }
 
 func DeleteTask(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().Delete(context.Background(), id)
+	}
+
 	_, err := DB.Exec("DELETE FROM tasks WHERE id = ?", id)
 	return err
 }
 
 func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []model.Task, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Tasks().Today(context.Background(), todayStart, todayEnd, overdueCutoff)
+	}
+
 	todayDate := time.Unix(todayStart, 0).In(time.Local).Format("2006-01-02")
 	overdueCutoffDate := time.Unix(overdueCutoff, 0).In(time.Local).Format("2006-01-02")
 

@@ -62,7 +62,31 @@ type NoteRepository interface {
 	Recent(context.Context, int) ([]model.Note, error)
 }
 
-type TaskRepository interface{}
+type TaskFilter struct {
+	Project     string
+	Status      string
+	Scope       string
+	Horizon     string
+	ProjectID   string
+	PlannedDate string
+	Page        int
+	PageSize    int
+}
+
+type TaskRepository interface {
+	List(context.Context, TaskFilter) ([]model.Task, int, error)
+	ListProjects(context.Context) ([]model.TaskProject, error)
+	CreateProject(context.Context, *model.CreateTaskProjectRequest) (*model.TaskProject, error)
+	UpdateProject(context.Context, string, *model.UpdateTaskProjectRequest) (*model.TaskProject, error)
+	DeleteProject(context.Context, string) error
+	GetProjectByID(context.Context, string) (*model.TaskProject, error)
+	GetProjectByName(context.Context, string) (*model.TaskProject, error)
+	Create(context.Context, *model.Task) error
+	Update(context.Context, string, *model.UpdateTaskRequest) (*model.Task, error)
+	GetByID(context.Context, string) (*model.Task, error)
+	Delete(context.Context, string) error
+	Today(context.Context, int64, int64, int64) ([]model.Task, []model.Task, error)
+}
 type EventRepository interface{}
 type InboxRepository interface{}
 type RoadmapRepository interface{}

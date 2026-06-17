@@ -127,7 +127,7 @@ func (s *store) Notes() storage.NoteRepository {
 }
 
 func (s *store) Tasks() storage.TaskRepository {
-	panic("postgres task repository is not implemented yet")
+	return taskRepository{db: s.db}
 }
 
 func (s *store) Events() storage.EventRepository {
@@ -165,4 +165,8 @@ func (s *storeTx) Notes() storage.NoteRepository {
 
 func (s *storeTx) Search() storage.SearchRepository {
 	return searchRepository{db: s.tx}
+}
+
+func (s *storeTx) Tasks() storage.TaskRepository {
+	return taskRepository{db: s.tx}
 }
