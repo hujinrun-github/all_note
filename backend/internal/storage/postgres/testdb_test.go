@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -44,7 +45,8 @@ func createPostgresTestSchema(t *testing.T, schema string) string {
 		t.Fatalf("open postgres admin connection: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	quotedSchema := quotePostgresIdentifier(schema)
 	if _, err := adminDB.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+quotedSchema+` CASCADE`); err != nil {
 		_ = adminDB.Close()

@@ -1,0 +1,30 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/hujinrun/flowspace/internal/storage/contracttest"
+)
+
+func TestPostgresStoreContract(t *testing.T) {
+	contracttest.RunStoreSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+
+		schema := fmt.Sprintf("fs_test_contract_%d", time.Now().UnixNano())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		store, err := (Provider{}).Open(ctx, storage.Config{
+			Env:    "test",
+			Driver: storage.DriverPostgres,
+			URL:    createPostgresTestSchema(t, schema),
+		})
+		if err != nil {
+			t.Fatalf("open postgres store: %v", err)
+		}
+		return store
+	})
+}
