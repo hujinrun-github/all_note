@@ -1,19 +1,13 @@
-# 每日总结页面设计（v6）
+# 每日总结页面设计（v7）
 
 **日期**: 2026-06-17 | **分支**: feat/note-project-links  
-**审查**: R1:12 / R2:12 / R3:14 / R4:14 / R5:13 — 已修正
+**审查**: R1:12 / R2:12 / R3:14 / R4:14 / R5:13 / R6:12 — 已修正
 
 ---
 
 ## 需求摘要
 
 侧边栏「每日总结」入口。默认本周已完成任务，按日期分组，预设按钮 + 手动日期选择。任务可展开查看来源笔记和项目笔记（可跳转），项目 badge 可跳转。统计后端返回。URL 持久化日期/页码。
-
----
-
-## 架构总览（不变）
-
-前端 6 + 后端 13 + 迁移 1 + e2e 1
 
 ---
 
@@ -25,24 +19,21 @@ PG: `0002_add_completed_at.sql` | SQLite: `db.go` `RunLegacySQLiteMigrations`
 
 ### 2. Model 层
 
-**`model/task.go`** — 新增：
-```go
-CompletedAt *int64 `json:"completed_at,omitempty"`
-```
+**`model/task.go`** — 新增 `CompletedAt *int64 \`json:"completed_at,omitempty"\``
 
 **`model/summary.go`**（新建）：
 ```go
+package model
+
 type SummaryData struct {
     Groups       []DateGroup `json:"groups"`
     ActiveDays   int         `json:"active_days"`
     ProjectCount int         `json:"project_count"`
-    total        int         // 私有，由 NewSummaryData 设置
+    total        int
 }
-
 func NewSummaryData(groups []DateGroup, activeDays, projectCount, total int) *SummaryData {
     return &SummaryData{Groups: groups, ActiveDays: activeDays, ProjectCount: projectCount, total: total}
 }
-
 func (s *SummaryData) PaginationTotal() int { return s.total }
 
 type DateGroup struct {
@@ -51,17 +42,16 @@ type DateGroup struct {
     Count int           `json:"count"`
 }
 
-// TaskSummary — 显式列出字段，不嵌入 Task（避免 Task.Project *string 与 TaskSummary.Project *TaskProject 的 JSON key 冲突）
 type TaskSummary struct {
-    ID           string       `json:"id"`
-    Title        string       `json:"title"`
-    Done         int          `json:"done"`
-    PlannedDate  *string      `json:"planned_date,omitempty"`
-    Due          *int64       `json:"due,omitempty"`
-    CompletedAt  *int64       `json:"completed_at,omitempty"`
-    NoteID       *string      `json:"note_id,omitempty"`
-    Project      *TaskProject `json:"project,omitempty"`
-    LinkedNotes  []NoteRef    `json:"linked_notes,omitempty"`
+    ID          string       `json:"id"`
+    Title       string       `json:"title"`
+    Done        int          `json:"done"`
+    PlannedDate *string      `json:"planned_date,omitempty"`
+    Due         *int64       `json:"due,omitempty"`
+    CompletedAt *int64       `json:"completed_at,omitempty"`
+    NoteID      *string      `json:"note_id,omitempty"`
+    Project     *TaskProject `json:"project,omitempty"`
+    LinkedNotes []NoteRef    `json:"linked_notes,omitempty"`
 }
 
 type NoteRef struct {
@@ -75,77 +65,67 @@ type SummaryParams struct {
 }
 ```
 
-> `TaskSummary` 只含列表展示所需字段，不含 `Content`、`Body` 等大字段，避免 50 条/页 × 10KB+/条 的臃肿传输。
+> `NoteRef` 放在 `model/summary.go`。虽然 `NoteRepository` 也引用它，但两者同属 `model` 包，编译器无碍。`NoteRef` 的语义是 summary 页面的轻量引用，与 `Note` 模型分离清晰。
 
-### 3. SELECT/Scan 更新
+### 3. SELECT/Scan — 注意 GetCompletedTasksByRange 不复用共享管道
 
-- `sqliteTaskSelectSQL()` / `scanSQLiteTaskRow()` → 加 `completed_at`
-- `postgresTaskSelectSQL()` / `scanPostgresTaskRow()` → 加 `completed_at`（`*time.Time` → `timeToUnix`）
-- `repository/tasks.go` `scanTaskRow()` ~L632 → 追加 `&task.CompletedAt`
-- `repository/tasks.go` 6 处内联 SELECT → 加 `t.completed_at`
+现有 `List`/`Today`/`GetByID` 复用 `*TaskSelectSQL()` + `scan*TaskRow()` → `*model.Task`。但 `GetCompletedTasksByRange` 返回类型是 `[]model.TaskSummary`（9 列，非 17 列），**无法复用**上述管道。
 
-### 4. UpdateTask — 三路径 TOCTOU + completed_at
+两个 storage 后端 + repository fallback 各自实现独立的 SQL + scan：
 
-**通用约定**：用 `nowUnix()`（`repository/db.go:50` 已定义）而非 `time.Now().Unix()`。用 `[]interface{}` 而非 `[]any`。
-
-#### SQLite storage — 事务内
-
+**storage/sqlite/tasks.go**：
 ```go
-tx, err := s.db.BeginTx(ctx, nil)
-if err != nil { return nil, err }
-defer tx.Rollback() // 显式忽略返回值（与项目风格一致）
-// ... GetByID + 判断 0→1/1→0 ...
-tx.Commit() // 检查 err
-```
-
-#### Postgres storage — withTx 内
-
-```go
-return withTx(s.db, ctx, func(tx *sql.Tx) (*model.Task, error) {
-    current, err := s.getByIDInTx(ctx, tx, id)
-    // ... 判断 ...
-})
-```
-
-#### Repository fallback（`repository/tasks.go` ~L296-395）
-
-```go
-func UpdateTask(id string, req model.UpdateTaskRequest) (*model.Task, error) {
-    if store := CurrentStore(); store != nil {
-        return store.Tasks().Update(context.Background(), id, req)
-    }
-    tx, err := DB.Begin()  // ← DB 是 repository 包级变量（db.go:14）
-    if err != nil { return nil, err }
-    defer tx.Rollback()
-
-    var currentDone int
-    if err := tx.QueryRow(`SELECT done FROM tasks WHERE id = ?`, id).Scan(&currentDone); err != nil {
-        return nil, err
-    }
-
-    var sets []string
-    var args []interface{}
-    // ... 其他字段 ...
-
-    if req.Done != nil {
-        sets = append(sets, "done = ?", "status = ?")
-        status := "open"
-        if *req.Done == 1 { status = "done" }
-        args = append(args, *req.Done, status)
-        if *req.Done == 1 && currentDone == 0 {
-            sets = append(sets, "completed_at = ?")
-            args = append(args, nowUnix())
-        } else if *req.Done == 0 && currentDone == 1 {
-            sets = append(sets, "completed_at = NULL")
-        }
-    }
-
-    _, err = tx.Exec(`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, append(args, id)...)
-    if err != nil { return nil, err }
-    if err := tx.Commit(); err != nil { return nil, err }
-    return GetTaskByID(id)
+func (s *SQLiteTaskStore) GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
+    var total int
+    s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE completed_at >= ? AND completed_at < ?`, from, to).Scan(&total)
+    offset := (page - 1) * pageSize
+    rows, _ := s.db.QueryContext(ctx,
+        `SELECT t.id, t.title, t.done, t.planned_date, t.due, t.completed_at, t.note_id, p.id, p.name, p.type
+         FROM tasks t LEFT JOIN task_projects p ON t.project_id = p.id
+         WHERE t.completed_at >= ? AND t.completed_at < ?
+         ORDER BY t.completed_at DESC LIMIT ? OFFSET ?`,
+        from, to, pageSize, offset)
+    defer rows.Close()
+    // scan → []model.TaskSummary（自定义 scan，非 scanSQLiteTaskRow）
+    return summaries, total, nil
 }
 ```
+
+**storage/postgres/tasks.go** — 同逻辑，`$1` 占位符 + `ANY($1)` 无变化。
+
+**repository/tasks.go fallback** — 同逻辑，用 `DB.Query(...)` 包级变量。
+
+### 4. UpdateTask — 两个分支都需处理 completed_at
+
+done 可以通过两条路径变更：
+
+| 分支 | 触发条件 | 需处理 |
+|------|----------|--------|
+| A: `req.Done != nil` | 直接设置 `done` 字段 | `0→1`: 设 `completed_at`；`1→0`: 清空 |
+| B: `req.Status != nil && req.Done == nil` | 通过 `status` 字段间接变更 | `status="done" && currentDone==0`: 设；`status≠"done" && currentDone==1`: 清空 |
+
+**分支 B 的伪代码**（三个 Update 路径均需加入）：
+
+```go
+// req.Status != nil && req.Done == nil 时
+if req.Status != nil {
+    becomingDone := (*req.Status == "done" && currentDone == 0)
+    becomingUndone := (*req.Status != "done" && currentDone == 1)
+    if becomingDone {
+        sets = append(sets, "completed_at = ?")
+        args = append(args, nowUnix())
+    } else if becomingUndone {
+        sets = append(sets, "completed_at = NULL")
+    }
+}
+```
+
+`currentDone` 的获取方式：
+- SQLite storage: `tx.QueryRowContext(...)`（§1 事务内）
+- PG storage: `getByIDInTx(ctx, tx, id)`（`withTx` 内）
+- Repository fallback: `tx.QueryRow(...)`（`DB.Begin()` 事务内）
+
+使用 `nowUnix()`（`repository/db.go:50`）。使用 `[]interface{}`。
 
 ### 5. Interface（`storage/store.go`）
 
@@ -161,19 +141,9 @@ type NoteRepository interface {
 }
 ```
 
-### 6. GetNotesByProjectIDs — 三层实现
+### 6. GetNotesByProjectIDs — 三层，显式列名（不变）
 
-SQL（storage/sqlite + postgres + repository fallback 三层均用显式列名）：
-```sql
-SELECT n.id, n.title, npl.project_id
-FROM notes n JOIN note_project_links npl ON n.id = npl.note_id
-WHERE npl.project_id IN (...)
-ORDER BY n.updated_at DESC
-```
-
-Repository fallback 使用 `DB.Query(...)`（包级 `DB *sql.DB`，`db.go:14`）。
-
-### 7. Handler（复用 helpers.go 全部函数）
+### 7. Handler
 
 ```go
 func GetSummary(c *gin.Context) {
@@ -192,19 +162,7 @@ func GetSummary(c *gin.Context) {
 }
 ```
 
-响应格式：
-```json
-{
-  "data": {
-    "groups": [{"date": "2026-06-17", "tasks": [...], "count": 3}],
-    "active_days": 5,
-    "project_count": 3
-  },
-  "pagination": {"page": 1, "page_size": 50, "total": 80}
-}
-```
-
-### 8. Service 层
+### 8. Service
 
 ```go
 func GetSummary(params model.SummaryParams) (*model.SummaryData, error) {
@@ -215,79 +173,99 @@ func GetSummary(params model.SummaryParams) (*model.SummaryData, error) {
 }
 ```
 
-#### DATE() 兼容
-
-| 后端 | SQL |
-|------|-----|
-| PG | `DATE(completed_at)` |
-| SQLite（storage + fallback） | `DATE(completed_at, 'unixepoch')` |
-
-### 9. GetCompletedTasksByRange — repository fallback
+### 9. GetSummaryStats — repository fallback 完整实现
 
 ```go
-func GetCompletedTasksByRange(from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
+func GetSummaryStats(from, to int64) (activeDays int, projectCount int, err error) {
     if store := CurrentStore(); store != nil {
-        return store.Tasks().GetCompletedTasksByRange(context.Background(), from, to, page, pageSize)
+        return store.Tasks().GetSummaryStats(context.Background(), from, to)
     }
-    var total int
-    DB.QueryRow(`SELECT COUNT(*) FROM tasks WHERE completed_at >= ? AND completed_at < ?`, from, to).Scan(&total)
-    offset := (page - 1) * pageSize
-    rows, _ := DB.Query(`SELECT t.id, t.title, t.done, t.planned_date, t.due, t.completed_at, t.note_id, p.id, p.name, p.type FROM tasks t LEFT JOIN task_projects p ON t.project_id = p.id WHERE t.completed_at >= ? AND t.completed_at < ? ORDER BY t.completed_at DESC LIMIT ? OFFSET ?`, from, to, pageSize, offset)
-    // scan → []model.TaskSummary（显式列，不含大字段）
-    return taskSummaries, total, nil
+    // fallback: SQLite（DATE 需要 'unixepoch' 修饰符）
+    DB.QueryRow(`SELECT COUNT(DISTINCT DATE(completed_at, 'unixepoch')) FROM tasks WHERE completed_at >= ? AND completed_at < ?`, from, to).Scan(&activeDays)
+    DB.QueryRow(`SELECT COUNT(DISTINCT project_id) FROM tasks WHERE completed_at >= ? AND completed_at < ? AND project_id IS NOT NULL`, from, to).Scan(&projectCount)
+    return
 }
 ```
 
-### 10. 排序：组间 `completed_at` 日期降序，组内 `completed_at` 时间戳降序
+> DATE() 兼容：PG `DATE(completed_at)`；SQLite（storage + fallback）`DATE(completed_at, 'unixepoch')`
+
+### 10. Router 注册
+
+```go
+// router/router.go，在 api 路由组内
+api.GET("/summary", handler.GetSummary)
+```
+
+### 11. 排序：组间/组内均 `completed_at DESC`
 
 ---
 
 ## 前端设计
 
-### ErrorBoundary
-
-项目中无 ErrorBoundary 组件。在 `router.tsx` 中为 lazy routes 包裹一个轻量 ErrorBoundary：
+### Router 注册
 
 ```tsx
-// 新建 components/ErrorBoundary.tsx
-class ChunkErrorBoundary extends React.Component<{children: ReactNode}, {hasError: boolean}> {
-  state = { hasError: false }
-  static getDerivedStateFromError() { return { hasError: true } }
-  render() {
-    if (this.state.hasError) return <div className="empty-copy">页面加载失败，请刷新重试</div>
-    return this.props.children
-  }
-}
-
-// router.tsx 用法
-{ path: 'summary', element: <ChunkErrorBoundary><DailySummary /></ChunkErrorBoundary> }
+const DailySummary = lazy(() => import('./routes/DailySummary'))
+// route:
+{ path: 'summary', element: <DailySummary /> }  // App.tsx 的 <Suspense> 提供 fallback
 ```
 
-> 其他 lazy routes 也应包裹，属于本次改动中顺手修的范围。
+> ErrorBoundary 包裹属于防御性改进，本次不强制加入（项目尚无 ErrorBoundary 组件）。如 chunk 加载失败，Suspense fallback 持续显示 "Loading..."，用户刷新即可恢复。
 
-### URL 状态持久化（`useSearchParams`）
+### API 模块（`frontend/src/api/summary.ts`，新建）
 
-```tsx
-// DailySummary.tsx
-import { useSearchParams } from 'react-router-dom'
+遵循项目惯例（参照 `api/tasks.ts`、`api/notes.ts`）：
 
-export default function DailySummary() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const from = searchParams.get('from') || getMonday() // 默认本周一
-  const to = searchParams.get('to') || todayDateInputValue()
-  const page = parseInt(searchParams.get('page') || '1', 10)
+```ts
+import { api } from './client'
+import type { TaskProject, NoteRef } from './types' // 按需
 
-  function setRange(newFrom: string, newTo: string) {
-    setSearchParams({ from: newFrom, to: newTo, page: '1' }) // 改范围重置页码
-  }
-  function setPage(newPage: number) {
-    setSearchParams({ from, to, page: String(newPage) })
-  }
+export interface TaskSummaryItem {
+  id: string; title: string; done: number;
+  planned_date?: string; due?: number; completed_at?: number;
+  note_id?: string;
+  project?: TaskProject;
+  linked_notes?: NoteRef[];
+}
 
-  const { data, isLoading, error } = useSummary(from, to, page)
-  // ...
+export interface DateGroup {
+  date: string; tasks: TaskSummaryItem[]; count: number;
+}
+
+export interface SummaryResponse {
+  groups: DateGroup[];
+  active_days: number;
+  project_count: number;
+}
+
+export async function getSummary(from: string, to: string, page: number, pageSize = 50) {
+  const res = await api.get<SummaryResponse>('/api/summary', {
+    from, to, page: String(page), page_size: String(pageSize),
+  })
+  return res.data  // 解包 APIResponse
 }
 ```
+
+### useSummary Hook
+
+```ts
+import { useQuery } from '@tanstack/react-query'
+import { getSummary } from '../api/summary'
+
+export function useSummary(from: string, to: string, page: number) {
+  return useQuery({
+    queryKey: ['summary', from, to, page],
+    queryFn: () => getSummary(from, to, page),  // 已解包 → 直接返回 SummaryResponse
+    enabled: !!from && !!to,
+  })
+}
+```
+
+> 调用方：`const { data } = useSummary(...)` — `data.groups` 直接可用，无双层 `.data.data.groups`。
+
+### URL 状态
+
+`useSearchParams` 同步 `from`/`to`/`page`。改范围重置 `page=1`。刷新/分享保持视图。
 
 ### 布局
 
@@ -296,88 +274,63 @@ export default function DailySummary() {
 ┌──────────────────────────────┐      ┌──────────────────────┐
 │ [本周][本月]  from [ ] to [ ]│      │ [本周][本月]          │
 ├──────────────┬───────────────┤      │ from [ ] to [ ]      │
-│ 统计卡片     │  任务列表      │      ├──────────────────────┤
-│  (1/3)      │  按日期分组    │      │ 统计卡片（横排）      │
-│              │               │      ├──────────────────────┤
-│              │               │      │ 任务列表              │
-└──────────────┴───────────────┘      └──────────────────────┘
-
-移动端统计卡片横排三列（flex-row），日期栏换行，preset 和 inputs 各占一行。
+│ 统计卡片(1/3)│ 任务列表(2/3) │      ├──────────────────────┤
+└──────────────┴───────────────┘      │ 统计卡片（横排三列）  │
+                                      │ 任务列表              │
+                                      └──────────────────────┘
 ```
 
-### 三态处理
+### 三态 + 子态
 
 | 状态 | 展示 |
 |------|------|
 | Loading | 骨架卡片 |
-| Error（API） | "加载失败" + 重试按钮 |
-| ChunkLoadError | "页面加载失败，请刷新重试"（ErrorBoundary 捕获） |
+| Error | "加载失败" + 重试 |
 | Empty | "这个时间段还没有完成的任务，试试调整日期范围" |
 | Data | 统计卡片 + 分组列表 + 分页 |
-| 任务展开为空 | "无关联笔记" 提示文字（`note_id == null && linked_notes == []` 时） |
+| 任务展开为空 | "无关联笔记"（note_id==null && linked_notes==[]） |
 
-### 任务卡片交互
+### 交互：展开/折叠用 `<details>`（键盘 Enter/Space 原生支持）；笔记跳转 `/editor/:id`；项目 badge 跳转 `/tasks`
 
-| 交互 | 行为 | 键盘 |
-|------|------|------|
-| 展开/折叠 | 显示来源笔记 + 项目笔记 | Enter / Space（`<details>` 元素原生支持） |
-| 笔记链接 | `navigate(/editor/:id)` | Enter |
-| 项目 badge | `navigate(/tasks)` | Enter |
+### 预设按钮 `[本周]` `[本月]`；手动改日期取消选中；改日期重置 page=1
 
-### useSummary Hook
+### 统计卡片：来自 `data.active_days`、`data.project_count`、`pagination.total`
 
-```ts
-export function useSummary(from: string, to: string, page: number) {
-  return useQuery({
-    queryKey: ['summary', from, to, page],
-    queryFn: () => api.get(`/api/summary?from=${from}&to=${to}&page=${page}&page_size=50`),
-    enabled: !!from && !!to,
-  })
-}
-```
+### Sidebar navItem + SummaryIcon SVG（同 v6）
 
-### Sidebar navItem + SummaryIcon SVG（同 v5）
+### `getPagination` 默认 pageSize=20（handler/helpers.go）— 前端始终传 `page_size=50`；API 直接调用时用默认值 20
 
 ---
 
-## 文件清单（v6）
+## 文件清单（v7）
 
 ### 新建
 
-| 文件 |
-|------|
-| `frontend/src/routes/DailySummary.tsx` |
-| `frontend/src/hooks/useSummary.ts` |
-| `frontend/src/components/ErrorBoundary.tsx` |
-| `backend/internal/model/summary.go` |
-| `backend/internal/handler/summary.go` |
-| `backend/internal/service/summary.go` |
-| `db/migrations/postgres/0002_add_completed_at.sql` |
-| `e2e/daily-summary.spec.ts` |
+`frontend/src/routes/DailySummary.tsx` | `frontend/src/hooks/useSummary.ts` | `frontend/src/api/summary.ts` | `backend/internal/model/summary.go` | `backend/internal/handler/summary.go` | `backend/internal/service/summary.go` | `db/migrations/postgres/0002_add_completed_at.sql` | `e2e/daily-summary.spec.ts`
 
 ### 修改
 
 | 文件 | 改动 |
 |------|------|
-| `frontend/src/router.tsx` | lazy + route + ErrorBoundary 包裹 |
+| `frontend/src/router.tsx` | lazy + route |
 | `frontend/src/components/layout/Sidebar.tsx` | navItem + SummaryIcon |
 | `frontend/src/components/layout/TopBar.tsx` | pageMeta |
-| `frontend/src/styles/index.css` | .summary-* + 移动端媒体查询 |
+| `frontend/src/styles/index.css` | .summary-* + 移动端 @media |
 | `backend/internal/model/task.go` | CompletedAt |
 | `backend/internal/storage/store.go` | TaskRepository +2, NoteRepository +1 |
 | `backend/internal/handler/tasks.go` | 响应透传 completed_at |
-| `backend/internal/storage/sqlite/tasks.go` | SELECT/scan + Update 事务 + GetCompletedTasksByRange + GetSummaryStats |
+| `backend/internal/storage/sqlite/tasks.go` | SELECT/scan + Update（A/B 双分支 TOCTOU）+ GetCompletedTasksByRange（自定义 SQL）+ GetSummaryStats |
 | `backend/internal/storage/postgres/tasks.go` | 同上 |
 | `backend/internal/storage/sqlite/notes.go` | GetNotesByProjectIDs |
 | `backend/internal/storage/postgres/notes.go` | 同上 |
-| `backend/internal/repository/tasks.go` | scanTaskRow + 6 SELECT + UpdateTask TOCTOU + GetCompletedTasksByRange + GetSummaryStats |
+| `backend/internal/repository/tasks.go` | scanTaskRow + 6 SELECT + UpdateTask（A/B 双分支 TOCTOU）+ GetCompletedTasksByRange fallback + GetSummaryStats fallback |
 | `backend/internal/repository/notes.go` | GetNotesByProjectIDs fallback |
 | `backend/internal/repository/db.go` | SQLite 迁移 |
-| `backend/internal/router/router.go` | GET /api/summary |
+| `backend/internal/router/router.go` | `api.GET("/summary", handler.GetSummary)` |
 
 ---
 
 ## 验证
 
 1. `go test ./internal/...`
-2. Playwright e2e：本周加载 / 预设切换 / 回填可见 / 统计跨页一致 / 笔记跳转 / 项目跳转 / 分页 / 键盘展开 / URL 刷新保持状态 / 移动端堆叠布局
+2. Playwright e2e：本周加载 / 预设切换 / 回填可见 / 统计跨页一致 / 笔记+项目跳转 / 分页 / 键盘展开 / URL 刷新保持 / 移动端 / Status 字段标记完成 → completed_at 正确记录
