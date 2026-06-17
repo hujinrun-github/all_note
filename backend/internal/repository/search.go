@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"log"
 	"sort"
 	"strings"
@@ -11,6 +12,10 @@ import (
 const searchPageMultiplier = 3
 
 func Search(q string, page, pageSize int) ([]model.SearchResult, int, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Search().Search(context.Background(), q, page, pageSize)
+	}
+
 	if strings.TrimSpace(q) == "" {
 		return []model.SearchResult{}, 0, nil
 	}

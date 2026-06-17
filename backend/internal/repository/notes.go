@@ -1,13 +1,24 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().List(context.Background(), storage.NoteFilter{
+			FolderID: folderID,
+			Query:    sort,
+			Page:     page,
+			PageSize: pageSize,
+		})
+	}
+
 	where := "1=1"
 	args := []interface{}{}
 	if folderID != "" {
@@ -48,6 +59,10 @@ func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, err
 }
 
 func GetNoteByID(id string) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().GetByID(context.Background(), id)
+	}
+
 	var n model.Note
 	err := DB.QueryRow(`
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
@@ -60,6 +75,10 @@ func GetNoteByID(id string) (*model.Note, error) {
 }
 
 func CreateNote(n *model.Note) error {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().CreateWithID(context.Background(), n)
+	}
+
 	n.ID = newUUID()
 	now := nowUnix()
 	n.CreatedAt = now
@@ -78,6 +97,20 @@ func CreateNote(n *model.Note) error {
 }
 
 func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		note := &model.Note{
+			ID:       strings.TrimSpace(req.ID),
+			Title:    req.Title,
+			Body:     req.Body,
+			FolderID: req.FolderID,
+			Tags:     req.Tags,
+		}
+		if err := store.Notes().CreateWithID(context.Background(), note); err != nil {
+			return nil, err
+		}
+		return store.Notes().GetByID(context.Background(), note.ID)
+	}
+
 	id := strings.TrimSpace(req.ID)
 	if id == "" {
 		id = newUUID()
@@ -102,6 +135,10 @@ func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
 }
 
 func ListAllNotes() ([]model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().ListAll(context.Background())
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
 		FROM notes ORDER BY updated_at DESC
@@ -126,6 +163,10 @@ func ListAllNotes() ([]model.Note, error) {
 }
 
 func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Update(context.Background(), id, req)
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -155,11 +196,19 @@ func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {
 }
 
 func DeleteNote(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Delete(context.Background(), id)
+	}
+
 	_, err := DB.Exec("DELETE FROM notes WHERE id = ?", id)
 	return err
 }
 
 func GetRecentNotes(limit int) ([]model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Recent(context.Background(), limit)
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
 		FROM notes ORDER BY updated_at DESC LIMIT ?

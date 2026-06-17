@@ -119,11 +119,11 @@ func (s *store) Transact(ctx context.Context, fn func(storage.Store) error) erro
 }
 
 func (s *store) Folders() storage.FolderRepository {
-	panic("postgres folder repository is not implemented yet")
+	return folderRepository{db: s.db}
 }
 
 func (s *store) Notes() storage.NoteRepository {
-	panic("postgres note repository is not implemented yet")
+	return noteRepository{db: s.db}
 }
 
 func (s *store) Tasks() storage.TaskRepository {
@@ -147,10 +147,22 @@ func (s *store) Sync() storage.SyncRepository {
 }
 
 func (s *store) Search() storage.SearchRepository {
-	panic("postgres search repository is not implemented yet")
+	return searchRepository{db: s.db}
 }
 
 type storeTx struct {
 	*store
 	tx *sql.Tx
+}
+
+func (s *storeTx) Folders() storage.FolderRepository {
+	return folderRepository{db: s.tx}
+}
+
+func (s *storeTx) Notes() storage.NoteRepository {
+	return noteRepository{db: s.tx}
+}
+
+func (s *storeTx) Search() storage.SearchRepository {
+	return searchRepository{db: s.tx}
 }

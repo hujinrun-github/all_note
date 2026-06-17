@@ -25,3 +25,9 @@ func ActiveStore() storage.Store {
 	}
 	return activeStore
 }
+
+func CurrentStore() storage.Store {
+	activeStoreMu.RLock()
+	defer activeStoreMu.RUnlock()
+	return activeStore
+}

@@ -39,7 +39,10 @@ type Store interface {
 	Search() SearchRepository
 }
 
-type FolderRepository interface{}
+type FolderRepository interface {
+	List(context.Context) ([]model.Folder, error)
+	Exists(context.Context, string) (bool, error)
+}
 
 type NoteFilter struct {
 	FolderID string
@@ -64,4 +67,6 @@ type EventRepository interface{}
 type InboxRepository interface{}
 type RoadmapRepository interface{}
 type SyncRepository interface{}
-type SearchRepository interface{}
+type SearchRepository interface {
+	Search(context.Context, string, int, int) ([]model.SearchResult, int, error)
+}
