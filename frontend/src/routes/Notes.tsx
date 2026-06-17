@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { getFolders } from '../api/folders'
 import { deleteNote, getNotes } from '../api/notes'
 import { useCreateNote } from '../hooks/useNotes'
 import { listTaskProjects } from '../api/tasks'
@@ -10,7 +9,6 @@ import { SyncSettingsPanel } from '../components/sync/SyncSettingsPanel'
 
 export default function Notes() {
   const navigate = useNavigate()
-  const [folder, setFolder] = useState('')
   const [sort, setSort] = useState('recent')
   const [syncOpen, setSyncOpen] = useState(false)
   const [projectID, setProjectID] = useState('')
@@ -21,11 +19,9 @@ export default function Notes() {
   })
   const createNote = useCreateNote()
 
-  const foldersQ = useQuery({ queryKey: ['folders'], queryFn: getFolders })
   const notesQ = useQuery({
-    queryKey: ['notes', folder, sort, projectID, unassigned],
+    queryKey: ['notes', sort, projectID, unassigned],
     queryFn: () => getNotes({
-      folder_id: folder || undefined,
       sort,
       project_id: projectID || undefined,
       unassigned: unassigned || undefined,
@@ -36,7 +32,7 @@ export default function Notes() {
     const note = await createNote.mutateAsync({
       title: '未命名笔记',
       body: '',
-      folder_id: folder || undefined,
+      folder_id: '__uncategorized',
       tags: '[]',
       project_ids: projectID ? [projectID] : undefined,
     })
@@ -55,18 +51,6 @@ export default function Notes() {
   return (
     <div className="list-workspace">
       <aside className="filter-rail">
-        <div className="filter-title">文件夹</div>
-        <button onClick={() => setFolder('')} className={!folder ? 'is-active' : ''}>
-          <span>全部</span>
-          <span className="text-xs opacity-60">{notesQ.data?.pagination.total ?? 0}</span>
-        </button>
-        {(foldersQ.data ?? []).map((item) => (
-          <button key={item.id} onClick={() => setFolder(item.id)} className={folder === item.id ? 'is-active' : ''}>
-            <span>{item.name}</span>
-            <span className="text-fs-text-muted text-xs">{item.note_count}</span>
-          </button>
-        ))}
-        <hr className="my-3" />
         <h4 className="text-xs font-semibold text-fs-text-muted mb-2">项目</h4>
         <button
           className={`block w-full text-left px-2 py-1 rounded text-sm ${!projectID && !unassigned ? 'bg-fs-accent/10 text-fs-accent' : ''}`}
@@ -93,7 +77,7 @@ export default function Notes() {
         <div className="rail-summary">
           <span>最近更新</span>
           <strong>{notesQ.data?.pagination.total ?? 0}</strong>
-          <p>按文件夹保持知识有序</p>
+          <p>按项目整理笔记</p>
         </div>
       </aside>
 
@@ -123,9 +107,6 @@ export default function Notes() {
                 <strong className="text-sm font-medium text-fs-text block truncate">{note.title}</strong>
                 <div className="text-fs-text-muted text-xs mt-1">
                   {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}
-                  {note.folder_id !== '__uncategorized' && note.folder_id !== '__work' && (
-                    <span> · {note.folder_id.replace('__', '')}</span>
-                  )}
                 </div>
                 {note.projects && note.projects.length > 0 && (
                   <div className="chip-list mt-1">
@@ -161,17 +142,19 @@ export default function Notes() {
 
 function Skeleton() {
   return (
-    <div className="grid grid-cols-[180px_1fr] gap-6">
-      <div className="grid gap-2">
-        {Array.from({ length: 4 }).map((_, index) => (
+    <div className="list-workspace">
+      <aside className="filter-rail">
+        {Array.from({ length: 3 }).map((_, index) => (
           <div key={index} className="h-9 bg-fs-hover rounded-lg animate-pulse" />
         ))}
-      </div>
-      <div className="grid gap-2">
-        {Array.from({ length: 5 }).map((_, index) => (
-          <div key={index} className="h-14 bg-fs-hover rounded-lg animate-pulse" />
-        ))}
-      </div>
+      </aside>
+      <section className="surface-panel list-panel">
+        <div className="grid gap-2">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <div key={index} className="h-14 bg-fs-hover rounded-lg animate-pulse" />
+          ))}
+        </div>
+      </section>
     </div>
   )
 }
