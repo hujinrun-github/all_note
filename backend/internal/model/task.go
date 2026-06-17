@@ -19,6 +19,7 @@ type Task struct {
 	RoadmapNodeID *string `json:"roadmap_node_id"`
 	CreatedAt     int64   `json:"created_at"`
 	UpdatedAt     int64   `json:"updated_at"`
+	CompletedAt   *int64  `json:"completed_at,omitempty"`
 }
 
 type CreateTaskRequest struct {

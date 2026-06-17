@@ -151,6 +151,16 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 	`); err != nil {
 		return err
 	}
+	_, err = db.Exec(`ALTER TABLE tasks ADD COLUMN completed_at INTEGER`)
+	if err != nil && !isDuplicateColumnError(err) {
+		return fmt.Errorf("add completed_at column: %w", err)
+	}
+	if err == nil {
+		_, err = db.Exec(`UPDATE tasks SET completed_at = updated_at WHERE done = 1 AND completed_at IS NULL`)
+		if err != nil {
+			return fmt.Errorf("backfill completed_at: %w", err)
+		}
+	}
 	return migrateTaskProjectsWithDB(db)
 }
 
