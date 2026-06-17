@@ -222,68 +222,87 @@ func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
 }
 
 func (r taskRepository) Update(ctx context.Context, id string, req *model.UpdateTaskRequest) (*model.Task, error) {
-	builder := newPgSetBuilder(1)
-	builder.Add("updated_at", time.Now().UTC())
-	if req.Title != nil {
-		builder.Add("title", strings.TrimSpace(*req.Title))
-	}
-	if req.Content != nil {
-		builder.Add("content", strings.TrimSpace(*req.Content))
-	}
-	if req.ProjectID != nil {
-		project, err := r.GetProjectByID(ctx, *req.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		builder.Add("project_id", project.ID)
-		builder.Add("project", project.Name)
-	} else if req.Project != nil {
-		projectID, err := r.ensureTaskProjectByName(ctx, *req.Project, "regular")
-		if err != nil {
-			return nil, err
-		}
-		builder.Add("project_id", projectID)
-		builder.Add("project", strings.TrimSpace(*req.Project))
-	}
-	if req.Due != nil {
-		builder.Add("due_at", unixToTime(*req.Due))
-	}
-	if req.PlannedDate != nil {
-		builder.Add("planned_date", strings.TrimSpace(*req.PlannedDate))
-	}
-	if req.Priority != nil {
-		builder.Add("priority", *req.Priority)
-	}
-	if req.Done != nil && req.Status == nil {
-		builder.Add("done", *req.Done == 1)
-		status := "open"
-		if *req.Done == 1 {
-			status = "done"
-		}
-		builder.Add("status", status)
-	}
-	if req.Status != nil {
-		status := normalizeTaskStatus(*req.Status)
-		builder.Add("status", status)
-		builder.Add("done", status == "done")
-	}
-	if req.Scope != nil {
-		builder.Add("scope", normalizeScope(*req.Scope))
-	}
-	if req.Horizon != nil {
-		builder.Add("horizon", normalizeHorizon(*req.Horizon))
-	}
-	if req.SortOrder != nil {
-		builder.Add("sort_order", *req.SortOrder)
-	}
-	if req.RoadmapNodeID != nil {
-		builder.Add("roadmap_node_id", *req.RoadmapNodeID)
-	}
-	clause, args := builder.ClauseAndArgs()
-	args = append(args, id)
-
 	var updated *model.Task
 	err := r.withTx(ctx, func(tx *sql.Tx) error {
+		// TOCTOU: read current done state inside transaction
+		var currentDone bool
+		if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE id = $1`, id).Scan(&currentDone); err != nil {
+			return err
+		}
+
+		builder := newPgSetBuilder(1)
+		builder.Add("updated_at", time.Now().UTC())
+		if req.Title != nil {
+			builder.Add("title", strings.TrimSpace(*req.Title))
+		}
+		if req.Content != nil {
+			builder.Add("content", strings.TrimSpace(*req.Content))
+		}
+		if req.ProjectID != nil {
+			project, err := r.GetProjectByID(ctx, *req.ProjectID)
+			if err != nil {
+				return err
+			}
+			builder.Add("project_id", project.ID)
+			builder.Add("project", project.Name)
+		} else if req.Project != nil {
+			projectID, err := r.ensureTaskProjectByName(ctx, *req.Project, "regular")
+			if err != nil {
+				return err
+			}
+			builder.Add("project_id", projectID)
+			builder.Add("project", strings.TrimSpace(*req.Project))
+		}
+		if req.Due != nil {
+			builder.Add("due_at", unixToTime(*req.Due))
+		}
+		if req.PlannedDate != nil {
+			builder.Add("planned_date", strings.TrimSpace(*req.PlannedDate))
+		}
+		if req.Priority != nil {
+			builder.Add("priority", *req.Priority)
+		}
+		if req.Done != nil && req.Status == nil {
+			builder.Add("done", *req.Done == 1)
+			status := "open"
+			if *req.Done == 1 {
+				status = "done"
+			}
+			builder.Add("status", status)
+			// Branch A: completed_at set/clear
+			if *req.Done == 1 && !currentDone {
+				builder.Add("completed_at", time.Now())
+			} else if *req.Done != 1 && currentDone {
+				builder.Add("completed_at", nil)
+			}
+		}
+		if req.Status != nil {
+			status := normalizeTaskStatus(*req.Status)
+			builder.Add("status", status)
+			newDone := status == "done"
+			builder.Add("done", newDone)
+			// Branch B: completed_at set/clear via status change
+			if newDone && !currentDone {
+				builder.Add("completed_at", time.Now())
+			} else if !newDone && currentDone {
+				builder.Add("completed_at", nil)
+			}
+		}
+		if req.Scope != nil {
+			builder.Add("scope", normalizeScope(*req.Scope))
+		}
+		if req.Horizon != nil {
+			builder.Add("horizon", normalizeHorizon(*req.Horizon))
+		}
+		if req.SortOrder != nil {
+			builder.Add("sort_order", *req.SortOrder)
+		}
+		if req.RoadmapNodeID != nil {
+			builder.Add("roadmap_node_id", *req.RoadmapNodeID)
+		}
+		clause, args := builder.ClauseAndArgs()
+		args = append(args, id)
+
 		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = %s", clause, pgPlaceholder(len(args))), args...)
 		if err != nil {
 			return err
@@ -370,7 +389,8 @@ func postgresTaskSelectSQL() string {
 			t.project_id, p.type, t.due_at, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
-			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
+			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 	`
@@ -570,10 +590,12 @@ func scanPostgresTaskRow(row rowScanner) (*model.Task, error) {
 	var roadmapNodeID sql.NullString
 	var createdAt time.Time
 	var updatedAt time.Time
+	var completedAt sql.NullTime
 	if err := row.Scan(
 		&task.ID, &task.Title, &task.Content, &project, &projectID, &projectType,
 		&dueAt, &plannedDate, &task.Priority, &done, &task.Status, &task.Horizon,
 		&task.Scope, &task.SortOrder, &noteID, &roadmapNodeID, &createdAt, &updatedAt,
+		&completedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -605,6 +627,10 @@ func scanPostgresTaskRow(row rowScanner) (*model.Task, error) {
 	}
 	task.CreatedAt = timeToUnix(createdAt)
 	task.UpdatedAt = timeToUnix(updatedAt)
+	if completedAt.Valid {
+		u := timeToUnix(completedAt.Time)
+		task.CompletedAt = &u
+	}
 	return &task, nil
 }
 
