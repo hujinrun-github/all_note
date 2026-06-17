@@ -5,9 +5,12 @@ import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
+import { useQuery } from '@tanstack/react-query'
 import { NoteSyncCard } from '../components/sync/NoteSyncCard'
 import { useNote, useUpdateNote } from '../hooks/useNotes'
 import { useSyncObsidianNote, useSyncTargets } from '../hooks/useSync'
+import { listTaskProjects } from '../api/tasks'
+import { formatTaskProjectOption } from '../utils/taskProjects'
 
 function getMarkdown(editor: Editor | null): string {
   if (!editor || editor.isDestroyed) return ''
@@ -36,6 +39,15 @@ export default function EditorPage() {
 
   const [title, setTitle] = useState('')
 
+  // Fetch all projects for the selector
+  const { data: allProjects = [] } = useQuery({
+    queryKey: ['task-projects'],
+    queryFn: listTaskProjects,
+  })
+
+  // Local state for selected project IDs
+  const [selectedProjectIDs, setSelectedProjectIDs] = useState<string[]>([])
+
   const editor = useEditor({
     immediatelyRender: true,
     extensions: [
@@ -61,6 +73,7 @@ export default function EditorPage() {
     if (note && note.id === id) {
       setTitle(note.title)
       editor.commands.setContent(note.body || '')
+      setSelectedProjectIDs(note.projects?.map(p => p.id) || [])
     } else {
       setTitle('')
       editor.commands.setContent('')
@@ -76,10 +89,10 @@ export default function EditorPage() {
   const save = useCallback(() => {
     if (!id || !title.trim() || !editor || editor.isDestroyed) return
     updateNote.mutate(
-      { id, title: title.trim(), body: getMarkdown(editor) },
+      { id, title: title.trim(), body: getMarkdown(editor), project_ids: selectedProjectIDs },
       { onSuccess: syncAfterSave },
     )
-  }, [id, title, editor, updateNote, syncAfterSave])
+  }, [id, title, editor, updateNote, syncAfterSave, selectedProjectIDs])
 
   useEffect(() => {
     if (!editor || !id) return
@@ -89,13 +102,13 @@ export default function EditorPage() {
       if (!note) return
       if (title.trim() && (markdown !== note.body || title.trim() !== note.title)) {
         updateNote.mutate(
-          { id, title: title.trim(), body: markdown },
+          { id, title: title.trim(), body: markdown, project_ids: selectedProjectIDs },
           { onSuccess: syncAfterSave },
         )
       }
     }, 5000)
     return () => clearInterval(timer)
-  }, [editor, title, id, note, updateNote, syncAfterSave])
+  }, [editor, title, id, note, updateNote, syncAfterSave, selectedProjectIDs])
 
   const markdown = editor ? getMarkdown(editor) : ''
 
@@ -267,12 +280,44 @@ export default function EditorPage() {
         </div>
         {id && <NoteSyncCard noteID={id} />}
         <div className="inspector-section">
-          <span>标签</span>
+          <h4 className="inspector-label">所属项目</h4>
           <div className="chip-list">
-            <em>产品</em>
-            <em>会议</em>
-            <em>评审</em>
+            {selectedProjectIDs.map(pid => {
+              const project = allProjects.find(p => p.id === pid)
+              if (!project) return null
+              return (
+                <button
+                  key={pid}
+                  type="button"
+                  className="sync-tag-chip"
+                  onClick={() => setSelectedProjectIDs(prev => prev.filter(id => id !== pid))}
+                >
+                  {formatTaskProjectOption(project)}
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              )
+            })}
           </div>
+          <select
+            className="project-select"
+            value=""
+            onChange={e => {
+              const pid = e.target.value
+              if (pid && !selectedProjectIDs.includes(pid)) {
+                setSelectedProjectIDs(prev => [...prev, pid])
+              }
+            }}
+            style={{ marginTop: '0.35rem', width: '100%', fontSize: '0.78rem' }}
+          >
+            <option value="">+ 添加项目</option>
+            {allProjects
+              .filter(p => !selectedProjectIDs.includes(p.id))
+              .map(p => (
+                <option key={p.id} value={p.id}>
+                  {formatTaskProjectOption(p)}
+                </option>
+              ))}
+          </select>
         </div>
         <div className="inspector-section">
           <span>关联任务</span>
