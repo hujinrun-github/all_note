@@ -4335,3 +4335,87 @@ body {
     order: -1;
   }
 }
+
+/* Summary page */
+.summary-page { display: grid; gap: 1rem; }
+
+.summary-date-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+}
+
+.summary-date-inputs {
+  display: flex; align-items: center; gap: 0.5rem;
+}
+.summary-date-inputs label {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: 0.8rem; color: var(--color-fs-text-muted);
+}
+.summary-date-inputs input[type="date"] {
+  border: 1px solid var(--color-fs-border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  background: var(--color-fs-surface);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.summary-stats {
+  display: grid; gap: 0.85rem; align-content: start;
+}
+
+.summary-date-heading {
+  font-size: 0.8rem; font-weight: 700; color: var(--color-fs-text-muted);
+  text-transform: none; letter-spacing: 0.02em;
+}
+
+.summary-task-card {
+  background: var(--color-fs-surface);
+  border: 1px solid var(--color-fs-border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  transition: border-color 0.2s var(--ease-standard);
+}
+.summary-task-card[open] { border-color: var(--color-fs-accent); }
+
+.summary-task-header {
+  display: flex; align-items: center; gap: 0.65rem;
+  cursor: pointer; list-style: none;
+  font-size: 0.88rem;
+}
+.summary-task-header::-webkit-details-marker { display: none; }
+
+.summary-task-check {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  background: var(--color-fs-success); color: #fff;
+  font-size: 11px; font-weight: 800;
+  flex-shrink: 0;
+}
+.summary-task-header strong.is-done {
+  color: var(--color-fs-text-disabled); text-decoration: line-through;
+}
+
+.summary-task-detail {
+  margin-top: 0.65rem; padding-top: 0.65rem;
+  border-top: 1px solid var(--color-fs-border);
+  font-size: 0.82rem; display: grid; gap: 0.35rem;
+}
+
+.summary-pagination {
+  display: flex; align-items: center; justify-content: center;
+  gap: 0.85rem; padding-top: 0.5rem;
+}
+
+@media (max-width: 760px) {
+  .summary-grid { grid-template-columns: 1fr; }
+  .summary-stats { grid-template-columns: repeat(3, 1fr); }
+  .summary-date-bar { flex-direction: column; align-items: flex-start; }
+}
