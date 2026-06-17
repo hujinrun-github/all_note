@@ -121,7 +121,7 @@ func SyncNotionNote(c *gin.Context) {
 }
 
 func SyncObsidianFolder(c *gin.Context) {
-	notes, _, err := service.GetNotes(c.Param("folder_id"), "recent", 1, 10000)
+	notes, _, err := service.GetNotes(c.Param("folder_id"), "", "recent", false, 1, 10000)
 	if err != nil {
 		internalError(c, "failed to load notes")
 		return
@@ -131,7 +131,7 @@ func SyncObsidianFolder(c *gin.Context) {
 }
 
 func SyncObsidianAll(c *gin.Context) {
-	notes, _, err := service.GetNotes("", "recent", 1, 10000)
+	notes, _, err := service.GetNotes("", "", "recent", false, 1, 10000)
 	if err != nil {
 		internalError(c, "failed to load notes")
 		return

@@ -7,8 +7,8 @@ import (
 	"github.com/hujinrun/flowspace/internal/repository"
 )
 
-func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, error) {
-	return repository.GetNotes(folderID, sort, page, pageSize)
+func GetNotes(folderID, projectID, sort string, unassigned bool, page, pageSize int) ([]model.Note, int, error) {
+	return repository.GetNotes(folderID, projectID, sort, unassigned, page, pageSize)
 }
 
 func GetNote(id string) (*model.Note, error) {

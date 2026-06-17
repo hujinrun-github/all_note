@@ -9,25 +9,41 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, error) {
+func GetNotes(folderID, projectID, sort string, unassigned bool, page, pageSize int) ([]model.Note, int, error) {
 	if store := CurrentStore(); store != nil {
 		return store.Notes().List(context.Background(), storage.NoteFilter{
-			FolderID: folderID,
-			Query:    sort,
-			Page:     page,
-			PageSize: pageSize,
+			FolderID:   folderID,
+			ProjectID:  projectID,
+			Unassigned: unassigned,
+			Sort:       sort,
+			Page:       page,
+			PageSize:   pageSize,
 		})
 	}
 
-	where := "1=1"
+	var where []string
 	args := []interface{}{}
 	if folderID != "" {
-		where = "n.folder_id = ?"
+		where = append(where, "n.folder_id = ?")
 		args = append(args, folderID)
+	}
+	if projectID != "" {
+		where = append(where,
+			`EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id AND npl.project_id = ?)`)
+		args = append(args, projectID)
+	}
+	if unassigned {
+		where = append(where,
+			`NOT EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id)`)
+	}
+
+	whereClause := "1=1"
+	if len(where) > 0 {
+		whereClause = strings.Join(where, " AND ")
 	}
 
 	var total int
-	DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", where), args...).Scan(&total)
+	DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", whereClause), args...).Scan(&total)
 
 	order := "n.created_at DESC"
 	if sort == "az" {
@@ -38,7 +54,7 @@ func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, err
 	query := fmt.Sprintf(`
 		SELECT n.id, n.title, n.body, n.folder_id, n.tags, n.created_at, n.updated_at
 		FROM notes n WHERE %s ORDER BY %s LIMIT ? OFFSET ?
-	`, where, order)
+	`, whereClause, order)
 	args = append(args, pageSize, offset)
 
 	rows, err := DB.Query(query, args...)
