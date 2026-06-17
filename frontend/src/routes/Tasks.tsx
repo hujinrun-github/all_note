@@ -1,4 +1,5 @@
 import { type ComponentType, type FormEvent, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Background,
@@ -38,8 +39,9 @@ import {
   type TaskProject,
 } from '../api/tasks'
 import { TaskRow } from '../components/ui/TaskRow'
+import { getNotes, createNote } from '../api/notes'
 import { dateInputToUnix, dateToInputValue, todayDateInputValue } from '../utils/taskForm'
-import { taskProjectTypeLabels } from '../utils/taskProjects'
+import { formatTaskProjectOption, taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
@@ -107,6 +109,7 @@ function resourceCandidateKey(resource: RoadmapResource) {
 
 export default function Tasks() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TaskTab>('week')
   const [projectName, setProjectName] = useState('')
   const [projectType, setProjectType] = useState<TaskProject['type']>('regular')
@@ -171,6 +174,13 @@ export default function Tasks() {
     queryFn: () => getLearningRoadmap(selectedLearningProjectID),
     enabled: Boolean(selectedLearningProjectID),
   })
+
+  const { data: projectNotesData } = useQuery({
+    queryKey: ['notes', { project_id: activeProjectID }],
+    queryFn: () => getNotes({ project_id: activeProjectID!, page_size: 6 }),
+    enabled: !!activeProjectID,
+  })
+  const projectNotes = projectNotesData?.notes || []
 
   const createProjectMutation = useMutation({
     mutationFn: createTaskProject,
@@ -562,6 +572,44 @@ export default function Tasks() {
             </div>
           ))}
         </div>
+
+        {activeProjectID && (
+          <div className="mt-4">
+            <h4 className="text-xs font-semibold text-fs-text-muted mb-2">项目笔记</h4>
+            {projectNotes.length === 0 && (
+              <p className="text-xs text-fs-text-muted">暂无笔记</p>
+            )}
+            {projectNotes.map((note) => (
+              <button
+                key={note.id}
+                type="button"
+                className="block w-full text-left px-2 py-1 rounded hover:bg-fs-accent/5 text-sm"
+                onClick={() => navigate(`/editor/${encodeURIComponent(note.id)}`)}
+              >
+                <div className="truncate">{note.title || '未命名笔记'}</div>
+                <div className="text-xs text-fs-text-muted">
+                  {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}
+                </div>
+              </button>
+            ))}
+            <button
+              type="button"
+              className="mt-2 text-sm text-fs-accent hover:underline"
+              onClick={async () => {
+                const note = await createNote({
+                  title: '未命名笔记',
+                  body: '',
+                  folder_id: '__uncategorized',
+                  tags: '[]',
+                  project_ids: activeProjectID ? [activeProjectID] : undefined,
+                })
+                navigate(`/editor/${encodeURIComponent(note.id)}`)
+              }}
+            >
+              + 新建项目笔记
+            </button>
+          </div>
+        )}
       </aside>
 
       <section className="task-main-panel">
