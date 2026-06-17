@@ -1,7 +1,7 @@
-# 每日总结页面设计（v7）
+# 每日总结页面设计（v8）
 
 **日期**: 2026-06-17 | **分支**: feat/note-project-links  
-**审查**: R1:12 / R2:12 / R3:14 / R4:14 / R5:13 / R6:12 — 已修正
+**审查**: R1:12 / R2:12 / R3:14 / R4:14 / R5:13 / R6:12 / R7:5 — 已修正
 
 ---
 
@@ -180,9 +180,13 @@ func GetSummaryStats(from, to int64) (activeDays int, projectCount int, err erro
     if store := CurrentStore(); store != nil {
         return store.Tasks().GetSummaryStats(context.Background(), from, to)
     }
-    // fallback: SQLite（DATE 需要 'unixepoch' 修饰符）
-    DB.QueryRow(`SELECT COUNT(DISTINCT DATE(completed_at, 'unixepoch')) FROM tasks WHERE completed_at >= ? AND completed_at < ?`, from, to).Scan(&activeDays)
-    DB.QueryRow(`SELECT COUNT(DISTINCT project_id) FROM tasks WHERE completed_at >= ? AND completed_at < ? AND project_id IS NOT NULL`, from, to).Scan(&projectCount)
+    // fallback: SQLite（DATE 需要 'unixepoch' 修饰符）— 单次查询取两个聚合值
+    DB.QueryRow(
+        `SELECT COUNT(DISTINCT DATE(completed_at, 'unixepoch')),
+                COUNT(DISTINCT project_id)
+         FROM tasks WHERE completed_at >= ? AND completed_at < ?`,
+        from, to,
+    ).Scan(&activeDays, &projectCount)
     return
 }
 ```
@@ -214,35 +218,42 @@ const DailySummary = lazy(() => import('./routes/DailySummary'))
 
 ### API 模块（`frontend/src/api/summary.ts`，新建）
 
-遵循项目惯例（参照 `api/tasks.ts`、`api/notes.ts`）：
+遵循项目惯例（参照 `api/notes.ts:36-38` — getNotes 返回 `{ notes, pagination }`）：
 
 ```ts
 import { api } from './client'
-import type { TaskProject, NoteRef } from './types' // 按需
+import type { TaskProject } from './tasks'  // TaskProject 定义于此
+
+// NoteRef — 在 api/summary.ts 本地定义（前端没有 ./types 模块）
+export interface NoteRef {
+  id: string
+  title: string
+}
 
 export interface TaskSummaryItem {
-  id: string; title: string; done: number;
-  planned_date?: string; due?: number; completed_at?: number;
-  note_id?: string;
-  project?: TaskProject;
-  linked_notes?: NoteRef[];
+  id: string; title: string; done: number
+  planned_date?: string; due?: number; completed_at?: number
+  note_id?: string
+  project?: TaskProject
+  linked_notes?: NoteRef[]
 }
 
 export interface DateGroup {
-  date: string; tasks: TaskSummaryItem[]; count: number;
+  date: string; tasks: TaskSummaryItem[]; count: number
 }
 
 export interface SummaryResponse {
-  groups: DateGroup[];
-  active_days: number;
-  project_count: number;
+  groups: DateGroup[]
+  active_days: number
+  project_count: number
 }
 
+// 返回 { summary, pagination }，与 getNotes 的 { notes, pagination } 模式一致
 export async function getSummary(from: string, to: string, page: number, pageSize = 50) {
   const res = await api.get<SummaryResponse>('/api/summary', {
     from, to, page: String(page), page_size: String(pageSize),
   })
-  return res.data  // 解包 APIResponse
+  return { summary: res.data, pagination: res.pagination! }
 }
 ```
 
@@ -255,13 +266,13 @@ import { getSummary } from '../api/summary'
 export function useSummary(from: string, to: string, page: number) {
   return useQuery({
     queryKey: ['summary', from, to, page],
-    queryFn: () => getSummary(from, to, page),  // 已解包 → 直接返回 SummaryResponse
+    queryFn: () => getSummary(from, to, page),
     enabled: !!from && !!to,
   })
 }
 ```
 
-> 调用方：`const { data } = useSummary(...)` — `data.groups` 直接可用，无双层 `.data.data.groups`。
+> 调用方：`const { data } = useSummary(...)` — `data.summary.groups` 和 `data.pagination.total` 均可访问。
 
 ### URL 状态
 
@@ -294,7 +305,7 @@ export function useSummary(from: string, to: string, page: number) {
 
 ### 预设按钮 `[本周]` `[本月]`；手动改日期取消选中；改日期重置 page=1
 
-### 统计卡片：来自 `data.active_days`、`data.project_count`、`pagination.total`
+### 统计卡片：来自 `data.summary.active_days`、`data.summary.project_count`、`data.pagination.total`
 
 ### Sidebar navItem + SummaryIcon SVG（同 v6）
 
@@ -302,7 +313,7 @@ export function useSummary(from: string, to: string, page: number) {
 
 ---
 
-## 文件清单（v7）
+## 文件清单（v8）
 
 ### 新建
 
