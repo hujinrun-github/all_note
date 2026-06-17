@@ -35,6 +35,7 @@ const (
 	defaultAIModel             = "deepseek-v4-pro"
 	defaultAIRequestTimeout    = 120 * time.Second
 	defaultArticleProvider     = "duckduckgo"
+	highSignalArticleHint      = `(popular OR "most read" OR upvoted) high quality technical article`
 	roadmapNodeMinGapX         = 250
 	roadmapNodeMinGapY         = 95
 	roadmapLayoutStepY         = 130
@@ -1102,13 +1103,14 @@ func searchDuckDuckGoResources(node model.RoadmapNode, sources []articleSearchSo
 func buildArticleSearchQuery(node model.RoadmapNode, sources []articleSearchSource) string {
 	for _, query := range node.ArticleSearchQueries {
 		if trimmed := strings.TrimSpace(query); trimmed != "" {
-			return strings.Join(nonEmptyStrings([]string{trimmed, articleSearchSourceQuery(sources)}), " ")
+			return strings.Join(nonEmptyStrings([]string{trimmed, highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
 		}
 	}
 	return strings.Join(nonEmptyStrings([]string{
 		node.Title,
 		node.Deliverable,
-		"official documentation tutorial technical article",
+		"official documentation tutorial",
+		highSignalArticleHint,
 		articleSearchSourceQuery(sources),
 	}), " ")
 }
@@ -1156,7 +1158,10 @@ func articleSearchSourceQuery(sources []articleSearchSource) string {
 			hints = append(hints, source.QueryHint)
 		}
 	}
-	return strings.Join(hints, " ")
+	if len(hints) == 1 {
+		return hints[0]
+	}
+	return "(" + strings.Join(hints, " OR ") + ")"
 }
 
 func articleSearchMaxResults() int {
@@ -1191,7 +1196,8 @@ func limitArticleResources(resources []model.RoadmapResource, limit int) []model
 	for _, resource := range resources {
 		resource.URL = strings.TrimSpace(resource.URL)
 		resource.Title = strings.TrimSpace(resource.Title)
-		if resource.URL == "" || seen[resource.URL] {
+		resource.Summary = strings.TrimSpace(resource.Summary)
+		if resource.URL == "" || seen[resource.URL] || isArticleSearchEntry(resource) {
 			continue
 		}
 		if resource.Title == "" {
@@ -1209,44 +1215,51 @@ func limitArticleResources(resources []model.RoadmapResource, limit int) []model
 func ensureArticleResourceChoices(node model.RoadmapNode, sources []articleSearchSource, resources []model.RoadmapResource, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
 	limited := limitArticleResources(resources, limit)
-	if len(limited) >= limit {
-		return limited
-	}
-	if len(sources) == 0 {
-		sources = selectedArticleSearchSources(nil)
-	}
-
-	seen := map[string]bool{}
-	for _, resource := range limited {
-		seen[resource.URL] = true
-	}
-	query := strings.Join(nonEmptyStrings([]string{node.Title, node.Deliverable, "technical article tutorial"}), " ")
-	for index := 0; len(limited) < limit; index++ {
-		source := sources[index%len(sources)]
-		searchURL := sourceSearchURL(source, query, index)
-		if seen[searchURL] {
-			continue
-		}
-		seen[searchURL] = true
-		limited = append(limited, model.RoadmapResource{
-			Title:   fmt.Sprintf("%s %s 搜索入口 %d", node.Title, source.Label, index+1),
-			URL:     searchURL,
-			Summary: source.Label + " 源内搜索入口，真实搜索结果不足时用于继续筛选技术文章。",
-		})
-	}
 	return limited
 }
 
-func sourceSearchURL(source articleSearchSource, query string, index int) string {
-	values := url.Values{"q": []string{query}}
-	if index > 0 {
-		values.Set("page", strconv.Itoa(index+1))
+func isArticleSearchEntry(resource model.RoadmapResource) bool {
+	lowerTitle := strings.ToLower(resource.Title)
+	lowerSummary := strings.ToLower(resource.Summary)
+	if strings.Contains(resource.Title, "搜索入口") ||
+		strings.Contains(resource.Summary, "搜索入口") ||
+		strings.Contains(lowerTitle, "search entry") ||
+		strings.Contains(lowerSummary, "search entry") {
+		return true
 	}
-	separator := "?"
-	if strings.Contains(source.MockURL, "?") {
-		separator = "&"
+
+	parsed, err := url.Parse(resource.URL)
+	if err != nil {
+		return false
 	}
-	return source.MockURL + separator + values.Encode()
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	path := strings.TrimRight(strings.ToLower(parsed.EscapedPath()), "/")
+	if path == "" {
+		path = "/"
+	}
+
+	switch host {
+	case "google.com":
+		return path == "/search"
+	case "duckduckgo.com":
+		return path == "/" || path == "/html"
+	case "medium.com":
+		return path == "/search"
+	case "reddit.com":
+		return path == "/search"
+	case "dev.to":
+		return path == "/search"
+	case "hashnode.com":
+		return path == "/search"
+	case "stackoverflow.com":
+		return path == "/search"
+	case "github.com":
+		return path == "/search"
+	case "web.dev":
+		return path == "/s/results"
+	default:
+		return false
+	}
 }
 
 func extractDuckDuckGoResults(root *html.Node, limit int) []model.RoadmapResource {

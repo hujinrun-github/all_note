@@ -526,19 +526,72 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 	}
 }
 
-func TestArticleSearchFallbackPadsSelectedSourcesToTenChoices(t *testing.T) {
+func TestArticleSearchDoesNotInventSearchEntryCandidates(t *testing.T) {
 	node := model.RoadmapNode{Title: "Go API 项目", Deliverable: "REST API"}
 	sources := selectedArticleSearchSources([]string{"medium", "reddit"})
 
 	resources := ensureArticleResourceChoices(node, sources, nil, 10)
 
-	if len(resources) != 10 {
-		t.Fatalf("fallback resources = %d, want 10", len(resources))
+	if len(resources) != 0 {
+		t.Fatalf("expected no invented search-entry candidates, got %+v", resources)
 	}
-	for _, resource := range resources {
-		if !strings.Contains(resource.URL, "medium.com") && !strings.Contains(resource.URL, "reddit.com") {
-			t.Fatalf("fallback resource did not honor selected sources: %+v", resource)
+}
+
+func TestArticleSearchKeepsArticleTitlesAndFiltersSearchEntryURLs(t *testing.T) {
+	node := model.RoadmapNode{Title: "Go API 项目", Deliverable: "REST API"}
+	sources := selectedArticleSearchSources([]string{"medium", "reddit"})
+
+	resources := ensureArticleResourceChoices(node, sources, []model.RoadmapResource{
+		{
+			Title:   "Go API 项目 Medium 搜索入口 1",
+			URL:     "https://medium.com/search?q=go+api",
+			Summary: "Medium 源内搜索入口",
+		},
+		{
+			Title:   "How to design high throughput Go APIs",
+			URL:     "https://medium.com/example/how-to-design-high-throughput-go-apis",
+			Summary: "A popular technical article.",
+		},
+		{
+			Title:   "Go API 项目 Reddit 搜索入口 2",
+			URL:     "https://www.reddit.com/search/?q=go+api",
+			Summary: "Reddit 源内搜索入口",
+		},
+	}, 10)
+
+	if len(resources) != 1 {
+		t.Fatalf("filtered resources = %d, want 1: %+v", len(resources), resources)
+	}
+	if resources[0].Title != "How to design high throughput Go APIs" {
+		t.Fatalf("expected real article title, got %+v", resources[0])
+	}
+}
+
+func TestArticleSearchQueryTargetsPopularHighSignalArticles(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "Go API 项目",
+		Deliverable:          "REST API",
+		ArticleSearchQueries: []string{"go api performance tutorial"},
+	}
+	query := buildArticleSearchQuery(node, selectedArticleSearchSources([]string{"medium", "reddit"}))
+
+	for _, term := range []string{"popular", "most read", "upvoted"} {
+		if !strings.Contains(strings.ToLower(query), term) {
+			t.Fatalf("search query should target high-signal articles with %q, got %q", term, query)
 		}
+	}
+}
+
+func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "Go API 项目",
+		Deliverable:          "REST API",
+		ArticleSearchQueries: []string{"go api performance tutorial"},
+	}
+	query := buildArticleSearchQuery(node, selectedArticleSearchSources([]string{"medium", "reddit"}))
+
+	if !strings.Contains(query, "site:medium.com OR site:reddit.com") {
+		t.Fatalf("selected sources should be alternatives, got %q", query)
 	}
 }
 
