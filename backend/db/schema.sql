@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS task_projects (
 INSERT OR IGNORE INTO task_projects (id, name, type, description, created_at, updated_at) VALUES
   ('personal', '个人', 'personal', '默认个人任务项目', unixepoch(), unixepoch());
 
+CREATE TABLE IF NOT EXISTS note_project_links (
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (note_id, project_id)
+);
+
+CREATE INDEX IF NOT EXISTS note_project_links_project_note_idx
+    ON note_project_links (project_id, note_id);
+
 CREATE TABLE IF NOT EXISTS tasks (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT UNIQUE NOT NULL,
