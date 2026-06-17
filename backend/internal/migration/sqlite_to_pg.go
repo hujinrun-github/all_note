@@ -66,6 +66,7 @@ func MigrateSQLiteToPostgres(sqlitePath, postgresURL string) error {
 		migrateFolders,
 		migrateNotes,
 		migrateTaskProjects,
+		migrateNoteProjectLinks,
 		migrateLearningRoadmaps,
 		migrateRoadmapNodes,
 		migrateTasks,
@@ -324,6 +325,31 @@ func migrateTaskProjects(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) erro
 			ON CONFLICT (id) DO UPDATE SET name = excluded.name, type = excluded.type, description = excluded.description, created_at = excluded.created_at, updated_at = excluded.updated_at
 		`, id, name, projectType, description, unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
 			return err
+		}
+	}
+	return rows.Err()
+}
+
+func migrateNoteProjectLinks(ctx context.Context, sqliteDB *sql.DB, pgTx *sql.Tx) error {
+	rows, err := sqliteDB.QueryContext(ctx,
+		`SELECT note_id, project_id, created_at FROM note_project_links`)
+	if err != nil {
+		// Table might not exist in legacy SQLite — that's OK
+		return nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var noteID, projectID string
+		var createdAt int64
+		if err := rows.Scan(&noteID, &projectID, &createdAt); err != nil {
+			return fmt.Errorf("scan note_project_links: %w", err)
+		}
+		_, err := pgTx.ExecContext(ctx,
+			`INSERT INTO note_project_links (note_id, project_id, created_at)
+			 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+			noteID, projectID, unixToTime(createdAt))
+		if err != nil {
+			return fmt.Errorf("insert note_project_links (%s, %s): %w", noteID, projectID, err)
 		}
 	}
 	return rows.Err()

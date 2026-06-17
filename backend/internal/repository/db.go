@@ -130,6 +130,19 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 			return err
 		}
 	}
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS note_project_links (
+			note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+			project_id TEXT NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (note_id, project_id)
+		);
+		CREATE INDEX IF NOT EXISTS note_project_links_project_note_idx
+			ON note_project_links (project_id, note_id);
+	`)
+	if err != nil {
+		return fmt.Errorf("create note_project_links table: %w", err)
+	}
 	if _, err := db.Exec(`
 		UPDATE note_sync_state
 		SET external_hash = content_hash
