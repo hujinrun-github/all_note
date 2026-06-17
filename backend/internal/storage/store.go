@@ -63,6 +63,7 @@ type NoteRepository interface {
 	Delete(context.Context, string) error
 	ListAll(context.Context) ([]model.Note, error)
 	Recent(context.Context, int) ([]model.Note, error)
+	GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error)
 }
 
 type TaskFilter struct {
@@ -89,6 +90,8 @@ type TaskRepository interface {
 	GetByID(context.Context, string) (*model.Task, error)
 	Delete(context.Context, string) error
 	Today(context.Context, int64, int64, int64) ([]model.Task, []model.Task, error)
+	GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error)
+	GetSummaryStats(ctx context.Context, from, to int64) (activeDays, projectCount int, err error)
 }
 type EventRepository interface {
 	List(context.Context, int64, int64, int, int) ([]model.Event, int, error)

@@ -402,6 +402,54 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	return todayTasks, overdueTasks, nil
 }
 
+func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
+	var total int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE completed_at >= ? AND completed_at < ?`,
+		from, to,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	offset := (page - 1) * pageSize
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT t.id, t.title, t.done, t.planned_date, t.due, t.completed_at, t.note_id,
+		        p.id, p.name, p.type
+		 FROM tasks t LEFT JOIN task_projects p ON t.project_id = p.id
+		 WHERE t.completed_at >= ? AND t.completed_at < ?
+		 ORDER BY t.completed_at DESC LIMIT ? OFFSET ?`,
+		from, to, pageSize, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var summaries []model.TaskSummary
+	for rows.Next() {
+		var s model.TaskSummary
+		var projectID, projectName, projectType sql.NullString
+		if err := rows.Scan(&s.ID, &s.Title, &s.Done, &s.PlannedDate, &s.Due, &s.CompletedAt,
+			&s.NoteID, &projectID, &projectName, &projectType); err != nil {
+			return nil, 0, err
+		}
+		if projectID.Valid {
+			s.Project = &model.TaskProject{ID: projectID.String, Name: projectName.String, Type: projectType.String}
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, total, rows.Err()
+}
+
+func (r taskRepository) GetSummaryStats(ctx context.Context, from, to int64) (int, int, error) {
+	var activeDays, projectCount int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT DATE(completed_at, 'unixepoch')),
+		        COUNT(DISTINCT project_id)
+		 FROM tasks WHERE completed_at >= ? AND completed_at < ?`,
+		from, to,
+	).Scan(&activeDays, &projectCount)
+	return activeDays, projectCount, err
+}
+
 func sqliteTaskSelectSQL() string {
 	return `
 		SELECT

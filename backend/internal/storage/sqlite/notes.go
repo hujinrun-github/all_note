@@ -258,6 +258,40 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 	return notes, nil
 }
 
+func (r noteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error) {
+	if len(projectIDs) == 0 {
+		return map[string][]model.NoteRef{}, nil
+	}
+	placeholders := make([]string, len(projectIDs))
+	args := make([]interface{}, len(projectIDs))
+	for i, id := range projectIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT n.id, n.title, npl.project_id
+		 FROM notes n
+		 JOIN note_project_links npl ON n.id = npl.note_id
+		 WHERE npl.project_id IN (%s)
+		 ORDER BY n.updated_at DESC`, strings.Join(placeholders, ","))
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]model.NoteRef)
+	for rows.Next() {
+		var ref model.NoteRef
+		var projectID string
+		if err := rows.Scan(&ref.ID, &ref.Title, &projectID); err != nil {
+			return nil, err
+		}
+		result[projectID] = append(result[projectID], ref)
+	}
+	return result, rows.Err()
+}
+
+
 func scanSQLiteNotes(rows *sql.Rows) ([]model.Note, error) {
 	notes := make([]model.Note, 0)
 	for rows.Next() {

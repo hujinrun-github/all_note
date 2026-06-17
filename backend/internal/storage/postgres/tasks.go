@@ -382,6 +382,69 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	return todayTasks, overdueTasks, nil
 }
 
+
+func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
+	var total int
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE completed_at >= $1 AND completed_at < $2`,
+		unixToTime(from), unixToTime(to),
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	offset := (page - 1) * pageSize
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT t.id, t.title, t.done, t.planned_date, t.due_at, t.completed_at, t.note_id,
+		        p.id, p.name, p.type
+		 FROM tasks t LEFT JOIN task_projects p ON t.project_id = p.id
+		 WHERE t.completed_at >= $1 AND t.completed_at < $2
+		 ORDER BY t.completed_at DESC LIMIT $3 OFFSET $4`,
+		unixToTime(from), unixToTime(to), pageSize, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var summaries []model.TaskSummary
+	for rows.Next() {
+		var s model.TaskSummary
+		var done bool
+		var dueAt sql.NullTime
+		var completedAt sql.NullTime
+		var projectID, projectName, projectType sql.NullString
+		if err := rows.Scan(&s.ID, &s.Title, &done, &s.PlannedDate, &dueAt, &completedAt,
+			&s.NoteID, &projectID, &projectName, &projectType); err != nil {
+			return nil, 0, err
+		}
+		if done {
+			s.Done = 1
+		}
+		if dueAt.Valid {
+			v := timeToUnix(dueAt.Time)
+			s.Due = &v
+		}
+		if completedAt.Valid {
+			v := timeToUnix(completedAt.Time)
+			s.CompletedAt = &v
+		}
+		if projectID.Valid {
+			s.Project = &model.TaskProject{ID: projectID.String, Name: projectName.String, Type: projectType.String}
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, total, rows.Err()
+}
+
+func (r taskRepository) GetSummaryStats(ctx context.Context, from, to int64) (int, int, error) {
+	var activeDays, projectCount int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT DATE(completed_at)),
+		        COUNT(DISTINCT project_id)
+		 FROM tasks WHERE completed_at >= $1 AND completed_at < $2`,
+		unixToTime(from), unixToTime(to),
+	).Scan(&activeDays, &projectCount)
+	return activeDays, projectCount, err
+}
+
 func postgresTaskSelectSQL() string {
 	return `
 		SELECT

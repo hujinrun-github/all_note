@@ -315,6 +315,33 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 	return notes, nil
 }
 
+
+func (r noteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error) {
+	if len(projectIDs) == 0 {
+		return map[string][]model.NoteRef{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT n.id, n.title, npl.project_id
+		 FROM notes n
+		 JOIN note_project_links npl ON n.id = npl.note_id
+		 WHERE npl.project_id = ANY($1::text[])
+		 ORDER BY n.updated_at DESC`, pq.Array(projectIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]model.NoteRef)
+	for rows.Next() {
+		var ref model.NoteRef
+		var projectID string
+		if err := rows.Scan(&ref.ID, &ref.Title, &projectID); err != nil {
+			return nil, err
+		}
+		result[projectID] = append(result[projectID], ref)
+	}
+	return result, rows.Err()
+}
+
 func (r noteRepository) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if tx, ok := r.db.(*sql.Tx); ok {
 		return fn(tx)
