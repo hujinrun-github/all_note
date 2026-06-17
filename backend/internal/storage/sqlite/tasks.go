@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -44,7 +45,8 @@ func (r taskRepository) List(ctx context.Context, filter storage.TaskFilter) ([]
 			t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
-			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
+			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 		WHERE %s
@@ -220,6 +222,25 @@ func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
 }
 
 func (r taskRepository) Update(ctx context.Context, id string, req *model.UpdateTaskRequest) (*model.Task, error) {
+	db, ok := r.db.(*sql.DB)
+	if !ok {
+		return nil, fmt.Errorf("Update requires *sql.DB, got %T", r.db)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// TOCTOU: read current state inside transaction
+	var currentDone int
+	if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE id = ?`, id).Scan(&currentDone); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
+		return nil, err
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 	if req.Title != nil {
@@ -231,14 +252,14 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		args = append(args, strings.TrimSpace(*req.Content))
 	}
 	if req.ProjectID != nil {
-		project, err := r.GetProjectByID(ctx, *req.ProjectID)
+		project, err := r.getProjectByIDInTx(ctx, tx, *req.ProjectID)
 		if err != nil {
 			return nil, err
 		}
 		sets = append(sets, "project_id = ?", "project = ?")
 		args = append(args, project.ID, project.Name)
 	} else if req.Project != nil {
-		projectID, err := r.ensureTaskProjectByName(ctx, *req.Project, "regular")
+		projectID, err := r.ensureTaskProjectByNameInTx(ctx, tx, *req.Project, "regular")
 		if err != nil {
 			return nil, err
 		}
@@ -258,6 +279,7 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		sets = append(sets, "priority = ?")
 		args = append(args, *req.Priority)
 	}
+	// Branch A: req.Done directly set
 	if req.Done != nil && req.Status == nil {
 		sets = append(sets, "done = ?")
 		args = append(args, *req.Done)
@@ -267,8 +289,26 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		}
 		sets = append(sets, "status = ?")
 		args = append(args, status)
+		// TOCTOU: completed_at set/clear
+		if *req.Done == 1 && currentDone == 0 {
+			sets = append(sets, "completed_at = ?")
+			args = append(args, nowUnix())
+		} else if *req.Done == 0 && currentDone == 1 {
+			sets = append(sets, "completed_at = NULL")
+		}
 	}
+	// Branch B: req.Status indirectly changes done
 	if req.Status != nil {
+		newStatus := strings.ToLower(normalizeTaskStatus(*req.Status))
+		isCurrentlyDone := (currentDone == 1)
+		isBecomingDone := (newStatus == "done" && !isCurrentlyDone)
+		isBecomingUndone := (newStatus != "done" && isCurrentlyDone)
+		if isBecomingDone {
+			sets = append(sets, "completed_at = ?")
+			args = append(args, nowUnix())
+		} else if isBecomingUndone {
+			sets = append(sets, "completed_at = NULL")
+		}
 		status := normalizeTaskStatus(*req.Status)
 		done := 0
 		if status == "done" {
@@ -294,12 +334,15 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		args = append(args, *req.RoadmapNodeID)
 	}
 	args = append(args, id)
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
+	result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
 	if err != nil {
 		return nil, err
 	}
 	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 		return nil, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	task, err := r.GetByID(ctx, id)
 	if err != nil {
@@ -366,7 +409,8 @@ func sqliteTaskSelectSQL() string {
 			t.project_id, p.type, t.due, t.planned_date, t.priority, t.done,
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
-			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at
+			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
+			t.completed_at
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 	`
@@ -432,6 +476,28 @@ func (r taskRepository) ensureTaskProjectByName(ctx context.Context, name, proje
 		return "", err
 	}
 	return created.ID, nil
+}
+
+func (r taskRepository) getProjectByIDInTx(ctx context.Context, tx *sql.Tx, id string) (*model.TaskProject, error) {
+	return scanSQLiteTaskProject(tx.QueryRowContext(ctx, `SELECT id, name, type, description, created_at, updated_at FROM task_projects WHERE id = ?`, id))
+}
+
+func (r taskRepository) ensureTaskProjectByNameInTx(ctx context.Context, tx *sql.Tx, name string, typ string) (string, error) {
+	name = strings.TrimSpace(name)
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT id FROM task_projects WHERE name = ? AND type = ?`, name, typ).Scan(&id)
+	if err == sql.ErrNoRows {
+		id = uuid.New().String()
+		now := nowUnix()
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO task_projects (id, name, type, description, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?)`,
+			id, name, typ, now, now)
+		if err != nil {
+			return "", err
+		}
+		return id, nil
+	}
+	return id, err
 }
 
 func (r taskRepository) syncRoadmapNodeStatus(ctx context.Context, task *model.Task) error {
@@ -525,6 +591,7 @@ func scanSQLiteTaskRow(row sqliteRowScanner) (*model.Task, error) {
 		&task.ID, &task.Title, &task.Content, &task.Project, &task.ProjectID, &task.ProjectType,
 		&task.Due, &task.PlannedDate, &task.Priority, &task.Done, &task.Status, &task.Horizon,
 		&task.Scope, &task.SortOrder, &task.NoteID, &task.RoadmapNodeID, &task.CreatedAt, &task.UpdatedAt,
+		&task.CompletedAt,
 	); err != nil {
 		return nil, err
 	}
