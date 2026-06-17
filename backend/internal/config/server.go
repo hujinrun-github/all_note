@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	ProductionPort = "8080"
-	TestPort       = "18080"
+	ProductionPort = "4201"
+	TestPort       = "4101"
 )
 
 type ServerConfig struct {

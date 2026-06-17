@@ -1,15 +1,15 @@
 # FlowSpace 前端手动测试用例
 
-> 默认手动测试服务: 后端 `http://localhost:18080` · 前端 `http://localhost:15199`
+> 默认手动测试服务: 后端 `http://localhost:4101` · 前端 `http://localhost:4100`
 >
-> 正式服务端口仅用于真实数据验证: 后端 `http://localhost:8080` · 前端 `http://localhost:5199`。日常修改验证不要连接正式服务。
+> 正式服务端口仅用于真实数据验证: 后端 `http://localhost:4201` · 前端 `http://localhost:4200`。日常修改验证不要连接正式服务。
 
 ---
 
 ## 0. 环境准备
 
-- [ ] **0.1** 确认测试后端运行: `curl http://localhost:18080/api/notes` 返回 JSON
-- [ ] **0.2** 确认测试前端运行: 浏览器打开 `http://localhost:15199` 不白屏
+- [ ] **0.1** 确认测试后端运行: `curl http://localhost:4101/api/notes` 返回 JSON
+- [ ] **0.2** 确认测试前端运行: 浏览器打开 `http://localhost:4100` 不白屏
 - [ ] **0.3** 打开浏览器开发者工具 (F12) → Console 面板，操作全过程观察是否有红色报错
 
 ---

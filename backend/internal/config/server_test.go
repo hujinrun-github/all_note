@@ -7,8 +7,8 @@ func TestServerConfigDefaultsToProductionPort(t *testing.T) {
 
 	cfg := LoadServerConfig(EnvironmentProduction)
 
-	if cfg.Port != "8080" {
-		t.Fatalf("expected production port 8080, got %q", cfg.Port)
+	if cfg.Port != "4201" {
+		t.Fatalf("expected production port 4201, got %q", cfg.Port)
 	}
 }
 
@@ -17,8 +17,8 @@ func TestServerConfigDefaultsToTestPort(t *testing.T) {
 
 	cfg := LoadServerConfig(EnvironmentTest)
 
-	if cfg.Port != "18080" {
-		t.Fatalf("expected test port 18080, got %q", cfg.Port)
+	if cfg.Port != "4101" {
+		t.Fatalf("expected test port 4101, got %q", cfg.Port)
 	}
 }
 

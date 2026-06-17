@@ -6,15 +6,15 @@ $logDir = $PSScriptRoot
 $tailscale = 'C:\Program Files\Tailscale\tailscale.exe'
 $publicHost = 'tylerhu-1.king-shiner.ts.net'
 
-$prodFrontendPort = 5198
+$prodFrontendPort = 4200
 $prodBackendHost = '[::1]'
-$prodBackendPort = 8080
+$prodBackendPort = 4201
 $prodBase = '/all-note/'
 $prodServePath = '/all-note'
 
-$testFrontendPort = 15198
+$testFrontendPort = 4100
 $testBackendHost = '127.0.0.1'
-$testBackendPort = 18080
+$testBackendPort = 4101
 $testBase = '/all-note-test/'
 $testServePath = '/all-note-test'
 
@@ -44,12 +44,12 @@ Stop-PortOwner 5176
 Start-Sleep -Seconds 2
 
 Start-Cmd `
-  'flowspace-public-prod-5198' `
+  'flowspace-public-prod-4200' `
   $frontendDir `
   "set VITE_APP_BASE=$prodBase&& set VITE_BACKEND_HOST=$prodBackendHost&& set VITE_BACKEND_PORT=$prodBackendPort&& npm run dev -- --host 127.0.0.1 --port $prodFrontendPort"
 
 Start-Cmd `
-  'flowspace-public-test-15198' `
+  'flowspace-public-test-4100' `
   $frontendDir `
   "set VITE_APP_BASE=$testBase&& set VITE_BACKEND_HOST=$testBackendHost&& set VITE_BACKEND_PORT=$testBackendPort&& npm run dev -- --host 127.0.0.1 --port $testFrontendPort"
 
@@ -65,4 +65,4 @@ if (Test-Path $tailscale) {
 Write-Host 'FlowSpace public services configured:'
 Write-Host "  prod: https://$publicHost/all-note/"
 Write-Host "  test: https://$publicHost/all-note-test/"
-Write-Host 'Local backends must be running on 8080 (prod) and 18080 (test).'
+Write-Host 'Local backends must be running on 4201 (prod) and 4101 (test).'

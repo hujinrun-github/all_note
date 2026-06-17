@@ -4673,7 +4673,7 @@ $env:FLOWSPACE_DATABASE_DRIVER = "postgres"
 node .\scripts\start-flowspace.mjs --env test
 ```
 
-Expected: backend logs `storage initialized env=test driver=postgres database=flowspace_test` and listens on `18080`.
+Expected: backend logs `storage initialized env=test driver=postgres database=flowspace_test` and listens on `4101`.
 
 - [ ] **Step 5: Update docs**
 
@@ -4747,15 +4747,15 @@ make dev-test
 
 Expected:
 
-- Frontend: `http://127.0.0.1:15199`
-- Backend: `http://127.0.0.1:18080/api`
+- Frontend: `http://127.0.0.1:4100`
+- Backend: `http://127.0.0.1:4101/api`
 - Storage: PostgreSQL `flowspace_test`
 
 - [ ] **Step 5: Browser smoke test**
 
 Use the in-app browser:
 
-1. Open `http://127.0.0.1:15199/notes`.
+1. Open `http://127.0.0.1:4100/notes`.
 2. Create a note with tag `sync`.
 3. Search for the note title.
 4. Create a task for today.

@@ -196,11 +196,11 @@ function normalizeProxyHost(value) {
 }
 
 function defaultBackendPortForEnv(env) {
-  return env === 'test' ? '18080' : '8080'
+  return env === 'test' ? '4101' : '4201'
 }
 
 function defaultFrontendPortForEnv(env) {
-  return env === 'test' ? '15199' : '5199'
+  return env === 'test' ? '4100' : '4200'
 }
 
 function normalizeBasePath(value) {
@@ -374,8 +374,8 @@ Options:
   --env <prod|test>              Storage environment (default: prod)
   --db, --db-path <path>         Explicit SQLite DB path; overrides --env default
   --proxy-host <host>            Frontend proxy host, e.g. localhost, 127.0.0.1, [::1]
-  --backend-port <port>          Backend port (prod default: 8080; test default: 18080)
-  --frontend-port <port>         Frontend port (prod default: 5199; test default: 15199)
+  --backend-port <port>          Backend port (prod default: 4201; test default: 4101)
+  --frontend-port <port>         Frontend port (prod default: 4200; test default: 4100)
   --frontend-base <path>         Frontend base path, e.g. /all-note-test/
   --backend-cmd <command>        Backend startup command (default: go run ./cmd/server)
   --frontend-cmd <command>       Frontend startup command
@@ -407,9 +407,9 @@ Examples:
   node scripts/start-flowspace.mjs --env prod
   node scripts/start-flowspace.mjs --env test
   node scripts/start-flowspace.mjs --db tmp/sandbox.db
-  node scripts/start-flowspace.mjs --env prod --proxy-host [::1] --frontend-port 5198 --frontend-base /all-note/ --frontend-only
-  node scripts/start-flowspace.mjs --env test --frontend-port 15198 --frontend-base /all-note-test/ --frontend-only
-  node scripts/start-flowspace.mjs --env test --backend-cmd "go run ./cmd/server" --frontend-cmd "npm run dev -- --host 127.0.0.1 --port 15199"
+  node scripts/start-flowspace.mjs --env prod --proxy-host [::1] --frontend-port 4200 --frontend-base /all-note/ --frontend-only
+  node scripts/start-flowspace.mjs --env test --frontend-port 4100 --frontend-base /all-note-test/ --frontend-only
+  node scripts/start-flowspace.mjs --env test --backend-cmd "go run ./cmd/server" --frontend-cmd "npm run dev -- --host 127.0.0.1 --port 4100"
 `)
 }
 

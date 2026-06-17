@@ -8,7 +8,7 @@ const TAILSCALE_ALLOWED_HOSTS = ['tylerhu-1.king-shiner.ts.net', 'tylerhu-1.tail
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const BACKEND_HOST = env.VITE_BACKEND_HOST || 'localhost'
-  const BACKEND_PORT = env.VITE_BACKEND_PORT || '8080'
+  const BACKEND_PORT = env.VITE_BACKEND_PORT || '4101'
   const BACKEND_TARGET = `http://${BACKEND_HOST}:${BACKEND_PORT}`
   const APP_BASE = env.VITE_APP_BASE || '/'
   const appBasePath = APP_BASE === '/' ? '' : APP_BASE.replace(/\/$/, '')

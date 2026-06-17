@@ -843,7 +843,7 @@ go run ./cmd/migrate_sqlite_to_pg
 - `FLOWSPACE_DATABASE_URL` 指向 `flowspace_test`
 - 后端启动时通过 provider registry 打开 PostgreSQL provider，不再走 legacy `repository.DB` 初始化。
 - 如需回归 SQLite 兼容 provider，显式设置 `FLOWSPACE_DATABASE_DRIVER=sqlite` 和 `FLOWSPACE_SQLITE_PATH=backend/flowspace.test.db`。
-- 前端仍用 `15199/15198` 测试入口。
+- 前端仍用 `4100/4100` 测试入口。
 
 ### 阶段 4：正式迁移
 

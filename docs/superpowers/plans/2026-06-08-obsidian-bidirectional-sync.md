@@ -1949,10 +1949,10 @@ Expected: PASS.
 Run:
 
 ```powershell
-node scripts/start-flowspace.mjs --env test --backend-port 18080 --frontend-port 15199 --frontend-cmd "npm run dev -- --host 127.0.0.1"
+node scripts/start-flowspace.mjs --env test --backend-port 4101 --frontend-port 4100 --frontend-cmd "npm run dev -- --host 127.0.0.1"
 ```
 
-Expected: backend listens on `127.0.0.1:18080`; frontend opens at `http://127.0.0.1:15199/`.
+Expected: backend listens on `127.0.0.1:4101`; frontend opens at `http://127.0.0.1:4100/`.
 
 - [ ] **Step 5: Verify bidirectional sync manually with a temporary Vault**
 
@@ -1965,7 +1965,7 @@ New-Item -ItemType Directory -Force -Path $base | Out-Null
 Set-Content -LiteralPath (Join-Path $base "Imported From Obsidian.md") -Encoding UTF8 -Value "# Imported From Obsidian`n`nCreated in Obsidian."
 ```
 
-In the browser at `http://127.0.0.1:15199/notes`:
+In the browser at `http://127.0.0.1:4100/notes`:
 
 - Open Obsidian sync settings.
 - Set Vault path to the temporary `$vault`.

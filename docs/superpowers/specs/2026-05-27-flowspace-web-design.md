@@ -222,13 +222,13 @@ CREATE TABLE inbox (
 
 ### CORS 与代理
 
-开发环境 Vite dev server (:5173) 和 Gin (:8080) 不同端口，使用 Vite proxy 让 `/api` 请求同源：
+开发环境 Vite dev server (:5173) 和 Gin (:4201) 不同端口，使用 Vite proxy 让 `/api` 请求同源：
 
 ```ts
 // vite.config.ts
 export default defineConfig({
   server: {
-    proxy: { '/api': 'http://localhost:8080' }
+    proxy: { '/api': 'http://localhost:4201' }
   }
 });
 ```
@@ -382,7 +382,7 @@ frontend/
 ├── .prettierrc                 # singleQuote, semi, tabWidth: 2, trailingComma: es5
 ├── tsconfig.json               # strict: true, paths: { @/*: ["./src/*"] }
 ├── tsconfig.node.json          # vite config 用
-└── vite.config.ts              # proxy /api → :8080
+└── vite.config.ts              # proxy /api → :4201
 ```
 
 **Lint/Format 命令:**

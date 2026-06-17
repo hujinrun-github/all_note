@@ -1,5 +1,5 @@
-PORT ?= 8080
-TEST_PORT ?= 18080
+PORT ?= 4201
+TEST_PORT ?= 4101
 
 .PHONY: dev dev-test dev-prod build test lint seed
 
