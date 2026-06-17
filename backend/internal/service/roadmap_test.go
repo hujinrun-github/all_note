@@ -2,6 +2,8 @@ package service
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -592,6 +594,49 @@ func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
 
 	if !strings.Contains(query, "site:medium.com OR site:reddit.com") {
 		t.Fatalf("selected sources should be alternatives, got %q", query)
+	}
+}
+
+func TestPublicSourceArticleSearchReturnsRealArticlesOnRepeatedCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/articles" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{
+				"title": "Rate Limiting Strategies in Go",
+				"url": "https://dev.to/example/rate-limiting-strategies-in-go",
+				"description": "A practical Go API article.",
+				"public_reactions_count": 342,
+				"reading_time_minutes": 8
+			}
+		]`))
+	}))
+	t.Cleanup(server.Close)
+
+	originalDevToURL := devToArticlesURL
+	devToArticlesURL = server.URL + "/articles"
+	t.Cleanup(func() { devToArticlesURL = originalDevToURL })
+
+	node := model.RoadmapNode{
+		Title:                "Go API 项目",
+		Deliverable:          "REST API",
+		ArticleSearchQueries: []string{"go api performance tutorial"},
+	}
+	sources := selectedArticleSearchSources([]string{"devto"})
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		resources := searchPublicSourceResources(node, sources, 10)
+		if len(resources) != 1 {
+			t.Fatalf("attempt %d resources = %d, want 1: %+v", attempt, len(resources), resources)
+		}
+		if resources[0].Title != "Rate Limiting Strategies in Go" {
+			t.Fatalf("attempt %d should show the real article title, got %+v", attempt, resources[0])
+		}
+		if strings.Contains(resources[0].URL, "/search") {
+			t.Fatalf("attempt %d returned a search entry instead of an article: %+v", attempt, resources[0])
+		}
 	}
 }
 

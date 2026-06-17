@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
@@ -64,6 +65,12 @@ var articleSearchSourceCatalog = []articleSearchSource{
 	{ID: "official", Label: "官方文档", QueryHint: "official documentation docs guide", MockURL: "https://example.com/docs"},
 	{ID: "technical", Label: "技术博客", QueryHint: "site:freecodecamp.org OR site:web.dev OR site:martinfowler.com OR site:smashingmagazine.com", MockURL: "https://web.dev/s/results"},
 }
+
+var (
+	articleHTTPClient      = &http.Client{Timeout: 20 * time.Second}
+	devToArticlesURL       = "https://dev.to/api/articles"
+	stackExchangeSearchURL = "https://api.stackexchange.com/2.3/search/advanced"
+)
 
 func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	project, err := repository.GetTaskProjectByID(projectID)
@@ -991,7 +998,176 @@ func searchArticleResources(node model.RoadmapNode, requestedSources []string, l
 		}
 		return searchTavilyResourcesForNode(node, sources, limit)
 	}
-	return searchDuckDuckGoResources(node, sources, limit)
+	publicResources := searchPublicSourceResources(node, sources, limit)
+	if len(publicResources) >= limit {
+		return publicResources, nil
+	}
+	duckDuckGoResources, err := searchDuckDuckGoResources(node, sources, limit-len(publicResources))
+	if err != nil {
+		if len(publicResources) > 0 {
+			return publicResources, nil
+		}
+		return nil, err
+	}
+	return limitArticleResources(append(publicResources, duckDuckGoResources...), limit), nil
+}
+
+func searchPublicSourceResources(node model.RoadmapNode, sources []articleSearchSource, limit int) []model.RoadmapResource {
+	limit = normalizeArticleSearchLimit(limit)
+	resources := make([]model.RoadmapResource, 0, limit)
+	for _, source := range sources {
+		if len(resources) >= limit {
+			break
+		}
+		remaining := limit - len(resources)
+		switch source.ID {
+		case "devto":
+			resources = append(resources, searchDevToResources(node, remaining)...)
+		case "stackoverflow":
+			resources = append(resources, searchStackOverflowResources(node, remaining)...)
+		}
+	}
+	return limitArticleResources(resources, limit)
+}
+
+func searchDevToResources(node model.RoadmapNode, limit int) []model.RoadmapResource {
+	limit = normalizeArticleSearchLimit(limit)
+	values := url.Values{}
+	values.Set("tag", articleTopicTag(node))
+	values.Set("top", "365")
+	values.Set("per_page", strconv.Itoa(limit))
+	requestURL := devToArticlesURL + "?" + values.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "FlowSpaceRoadmap/1.0")
+	resp, err := articleHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil
+	}
+
+	var decoded []struct {
+		Title                string `json:"title"`
+		URL                  string `json:"url"`
+		Description          string `json:"description"`
+		PublicReactionsCount int    `json:"public_reactions_count"`
+		ReadingTimeMinutes   int    `json:"reading_time_minutes"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1_000_000)).Decode(&decoded); err != nil {
+		return nil
+	}
+
+	resources := make([]model.RoadmapResource, 0, len(decoded))
+	for _, article := range decoded {
+		title := strings.TrimSpace(article.Title)
+		link := strings.TrimSpace(article.URL)
+		if title == "" || link == "" {
+			continue
+		}
+		summaryParts := []string{fmt.Sprintf("Dev.to 热门文章 · %d reactions", article.PublicReactionsCount)}
+		if article.ReadingTimeMinutes > 0 {
+			summaryParts = append(summaryParts, fmt.Sprintf("%d min read", article.ReadingTimeMinutes))
+		}
+		if description := strings.TrimSpace(article.Description); description != "" {
+			summaryParts = append(summaryParts, description)
+		}
+		resources = append(resources, model.RoadmapResource{
+			Title:   title,
+			URL:     link,
+			Summary: strings.Join(summaryParts, " · "),
+		})
+	}
+	return resources
+}
+
+func searchStackOverflowResources(node model.RoadmapNode, limit int) []model.RoadmapResource {
+	limit = normalizeArticleSearchLimit(limit)
+	values := url.Values{}
+	values.Set("order", "desc")
+	values.Set("sort", "votes")
+	values.Set("q", baseArticleSearchQuery(node))
+	values.Set("site", "stackoverflow")
+	values.Set("pagesize", strconv.Itoa(limit))
+	requestURL := stackExchangeSearchURL + "?" + values.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "FlowSpaceRoadmap/1.0")
+	resp, err := articleHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil
+	}
+
+	var decoded struct {
+		Items []struct {
+			Title       string `json:"title"`
+			Link        string `json:"link"`
+			Score       int    `json:"score"`
+			AnswerCount int    `json:"answer_count"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1_000_000)).Decode(&decoded); err != nil {
+		return nil
+	}
+
+	resources := make([]model.RoadmapResource, 0, len(decoded.Items))
+	for _, item := range decoded.Items {
+		title := strings.TrimSpace(stdhtml.UnescapeString(item.Title))
+		link := strings.TrimSpace(item.Link)
+		if title == "" || link == "" {
+			continue
+		}
+		resources = append(resources, model.RoadmapResource{
+			Title:   title,
+			URL:     link,
+			Summary: fmt.Sprintf("Stack Overflow 高票讨论 · %d votes · %d answers", item.Score, item.AnswerCount),
+		})
+	}
+	return resources
+}
+
+func articleTopicTag(node model.RoadmapNode) string {
+	text := strings.ToLower(strings.Join(nonEmptyStrings([]string{
+		node.Title,
+		node.Deliverable,
+		strings.Join(node.ArticleSearchQueries, " "),
+	}), " "))
+	switch {
+	case strings.Contains(text, "golang") || strings.Contains(text, " go ") || strings.HasPrefix(text, "go "):
+		return "go"
+	case strings.Contains(text, "python"):
+		return "python"
+	case strings.Contains(text, "docker") || strings.Contains(text, "container"):
+		return "docker"
+	case strings.Contains(text, "kubernetes") || strings.Contains(text, "k8s"):
+		return "kubernetes"
+	case strings.Contains(text, "react"):
+		return "react"
+	case strings.Contains(text, "typescript"):
+		return "typescript"
+	case strings.Contains(text, "javascript"):
+		return "javascript"
+	case strings.Contains(text, "postgres") || strings.Contains(text, "database") || strings.Contains(text, "sql"):
+		return "database"
+	case strings.Contains(text, "devops") || strings.Contains(text, "infra") || strings.Contains(text, "deploy"):
+		return "devops"
+	case strings.Contains(text, "ai") || strings.Contains(text, "llm") || strings.Contains(text, "model") || strings.Contains(text, "gpu"):
+		return "ai"
+	default:
+		return "programming"
+	}
 }
 
 func mockArticleResources(node model.RoadmapNode, sources []articleSearchSource, limit int) []model.RoadmapResource {
@@ -1101,17 +1277,19 @@ func searchDuckDuckGoResources(node model.RoadmapNode, sources []articleSearchSo
 }
 
 func buildArticleSearchQuery(node model.RoadmapNode, sources []articleSearchSource) string {
+	return strings.Join(nonEmptyStrings([]string{baseArticleSearchQuery(node), highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
+}
+
+func baseArticleSearchQuery(node model.RoadmapNode) string {
 	for _, query := range node.ArticleSearchQueries {
 		if trimmed := strings.TrimSpace(query); trimmed != "" {
-			return strings.Join(nonEmptyStrings([]string{trimmed, highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
+			return trimmed
 		}
 	}
 	return strings.Join(nonEmptyStrings([]string{
 		node.Title,
 		node.Deliverable,
 		"official documentation tutorial",
-		highSignalArticleHint,
-		articleSearchSourceQuery(sources),
 	}), " ")
 }
 
