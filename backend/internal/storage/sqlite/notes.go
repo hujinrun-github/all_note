@@ -89,6 +89,16 @@ func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest
 	if err := r.CreateWithID(ctx, note); err != nil {
 		return nil, err
 	}
+	// Insert project links if provided.
+	if len(req.ProjectIDs) > 0 {
+		for _, pid := range req.ProjectIDs {
+			if _, err := r.db.ExecContext(ctx,
+				`INSERT OR IGNORE INTO note_project_links (note_id, project_id, created_at)
+				 VALUES (?, ?, ?)`, note.ID, pid, nowUnix()); err != nil {
+				return nil, fmt.Errorf("insert project link: %w", err)
+			}
+		}
+	}
 	return r.GetByID(ctx, note.ID)
 }
 
@@ -150,6 +160,12 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 	args = append(args, id)
 	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE notes SET %s WHERE id = ?", strings.Join(sets, ", ")), args...); err != nil {
 		return nil, err
+	}
+	// Merge project links if provided.
+	if req.ProjectIDs != nil {
+		if err := setNoteProjectLinks(ctx, r.db, id, *req.ProjectIDs); err != nil {
+			return nil, fmt.Errorf("update project links: %w", err)
+		}
 	}
 	return r.GetByID(ctx, id)
 }
