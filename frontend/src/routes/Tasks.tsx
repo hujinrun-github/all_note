@@ -39,6 +39,7 @@ import {
 } from '../api/tasks'
 import { TaskRow } from '../components/ui/TaskRow'
 import { dateInputToUnix, dateToInputValue, todayDateInputValue } from '../utils/taskForm'
+import { taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
@@ -54,12 +55,6 @@ const tabLabels: Record<TaskTab, string> = {
   week: '本周',
   long: '长期任务',
   roadmap: '学习 Roadmap',
-}
-
-const projectTypeLabels: Record<TaskProject['type'], string> = {
-  personal: '个人',
-  regular: '任务项目',
-  learning: '学习项目',
 }
 
 const nodeTypeLabels: Record<RoadmapNode['type'], string> = {
@@ -534,7 +529,7 @@ export default function Tasks() {
                 }}
               >
                 <span>{project.name}</span>
-                <small>{projectTypeLabels[project.type]}</small>
+                <small>{taskProjectTypeLabels[project.type]}</small>
               </button>
 
               {project.id !== 'personal' && (
