@@ -68,17 +68,21 @@ export default function EditorPage() {
     },
   })
 
+  // Initialize editor from note only when navigating to a different note
+  const [lastLoadedID, setLastLoadedID] = useState<string | null>(null)
   useEffect(() => {
     if (!editor || editor.isDestroyed) return
-    if (note && note.id === id) {
+    if (note && note.id === id && note.id !== lastLoadedID) {
       setTitle(note.title)
       editor.commands.setContent(note.body || '')
       setSelectedProjectIDs(note.projects?.map(p => p.id) || [])
-    } else {
+      setLastLoadedID(note.id)
+    } else if (!note || note.id !== id) {
       setTitle('')
       editor.commands.setContent('')
+      setLastLoadedID(null)
     }
-  }, [id, note, editor])
+  }, [id, note, editor, lastLoadedID])
 
   const syncAfterSave = useCallback(() => {
     if (autoSyncEnabled && !isAutoSyncPending) {
@@ -320,18 +324,9 @@ export default function EditorPage() {
           </select>
         </div>
         <div className="inspector-section">
-          <span>关联任务</span>
-          <div className="linked-note">整理行动项</div>
-          <div className="linked-note">同步设计结论</div>
-        </div>
-        <div className="inspector-section">
-          <span>关联日程</span>
-          <div className="linked-note">产品需求评审会议记录</div>
-        </div>
-        <div className="inspector-section">
           <span>最近版本</span>
-          <div className="linked-note">今天 09:15</div>
-          <div className="linked-note">昨天 20:40</div>
+          <div className="linked-note">今天 {new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</div>
+          <div className="linked-note">昨天 {new Date(Date.now() - 86400000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
       </aside>
     </div>

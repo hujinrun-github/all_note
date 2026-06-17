@@ -208,11 +208,6 @@ export default function Calendar() {
             </>
           )}
         </div>
-        <div className="inspector-section">
-          <span>关联笔记</span>
-          <div className="linked-note">设计评审记录</div>
-          <div className="linked-note">用户访谈摘要</div>
-        </div>
       </aside>
     </div>
   )
