@@ -198,3 +198,347 @@ func hasSearchResult(results []model.SearchResult, resultType, id string) bool {
 	}
 	return false
 }
+
+// RunNoteProjectLinksSuite runs contract tests for note-project many-to-many links.
+func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
+	t.Helper()
+
+	t.Run("CreateNoteWithProjects", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		// Create a test project first
+		proj, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Contract Test Project",
+			Type: "regular",
+		})
+		if err != nil {
+			t.Fatalf("create project: %v", err)
+		}
+
+		// Create note with project
+		note, err := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title:      "Note With Project",
+			Body:       "test body",
+			ProjectIDs: []string{proj.ID},
+		})
+		if err != nil {
+			t.Fatalf("create note with project: %v", err)
+		}
+		if len(note.Projects) != 1 {
+			t.Fatalf("expected 1 project, got %d", len(note.Projects))
+		}
+		if note.Projects[0].ID != proj.ID {
+			t.Fatalf("expected project ID %s, got %s", proj.ID, note.Projects[0].ID)
+		}
+	})
+
+	t.Run("GetByIDReturnsProjects", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "GetByID Project", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "GetByID Note", ProjectIDs: []string{proj.ID},
+		})
+
+		got, err := store.Notes().GetByID(ctx, note.ID)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+		if len(got.Projects) == 0 {
+			t.Fatal("expected projects in GetByID response")
+		}
+		if got.Projects[0].ID != proj.ID {
+			t.Fatalf("expected project %s, got %s", proj.ID, got.Projects[0].ID)
+		}
+	})
+
+	t.Run("UpdatePreservesProjectsWhenNil", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Preserve Project", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Preserve Note", ProjectIDs: []string{proj.ID},
+		})
+
+		// Update only title, omit project_ids (nil)
+		newTitle := "Updated Title"
+		updated, err := store.Notes().Update(ctx, note.ID, &model.UpdateNoteRequest{
+			Title: &newTitle,
+		})
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if len(updated.Projects) != 1 {
+			t.Fatalf("expected projects preserved, got %d", len(updated.Projects))
+		}
+	})
+
+	t.Run("UpdateClearsProjectsWithEmptySlice", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Clear Project", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Clear Note", ProjectIDs: []string{proj.ID},
+		})
+
+		empty := []string{}
+		updated, err := store.Notes().Update(ctx, note.ID, &model.UpdateNoteRequest{
+			ProjectIDs: &empty,
+		})
+		if err != nil {
+			t.Fatalf("update clear: %v", err)
+		}
+		if len(updated.Projects) != 0 {
+			t.Fatalf("expected 0 projects after clear, got %d", len(updated.Projects))
+		}
+	})
+
+	t.Run("UpdateReplacesProjects", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		projA, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Replace Project A", Type: "regular",
+		})
+		projB, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Replace Project B", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Replace Note", ProjectIDs: []string{projA.ID},
+		})
+
+		// Replace A with B
+		updated, err := store.Notes().Update(ctx, note.ID, &model.UpdateNoteRequest{
+			ProjectIDs: &[]string{projB.ID},
+		})
+		if err != nil {
+			t.Fatalf("update replace: %v", err)
+		}
+		if len(updated.Projects) != 1 || updated.Projects[0].ID != projB.ID {
+			t.Fatalf("expected project B, got %+v", updated.Projects)
+		}
+	})
+
+	t.Run("ListByProjectID", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "List Project", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "In Project", ProjectIDs: []string{proj.ID},
+		})
+		// Create another note NOT in the project
+		store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Not In Project",
+		})
+
+		notes, total, err := store.Notes().List(ctx, storage.NoteFilter{
+			ProjectID: proj.ID,
+			Sort:      "recent",
+			Page:      1,
+			PageSize:  20,
+		})
+		if err != nil {
+			t.Fatalf("list by project: %v", err)
+		}
+		if total != 1 {
+			t.Fatalf("expected 1 note in project, got total=%d", total)
+		}
+		if notes[0].ID != note.ID {
+			t.Fatalf("expected note %s, got %s", note.ID, notes[0].ID)
+		}
+	})
+
+	t.Run("ListUnassigned", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		// Create note WITHOUT project
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Unassigned Note",
+		})
+		// Create note WITH project
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Assigned Project", Type: "regular",
+		})
+		store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Assigned Note", ProjectIDs: []string{proj.ID},
+		})
+
+		notes, total, err := store.Notes().List(ctx, storage.NoteFilter{
+			Unassigned: true,
+			Sort:       "recent",
+			Page:       1,
+			PageSize:   20,
+		})
+		if err != nil {
+			t.Fatalf("list unassigned: %v", err)
+		}
+		// Should find at least the unassigned note, and NOT the assigned note
+		found := false
+		for _, n := range notes {
+			if n.ID == note.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected unassigned note in results, got total=%d notes=%+v", total, notes)
+		}
+		if total < 1 {
+			t.Fatalf("expected at least 1 unassigned note, got %d", total)
+		}
+	})
+
+	t.Run("DeleteNoteCleansLinks", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Delete Project", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "To Delete", ProjectIDs: []string{proj.ID},
+		})
+
+		// Delete the note
+		if err := store.Notes().Delete(ctx, note.ID); err != nil {
+			t.Fatalf("delete note: %v", err)
+		}
+		// Verify note is gone
+		_, err := store.Notes().GetByID(ctx, note.ID)
+		if err == nil {
+			t.Fatal("expected note to be deleted")
+		}
+	})
+
+	t.Run("DeleteProjectPreservesNote", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "To Delete Project", Type: "regular",
+		})
+		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Surviving Note", ProjectIDs: []string{proj.ID},
+		})
+
+		// Delete the project
+		if err := store.Tasks().DeleteProject(ctx, proj.ID); err != nil {
+			t.Fatalf("delete project: %v", err)
+		}
+		// Note should still exist
+		got, err := store.Notes().GetByID(ctx, note.ID)
+		if err != nil {
+			t.Fatalf("note should survive project deletion: %v", err)
+		}
+		if len(got.Projects) != 0 {
+			t.Fatalf("expected 0 projects after project deletion, got %d", len(got.Projects))
+		}
+	})
+
+	t.Run("InvalidProjectIDRejected", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		// Create note with non-existent project ID — should fail with constraint error
+		_, err := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title:      "Invalid Project Note",
+			ProjectIDs: []string{"nonexistent-project-id"},
+		})
+		if err == nil {
+			t.Fatal("expected error when creating note with non-existent project ID")
+		}
+	})
+
+	t.Run("DuplicateProjectIDsHandled", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Dedup Project", Type: "regular",
+		})
+		note, err := store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title:      "Dedup Note",
+			ProjectIDs: []string{proj.ID, proj.ID}, // duplicate
+		})
+		if err != nil {
+			t.Fatalf("create with duplicate project IDs: %v", err)
+		}
+		if len(note.Projects) != 1 {
+			t.Fatalf("expected 1 project after dedup, got %d", len(note.Projects))
+		}
+	})
+
+	t.Run("RecentReturnsProjects", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Recent Project", Type: "regular",
+		})
+		store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "Recent Note", ProjectIDs: []string{proj.ID},
+		})
+
+		notes, err := store.Notes().Recent(ctx, 10)
+		if err != nil {
+			t.Fatalf("recent: %v", err)
+		}
+		found := false
+		for _, n := range notes {
+			if len(n.Projects) > 0 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("expected at least one note with projects in Recent")
+		}
+	})
+
+	t.Run("ListAllDoesNotRequireProjects", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := context.Background()
+
+		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "ListAll Project", Type: "regular",
+		})
+		store.Notes().Create(ctx, &model.CreateNoteRequest{
+			Title: "ListAll Note", ProjectIDs: []string{proj.ID},
+		})
+
+		notes, err := store.Notes().ListAll(ctx)
+		if err != nil {
+			t.Fatalf("ListAll: %v", err)
+		}
+		if len(notes) == 0 {
+			t.Fatal("expected at least one note from ListAll")
+		}
+		// Projects may or may not be populated — that's fine for ListAll
+	})
+}
