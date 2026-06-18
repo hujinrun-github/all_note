@@ -33,7 +33,8 @@
 1. `sync_targets` 继续作为同步配置表，允许同一用户拥有多个 Obsidian 和 Notion 配置。
 2. 新增 `note_sync_bindings`，记录每篇笔记当前绑定的唯一目标。
 3. 新增 `sync_external_claims`，记录当前被 FlowSpace 管理的外部资源，防止同一个外部文件或 page 被多个同步配置同时接管。
-4. `note_sync_state` 继续保存每个 `(note_id, target_id)` 的同步状态、hash、外部链接和错误信息，不承担“当前归属”的唯一性判断。
+4. 新增 `note_sync_suppressions`，记录用户显式解除过的 note + target，防止旧外部文件或 Notion page 在下一次 pull/import 时自动把笔记绑回去。
+5. `note_sync_state` 继续保存每个 `(note_id, target_id)` 的同步状态、hash、外部链接和错误信息，不承担“当前归属”的唯一性判断。
 
 这个方案比直接在 `note_sync_state` 上加唯一约束更稳：`note_sync_state` 可以保留历史状态，绑定和外部资源占用则表达当前事实。
 
@@ -121,6 +122,31 @@ CREATE INDEX sync_external_claims_target_idx
 - claim 的 `(note_id, target_id)` 必须引用当前 `note_sync_bindings`。解除笔记绑定时 claim 由数据库级联删除，服务层漏删不会留下 active claim。
 - 更换目标后，旧外部文件或 Notion page 不会自动删除，也不会继续被当前笔记管理。
 
+### note_sync_suppressions
+
+```sql
+CREATE TABLE note_sync_suppressions (
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL DEFAULT 'user_unbound'
+    CHECK (reason IN ('user_unbound', 'target_changed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (note_id, target_id)
+);
+
+CREATE INDEX note_sync_suppressions_target_idx
+  ON note_sync_suppressions (target_id, updated_at DESC);
+```
+
+规则：
+
+- 用户选择“不同步”时，删除 active binding，并为原 `(note_id, target_id)` 写入 suppression。
+- 用户把笔记从目标 A 切换到目标 B 时，为目标 A 写入 suppression，然后创建或更新目标 B 的 active binding。
+- 用户显式重新选择某个被 suppression 的 target 时，先删除该 suppression，再创建 active binding。
+- pull/import 遇到外部资源带 FlowSpace ID，且本地 note 未绑定但存在 `(note_id, current_target_id)` suppression 时，返回 `binding_required`，不得自动重新绑定。
+- suppression 不影响用户手动重新绑定，只阻止外部扫描自动绑回。
+
 ## API 设计
 
 ### 同步目标管理
@@ -194,12 +220,16 @@ DELETE /api/notes/:id/sync-binding
 - 如果笔记已有绑定且 `target_id` 不同，前端必须先展示确认提示，再提交 `confirm_changed_target=true`。没有确认时返回 `409 Conflict`，避免误点后已经释放旧 claim。
 - `expected_target_id` 用于乐观并发校验；如果当前绑定和请求里的旧 target 不一致，返回 `409 Conflict`，前端重新加载绑定状态。
 - 如果原绑定存在 active claim，更换目标必须在同一事务里先释放旧 claim，再更新 binding。
+- 如果更换目标，必须为旧 `(note_id, target_id)` 写入 `note_sync_suppressions(reason='target_changed')`。
+- 如果新 target 对当前 note 存在 suppression，说明用户正在显式重新启用该 target，保存 binding 时必须删除这条 suppression。
 - API 可以返回 `changed_target=true` 供前端更新提示文案，但提示不能只发生在 PUT 成功之后。
 
 `DELETE` 行为：
 
-- 删除当前绑定。
-- 释放 active claim。
+- 请求必须带 `expected_target_id` 和 `expected_updated_at`，可通过 query string 或 JSON body 表达；如果当前 binding 不匹配，返回 `409 Conflict`，前端重新加载。
+- 删除当前 active binding。
+- 通过数据库级联释放 active claim。
+- 为原 `(note_id, target_id)` 写入 `note_sync_suppressions(reason='user_unbound')`，表示用户显式选择不再让这个 target 管理该笔记。
 - 不删除历史 `note_sync_state`。
 
 ### 同步执行
@@ -248,6 +278,7 @@ POST /api/sync/notion/notes/:id
 兼容规则：
 
 - `GET /api/notes/:id/sync-state` 默认返回当前绑定目标的状态；如果没有绑定且传了 `target=notion|obsidian`，才按旧默认目标逻辑查询。
+- 如果笔记已经绑定到某个 target，但请求传入的 `target=notion|obsidian` 与当前绑定 target 类型不一致，返回 `200 OK` 和 `{ "state": null, "binding_mismatch": true, "binding_target_id": "...", "binding_target_type": "notion" }`。这样旧前端的双卡片查询不会变成请求失败，同时不会误读另一个默认目标状态。
 - 旧的类型单篇同步接口如果没有 `target_id`，先检查笔记当前绑定是否为对应类型；不匹配则返回 `409 Conflict`。
 - 如果传入 `target_id`，必须和当前绑定一致，否则返回 `409 Conflict`。
 
@@ -255,13 +286,19 @@ POST /api/sync/notion/notes/:id
 
 新增同步绑定 repository 能力：
 
+- `GetSyncTarget(targetID)`
+- `DeleteSyncTarget(targetID)`
+- `CountBindingsByTarget(targetID)`
 - `GetNoteSyncBinding(noteID)`
 - `SaveNoteSyncBinding(noteID, targetID)`
-- `DeleteNoteSyncBinding(noteID)`
+- `DeleteNoteSyncBinding(noteID, expectedTargetID, expectedUpdatedAt)`
 - `ListBoundNotes(targetID)`
 - `ClaimExternalResource(noteID, targetID, externalType, externalID, externalPath)`
 - `ReleaseExternalClaim(noteID)`
 - `GetExternalClaim(externalKey)`
+- `SaveSyncSuppression(noteID, targetID, reason)`
+- `DeleteSyncSuppression(noteID, targetID)`
+- `HasSyncSuppression(noteID, targetID)`
 
 服务层分工：
 
@@ -274,6 +311,8 @@ POST /api/sync/notion/notes/:id
 - 更换绑定和释放旧 claim 必须同事务。
 - 单篇同步的 `note_sync_state` 写入和 `sync_external_claims` 更新必须同事务，避免状态成功但资源声明缺失。
 - 导入外部笔记时，创建 note、创建 binding、写 sync state、写 claim 必须同事务。
+- 所有跨 note/sync 的原子流程必须通过 `storage.Store.Transact(ctx, func(txStore storage.Store) error { ... })` 执行，并在事务回调内使用 `txStore.Notes()` 和 `txStore.Sync()`。不得在这些流程里混用 package-level `repository.*` facade 或全局 store，否则 note 创建成功但 binding/state/claim 失败时无法回滚。
+- handler/service 新代码必须传入 `context.Context`，事务内 repository 方法都使用同一个 ctx。
 
 ### 外部副作用和 claim 顺序
 
@@ -335,7 +374,8 @@ POST /api/sync/notion/notes/:id
 
 Obsidian frontmatter 中的 FlowSpace `id` 和 Notion `FlowSpace ID` 属性只能用于定位同一个绑定目标下的笔记。pull/import 时如果外部资源声明了某个本地 note id，服务必须先读取该 note 的当前 binding：
 
-- note 未绑定：可以把该 note 绑定到当前 target，并继续 pull/import。
+- note 未绑定且没有当前 target 的 suppression：可以把该 note 绑定到当前 target，并继续 pull/import。
+- note 未绑定但存在当前 target 的 suppression：必须返回 `binding_required`，不得自动绑定。前端或结果明细提示用户需要手动重新选择该同步目标。
 - note 已绑定到当前 target：可以按既有冲突规则更新。
 - note 已绑定到其他 target：必须返回 `binding_conflict` 并跳过，不得用目标 B 的外部内容更新目标 A 管理的笔记。
 - note 不存在：按 provider 原有导入规则创建新 note，并绑定当前 target。
@@ -383,6 +423,7 @@ PostgreSQL 和 SQLite 必须同时满足：
 - `sync_external_claims.external_key` 主键唯一。
 - `sync_external_claims(note_id)` 唯一。
 - `sync_external_claims(note_id, target_id)` 外键引用 `note_sync_bindings(note_id, target_id)`，并 `ON DELETE CASCADE`。
+- `note_sync_suppressions(note_id, target_id)` 主键唯一。
 
 SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage contract tests 要同时跑 PostgreSQL 和 SQLite provider，不能只依赖 PostgreSQL 约束。
 
@@ -392,6 +433,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 
 - `note_sync_bindings`
 - `sync_external_claims`
+- `note_sync_suppressions`
 
 迁移前预检需要新增：
 
@@ -400,12 +442,21 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 当前代码使用 `delete_detected`，PostgreSQL CHECK 和迁移预检必须允许 `delete_detected`，或者在迁移时统一清洗成同一个枚举值。第一版建议统一允许并保留 `delete_detected`，避免历史状态丢语义。
 - 自动生成 binding 时，如果同一 note 有多个历史 target，不创建 binding，也不创建 claim。
 - 自动生成 claim 时，必须先成功创建对应 binding，依赖组合外键兜底。
+- 迁移不会自动生成 suppression；suppression 只来自迁移后用户显式解绑或切换目标。
+
+历史 claim 生成规则必须保守：
+
+- 只有 `note_sync_state.status = 'synced'` 且 `last_direction` 不是 `delete_detected` 的历史状态，才允许生成 active claim。
+- `failed`、`pending`、`external_deleted` 或 `last_direction='delete_detected'` 的状态只保留为历史 state/candidate，不生成 active claim。
+- Obsidian 历史 `external_path` 必须能解析为存在的真实路径，并且真实路径仍在该 target 的 base folder 内；否则跳过 active claim。符号链接解析失败、路径不存在、路径逃逸都不能词法生成 claim。
+- Notion 历史 `external_id` 必须能规范化为 page id。迁移阶段不调用远端 Notion API 校验 page 是否存在；首次同步时再验证远端状态。如果状态是 `external_deleted`，即使有 `external_id` 也不生成 active claim。
+- 无法生成 active claim 不代表迁移失败；它只表示该笔记需要用户在编辑器中重新选择同步目标或通过 pull/import 重新确认。
 
 ## 错误处理
 
 - `400 Bad Request`：笔记未绑定同步目标、目标类型不支持、目标已停用。
 - `404 Not Found`：笔记或同步目标不存在。
-- `409 Conflict`：传入目标和当前绑定不一致、删除仍有绑定的目标、外部资源已被其他配置 claim。
+- `409 Conflict`：传入目标和当前绑定不一致、删除仍有绑定的目标、外部资源已被其他配置 claim、外部资源因用户显式解绑而需要重新确认绑定。
 - `500 Internal Server Error`：存储故障或 provider 内部错误。
 
 错误信息必须能在前端直接展示，避免只返回泛化的“请求失败”。
@@ -422,21 +473,29 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - repository/storage contract：删除 binding 后，组合外键级联删除对应 claim。
 - repository/storage contract：没有当前 binding 时不能插入 claim。
 - repository/storage contract：SQLite 和 PostgreSQL 都拒绝重复的 `sync_targets(type,name)`。
+- repository/storage contract：target 按 ID 查询、删除和绑定计数分别返回正确的 404/409 前置条件。
+- repository/storage contract：`note_sync_suppressions(note_id,target_id)` 可创建、查询、删除，并阻止自动绑定路径。
 - handler：`GET/PUT/DELETE /api/notes/:id/sync-binding` 的成功、未找到、目标停用和更换目标场景。
 - handler：更换目标时缺少 `confirm_changed_target=true` 返回 409。
 - handler：`expected_target_id` 和当前绑定不一致时返回 409。
+- handler：删除 binding 时缺少或不匹配 `expected_target_id/expected_updated_at` 返回 409。
 - handler：`POST /api/sync/notes/:id` 在未绑定时返回 400。
 - handler：target-scoped deletion confirm/restore 使用指定 `target_id`，不走默认 target。
+- handler：已有绑定但 `GET /api/notes/:id/sync-state?target=其他类型` 返回 `binding_mismatch=true`，不读取默认 target。
 - service：单篇同步按当前绑定目标分发到 Obsidian 或 Notion。
+- service：导入、绑定切换、state/claim 写入使用 `Store.Transact` 内的 `txStore.Notes()` 和 `txStore.Sync()`，测试用失败注入证明 note 成功但 binding/state/claim 失败时会回滚。
 - service：已绑定笔记执行 push 时不被 `required_tags` 过滤跳过。
 - service：传入不匹配的 `target_id` 返回 409。
 - service：pull/import 遇到已绑定到其他 target 的 FlowSpace ID 时返回 `binding_conflict`，不得更新该 note。
+- service：pull/import 遇到未绑定但已 suppression 的 FlowSpace ID 时返回 `binding_required`，不得自动重建 binding。
 - service：Obsidian 写文件前必须先 reserve claim；reserve 失败时不写文件。
 - service：Notion 新建 page 后本地落库失败时，下一次同步能通过 FlowSpace ID 收养已创建 page，不重复创建。
 - Obsidian：重叠目录扫描时，对已被其他 target claim 的文件返回冲突并跳过。
 - Notion：导入 page 时，对已被其他 target claim 的 page 返回冲突并跳过。
 - migration：单历史状态自动生成绑定，多历史状态不自动绑定并保留 candidates。
 - migration：`note_sync_bindings` 和 `sync_external_claims` 进入 SQLite 到 PostgreSQL 迁移清单。
+- migration：`note_sync_suppressions` 进入 SQLite 到 PostgreSQL 迁移清单。
+- migration：只有 `status='synced'` 且外部资源可验证/可规范化的历史状态生成 active claim；`external_deleted/failed/pending/delete_detected` 不生成 claim。
 - migration：`delete_detected` 在 PostgreSQL CHECK 和预检中保持一致。
 
 ### 前端测试
@@ -445,6 +504,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 下拉框只允许选择一个同步目标。
 - 选择目标后调用 `PUT /api/notes/:id/sync-binding`。
 - 选择“不 同步”后调用 `DELETE /api/notes/:id/sync-binding`。
+- 删除绑定请求携带当前 `expected_target_id/expected_updated_at`。
 - 更换已绑定目标时显示确认提示。
 - 取消更换确认时不调用 `PUT /api/notes/:id/sync-binding`。
 - 未绑定时同步按钮提示先选择同步目标。
@@ -459,6 +519,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 未绑定笔记不会被目标批量 push。
 - 绑定到目标 A 后执行单篇同步，只写入目标 A。
 - 切换到目标 B 后再次同步，只写入目标 B；目标 A 的旧外部资源不被删除。
+- 解除绑定后保留旧 Obsidian 文件或 Notion page，再执行 pull/import，系统提示需要用户重新选择同步目标，不会自动恢复旧绑定。
 - 两个 Obsidian 配置目录重叠时，同一文件不会被两个配置同时导入。
 - 同一个 Notion page 不会被两个 Data Source 配置重复导入管理。
 
@@ -466,9 +527,10 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 
 ### 阶段一：数据模型和 API
 
-- 增加 `note_sync_bindings` 和 `sync_external_claims`。
-- 为 PostgreSQL 和 SQLite 同时补齐 `sync_targets(type,name)`、binding、claim 约束。
+- 增加 `note_sync_bindings`、`sync_external_claims` 和 `note_sync_suppressions`。
+- 为 PostgreSQL 和 SQLite 同时补齐 `sync_targets(type,name)`、binding、claim、suppression 约束。
 - 增加 storage/repository contract。
+- 增加 target 按 ID 查询、删除和绑定计数能力。
 - 增加绑定 API。
 - 增加统一单篇同步 API。
 - 增加 target-scoped deletion confirm/restore API。
@@ -480,6 +542,8 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 单篇 push 不再被 `required_tags` 过滤。
 - pull/import 成功后自动创建绑定和 claim。
 - pull/import 遇到跨 target FlowSpace ID 时返回 binding conflict。
+- pull/import 遇到用户显式解绑 suppression 时返回 binding required。
+- 跨 note/sync 原子流程全部改为 `Store.Transact` 内 txStore repository。
 - Obsidian/Notion 按 provider 实现 reserve claim 或可重试恢复策略。
 - 外部资源冲突时跳过并返回明确结果。
 
@@ -495,6 +559,8 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 从历史 `note_sync_state` 迁移可确定的绑定。
 - 多历史状态保留为候选，不自动选择。
 - SQLite 到 PostgreSQL 迁移清单加入 binding 和 claim 表。
+- SQLite 到 PostgreSQL 迁移清单加入 suppression 表。
+- 历史 claim 只从已同步且外部资源可验证/可规范化的状态生成。
 - 统一 `last_direction` 的 `delete_detected` 枚举约束。
 - 保留旧接口兼容，但对不匹配的目标返回 409。
 
@@ -502,6 +568,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 
 - 数据库层保证一篇笔记最多一个 active 同步绑定。
 - 数据库层保证一个外部资源最多一个 active claim。
+- 用户显式解绑后，旧外部资源带 FlowSpace ID 再被 pull/import 时不会自动重建绑定。
 - 前端编辑器只能选择一个同步目标名。
 - 未绑定笔记不会被同步任务误处理。
 - 单篇同步不再依赖类型默认目标，而是依赖当前笔记绑定。
