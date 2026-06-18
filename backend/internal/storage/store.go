@@ -2,9 +2,12 @@ package storage
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hujinrun/flowspace/internal/model"
 )
+
+var ErrNotImplemented = errors.New("not implemented")
 
 type Capabilities struct {
 	FullTextSearch bool
@@ -130,13 +133,33 @@ type RoadmapRepository interface {
 }
 type SyncRepository interface {
 	SaveTarget(context.Context, *model.SyncTarget) error
+	GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error)
 	GetDefaultTarget(context.Context, string) (*model.SyncTarget, error)
 	ListTargets(context.Context) ([]model.SyncTarget, error)
+	DeleteTarget(ctx context.Context, targetID string) error
+	CountBindingsByTarget(ctx context.Context, targetID string) (int, error)
+	CountClaimsByTarget(ctx context.Context, targetID string) (int, error)
+	CountStatesByTarget(ctx context.Context, targetID string) (int, error)
 	UpsertState(context.Context, *model.SyncState) error
 	GetState(context.Context, string, string) (*model.SyncState, error)
 	ListStatesByTarget(context.Context, string) ([]model.SyncState, error)
 	DeleteState(context.Context, string, string) error
 	ListExternalDeletedStates(context.Context, string) ([]model.ExternalDeletedNote, error)
+	GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error)
+	PutBinding(ctx context.Context, binding model.NoteSyncBinding) error
+	DeleteBinding(ctx context.Context, noteID string) error
+	ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error)
+	GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error)
+	GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error)
+	PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error
+	ReleaseExternalClaim(ctx context.Context, noteID string) error
+	PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error
+	DeleteSuppression(ctx context.Context, noteID string, targetID string) error
+	GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error)
+	PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error
+	DeleteImportTombstone(ctx context.Context, externalKey string) error
+	DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error
+	FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error)
 }
 type SearchRepository interface {
 	Search(context.Context, string, int, int) ([]model.SearchResult, int, error)

@@ -24,6 +24,7 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 			ConfigJSON: `{"data_source_id":"abc","token_env":"NOTION_TOKEN","required_tags":["sync"]}`,
 			Enabled:    true,
 			AutoSync:   false,
+			IsDefault:  true,
 		}
 		if err := store.Sync().SaveTarget(ctx, target); err != nil {
 			t.Fatalf("save target: %v", err)

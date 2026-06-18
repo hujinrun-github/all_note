@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 type syncRepository struct {
@@ -46,6 +47,10 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 	return err
 }
 
+func (r syncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return nil, storage.ErrNotImplemented
+}
+
 func (r syncRepository) GetDefaultTarget(ctx context.Context, syncType string) (*model.SyncTarget, error) {
 	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, created_at, updated_at
@@ -75,6 +80,22 @@ func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, er
 		targets = append(targets, *target)
 	}
 	return targets, rows.Err()
+}
+
+func (r syncRepository) DeleteTarget(ctx context.Context, targetID string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
+	return 0, storage.ErrNotImplemented
+}
+
+func (r syncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
+	return 0, storage.ErrNotImplemented
+}
+
+func (r syncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
+	return 0, storage.ErrNotImplemented
 }
 
 func (r syncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
@@ -158,6 +179,66 @@ func (r syncRepository) ListExternalDeletedStates(ctx context.Context, targetID 
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r syncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r syncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) DeleteBinding(ctx context.Context, noteID string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r syncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r syncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r syncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r syncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r syncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
+	return nil, storage.ErrNotImplemented
 }
 
 func scanPostgresSyncTarget(row rowScanner) (*model.SyncTarget, error) {
