@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Tasks from './Tasks'
 import * as tasksApi from '../api/tasks'
@@ -66,7 +67,9 @@ function renderTasks(queryClient = createTestQueryClient()) {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <Tasks />
+      <MemoryRouter>
+        <Tasks />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
