@@ -3,21 +3,52 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 type syncRepository struct {
 	db sqliteRunner
 }
 
+func (r syncRepository) withTx(ctx context.Context, fn func(sqliteRunner) error) error {
+	if tx, ok := r.db.(*sql.Tx); ok {
+		return fn(tx)
+	}
+	db, ok := r.db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("unsupported sqlite runner %T", r.db)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget) error {
 	if target == nil {
 		return fmt.Errorf("sync target is nil")
+	}
+	if err := validateSyncTargetType(target.Type); err != nil {
+		return err
 	}
 	config, err := normalizeSyncConfigJSON(target.ConfigJSON)
 	if err != nil {
@@ -32,38 +63,54 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 		target.CreatedAt = now
 	}
 	target.UpdatedAt = now
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			name = excluded.name,
-			vault_path = excluded.vault_path,
-			base_folder = excluded.base_folder,
-			config_json = excluded.config_json,
-			enabled = excluded.enabled,
-			auto_sync = excluded.auto_sync,
-			updated_at = excluded.updated_at
-	`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, boolToSQLiteInt(target.Enabled), boolToSQLiteInt(target.AutoSync), target.CreatedAt, target.UpdatedAt)
-	return err
+	return r.withTx(ctx, func(tx sqliteRunner) error {
+		if target.IsDefault {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE sync_targets
+				SET is_default = 0, updated_at = ?
+				WHERE type = ? AND id <> ? AND is_default = 1
+			`, target.UpdatedAt, target.Type, target.ID); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				type = excluded.type,
+				name = excluded.name,
+				vault_path = excluded.vault_path,
+				base_folder = excluded.base_folder,
+				config_json = excluded.config_json,
+				enabled = excluded.enabled,
+				auto_sync = excluded.auto_sync,
+				is_default = excluded.is_default,
+				updated_at = excluded.updated_at
+		`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, boolToSQLiteInt(target.Enabled), boolToSQLiteInt(target.AutoSync), boolToSQLiteInt(target.IsDefault), target.CreatedAt, target.UpdatedAt)
+		return err
+	})
 }
 
 func (r syncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
-	return nil, storage.ErrNotImplemented
+	return scanSQLiteSyncTarget(r.db.QueryRowContext(ctx, `
+		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at
+		FROM sync_targets
+		WHERE id = ?
+	`, targetID))
 }
 
 func (r syncRepository) GetDefaultTarget(ctx context.Context, syncType string) (*model.SyncTarget, error) {
 	return scanSQLiteSyncTarget(r.db.QueryRowContext(ctx, `
-		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, created_at, updated_at
+		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
-		WHERE type = ? AND enabled = 1
-		ORDER BY updated_at DESC
+		WHERE type = ? AND enabled = 1 AND is_default = 1
 		LIMIT 1
 	`, syncType))
 }
 
 func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, created_at, updated_at
+		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
 		ORDER BY updated_at DESC
 	`)
@@ -83,19 +130,28 @@ func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, er
 }
 
 func (r syncRepository) DeleteTarget(ctx context.Context, targetID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_targets WHERE id = ?
+	`, targetID)
+	return err
 }
 
 func (r syncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
-	return 0, storage.ErrNotImplemented
+	return scanSQLiteCount(r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM note_sync_bindings WHERE target_id = ?
+	`, targetID))
 }
 
 func (r syncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
-	return 0, storage.ErrNotImplemented
+	return scanSQLiteCount(r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sync_external_claims WHERE target_id = ?
+	`, targetID))
 }
 
 func (r syncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
-	return 0, storage.ErrNotImplemented
+	return scanSQLiteCount(r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM note_sync_state WHERE target_id = ?
+	`, targetID))
 }
 
 func (r syncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
@@ -181,75 +237,231 @@ func (r syncRepository) ListExternalDeletedStates(ctx context.Context, targetID 
 }
 
 func (r syncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
-	return nil, storage.ErrNotImplemented
+	return scanSQLiteNoteSyncBinding(r.db.QueryRowContext(ctx, sqliteBindingSelectSQL()+`
+		WHERE note_id = ?
+	`, noteID))
 }
 
 func (r syncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if binding.CreatedAt == 0 {
+		binding.CreatedAt = now
+	}
+	binding.UpdatedAt = now
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(note_id) DO UPDATE SET
+			target_id = excluded.target_id,
+			updated_at = excluded.updated_at
+	`, binding.NoteID, binding.TargetID, binding.CreatedAt, binding.UpdatedAt)
+	return err
 }
 
 func (r syncRepository) DeleteBinding(ctx context.Context, noteID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_bindings WHERE note_id = ?
+	`, noteID)
+	return err
 }
 
 func (r syncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
-	return nil, storage.ErrNotImplemented
+	rows, err := r.db.QueryContext(ctx, sqliteBindingSelectSQL()+`
+		WHERE target_id = ?
+		ORDER BY updated_at DESC, note_id
+	`, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	bindings := make([]model.NoteSyncBinding, 0)
+	for rows.Next() {
+		binding, err := scanSQLiteNoteSyncBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, *binding)
+	}
+	return bindings, rows.Err()
 }
 
 func (r syncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
-	return nil, storage.ErrNotImplemented
+	return scanSQLiteExternalClaim(r.db.QueryRowContext(ctx, sqliteExternalClaimSelectSQL()+`
+		WHERE external_key = ?
+	`, externalKey))
 }
 
 func (r syncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
-	return nil, storage.ErrNotImplemented
+	return scanSQLiteExternalClaim(r.db.QueryRowContext(ctx, sqliteExternalClaimSelectSQL()+`
+		WHERE note_id = ?
+	`, noteID))
 }
 
 func (r syncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if claim.CreatedAt == 0 {
+		claim.CreatedAt = now
+	}
+	claim.UpdatedAt = now
+	return r.withTx(ctx, func(tx sqliteRunner) error {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sync_external_claims
+			WHERE note_id = ? AND external_key <> ?
+		`, claim.NoteID, claim.ExternalKey); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sync_external_claims (
+				external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(external_key) DO UPDATE SET
+				note_id = excluded.note_id,
+				target_id = excluded.target_id,
+				external_type = excluded.external_type,
+				external_id = excluded.external_id,
+				external_path = excluded.external_path,
+				updated_at = excluded.updated_at
+		`, claim.ExternalKey, claim.NoteID, claim.TargetID, claim.ExternalType, claim.ExternalID, claim.ExternalPath, claim.CreatedAt, claim.UpdatedAt)
+		return err
+	})
 }
 
 func (r syncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_external_claims WHERE note_id = ?
+	`, noteID)
+	return err
 }
 
 func (r syncRepository) PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if suppression.CreatedAt == 0 {
+		suppression.CreatedAt = now
+	}
+	if strings.TrimSpace(suppression.Reason) == "" {
+		suppression.Reason = "user_unbound"
+	}
+	suppression.UpdatedAt = now
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(note_id, target_id) DO UPDATE SET
+			reason = excluded.reason,
+			updated_at = excluded.updated_at
+	`, suppression.NoteID, suppression.TargetID, suppression.Reason, suppression.CreatedAt, suppression.UpdatedAt)
+	return err
 }
 
 func (r syncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_suppressions WHERE note_id = ? AND target_id = ?
+	`, noteID, targetID)
+	return err
 }
 
 func (r syncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
-	return nil, storage.ErrNotImplemented
+	return scanSQLiteSuppression(r.db.QueryRowContext(ctx, sqliteSuppressionSelectSQL()+`
+		WHERE note_id = ? AND target_id = ?
+	`, noteID, targetID))
 }
 
 func (r syncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if tombstone.CreatedAt == 0 {
+		tombstone.CreatedAt = now
+	}
+	if strings.TrimSpace(tombstone.Reason) == "" {
+		tombstone.Reason = "user_unbound"
+	}
+	tombstone.UpdatedAt = now
+	return r.withTx(ctx, func(tx sqliteRunner) error {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sync_import_tombstones
+			WHERE external_key = ?
+				OR (target_id = ? AND former_note_id = ? AND external_type = ?)
+		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sync_import_tombstones (
+				external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType, tombstone.ExternalID, tombstone.ExternalPath, tombstone.Reason, tombstone.CreatedAt, tombstone.UpdatedAt)
+		return err
+	})
 }
 
 func (r syncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_import_tombstones WHERE external_key = ?
+	`, externalKey)
+	return err
 }
 
 func (r syncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_import_tombstones WHERE former_note_id = ? AND target_id = ?
+	`, noteID, targetID)
+	return err
 }
 
 func (r syncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
-	return nil, storage.ErrNotImplemented
+	if strings.TrimSpace(targetID) != "" && strings.TrimSpace(externalKey) != "" {
+		tombstone, err := scanSQLiteImportTombstone(r.db.QueryRowContext(ctx, sqliteImportTombstoneSelectSQL()+`
+			WHERE target_id = ? AND external_key = ?
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		`, targetID, externalKey))
+		if err == nil {
+			return tombstone, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(targetID) != "" && strings.TrimSpace(formerNoteID) != "" && strings.TrimSpace(externalType) != "" {
+		tombstone, err := scanSQLiteImportTombstone(r.db.QueryRowContext(ctx, sqliteImportTombstoneSelectSQL()+`
+			WHERE target_id = ? AND former_note_id = ? AND external_type = ?
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		`, targetID, formerNoteID, externalType))
+		if err == nil {
+			return tombstone, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(formerNoteID) != "" && strings.TrimSpace(externalType) != "" {
+		return scanSQLiteImportTombstone(r.db.QueryRowContext(ctx, sqliteImportTombstoneSelectSQL()+`
+			WHERE former_note_id = ? AND external_type = ?
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		`, formerNoteID, externalType))
+	}
+	return nil, sql.ErrNoRows
 }
 
 func scanSQLiteSyncTarget(row sqliteRowScanner) (*model.SyncTarget, error) {
 	var target model.SyncTarget
 	var enabled int
 	var autoSync int
-	if err := row.Scan(&target.ID, &target.Type, &target.Name, &target.VaultPath, &target.BaseFolder, &target.ConfigJSON, &enabled, &autoSync, &target.CreatedAt, &target.UpdatedAt); err != nil {
+	var isDefault int
+	if err := row.Scan(&target.ID, &target.Type, &target.Name, &target.VaultPath, &target.BaseFolder, &target.ConfigJSON, &enabled, &autoSync, &isDefault, &target.CreatedAt, &target.UpdatedAt); err != nil {
 		return nil, err
 	}
 	target.Enabled = enabled == 1
 	target.AutoSync = autoSync == 1
+	target.IsDefault = isDefault == 1
 	return &target, nil
+}
+
+func scanSQLiteCount(row sqliteRowScanner) (int, error) {
+	var count int
+	err := row.Scan(&count)
+	return count, err
 }
 
 func sqliteSyncStateSelectSQL() string {
@@ -281,6 +493,85 @@ func scanSQLiteSyncState(row sqliteRowScanner) (*model.SyncState, error) {
 	return &state, nil
 }
 
+func sqliteBindingSelectSQL() string {
+	return `
+		SELECT note_id, target_id, created_at, updated_at
+		FROM note_sync_bindings
+	`
+}
+
+func scanSQLiteNoteSyncBinding(row sqliteRowScanner) (*model.NoteSyncBinding, error) {
+	var binding model.NoteSyncBinding
+	if err := row.Scan(&binding.NoteID, &binding.TargetID, &binding.CreatedAt, &binding.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &binding, nil
+}
+
+func sqliteExternalClaimSelectSQL() string {
+	return `
+		SELECT external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+		FROM sync_external_claims
+	`
+}
+
+func scanSQLiteExternalClaim(row sqliteRowScanner) (*model.SyncExternalClaim, error) {
+	var claim model.SyncExternalClaim
+	if err := row.Scan(
+		&claim.ExternalKey,
+		&claim.NoteID,
+		&claim.TargetID,
+		&claim.ExternalType,
+		&claim.ExternalID,
+		&claim.ExternalPath,
+		&claim.CreatedAt,
+		&claim.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &claim, nil
+}
+
+func sqliteSuppressionSelectSQL() string {
+	return `
+		SELECT note_id, target_id, reason, created_at, updated_at
+		FROM note_sync_suppressions
+	`
+}
+
+func scanSQLiteSuppression(row sqliteRowScanner) (*model.NoteSyncSuppression, error) {
+	var suppression model.NoteSyncSuppression
+	if err := row.Scan(&suppression.NoteID, &suppression.TargetID, &suppression.Reason, &suppression.CreatedAt, &suppression.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &suppression, nil
+}
+
+func sqliteImportTombstoneSelectSQL() string {
+	return `
+		SELECT external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+		FROM sync_import_tombstones
+	`
+}
+
+func scanSQLiteImportTombstone(row sqliteRowScanner) (*model.SyncImportTombstone, error) {
+	var tombstone model.SyncImportTombstone
+	if err := row.Scan(
+		&tombstone.ExternalKey,
+		&tombstone.TargetID,
+		&tombstone.FormerNoteID,
+		&tombstone.ExternalType,
+		&tombstone.ExternalID,
+		&tombstone.ExternalPath,
+		&tombstone.Reason,
+		&tombstone.CreatedAt,
+		&tombstone.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &tombstone, nil
+}
+
 func normalizeSyncConfigJSON(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "{}", nil
@@ -304,4 +595,13 @@ func boolToSQLiteInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func validateSyncTargetType(targetType string) error {
+	switch targetType {
+	case "obsidian", "notion":
+		return nil
+	default:
+		return fmt.Errorf("unsupported sync target type %q", targetType)
+	}
 }

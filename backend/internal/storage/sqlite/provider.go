@@ -41,11 +41,19 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteSyncColumnsBeforeSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := initializeLegacySchema(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	if err := repository.RunLegacySQLiteMigrations(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSQLiteSyncSchema(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

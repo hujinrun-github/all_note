@@ -75,6 +75,10 @@ func MigrateSQLiteToPostgres(sqlitePath, postgresURL string) error {
 		migrateEvents,
 		migrateInbox,
 		migrateSyncTargets,
+		migrateNoteSyncBindings,
+		migrateSyncExternalClaims,
+		migrateNoteSyncSuppressions,
+		migrateSyncImportTombstones,
 		migrateSyncStates,
 	}
 	for _, step := range steps {
@@ -120,6 +124,7 @@ func runLegacySQLiteUpgrade(db *sql.DB) error {
 		`ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE roadmap_nodes ADD COLUMN article_search_queries TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE sync_targets ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE sync_targets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_id TEXT`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_url TEXT`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_hash TEXT`,
@@ -147,7 +152,7 @@ func validateSQLiteSource(db *sql.DB) error {
 		{"events.time_range", `SELECT COUNT(*) FROM events WHERE end_time <= start_time`},
 		{"sync_targets.type", `SELECT COUNT(*) FROM sync_targets WHERE type NOT IN ('obsidian','notion')`},
 		{"note_sync_state.status", `SELECT COUNT(*) FROM note_sync_state WHERE status NOT IN ('synced','pending','failed','external_deleted')`},
-		{"note_sync_state.last_direction", `SELECT COUNT(*) FROM note_sync_state WHERE last_direction IS NOT NULL AND last_direction NOT IN ('push','pull','import','restore','delete')`},
+		{"note_sync_state.last_direction", `SELECT COUNT(*) FROM note_sync_state WHERE last_direction IS NOT NULL AND last_direction NOT IN ('push','pull','import','restore','delete','delete_detected')`},
 	}
 	for _, check := range checks {
 		var count int
@@ -238,7 +243,8 @@ func ensurePostgresMigrationTargetEmpty(db *sql.DB) error {
 	tables := []string{
 		"notes", "tasks", "events", "inbox", "learning_roadmaps", "roadmap_nodes",
 		"roadmap_edges", "roadmap_resources", "sync_targets", "note_sync_state",
-	"note_project_links", "search_index",
+		"note_sync_bindings", "sync_external_claims", "note_sync_suppressions",
+		"sync_import_tombstones", "note_project_links", "search_index",
 	}
 	for _, table := range tables {
 		var count int
@@ -562,16 +568,16 @@ func migrateInbox(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error {
 }
 
 func migrateSyncTargets(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error {
-	rows, err := sqliteDB.Query(`SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, created_at, updated_at FROM sync_targets ORDER BY id`)
+	rows, err := sqliteDB.Query(`SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at FROM sync_targets ORDER BY id`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, targetType, name, vaultPath, baseFolder, rawConfig string
-		var enabled, autoSync int
+		var enabled, autoSync, isDefault int
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&id, &targetType, &name, &vaultPath, &baseFolder, &rawConfig, &enabled, &autoSync, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &targetType, &name, &vaultPath, &baseFolder, &rawConfig, &enabled, &autoSync, &isDefault, &createdAt, &updatedAt); err != nil {
 			return err
 		}
 		config, err := normalizeJSONObject(rawConfig)
@@ -579,9 +585,135 @@ func migrateSyncTargets(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config, enabled, auto_sync, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
-		`, id, targetType, name, vaultPath, baseFolder, config, enabled == 1, autoSync == 1, unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
+			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config, enabled, auto_sync, is_default, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+		`, id, targetType, name, vaultPath, baseFolder, config, enabled == 1, autoSync == 1, isDefault == 1, unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func migrateNoteSyncBindings(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error {
+	exists, err := sqliteTableExists(sqliteDB, "note_sync_bindings")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := sqliteDB.Query(`SELECT note_id, target_id, created_at, updated_at FROM note_sync_bindings ORDER BY note_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var noteID, targetID string
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&noteID, &targetID, &createdAt, &updatedAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
+			VALUES ($1, $2, $3, $4)
+		`, noteID, targetID, unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func migrateSyncExternalClaims(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error {
+	exists, err := sqliteTableExists(sqliteDB, "sync_external_claims")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := sqliteDB.Query(`
+		SELECT external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+		FROM sync_external_claims ORDER BY external_key
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var externalKey, noteID, targetID, externalType, externalID, externalPath string
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&externalKey, &noteID, &targetID, &externalType, &externalID, &externalPath, &createdAt, &updatedAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sync_external_claims (
+				external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, externalKey, noteID, targetID, externalType, externalID, externalPath, unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func migrateNoteSyncSuppressions(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error {
+	exists, err := sqliteTableExists(sqliteDB, "note_sync_suppressions")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := sqliteDB.Query(`SELECT note_id, target_id, reason, created_at, updated_at FROM note_sync_suppressions ORDER BY note_id, target_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var noteID, targetID, reason string
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&noteID, &targetID, &reason, &createdAt, &updatedAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5)
+		`, noteID, targetID, normalizeSyncSuppressionReason(reason), unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func migrateSyncImportTombstones(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error {
+	exists, err := sqliteTableExists(sqliteDB, "sync_import_tombstones")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := sqliteDB.Query(`
+		SELECT external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+		FROM sync_import_tombstones ORDER BY external_key
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var externalKey, targetID, formerNoteID, externalType, externalID, externalPath, reason string
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&externalKey, &targetID, &formerNoteID, &externalType, &externalID, &externalPath, &reason, &createdAt, &updatedAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sync_import_tombstones (
+				external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, externalKey, targetID, formerNoteID, externalType, externalID, externalPath, normalizeSyncImportTombstoneReason(reason), unixToTime(createdAt), unixToTime(updatedAt)); err != nil {
 			return err
 		}
 	}
@@ -669,4 +801,32 @@ func normalizeJSONObject(raw string) (string, error) {
 		return "", err
 	}
 	return compacted.String(), nil
+}
+
+func sqliteTableExists(db *sql.DB, table string) (bool, error) {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func normalizeSyncSuppressionReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "target_changed":
+		return "target_changed"
+	default:
+		return "user_unbound"
+	}
+}
+
+func normalizeSyncImportTombstoneReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "target_changed":
+		return "target_changed"
+	case "note_deleted":
+		return "note_deleted"
+	default:
+		return "user_unbound"
+	}
 }

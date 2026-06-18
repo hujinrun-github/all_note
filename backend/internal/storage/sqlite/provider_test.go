@@ -2,11 +2,13 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
@@ -59,6 +61,114 @@ func TestProviderOpenUsesLegacySchemaAndReportsCapabilities(t *testing.T) {
 		{"tasks", "content"},
 	} {
 		assertColumnExists(t, sqliteStore, column.table, column.name)
+	}
+}
+
+func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.legacy-sync.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE sync_targets (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			name TEXT NOT NULL,
+			vault_path TEXT NOT NULL,
+			base_folder TEXT NOT NULL,
+			config_json TEXT NOT NULL DEFAULT '{}',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			auto_sync INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE TABLE note_sync_state (
+			note_id TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			external_path TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			status TEXT NOT NULL,
+			error_message TEXT,
+			PRIMARY KEY (note_id, target_id)
+		);
+	`); err != nil {
+		t.Fatalf("create legacy sync schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	opened, err := (Provider{}).Open(context.Background(), storage.Config{
+		Env:        "test",
+		Driver:     storage.DriverSQLite,
+		SQLitePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open upgraded sqlite provider: %v", err)
+	}
+	defer opened.Close()
+
+	target := &model.SyncTarget{
+		ID:         "legacy-default-target",
+		Type:       "notion",
+		Name:       "Legacy Default Target",
+		ConfigJSON: `{}`,
+		Enabled:    true,
+		IsDefault:  true,
+	}
+	if err := opened.Sync().SaveTarget(context.Background(), target); err != nil {
+		t.Fatalf("save default target after upgrade: %v", err)
+	}
+	defaultTarget, err := opened.Sync().GetDefaultTarget(context.Background(), "notion")
+	if err != nil {
+		t.Fatalf("get default target after upgrade: %v", err)
+	}
+	if defaultTarget.ID != target.ID {
+		t.Fatalf("default target ID = %q, want %q", defaultTarget.ID, target.ID)
+	}
+
+	note, err := opened.Notes().Create(context.Background(), &model.CreateNoteRequest{
+		Title:    "Legacy Binding Note",
+		Body:     "Body",
+		FolderID: "__uncategorized",
+		Tags:     `[]`,
+	})
+	if err != nil {
+		t.Fatalf("create note after upgrade: %v", err)
+	}
+	if err := opened.Sync().PutBinding(context.Background(), model.NoteSyncBinding{
+		NoteID:   note.ID,
+		TargetID: target.ID,
+	}); err != nil {
+		t.Fatalf("put binding after upgrade: %v", err)
+	}
+	binding, err := opened.Sync().GetBinding(context.Background(), note.ID)
+	if err != nil {
+		t.Fatalf("get binding after upgrade: %v", err)
+	}
+	if binding.TargetID != target.ID {
+		t.Fatalf("binding target = %q, want %q", binding.TargetID, target.ID)
+	}
+
+	if err := opened.Sync().SaveTarget(context.Background(), &model.SyncTarget{
+		ID:         "unsupported-target",
+		Type:       "unsupported",
+		Name:       "Unsupported Target",
+		ConfigJSON: `{}`,
+		Enabled:    true,
+	}); err == nil {
+		t.Fatal("expected unsupported sync target type to fail after legacy upgrade")
+	}
+
+	if err := opened.Sync().SaveTarget(context.Background(), &model.SyncTarget{
+		ID:         "duplicate-name-target",
+		Type:       target.Type,
+		Name:       target.Name,
+		ConfigJSON: `{}`,
+		Enabled:    true,
+	}); err == nil {
+		t.Fatal("expected duplicate sync target type/name to fail after legacy upgrade")
 	}
 }
 

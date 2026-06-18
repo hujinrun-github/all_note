@@ -46,6 +46,10 @@ func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
 	assertTableCount(t, pgDB, "events", 1)
 	assertTableCount(t, pgDB, "inbox", 1)
 	assertTableCount(t, pgDB, "sync_targets", 1)
+	assertTableCount(t, pgDB, "note_sync_bindings", 1)
+	assertTableCount(t, pgDB, "sync_external_claims", 1)
+	assertTableCount(t, pgDB, "note_sync_suppressions", 1)
+	assertTableCount(t, pgDB, "sync_import_tombstones", 1)
 	assertTableCount(t, pgDB, "note_sync_state", 1)
 	assertTableCount(t, pgDB, "search_index", 3)
 
@@ -72,6 +76,47 @@ func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
 	}
 	if tokenEnv != "FLOWSPACE_NOTION_TOKEN" {
 		t.Fatalf("unexpected token env: %q", tokenEnv)
+	}
+
+	var isDefault bool
+	if err := pgDB.QueryRow(`SELECT is_default FROM sync_targets WHERE id = 'target-1'`).Scan(&isDefault); err != nil {
+		t.Fatalf("query sync target default flag: %v", err)
+	}
+	if !isDefault {
+		t.Fatal("expected sync target default flag to migrate")
+	}
+
+	var bindingTarget string
+	if err := pgDB.QueryRow(`SELECT target_id FROM note_sync_bindings WHERE note_id = 'note-1'`).Scan(&bindingTarget); err != nil {
+		t.Fatalf("query migrated binding: %v", err)
+	}
+	if bindingTarget != "target-1" {
+		t.Fatalf("unexpected migrated binding target: %q", bindingTarget)
+	}
+
+	var claimNoteID string
+	var claimType string
+	if err := pgDB.QueryRow(`SELECT note_id, external_type FROM sync_external_claims WHERE external_key = 'notion:external-1'`).Scan(&claimNoteID, &claimType); err != nil {
+		t.Fatalf("query migrated claim: %v", err)
+	}
+	if claimNoteID != "note-1" || claimType != "notion_page" {
+		t.Fatalf("unexpected migrated claim: note_id=%q type=%q", claimNoteID, claimType)
+	}
+
+	var suppressionReason string
+	if err := pgDB.QueryRow(`SELECT reason FROM note_sync_suppressions WHERE note_id = 'note-1' AND target_id = 'target-1'`).Scan(&suppressionReason); err != nil {
+		t.Fatalf("query migrated suppression: %v", err)
+	}
+	if suppressionReason != "target_changed" {
+		t.Fatalf("unexpected migrated suppression reason: %q", suppressionReason)
+	}
+
+	var tombstoneReason string
+	if err := pgDB.QueryRow(`SELECT reason FROM sync_import_tombstones WHERE external_key = 'notion:deleted-page'`).Scan(&tombstoneReason); err != nil {
+		t.Fatalf("query migrated tombstone: %v", err)
+	}
+	if tombstoneReason != "note_deleted" {
+		t.Fatalf("unexpected migrated tombstone reason: %q", tombstoneReason)
 	}
 
 	var eventOverlaps bool
@@ -214,8 +259,28 @@ func seedMigrationSQLite(t *testing.T) string {
 		INSERT INTO inbox (id, kind, title, body, source, archived, converted_to, created_at, updated_at)
 		VALUES ('inbox-1', 'note', 'Inbox Item', 'Needs triage', 'quick-capture', 0, NULL, 1800000000, 1800000100);
 
-		INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, created_at, updated_at)
-		VALUES ('target-1', 'notion', 'Notion', '', '', '{"token_env":"FLOWSPACE_NOTION_TOKEN","required_tags":["sync"]}', 1, 0, 1800000000, 1800000100);
+		INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at)
+		VALUES ('target-1', 'notion', 'Notion', '', '', '{"token_env":"FLOWSPACE_NOTION_TOKEN","required_tags":["sync"]}', 1, 0, 1, 1800000000, 1800000100);
+
+		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
+		VALUES ('note-1', 'target-1', 1800000000, 1800000100);
+
+		INSERT INTO sync_external_claims (
+			external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+		)
+		VALUES (
+			'notion:external-1', 'note-1', 'target-1', 'notion_page', 'external-1', '', 1800000000, 1800000100
+		);
+
+		INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at)
+		VALUES ('note-1', 'target-1', 'target_changed', 1800000000, 1800000100);
+
+		INSERT INTO sync_import_tombstones (
+			external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+		)
+		VALUES (
+			'notion:deleted-page', 'target-1', 'note-1', 'notion_page', 'deleted-page', '', 'note_deleted', 1800000000, 1800000100
+		);
 
 		INSERT INTO note_sync_state (
 			note_id, target_id, external_path, external_id, external_url, content_hash,

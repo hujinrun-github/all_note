@@ -144,4 +144,20 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 			t.Fatal("expected non-object config to be rejected")
 		}
 	})
+
+	t.Run("SyncTargetRejectsUnsupportedType", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := context.Background()
+		target := &model.SyncTarget{
+			Type:       "unsupported",
+			Name:       "Unsupported Target",
+			ConfigJSON: `{}`,
+			Enabled:    true,
+		}
+		if err := store.Sync().SaveTarget(ctx, target); err == nil {
+			t.Fatal("expected unsupported target type to be rejected")
+		}
+	})
 }

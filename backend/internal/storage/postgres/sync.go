@@ -8,16 +8,46 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 type syncRepository struct {
 	db postgresRunner
 }
 
+func (r syncRepository) withTx(ctx context.Context, fn func(postgresRunner) error) error {
+	if tx, ok := r.db.(*sql.Tx); ok {
+		return fn(tx)
+	}
+	db, ok := r.db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("unsupported postgres runner %T", r.db)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget) error {
 	if target == nil {
 		return fmt.Errorf("sync target is nil")
+	}
+	if err := validateSyncTargetType(target.Type); err != nil {
+		return err
 	}
 	config, err := normalizeJSONObjectString(target.ConfigJSON)
 	if err != nil {
@@ -32,38 +62,54 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 		target.CreatedAt = now
 	}
 	target.UpdatedAt = now
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config, enabled, auto_sync, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
-		ON CONFLICT (id) DO UPDATE SET
-			name = excluded.name,
-			vault_path = excluded.vault_path,
-			base_folder = excluded.base_folder,
-			config = excluded.config,
-			enabled = excluded.enabled,
-			auto_sync = excluded.auto_sync,
-			updated_at = excluded.updated_at
-	`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, target.Enabled, target.AutoSync, unixToTime(target.CreatedAt), unixToTime(target.UpdatedAt))
-	return err
+	return r.withTx(ctx, func(tx postgresRunner) error {
+		if target.IsDefault {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE sync_targets
+				SET is_default = false, updated_at = $1
+				WHERE type = $2 AND id <> $3 AND is_default = true
+			`, unixToTime(target.UpdatedAt), target.Type, target.ID); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config, enabled, auto_sync, is_default, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+			ON CONFLICT (id) DO UPDATE SET
+				type = excluded.type,
+				name = excluded.name,
+				vault_path = excluded.vault_path,
+				base_folder = excluded.base_folder,
+				config = excluded.config,
+				enabled = excluded.enabled,
+				auto_sync = excluded.auto_sync,
+				is_default = excluded.is_default,
+				updated_at = excluded.updated_at
+		`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, target.Enabled, target.AutoSync, target.IsDefault, unixToTime(target.CreatedAt), unixToTime(target.UpdatedAt))
+		return err
+	})
 }
 
 func (r syncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
-	return nil, storage.ErrNotImplemented
+	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
+		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
+		FROM sync_targets
+		WHERE id = $1
+	`, targetID))
 }
 
 func (r syncRepository) GetDefaultTarget(ctx context.Context, syncType string) (*model.SyncTarget, error) {
 	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
-		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, created_at, updated_at
+		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
-		WHERE type = $1 AND enabled = true
-		ORDER BY updated_at DESC
+		WHERE type = $1 AND enabled = true AND is_default = true
 		LIMIT 1
 	`, syncType))
 }
 
 func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, created_at, updated_at
+		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
 		ORDER BY updated_at DESC
 	`)
@@ -83,19 +129,28 @@ func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, er
 }
 
 func (r syncRepository) DeleteTarget(ctx context.Context, targetID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_targets WHERE id = $1
+	`, targetID)
+	return err
 }
 
 func (r syncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
-	return 0, storage.ErrNotImplemented
+	return scanPostgresCount(r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM note_sync_bindings WHERE target_id = $1
+	`, targetID))
 }
 
 func (r syncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
-	return 0, storage.ErrNotImplemented
+	return scanPostgresCount(r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sync_external_claims WHERE target_id = $1
+	`, targetID))
 }
 
 func (r syncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
-	return 0, storage.ErrNotImplemented
+	return scanPostgresCount(r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM note_sync_state WHERE target_id = $1
+	`, targetID))
 }
 
 func (r syncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
@@ -182,75 +237,229 @@ func (r syncRepository) ListExternalDeletedStates(ctx context.Context, targetID 
 }
 
 func (r syncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
-	return nil, storage.ErrNotImplemented
+	return scanPostgresNoteSyncBinding(r.db.QueryRowContext(ctx, postgresBindingSelectSQL()+`
+		WHERE note_id = $1
+	`, noteID))
 }
 
 func (r syncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if binding.CreatedAt == 0 {
+		binding.CreatedAt = now
+	}
+	binding.UpdatedAt = now
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (note_id) DO UPDATE SET
+			target_id = excluded.target_id,
+			updated_at = excluded.updated_at
+	`, binding.NoteID, binding.TargetID, unixToTime(binding.CreatedAt), unixToTime(binding.UpdatedAt))
+	return err
 }
 
 func (r syncRepository) DeleteBinding(ctx context.Context, noteID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_bindings WHERE note_id = $1
+	`, noteID)
+	return err
 }
 
 func (r syncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
-	return nil, storage.ErrNotImplemented
+	rows, err := r.db.QueryContext(ctx, postgresBindingSelectSQL()+`
+		WHERE target_id = $1
+		ORDER BY updated_at DESC, note_id
+	`, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	bindings := make([]model.NoteSyncBinding, 0)
+	for rows.Next() {
+		binding, err := scanPostgresNoteSyncBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, *binding)
+	}
+	return bindings, rows.Err()
 }
 
 func (r syncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
-	return nil, storage.ErrNotImplemented
+	return scanPostgresExternalClaim(r.db.QueryRowContext(ctx, postgresExternalClaimSelectSQL()+`
+		WHERE external_key = $1
+	`, externalKey))
 }
 
 func (r syncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
-	return nil, storage.ErrNotImplemented
+	return scanPostgresExternalClaim(r.db.QueryRowContext(ctx, postgresExternalClaimSelectSQL()+`
+		WHERE note_id = $1
+	`, noteID))
 }
 
 func (r syncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if claim.CreatedAt == 0 {
+		claim.CreatedAt = now
+	}
+	claim.UpdatedAt = now
+	return r.withTx(ctx, func(tx postgresRunner) error {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sync_external_claims
+			WHERE note_id = $1 AND external_key <> $2
+		`, claim.NoteID, claim.ExternalKey); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sync_external_claims (
+				external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (external_key) DO UPDATE SET
+				note_id = excluded.note_id,
+				target_id = excluded.target_id,
+				external_type = excluded.external_type,
+				external_id = excluded.external_id,
+				external_path = excluded.external_path,
+				updated_at = excluded.updated_at
+		`, claim.ExternalKey, claim.NoteID, claim.TargetID, claim.ExternalType, claim.ExternalID, claim.ExternalPath, unixToTime(claim.CreatedAt), unixToTime(claim.UpdatedAt))
+		return err
+	})
 }
 
 func (r syncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_external_claims WHERE note_id = $1
+	`, noteID)
+	return err
 }
 
 func (r syncRepository) PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if suppression.CreatedAt == 0 {
+		suppression.CreatedAt = now
+	}
+	if strings.TrimSpace(suppression.Reason) == "" {
+		suppression.Reason = "user_unbound"
+	}
+	suppression.UpdatedAt = now
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (note_id, target_id) DO UPDATE SET
+			reason = excluded.reason,
+			updated_at = excluded.updated_at
+	`, suppression.NoteID, suppression.TargetID, suppression.Reason, unixToTime(suppression.CreatedAt), unixToTime(suppression.UpdatedAt))
+	return err
 }
 
 func (r syncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_suppressions WHERE note_id = $1 AND target_id = $2
+	`, noteID, targetID)
+	return err
 }
 
 func (r syncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
-	return nil, storage.ErrNotImplemented
+	return scanPostgresSuppression(r.db.QueryRowContext(ctx, postgresSuppressionSelectSQL()+`
+		WHERE note_id = $1 AND target_id = $2
+	`, noteID, targetID))
 }
 
 func (r syncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
-	return storage.ErrNotImplemented
+	now := nowUnix()
+	if tombstone.CreatedAt == 0 {
+		tombstone.CreatedAt = now
+	}
+	if strings.TrimSpace(tombstone.Reason) == "" {
+		tombstone.Reason = "user_unbound"
+	}
+	tombstone.UpdatedAt = now
+	return r.withTx(ctx, func(tx postgresRunner) error {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM sync_import_tombstones
+			WHERE external_key = $1
+				OR (target_id = $2 AND former_note_id = $3 AND external_type = $4)
+		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO sync_import_tombstones (
+				external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType, tombstone.ExternalID, tombstone.ExternalPath, tombstone.Reason, unixToTime(tombstone.CreatedAt), unixToTime(tombstone.UpdatedAt))
+		return err
+	})
 }
 
 func (r syncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_import_tombstones WHERE external_key = $1
+	`, externalKey)
+	return err
 }
 
 func (r syncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
-	return storage.ErrNotImplemented
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM sync_import_tombstones WHERE former_note_id = $1 AND target_id = $2
+	`, noteID, targetID)
+	return err
 }
 
 func (r syncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
-	return nil, storage.ErrNotImplemented
+	if strings.TrimSpace(targetID) != "" && strings.TrimSpace(externalKey) != "" {
+		tombstone, err := scanPostgresImportTombstone(r.db.QueryRowContext(ctx, postgresImportTombstoneSelectSQL()+`
+			WHERE target_id = $1 AND external_key = $2
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		`, targetID, externalKey))
+		if err == nil {
+			return tombstone, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(targetID) != "" && strings.TrimSpace(formerNoteID) != "" && strings.TrimSpace(externalType) != "" {
+		tombstone, err := scanPostgresImportTombstone(r.db.QueryRowContext(ctx, postgresImportTombstoneSelectSQL()+`
+			WHERE target_id = $1 AND former_note_id = $2 AND external_type = $3
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		`, targetID, formerNoteID, externalType))
+		if err == nil {
+			return tombstone, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(formerNoteID) != "" && strings.TrimSpace(externalType) != "" {
+		return scanPostgresImportTombstone(r.db.QueryRowContext(ctx, postgresImportTombstoneSelectSQL()+`
+			WHERE former_note_id = $1 AND external_type = $2
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		`, formerNoteID, externalType))
+	}
+	return nil, sql.ErrNoRows
 }
 
 func scanPostgresSyncTarget(row rowScanner) (*model.SyncTarget, error) {
 	var target model.SyncTarget
 	var createdAt time.Time
 	var updatedAt time.Time
-	if err := row.Scan(&target.ID, &target.Type, &target.Name, &target.VaultPath, &target.BaseFolder, &target.ConfigJSON, &target.Enabled, &target.AutoSync, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&target.ID, &target.Type, &target.Name, &target.VaultPath, &target.BaseFolder, &target.ConfigJSON, &target.Enabled, &target.AutoSync, &target.IsDefault, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	target.CreatedAt = timeToUnix(createdAt)
 	target.UpdatedAt = timeToUnix(updatedAt)
 	return &target, nil
+}
+
+func scanPostgresCount(row rowScanner) (int, error) {
+	var count int
+	err := row.Scan(&count)
+	return count, err
 }
 
 func postgresSyncStateSelectSQL() string {
@@ -286,6 +495,101 @@ func scanPostgresSyncState(row rowScanner) (*model.SyncState, error) {
 	return &state, nil
 }
 
+func postgresBindingSelectSQL() string {
+	return `
+		SELECT note_id, target_id, created_at, updated_at
+		FROM note_sync_bindings
+	`
+}
+
+func scanPostgresNoteSyncBinding(row rowScanner) (*model.NoteSyncBinding, error) {
+	var binding model.NoteSyncBinding
+	var createdAt time.Time
+	var updatedAt time.Time
+	if err := row.Scan(&binding.NoteID, &binding.TargetID, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	binding.CreatedAt = timeToUnix(createdAt)
+	binding.UpdatedAt = timeToUnix(updatedAt)
+	return &binding, nil
+}
+
+func postgresExternalClaimSelectSQL() string {
+	return `
+		SELECT external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+		FROM sync_external_claims
+	`
+}
+
+func scanPostgresExternalClaim(row rowScanner) (*model.SyncExternalClaim, error) {
+	var claim model.SyncExternalClaim
+	var createdAt time.Time
+	var updatedAt time.Time
+	if err := row.Scan(
+		&claim.ExternalKey,
+		&claim.NoteID,
+		&claim.TargetID,
+		&claim.ExternalType,
+		&claim.ExternalID,
+		&claim.ExternalPath,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	claim.CreatedAt = timeToUnix(createdAt)
+	claim.UpdatedAt = timeToUnix(updatedAt)
+	return &claim, nil
+}
+
+func postgresSuppressionSelectSQL() string {
+	return `
+		SELECT note_id, target_id, reason, created_at, updated_at
+		FROM note_sync_suppressions
+	`
+}
+
+func scanPostgresSuppression(row rowScanner) (*model.NoteSyncSuppression, error) {
+	var suppression model.NoteSyncSuppression
+	var createdAt time.Time
+	var updatedAt time.Time
+	if err := row.Scan(&suppression.NoteID, &suppression.TargetID, &suppression.Reason, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	suppression.CreatedAt = timeToUnix(createdAt)
+	suppression.UpdatedAt = timeToUnix(updatedAt)
+	return &suppression, nil
+}
+
+func postgresImportTombstoneSelectSQL() string {
+	return `
+		SELECT external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+		FROM sync_import_tombstones
+	`
+}
+
+func scanPostgresImportTombstone(row rowScanner) (*model.SyncImportTombstone, error) {
+	var tombstone model.SyncImportTombstone
+	var createdAt time.Time
+	var updatedAt time.Time
+	if err := row.Scan(
+		&tombstone.ExternalKey,
+		&tombstone.TargetID,
+		&tombstone.FormerNoteID,
+		&tombstone.ExternalType,
+		&tombstone.ExternalID,
+		&tombstone.ExternalPath,
+		&tombstone.Reason,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	tombstone.CreatedAt = timeToUnix(createdAt)
+	tombstone.UpdatedAt = timeToUnix(updatedAt)
+	return &tombstone, nil
+}
+
 func unixPtrToTime(value *int64) interface{} {
 	if value == nil {
 		return nil
@@ -306,4 +610,13 @@ func nullableString(value string) interface{} {
 		return nil
 	}
 	return value
+}
+
+func validateSyncTargetType(targetType string) error {
+	switch targetType {
+	case "obsidian", "notion":
+		return nil
+	default:
+		return fmt.Errorf("unsupported sync target type %q", targetType)
+	}
 }

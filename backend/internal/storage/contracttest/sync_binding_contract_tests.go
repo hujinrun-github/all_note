@@ -22,6 +22,9 @@ func RunSyncBindingSuite(t *testing.T, factory StoreFactory) {
 	t.Run("TestSyncBindingContractOneDefaultTargetPerType", suite.TestSyncBindingContractOneDefaultTargetPerType)
 	t.Run("TestSyncBindingContractDefaultTargetDoesNotUseUpdatedAtFallback", suite.TestSyncBindingContractDefaultTargetDoesNotUseUpdatedAtFallback)
 	t.Run("TestSyncBindingContractTargetIdentityLockCounts", suite.TestSyncBindingContractTargetIdentityLockCounts)
+	t.Run("TestSyncBindingContractTargetDeleteRestrictedByBinding", suite.TestSyncBindingContractTargetDeleteRestrictedByBinding)
+	t.Run("TestSyncBindingContractSuppressionReasonDefaults", suite.TestSyncBindingContractSuppressionReasonDefaults)
+	t.Run("TestSyncBindingContractTombstoneReasonDefaults", suite.TestSyncBindingContractTombstoneReasonDefaults)
 }
 
 type syncBindingContractSuite struct {
@@ -310,6 +313,72 @@ func (s syncBindingContractSuite) TestSyncBindingContractTargetIdentityLockCount
 	}
 	if bindings != 1 || claims != 1 || states != 1 {
 		t.Fatalf("unexpected counts: bindings=%d claims=%d states=%d", bindings, claims, states)
+	}
+}
+
+func (s syncBindingContractSuite) TestSyncBindingContractTargetDeleteRestrictedByBinding(t *testing.T) {
+	store := s.factory(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	note := createContractNote(t, ctx, store, "Target Restrict")
+	target := createContractTarget(t, ctx, store, "restrict-target", "notion", "Restrict Target", true)
+	if err := store.Sync().PutBinding(ctx, model.NoteSyncBinding{NoteID: note.ID, TargetID: target.ID}); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+
+	if err := store.Sync().DeleteTarget(ctx, target.ID); err == nil {
+		t.Fatal("expected target delete to be restricted while binding exists")
+	}
+	if _, err := store.Sync().GetTarget(ctx, target.ID); err != nil {
+		t.Fatalf("target should remain after restricted delete: %v", err)
+	}
+	if binding, err := store.Sync().GetBinding(ctx, note.ID); err != nil || binding.TargetID != target.ID {
+		t.Fatalf("binding should remain after restricted delete, binding=%+v err=%v", binding, err)
+	}
+}
+
+func (s syncBindingContractSuite) TestSyncBindingContractSuppressionReasonDefaults(t *testing.T) {
+	store := s.factory(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	note := createContractNote(t, ctx, store, "Suppression Reason")
+	target := createContractTarget(t, ctx, store, "suppression-reason-target", "obsidian", "Suppression Reason Target", true)
+	if err := store.Sync().PutSuppression(ctx, model.NoteSyncSuppression{NoteID: note.ID, TargetID: target.ID}); err != nil {
+		t.Fatalf("put suppression: %v", err)
+	}
+	suppression, err := store.Sync().GetSuppression(ctx, note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get suppression: %v", err)
+	}
+	if suppression.Reason != "user_unbound" {
+		t.Fatalf("expected default suppression reason user_unbound, got %+v", suppression)
+	}
+}
+
+func (s syncBindingContractSuite) TestSyncBindingContractTombstoneReasonDefaults(t *testing.T) {
+	store := s.factory(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	note := createContractNote(t, ctx, store, "Tombstone Reason")
+	target := createContractTarget(t, ctx, store, "tombstone-reason-target", "obsidian", "Tombstone Reason Target", true)
+	if err := store.Sync().PutImportTombstone(ctx, model.SyncImportTombstone{
+		ExternalKey:  "obsidian:/vault/default-reason.md",
+		TargetID:     target.ID,
+		FormerNoteID: note.ID,
+		ExternalType: "obsidian_file",
+		ExternalPath: "/vault/default-reason.md",
+	}); err != nil {
+		t.Fatalf("put tombstone: %v", err)
+	}
+	tombstone, err := store.Sync().FindImportTombstone(ctx, target.ID, "obsidian:/vault/default-reason.md", "", "obsidian_file")
+	if err != nil {
+		t.Fatalf("find tombstone: %v", err)
+	}
+	if tombstone.Reason != "user_unbound" {
+		t.Fatalf("expected default tombstone reason user_unbound, got %+v", tombstone)
 	}
 }
 

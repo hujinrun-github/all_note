@@ -218,6 +218,59 @@ func TestRunPostgresMigrationsFromDirUsesSQLFiles(t *testing.T) {
 	assertRowCount(t, db, `SELECT COUNT(*) FROM schema_migrations WHERE version = '4242_explicit_dir.sql'`, 1)
 }
 
+func TestRunPostgresMigrationsReplacesCustomLastDirectionCheck(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_custom_last_direction_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+
+	if err := RunPostgresMigrations(db); err != nil {
+		t.Fatalf("initial migrations: %v", err)
+	}
+	if _, err := db.Exec(`
+		ALTER TABLE note_sync_state DROP CONSTRAINT IF EXISTS note_sync_state_last_direction_check;
+		ALTER TABLE note_sync_state
+			ADD CONSTRAINT custom_legacy_last_direction_only_delete
+			CHECK (last_direction IN ('push', 'pull', 'import', 'restore', 'delete') OR last_direction IS NULL);
+		DELETE FROM schema_migrations WHERE version = '0002_single_note_sync_target.sql';
+	`); err != nil {
+		t.Fatalf("install custom legacy last_direction check: %v", err)
+	}
+
+	if err := RunPostgresMigrations(db); err != nil {
+		t.Fatalf("rerun migrations: %v", err)
+	}
+
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'note_sync_state'::regclass
+			AND contype = 'c'
+			AND conname = 'custom_legacy_last_direction_only_delete'
+	`, 0)
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'note_sync_state'::regclass
+			AND contype = 'c'
+			AND conname = 'note_sync_state_last_direction_check'
+			AND pg_get_constraintdef(oid) LIKE '%delete_detected%'
+	`, 1)
+
+	if _, err := db.Exec(`
+		INSERT INTO sync_targets (id, type, name, config, enabled)
+		VALUES ('target-delete-detected', 'notion', 'Delete Detected Target', '{}'::jsonb, true);
+		INSERT INTO notes (id, title, body, folder_id, tags)
+		VALUES ('note-delete-detected', 'Delete Detected Note', '', '__uncategorized', '{}'::text[]);
+		INSERT INTO note_sync_state (
+			note_id, target_id, external_path, content_hash, last_direction, status
+		)
+		VALUES (
+			'note-delete-detected', 'target-delete-detected', 'remote/path', 'hash', 'delete_detected', 'synced'
+		);
+	`); err != nil {
+		t.Fatalf("insert delete_detected state after migration: %v", err)
+	}
+}
+
 func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	err := wrapPostgresMigrationError("0001_init_postgres.sql", []byte(`CREATE EXTENSION IF NOT EXISTS pg_trgm`), fmt.Errorf(`permission denied to create extension "pg_trgm"`))
 	if err == nil {
