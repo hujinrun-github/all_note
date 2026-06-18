@@ -45,7 +45,7 @@
 
 `sync_targets` 保持现有主体结构。PostgreSQL 和 SQLite provider 都必须提供同等约束：`type` 只允许 `obsidian`、`notion`，并且同一类型下 `name` 唯一。当前 PostgreSQL migration 已经有 `UNIQUE(type, name)`，SQLite schema 需要补同等 unique index，避免可插拔 storage provider 的行为分叉。
 
-后续可选字段：
+第一版必须增加默认目标字段：
 
 ```sql
 ALTER TABLE sync_targets
@@ -60,7 +60,14 @@ CREATE UNIQUE INDEX sync_targets_one_default_per_type_idx
   WHERE is_default = true;
 ```
 
-如果第一版不需要保留旧默认入口，也可以暂不增加 `is_default`，继续用 `updated_at DESC` 兼容旧 API。
+规则：
+
+- 旧的 `GetDefaultTarget(type)` 和类型兼容接口只能使用 `is_default=true AND enabled=true` 的 target。
+- 不允许用 `updated_at DESC` 作为默认目标 fallback，避免编辑名称、启停、测试保存后默认目标漂移。
+- 创建某个类型的第一个 enabled target 时，如果该类型还没有默认目标，可以自动设为 `is_default=true`。
+- 把某个 target 设置为默认目标时，必须在同一事务里取消同类型其他 target 的默认标记。
+- 默认目标必须是 enabled target；停用默认目标时，需要同时清空默认标记，旧兼容执行接口在无默认目标时返回明确配置错误。
+- `is_default` 属于兼容元数据，不是外部身份字段；已有 binding/claim/history 的 target 仍允许修改该字段。
 
 目标的外部身份字段必须受保护：
 
@@ -168,11 +175,15 @@ CREATE TABLE sync_import_tombstones (
   external_path TEXT NOT NULL DEFAULT '',
   reason TEXT NOT NULL CHECK (reason IN ('user_unbound', 'target_changed', 'note_deleted')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (target_id, former_note_id, external_type)
 );
 
 CREATE INDEX sync_import_tombstones_target_idx
   ON sync_import_tombstones (target_id, updated_at DESC);
+
+CREATE INDEX sync_import_tombstones_former_note_idx
+  ON sync_import_tombstones (former_note_id, external_type, updated_at DESC);
 ```
 
 规则：
@@ -180,7 +191,8 @@ CREATE INDEX sync_import_tombstones_target_idx
 - tombstone 不引用 `notes(id)`，因为它必须在 FlowSpace note 被删除后继续存在。
 - 用户解绑或切换 target 时，如果存在 active claim，释放 claim 前必须把该 claim 的 `external_key` 写入 tombstone。
 - 用户删除 FlowSpace note 时，如果存在 active claim，删除 note 前必须在同一事务里写入 tombstone，再删除 note。删除 note 的 handler 不能直接调用底层 note delete 绕过该流程。
-- pull/import 扫描到 tombstone 命中的外部资源时，返回 `import_tombstoned` 或 `binding_required`，不得自动创建 note 或恢复 binding。
+- tombstone 查询不能只按当前 `external_key`。pull/import 扫描外部资源时，先查精确 `external_key`；如果资源带 FlowSpace ID，再查 `(target_id, former_note_id, external_type)`；如果仍未命中，再查 `(former_note_id, external_type)` 的跨 target tombstone 并返回需要用户确认的结果。
+- pull/import 扫描到 tombstone 命中的外部资源时，返回 `import_tombstoned` 或 `binding_required`，不得自动创建 note 或恢复 binding。这样 Obsidian 文件改名、移动或复制后，只要 frontmatter 里的 FlowSpace ID 仍在，也不会绕过删除记录。
 - 用户在 UI 中显式选择“重新导入/重新绑定该外部资源”时，才允许删除 tombstone 并继续导入或绑定。
 
 ## API 设计
@@ -264,6 +276,8 @@ DELETE /api/notes/:id/sync-binding
 - 如果原绑定存在 active claim，更换目标必须在同一事务里先写入 `sync_import_tombstones(reason='target_changed')`，再释放旧 claim，最后更新 binding。
 - 如果更换目标，必须为旧 `(note_id, target_id)` 写入 `note_sync_suppressions(reason='target_changed')`。
 - 如果新 target 对当前 note 存在 suppression，说明用户正在显式重新启用该 target，保存 binding 时必须删除这条 suppression。
+- 如果新 target 对当前 note 存在 `sync_import_tombstones`，保存 binding 时必须删除该 `(target_id, former_note_id, external_type)` 相关 tombstone。显式重新绑定是唯一可以自动清理该 tombstone 的路径；pull/import 不能自行清理。
+- 如果用户选择的是某个具体外部资源候选，服务还必须删除该资源 `external_key` 对应的 tombstone，避免旧 tombstone 和新 claim 语义冲突。
 - API 可以返回 `changed_target=true` 供前端更新提示文案，但提示不能只发生在 PUT 成功之后。
 
 `DELETE` 行为：
@@ -307,7 +321,7 @@ POST /api/sync/targets/:target_id/deletions/:note_id/restore
 
 - push 只处理绑定到该 `target_id` 且启用同步的笔记。
 - pull/import 可以从外部目标导入新笔记，导入后自动创建 `note_sync_bindings`。
-- pull/import 必须先用外部资源的 `external_key` 检查 `sync_import_tombstones`。如果命中 tombstone，跳过自动导入/绑定并返回 `import_tombstoned` 或 `binding_required`。
+- pull/import 必须先检查 `sync_import_tombstones`：先用外部资源当前 `external_key` 精确匹配；如果资源带 FlowSpace ID，再用 `(target_id, former_note_id, external_type)` 匹配；如果仍未命中，再用 `(former_note_id, external_type)` 查跨 target tombstone。任一路径命中时，跳过自动导入/绑定并返回 `import_tombstoned` 或 `binding_required`。
 - 如果外部资源已经被其他 target claim，跳过并返回 `external_claim_conflict`。
 - confirm/restore 必须显式带 `target_id`，不能再通过类型默认目标查找删除候选。多目标存在时，旧的 `/api/sync/obsidian/deletions/:note_id/...` 和 `/api/sync/notion/deletions/:note_id/...` 只能作为默认目标兼容入口。
 
@@ -323,6 +337,7 @@ POST /api/sync/notion/notes/:id
 
 - `GET /api/notes/:id/sync-state` 默认返回当前绑定目标的状态；如果没有绑定且传了 `target=notion|obsidian`，才按旧默认目标逻辑查询。
 - 如果笔记已经绑定到某个 target，但请求传入的 `target=notion|obsidian` 与当前绑定 target 类型不一致，返回 `200 OK` 和 `{ "state": null, "binding_mismatch": true, "binding_target_id": "...", "binding_target_type": "notion" }`。这样旧前端的双卡片查询不会变成请求失败，同时不会误读另一个默认目标状态。
+- 旧默认目标逻辑只读取 `is_default=true AND enabled=true` 的 target；不得 fallback 到 `updated_at DESC`。如果没有默认 target，查询类接口返回 `{ "state": null, "default_target_missing": true }`，执行类接口返回 `409 Conflict default_target_missing`。
 - 旧的类型单篇同步接口如果没有 `target_id`，先检查笔记当前绑定是否为对应类型；不匹配则返回 `409 Conflict`。
 - 如果传入 `target_id`，必须和当前绑定一致，否则返回 `409 Conflict`。
 
@@ -342,12 +357,17 @@ POST /api/sync/notion/notes/:id
 - `ClaimExternalResource(noteID, targetID, externalType, externalID, externalPath)`
 - `ReleaseExternalClaim(noteID)`
 - `GetExternalClaim(externalKey)`
+- `GetExternalClaimByNote(noteID)`
+- `GetExternalClaimForBinding(noteID, targetID)`
 - `SaveSyncSuppression(noteID, targetID, reason)`
 - `DeleteSyncSuppression(noteID, targetID)`
 - `HasSyncSuppression(noteID, targetID)`
 - `SaveImportTombstone(externalKey, targetID, formerNoteID, externalType, externalID, externalPath, reason)`
 - `DeleteImportTombstone(externalKey)`
 - `GetImportTombstone(externalKey)`
+- `GetImportTombstoneByFormerNote(targetID, formerNoteID, externalType)`
+- `FindImportTombstonesByFormerNote(formerNoteID, externalType)`
+- `DeleteImportTombstonesByFormerNote(targetID, formerNoteID, externalType)`
 
 服务层分工：
 
@@ -469,6 +489,7 @@ SQLite 和 PostgreSQL 都需要同等 schema 支持，保持可插拔 storage pr
 PostgreSQL 和 SQLite 必须同时满足：
 
 - `sync_targets(type, name)` 唯一。
+- `sync_targets(type) WHERE is_default=true` 最多一条，旧默认目标查询只允许使用该字段。
 - `note_sync_bindings(note_id)` 主键唯一。
 - `note_sync_bindings(note_id, target_id)` 唯一，用于 claim 组合外键。
 - `sync_external_claims.external_key` 主键唯一。
@@ -476,6 +497,7 @@ PostgreSQL 和 SQLite 必须同时满足：
 - `sync_external_claims(note_id, target_id)` 外键引用 `note_sync_bindings(note_id, target_id)`，并 `ON DELETE CASCADE`。
 - `note_sync_suppressions(note_id, target_id)` 主键唯一。
 - `sync_import_tombstones.external_key` 主键唯一，且不引用 `notes(id)`。
+- `sync_import_tombstones(target_id, former_note_id, external_type)` 唯一，用于 Obsidian 改名/移动后的 fallback 命中。
 
 SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage contract tests 要同时跑 PostgreSQL 和 SQLite provider，不能只依赖 PostgreSQL 约束。
 
@@ -529,6 +551,9 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - repository/storage contract：target 按 ID 查询、删除和绑定计数分别返回正确的 404/409 前置条件。
 - repository/storage contract：`note_sync_suppressions(note_id,target_id)` 可创建、查询、删除，并阻止自动绑定路径。
 - repository/storage contract：`sync_import_tombstones.external_key` 可创建、查询、删除，且删除 note 后仍保留。
+- repository/storage contract：`sync_import_tombstones(target_id,former_note_id,external_type)` fallback 查询能命中已改名/移动的 Obsidian 资源。
+- repository/storage contract：可通过 noteID 或 noteID+targetID 读取 active claim，用于解绑、切换 target 和删除 note 前写 tombstone。
+- repository/storage contract：每种 type 只能有一个 `is_default=true` target，默认目标查询不会受 `updated_at` 变化影响。
 - handler：`GET/PUT/DELETE /api/notes/:id/sync-binding` 的成功、未找到、目标停用和更换目标场景。
 - handler：target 已有 binding/claim/history state 时，修改 Obsidian `vault_path/base_folder` 或 Notion `data_source_id` 返回 `409 target_identity_locked`。
 - handler：更换目标时缺少 `confirm_changed_target=true` 返回 409。
@@ -543,7 +568,8 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - service：传入不匹配的 `target_id` 返回 409。
 - service：pull/import 遇到已绑定到其他 target 的 FlowSpace ID 时返回 `binding_conflict`，不得更新该 note。
 - service：pull/import 遇到未绑定但已 suppression 的 FlowSpace ID 时返回 `binding_required`，不得自动重建 binding。
-- service：pull/import 遇到 external_key 命中 tombstone 时返回 `import_tombstoned` 或 `binding_required`，不得创建 note。
+- service：pull/import 遇到 external_key 或 former note fallback 命中 tombstone 时返回 `import_tombstoned` 或 `binding_required`，不得创建 note。
+- service：用户显式重新绑定同一 target 时，删除该 note/target 相关 suppression 和 tombstone。
 - service：删除有 active claim 的 note 时先写 tombstone，再删除 note；失败注入证明任一步失败都会回滚。
 - service：Obsidian 写文件前必须先 reserve claim；reserve 失败时不写文件。
 - service：Notion 新建 page 后本地落库失败时，下一次同步能通过 FlowSpace ID 收养已创建 page，不重复创建。
@@ -553,6 +579,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - migration：`note_sync_bindings` 和 `sync_external_claims` 进入 SQLite 到 PostgreSQL 迁移清单。
 - migration：`note_sync_suppressions` 进入 SQLite 到 PostgreSQL 迁移清单。
 - migration：`sync_import_tombstones` 进入 SQLite 到 PostgreSQL 迁移清单。
+- migration：`is_default` 进入 SQLite 和 PostgreSQL schema，旧默认目标迁移不使用 `updated_at DESC` 作为运行时 fallback。
 - migration：只有 `status='synced'` 且外部资源可验证/可规范化的历史状态生成 active claim；`external_deleted/failed/pending/delete_detected` 不生成 claim。
 - migration：初始 binding/claim 迁移在服务切换到 binding-only 批量 push 前完成。
 - migration：`delete_detected` 在 PostgreSQL CHECK 和预检中保持一致。
@@ -571,6 +598,8 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 同步设置页可以显示多个 Notion 和多个 Obsidian 配置。
 - 删除有绑定笔记的目标时显示冲突提示。
 - 编辑已有绑定/claim 的 target 外部身份字段时，前端展示 `target_identity_locked` 冲突提示，引导用户新建 target 或走迁移流程。
+- 设置默认 target 后，编辑其他 target 的名称或开关不会改变旧兼容接口使用的默认目标。
+- 显式重新绑定被解绑过的 target 后，前端能再次触发同步，后端不再被旧 tombstone 拦截。
 
 ### 手动验收
 
@@ -581,6 +610,8 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 切换到目标 B 后再次同步，只写入目标 B；目标 A 的旧外部资源不被删除。
 - 解除绑定后保留旧 Obsidian 文件或 Notion page，再执行 pull/import，系统提示需要用户重新选择同步目标，不会自动恢复旧绑定。
 - 删除已同步的 FlowSpace 笔记后保留旧 Obsidian 文件或 Notion page，再执行 pull/import，系统不会自动重新创建该笔记。
+- 删除已同步笔记后，把旧 Obsidian 文件改名或移动，再执行 pull/import，系统仍通过 FlowSpace ID tombstone fallback 阻止自动重新导入。
+- 用户显式重新选择同一个同步目标后，旧 suppression/tombstone 被清理，后续同步按新绑定继续。
 - 已有绑定的 target 不能把 Obsidian 目录或 Notion Data Source 改成另一个外部空间。
 - 两个 Obsidian 配置目录重叠时，同一文件不会被两个配置同时导入。
 - 同一个 Notion page 不会被两个 Data Source 配置重复导入管理。
@@ -591,6 +622,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 
 - 增加 `note_sync_bindings`、`sync_external_claims`、`note_sync_suppressions` 和 `sync_import_tombstones`。
 - 为 PostgreSQL 和 SQLite 同时补齐 `sync_targets(type,name)`、binding、claim、suppression、tombstone 约束。
+- 增加 `sync_targets.is_default` 和每类型唯一默认目标约束。
 - 与 schema 一起执行历史迁移：从历史 `note_sync_state` 生成可确定的初始 binding/claim，多历史状态保留为候选。
 - 服务切换到“批量 push 只处理绑定笔记”之前，必须保证初始 binding/claim 迁移已经完成。
 - 增加 storage/repository contract。
@@ -609,6 +641,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - pull/import 遇到跨 target FlowSpace ID 时返回 binding conflict。
 - pull/import 遇到用户显式解绑 suppression 时返回 binding required。
 - pull/import 遇到 tombstone 时跳过自动导入。
+- pull/import tombstone 查询支持 `external_key` 和 former note fallback。
 - 删除 note 前为 active claim 写入 tombstone。
 - 跨 note/sync 原子流程全部改为 `Store.Transact` 内 txStore repository。
 - Obsidian/Notion 按 provider 实现 reserve claim 或可重试恢复策略。
@@ -626,6 +659,7 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - SQLite 到 PostgreSQL 迁移清单加入 binding 和 claim 表。
 - SQLite 到 PostgreSQL 迁移清单加入 suppression 表。
 - SQLite 到 PostgreSQL 迁移清单加入 import tombstone 表。
+- SQLite 到 PostgreSQL 迁移包含 `is_default` 字段和默认目标唯一约束。
 - 历史 claim 只从已同步且外部资源可验证/可规范化的状态生成。
 - 统一 `last_direction` 的 `delete_detected` 枚举约束。
 - 保留旧接口兼容：查询类 mismatch 返回 `200 binding_mismatch=true`，执行类 mismatch 返回 `409 Conflict`。
@@ -636,6 +670,8 @@ SQLite 的 `PRAGMA foreign_keys` 必须在测试和运行时开启。storage con
 - 数据库层保证一个外部资源最多一个 active claim。
 - 用户显式解绑后，旧外部资源带 FlowSpace ID 再被 pull/import 时不会自动重建绑定。
 - 用户删除已同步笔记后，旧外部资源不会自动重新导入成新笔记。
+- Obsidian 外部文件改名或移动后，只要 FlowSpace ID 仍在，tombstone fallback 仍能阻止自动重新导入。
+- 旧兼容接口的默认目标由 `is_default` 决定，不会因编辑 target 导致默认目标漂移。
 - 已有 binding/claim/history 的 target 不能被修改为另一个 Obsidian 目录或 Notion Data Source。
 - 前端编辑器只能选择一个同步目标名。
 - 未绑定笔记不会被同步任务误处理。
