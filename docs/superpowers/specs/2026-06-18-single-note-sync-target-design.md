@@ -1,0 +1,423 @@
+# FlowSpace 单笔记单同步目标设计
+
+日期：2026-06-18
+
+## 背景
+
+当前 FlowSpace 已经支持 Obsidian 和 Notion 同步配置，底层通过 `sync_targets` 保存同步目标，通过 `note_sync_state` 保存笔记与外部资源的同步状态。现有实现的问题是产品层仍按“每种类型一个默认目标”工作：编辑器同步卡片只展示一个 Obsidian 和一个 Notion 入口，服务层也大量使用 `GetDefaultSyncTarget(type)`。
+
+新的产品目标是允许用户维护多个同步配置，例如多个 Notion Data Source 或多个 Obsidian Vault/目录，但每篇 FlowSpace 笔记只能归属一个同步配置。编辑器中的笔记绑定位置应直接选择同步目标名，而不是先选择 Notion/Obsidian 类型；默认行为仍然是不同步。
+
+## 目标
+
+- 支持多个 `sync_targets` 配置，并在同步设置页按目标名称管理。
+- 一篇 FlowSpace 笔记最多只能绑定一个同步目标。
+- 编辑器同步卡片通过目标名称下拉框选择当前笔记的同步目标。
+- 一个外部资源当前只能被一个同步配置管理：Obsidian 文件按规范化绝对路径识别，Notion page 按 page id 识别。
+- 没有绑定同步目标的笔记不参与自动或批量 push。
+- 单篇同步按当前绑定目标执行，不再默认同时尝试 Obsidian 和 Notion。
+- 保留旧同步状态作为历史记录，但 UI 和同步执行只读取当前绑定目标的状态。
+
+## 非目标
+
+- 不实现一篇笔记同步到多个目标。
+- 不做跨目标内容合并，也不做两个外部系统之间的三方冲突解决。
+- 不自动删除旧同步目标中的外部文件或 Notion page。
+- 不在第一版实现后台定时同步调度。
+- 不改变 Notion 优先、Obsidian 优先等既有双向同步冲突策略。
+
+## 推荐方案
+
+采用“多个配置、单个绑定、外部资源声明”的模型：
+
+1. `sync_targets` 继续作为同步配置表，允许同一用户拥有多个 Obsidian 和 Notion 配置。
+2. 新增 `note_sync_bindings`，记录每篇笔记当前绑定的唯一目标。
+3. 新增 `sync_external_claims`，记录当前被 FlowSpace 管理的外部资源，防止同一个外部文件或 page 被多个同步配置同时接管。
+4. `note_sync_state` 继续保存每个 `(note_id, target_id)` 的同步状态、hash、外部链接和错误信息，不承担“当前归属”的唯一性判断。
+
+这个方案比直接在 `note_sync_state` 上加唯一约束更稳：`note_sync_state` 可以保留历史状态，绑定和外部资源占用则表达当前事实。
+
+## 数据模型
+
+### sync_targets
+
+`sync_targets` 保持现有主体结构。PostgreSQL 已经有 `UNIQUE(type, name)`，第一版继续使用这个约束，避免同一类型下出现同名配置。
+
+后续可选字段：
+
+```sql
+ALTER TABLE sync_targets
+  ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT false;
+```
+
+`is_default` 只用于兼容旧入口，不影响编辑器绑定。每种 `type` 最多一个默认目标，可通过 partial unique index 约束：
+
+```sql
+CREATE UNIQUE INDEX sync_targets_one_default_per_type_idx
+  ON sync_targets (type)
+  WHERE is_default = true;
+```
+
+如果第一版不需要保留旧默认入口，也可以暂不增加 `is_default`，继续用 `updated_at DESC` 兼容旧 API。
+
+### note_sync_bindings
+
+```sql
+CREATE TABLE note_sync_bindings (
+  note_id TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE RESTRICT,
+  sync_mode TEXT NOT NULL DEFAULT 'push'
+    CHECK (sync_mode IN ('push', 'pull', 'bidirectional')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX note_sync_bindings_target_idx
+  ON note_sync_bindings (target_id, updated_at DESC);
+```
+
+规则：
+
+- `note_id PRIMARY KEY` 是一篇笔记只能绑定一个同步目标的硬约束。
+- 没有绑定记录表示这篇笔记不同步。
+- 更换同步目标时更新同一行的 `target_id`，不是新增绑定。
+- 删除绑定时不删除 `note_sync_state`，只停止后续同步。
+- 删除 `sync_targets` 时如果仍有绑定，应返回冲突提示，而不是级联删除绑定。
+
+### sync_external_claims
+
+```sql
+CREATE TABLE sync_external_claims (
+  external_key TEXT PRIMARY KEY,
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+  external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+  external_id TEXT NOT NULL DEFAULT '',
+  external_path TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (note_id)
+);
+
+CREATE INDEX sync_external_claims_target_idx
+  ON sync_external_claims (target_id, updated_at DESC);
+```
+
+`external_key` 由同步服务生成：
+
+- Obsidian：`obsidian:` + 规范化真实绝对路径。路径需要解析符号链接、统一大小写策略，并保证在目标 base folder 内。
+- Notion：`notion:` + Notion page id。page id 需要统一成无连字符或有连字符的单一格式。
+
+规则：
+
+- 同一个 `external_key` 只能存在一条 active claim，因此同一个外部文件或 page 不能同时属于两个配置。
+- 同一篇笔记只能有一个 active claim，和“单绑定”保持一致。
+- 解除笔记绑定时释放 claim，但保留历史 `note_sync_state`。
+- 更换目标后，旧外部文件或 Notion page 不会自动删除，也不会继续被当前笔记管理。
+
+## API 设计
+
+### 同步目标管理
+
+保留现有接口：
+
+```http
+GET   /api/sync/targets
+POST  /api/sync/targets
+PATCH /api/sync/targets/:id
+```
+
+新增删除接口：
+
+```http
+DELETE /api/sync/targets/:id
+```
+
+删除规则：
+
+- 如果目标存在 `note_sync_bindings`，返回 `409 Conflict`，提示先迁移或解除绑定。
+- 如果目标没有绑定，可以删除，并级联清理该目标下的历史 `note_sync_state` 和 active claims。
+
+### 笔记绑定
+
+新增：
+
+```http
+GET    /api/notes/:id/sync-binding
+PUT    /api/notes/:id/sync-binding
+DELETE /api/notes/:id/sync-binding
+```
+
+`GET` 返回当前绑定、可选历史候选和当前状态：
+
+```json
+{
+  "binding": {
+    "note_id": "note-1",
+    "target_id": "target-1",
+    "sync_mode": "push"
+  },
+  "target": {
+    "id": "target-1",
+    "type": "notion",
+    "name": "个人 Notion 知识库"
+  },
+  "state": {
+    "note_id": "note-1",
+    "target_id": "target-1",
+    "status": "synced"
+  },
+  "candidates": []
+}
+```
+
+`PUT` 请求：
+
+```json
+{
+  "target_id": "target-1",
+  "sync_mode": "push"
+}
+```
+
+行为：
+
+- `target_id` 必须存在且 `enabled=true`。
+- 如果笔记已有绑定，则替换原绑定。
+- 如果原绑定存在 active claim，更换目标前释放旧 claim。
+- 如果用户更换目标，API 返回 `changed_target=true`，前端展示“旧外部资源不会自动删除”的提示。
+
+`DELETE` 行为：
+
+- 删除当前绑定。
+- 释放 active claim。
+- 不删除历史 `note_sync_state`。
+
+### 同步执行
+
+新增统一单篇同步入口：
+
+```http
+POST /api/sync/notes/:id
+```
+
+行为：
+
+- 如果笔记没有绑定，返回 `400 Bad Request`，提示“当前笔记未选择同步目标”。
+- 根据绑定目标的 `type` 分发到 Obsidian 或 Notion 单篇同步服务。
+- 同步状态写入当前绑定目标对应的 `note_sync_state`。
+- 同步成功后写入或更新 `sync_external_claims`。
+
+批量目标同步建议新增目标维度接口：
+
+```http
+POST /api/sync/targets/:target_id/push
+POST /api/sync/targets/:target_id/pull
+POST /api/sync/targets/:target_id/bidirectional
+GET  /api/sync/targets/:target_id/deletions
+```
+
+行为：
+
+- push 只处理绑定到该 `target_id` 且启用同步的笔记。
+- pull/import 可以从外部目标导入新笔记，导入后自动创建 `note_sync_bindings`。
+- 如果外部资源已经被其他 target claim，跳过并返回 `external_claim_conflict`。
+
+兼容旧接口：
+
+```http
+GET  /api/notes/:id/sync-state
+POST /api/sync/obsidian/notes/:id
+POST /api/sync/notion/notes/:id
+```
+
+兼容规则：
+
+- `GET /api/notes/:id/sync-state` 默认返回当前绑定目标的状态；如果没有绑定且传了 `target=notion|obsidian`，才按旧默认目标逻辑查询。
+- 旧的类型单篇同步接口如果没有 `target_id`，先检查笔记当前绑定是否为对应类型；不匹配则返回 `409 Conflict`。
+- 如果传入 `target_id`，必须和当前绑定一致，否则返回 `409 Conflict`。
+
+## 后端服务设计
+
+新增同步绑定 repository 能力：
+
+- `GetNoteSyncBinding(noteID)`
+- `SaveNoteSyncBinding(noteID, targetID, syncMode)`
+- `DeleteNoteSyncBinding(noteID)`
+- `ListBoundNotes(targetID)`
+- `ClaimExternalResource(noteID, targetID, externalType, externalID, externalPath)`
+- `ReleaseExternalClaim(noteID)`
+- `GetExternalClaim(externalKey)`
+
+服务层分工：
+
+- `sync_binding_service`：处理绑定、解绑、更换目标、释放 claim。
+- `sync_dispatch_service`：根据绑定目标类型分发单篇同步。
+- Obsidian/Notion 现有服务只负责对应 provider 的读写和冲突规则，不再自己选择默认目标。
+
+事务要求：
+
+- 更换绑定和释放旧 claim 必须同事务。
+- 单篇同步的 `note_sync_state` 写入和 `sync_external_claims` 更新必须同事务，避免状态成功但资源声明缺失。
+- 导入外部笔记时，创建 note、创建 binding、写 sync state、写 claim 必须同事务。
+
+## 前端设计
+
+### 同步设置页
+
+同步设置页从“Obsidian / Notion 单配置表单”升级为“目标管理”：
+
+- 顶部保留 Obsidian / Notion 分组或筛选。
+- 每个目标以配置行展示：目标名称、类型、启用状态、自动同步状态、最近更新时间。
+- 支持新增、编辑、测试连接、停用、删除。
+- 删除有绑定笔记的目标时，显示冲突提示和绑定数量。
+
+第一版可以保留现有 Obsidian/Notion 表单作为编辑抽屉或弹窗，不需要重做全部表单样式。
+
+### 编辑器同步卡片
+
+笔记绑定位置改为单选下拉：
+
+```text
+同步目标
+[ 不同步                           v ]
+[ 个人 Notion 知识库 · Notion       ]
+[ 工作资料库 · Notion              ]
+[ 本地 Obsidian Vault · Obsidian    ]
+```
+
+规则：
+
+- 下拉选项来自 `GET /api/sync/targets` 中 `enabled=true` 的目标。
+- 展示文案优先使用目标名称，后缀显示目标类型。
+- 只能选择一个目标。
+- 选择“不 同步”调用 `DELETE /api/notes/:id/sync-binding`。
+- 选择目标调用 `PUT /api/notes/:id/sync-binding`。
+- 已有绑定时更换目标，前端展示确认提示：旧外部文件或 Notion 页面不会自动删除，后续只同步到新目标。
+- 同步状态区只展示当前绑定目标的状态。
+- 同步按钮只调用 `POST /api/sync/notes/:id`。
+
+空状态：
+
+- 没有任何同步目标：提示“还没有同步配置”，提供打开同步设置入口。
+- 有同步目标但当前笔记未绑定：提示“当前笔记未开启同步”。
+- 当前绑定目标被停用：显示“同步目标已停用”，同步按钮禁用。
+
+## 外部冲突规则
+
+### Obsidian
+
+扫描文件时生成 `external_key = obsidian:<canonical_abs_path>`。
+
+- claim 不存在：可以导入或绑定。
+- claim 属于当前 note + target：正常同步。
+- claim 属于当前 target 的另一个 note：跳过，返回文件重复绑定冲突。
+- claim 属于另一个 target：跳过，返回“该文件已由其他同步配置管理”。
+
+如果两个 Obsidian 配置目录重叠，同一个文件只会被第一个已 claim 的配置管理，另一个配置扫描时必须跳过并报告冲突。
+
+### Notion
+
+读取 page 时生成 `external_key = notion:<page_id>`。
+
+- claim 不存在：可以导入或绑定。
+- claim 属于当前 note + target：正常同步。
+- claim 属于当前 target 的另一个 note：跳过，返回 page 重复绑定冲突。
+- claim 属于另一个 target：跳过，返回“该 Notion 页面已由其他同步配置管理”。
+
+## 迁移策略
+
+新增表后，从历史 `note_sync_state` 尝试生成初始绑定：
+
+- 如果一篇笔记只有一个 `note_sync_state` 且目标仍存在，自动创建 `note_sync_bindings`。
+- 如果一篇笔记有多个历史同步状态，不自动选择目标，保持未绑定；`GET /api/notes/:id/sync-binding` 返回这些历史状态作为 `candidates`，让用户手动选择。
+- 对有明确 `external_path` 或 `external_id` 的历史状态，只有自动绑定成功时才创建 active claim。
+- 迁移过程不删除任何历史 `note_sync_state`。
+
+SQLite 和 PostgreSQL 都需要同等 schema 支持，保持可插拔 storage provider 的契约一致。
+
+## 错误处理
+
+- `400 Bad Request`：笔记未绑定同步目标、目标类型不支持、目标已停用。
+- `404 Not Found`：笔记或同步目标不存在。
+- `409 Conflict`：传入目标和当前绑定不一致、删除仍有绑定的目标、外部资源已被其他配置 claim。
+- `500 Internal Server Error`：存储故障或 provider 内部错误。
+
+错误信息必须能在前端直接展示，避免只返回泛化的“请求失败”。
+
+## 测试计划
+
+### 后端 TDD
+
+先写失败测试，再实现：
+
+- repository/storage contract：创建、读取、替换、删除 `note_sync_bindings`。
+- repository/storage contract：`note_id` 唯一约束阻止一篇笔记绑定多个目标。
+- repository/storage contract：`sync_external_claims.external_key` 唯一约束阻止一个外部资源被多个 target 管理。
+- handler：`GET/PUT/DELETE /api/notes/:id/sync-binding` 的成功、未找到、目标停用和更换目标场景。
+- handler：`POST /api/sync/notes/:id` 在未绑定时返回 400。
+- service：单篇同步按当前绑定目标分发到 Obsidian 或 Notion。
+- service：传入不匹配的 `target_id` 返回 409。
+- Obsidian：重叠目录扫描时，对已被其他 target claim 的文件返回冲突并跳过。
+- Notion：导入 page 时，对已被其他 target claim 的 page 返回冲突并跳过。
+- migration：单历史状态自动生成绑定，多历史状态不自动绑定并保留 candidates。
+
+### 前端测试
+
+- 同步卡片展示目标名下拉框，而不是多个类型卡片。
+- 下拉框只允许选择一个同步目标。
+- 选择目标后调用 `PUT /api/notes/:id/sync-binding`。
+- 选择“不 同步”后调用 `DELETE /api/notes/:id/sync-binding`。
+- 更换已绑定目标时显示确认提示。
+- 未绑定时同步按钮提示先选择同步目标。
+- 绑定目标后，同步按钮调用 `POST /api/sync/notes/:id`。
+- 同步设置页可以显示多个 Notion 和多个 Obsidian 配置。
+- 删除有绑定笔记的目标时显示冲突提示。
+
+### 手动验收
+
+- 创建两个 Notion 同步目标，编辑同一篇笔记时只能选择其中一个。
+- 创建两个 Obsidian 同步目标，编辑同一篇笔记时只能选择其中一个。
+- 未绑定笔记不会被目标批量 push。
+- 绑定到目标 A 后执行单篇同步，只写入目标 A。
+- 切换到目标 B 后再次同步，只写入目标 B；目标 A 的旧外部资源不被删除。
+- 两个 Obsidian 配置目录重叠时，同一文件不会被两个配置同时导入。
+- 同一个 Notion page 不会被两个 Data Source 配置重复导入管理。
+
+## 分阶段实现
+
+### 阶段一：数据模型和 API
+
+- 增加 `note_sync_bindings` 和 `sync_external_claims`。
+- 增加 storage/repository contract。
+- 增加绑定 API。
+- 增加统一单篇同步 API。
+
+### 阶段二：服务接入
+
+- 改造 Obsidian/Notion 单篇同步为显式 target。
+- 批量 push 只处理绑定到目标的笔记。
+- pull/import 成功后自动创建绑定和 claim。
+- 外部资源冲突时跳过并返回明确结果。
+
+### 阶段三：前端交互
+
+- 同步设置页支持多个目标配置管理。
+- 编辑器同步卡片改成目标名单选下拉。
+- 同步状态只展示当前绑定目标。
+- 添加更换目标确认和未绑定空状态。
+
+### 阶段四：迁移和兼容
+
+- 从历史 `note_sync_state` 迁移可确定的绑定。
+- 多历史状态保留为候选，不自动选择。
+- 保留旧接口兼容，但对不匹配的目标返回 409。
+
+## 验收标准
+
+- 数据库层保证一篇笔记最多一个 active 同步绑定。
+- 数据库层保证一个外部资源最多一个 active claim。
+- 前端编辑器只能选择一个同步目标名。
+- 未绑定笔记不会被同步任务误处理。
+- 单篇同步不再依赖类型默认目标，而是依赖当前笔记绑定。
+- 所有新增行为都有后端和前端测试覆盖。
