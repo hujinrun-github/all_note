@@ -62,6 +62,11 @@ export interface NoteSyncBindingResponse {
   target?: SyncTarget
   state?: SyncState
   candidates?: NoteSyncBindingCandidate[]
+  binding_mismatch?: boolean
+  default_target_missing?: boolean
+  binding_required?: boolean
+  bound_target_id?: string
+  bound_target_name?: string
 }
 
 export interface SaveNoteSyncBindingRequest {
