@@ -99,6 +99,12 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 			if item.NoteID != "" {
 				handledNoteIDs[item.NoteID] = struct{}{}
 			}
+		case "import_tombstoned", "external_claim_conflict", "binding_required":
+			result.Failed++
+			result.Items = append(result.Items, item)
+			if item.NoteID != "" {
+				handledNoteIDs[item.NoteID] = struct{}{}
+			}
 		case "synced":
 			if item.NoteID != "" {
 				handledNoteIDs[item.NoteID] = struct{}{}
@@ -276,6 +282,12 @@ func syncObsidianPullTarget(target *model.SyncTarget) model.ObsidianBidirectiona
 			if item.NoteID != "" {
 				handledNoteIDs[item.NoteID] = struct{}{}
 			}
+		case "import_tombstoned", "external_claim_conflict", "binding_required":
+			result.Failed++
+			result.Items = append(result.Items, item)
+			if item.NoteID != "" {
+				handledNoteIDs[item.NoteID] = struct{}{}
+			}
 		case "synced", bidirectionalPendingPushStatus:
 			if item.NoteID != "" {
 				handledNoteIDs[item.NoteID] = struct{}{}
@@ -321,11 +333,27 @@ func ListObsidianDeletionCandidates() ([]model.ExternalDeletedNote, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ListObsidianDeletionCandidatesForTarget(target.ID)
+}
+
+func ListObsidianDeletionCandidatesForTarget(targetID string) ([]model.ExternalDeletedNote, error) {
+	target, err := loadObsidianTargetByID(targetID)
+	if err != nil {
+		return nil, err
+	}
 	return repository.ListExternalDeletedSyncStates(target.ID)
 }
 
 func ConfirmObsidianDeletion(noteID string) error {
 	target, err := loadObsidianDeletionTarget()
+	if err != nil {
+		return err
+	}
+	return ConfirmObsidianDeletionForTarget(noteID, target.ID)
+}
+
+func ConfirmObsidianDeletionForTarget(noteID string, targetID string) error {
+	target, err := loadObsidianTargetByID(targetID)
 	if err != nil {
 		return err
 	}
@@ -339,6 +367,9 @@ func ConfirmObsidianDeletion(noteID string) error {
 	if _, err := loadObsidianDeletionNote(noteID); err != nil {
 		return err
 	}
+	if store := repository.CurrentStore(); store != nil {
+		return confirmObsidianDeletionWithStore(store, noteID, target, state)
+	}
 	if err := repository.DeleteNote(noteID); err != nil {
 		return fmt.Errorf("delete note: %w", err)
 	}
@@ -348,8 +379,69 @@ func ConfirmObsidianDeletion(noteID string) error {
 	return nil
 }
 
+func confirmObsidianDeletionWithStore(store storage.Store, noteID string, target *model.SyncTarget, state *model.SyncState) error {
+	ctx := context.Background()
+	return store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, noteID); err != nil {
+			return err
+		}
+		tombstone, err := obsidianDeletionTombstone(ctx, txStore, noteID, target, state)
+		if err != nil {
+			return err
+		}
+		if err := txStore.Sync().PutImportTombstone(ctx, tombstone); err != nil {
+			return fmt.Errorf("write obsidian deletion tombstone: %w", err)
+		}
+		if err := txStore.Notes().Delete(ctx, noteID); err != nil {
+			return fmt.Errorf("delete note: %w", err)
+		}
+		if err := txStore.Sync().DeleteState(ctx, noteID, target.ID); err != nil {
+			return fmt.Errorf("delete obsidian sync state: %w", err)
+		}
+		return nil
+	})
+}
+
+func obsidianDeletionTombstone(ctx context.Context, store storage.Store, noteID string, target *model.SyncTarget, state *model.SyncState) (model.SyncImportTombstone, error) {
+	claim, err := store.Sync().GetExternalClaimByNote(ctx, noteID)
+	if err == nil {
+		return model.SyncImportTombstone{
+			ExternalKey:  claim.ExternalKey,
+			TargetID:     claim.TargetID,
+			FormerNoteID: noteID,
+			ExternalType: claim.ExternalType,
+			ExternalID:   claim.ExternalID,
+			ExternalPath: claim.ExternalPath,
+			Reason:       "note_deleted",
+		}, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.SyncImportTombstone{}, fmt.Errorf("load external claim: %w", err)
+	}
+	externalKey, err := obsidianExternalKey(state.ExternalPath)
+	if err != nil {
+		return model.SyncImportTombstone{}, fmt.Errorf("build obsidian external key: %w", err)
+	}
+	return model.SyncImportTombstone{
+		ExternalKey:  externalKey,
+		TargetID:     target.ID,
+		FormerNoteID: noteID,
+		ExternalType: "obsidian_file",
+		ExternalPath: state.ExternalPath,
+		Reason:       "note_deleted",
+	}, nil
+}
+
 func RestoreObsidianDeletion(noteID string) (*model.SyncResultItem, error) {
 	target, err := loadObsidianDeletionTarget()
+	if err != nil {
+		return nil, err
+	}
+	return RestoreObsidianDeletionForTarget(noteID, target.ID)
+}
+
+func RestoreObsidianDeletionForTarget(noteID string, targetID string) (*model.SyncResultItem, error) {
+	target, err := loadObsidianTargetByID(targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -374,6 +466,23 @@ func RestoreObsidianDeletion(noteID string) (*model.SyncResultItem, error) {
 	}
 	item.Status = "synced"
 	return item, nil
+}
+
+func loadObsidianTargetByID(targetID string) (*model.SyncTarget, error) {
+	if strings.TrimSpace(targetID) == "" {
+		return nil, fmt.Errorf("%w: obsidian sync target not found", ErrObsidianDeletionNotFound)
+	}
+	target, err := repository.GetSyncTarget(targetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: obsidian sync target not found", ErrObsidianDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load obsidian sync target: %w", err)
+	}
+	if target.Type != "obsidian" {
+		return nil, fmt.Errorf("%w: sync target is not obsidian", ErrObsidianDeletionNotFound)
+	}
+	return target, nil
 }
 
 func loadObsidianDeletionTarget() (*model.SyncTarget, error) {
@@ -517,6 +626,9 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 	}
 
 	filePath := normalizedPath(file.Path)
+	if item := checkObsidianExternalBlockers(file, target, states); item != nil {
+		return *item
+	}
 	if importedID := validImportedID(file.Note); importedID != "" {
 		if note, ok := notes[importedID]; ok {
 			state, hasState := states[note.ID]
@@ -593,6 +705,67 @@ func syncObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget, notes
 	}
 
 	return importObsidianFile(file, target)
+}
+
+func checkObsidianExternalBlockers(file obsidianMarkdownFile, target *model.SyncTarget, states map[string]model.SyncState) *model.SyncResultItem {
+	store := repository.CurrentStore()
+	if store == nil {
+		return nil
+	}
+	externalKey, err := obsidianExternalKey(file.Path)
+	if err != nil {
+		return &model.SyncResultItem{
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: fmt.Errorf("build obsidian external key: %w", err).Error(),
+		}
+	}
+	importedID := validImportedID(file.Note)
+	ctx := context.Background()
+	tombstone, err := store.Sync().FindImportTombstone(ctx, target.ID, externalKey, importedID, "obsidian_file")
+	if err == nil {
+		return &model.SyncResultItem{
+			NoteID:       tombstone.FormerNoteID,
+			Status:       "import_tombstoned",
+			ExternalPath: file.Path,
+			ErrorMessage: "external resource was previously removed from sync",
+		}
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return &model.SyncResultItem{
+			NoteID:       importedID,
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: fmt.Errorf("check import tombstone: %w", err).Error(),
+		}
+	}
+
+	claim, err := store.Sync().GetExternalClaim(ctx, externalKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return &model.SyncResultItem{
+			NoteID:       importedID,
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: fmt.Errorf("check external claim: %w", err).Error(),
+		}
+	}
+	if claim.TargetID == target.ID && claim.NoteID == importedID && importedID != "" {
+		return nil
+	}
+	for _, state := range states {
+		if normalizedPath(state.ExternalPath) == normalizedPath(file.Path) && claim.TargetID == target.ID && claim.NoteID == state.NoteID {
+			return nil
+		}
+	}
+	return &model.SyncResultItem{
+		NoteID:       claim.NoteID,
+		Status:       "external_claim_conflict",
+		ExternalPath: file.Path,
+		ErrorMessage: ErrSyncClaimConflict.Error(),
+	}
 }
 
 func importObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget) model.SyncResultItem {
@@ -754,7 +927,7 @@ func pullObsidianIntoNoteWithStore(store storage.Store, note model.Note, file ob
 		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
 			return err
 		}
-		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+		if err := ensureOrCreatePullBindingInStore(ctx, txStore, note.ID, target.ID); err != nil {
 			return err
 		}
 		var err error

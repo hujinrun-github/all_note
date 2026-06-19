@@ -838,7 +838,7 @@ func pullNotionRemoteIntoNoteWithStore(store storage.Store, note model.Note, rem
 		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
 			return err
 		}
-		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+		if err := ensureOrCreatePullBindingInStore(ctx, txStore, note.ID, target.ID); err != nil {
 			return err
 		}
 		var err error

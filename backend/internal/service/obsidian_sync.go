@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 var invalidMarkdownFileNameChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]+`)
@@ -170,6 +173,21 @@ func writeNoteToOutputPath(note *model.Note, target *model.SyncTarget, outputPat
 		return nil, wrapped
 	}
 	outputPath = validatedOutputPath
+	externalKey, err := obsidianExternalKey(outputPath)
+	if err != nil {
+		wrapped := fmt.Errorf("build obsidian external key: %w", err)
+		if recordErr := recordSyncFailure(note, target, outputPath, contentHash, wrapped); recordErr != nil {
+			return nil, fmt.Errorf("%w; failed to record sync state: %v", wrapped, recordErr)
+		}
+		return nil, wrapped
+	}
+	if err := reserveObsidianFileClaim(note, target, outputPath, externalKey); err != nil {
+		wrapped := fmt.Errorf("reserve obsidian file claim: %w", err)
+		if recordErr := recordSyncFailure(note, target, outputPath, contentHash, wrapped); recordErr != nil {
+			return nil, fmt.Errorf("%w; failed to record sync state: %v", wrapped, recordErr)
+		}
+		return nil, wrapped
+	}
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		wrapped := fmt.Errorf("create obsidian note folder: %w", err)
@@ -196,18 +214,7 @@ func writeNoteToOutputPath(note *model.Note, target *model.SyncTarget, outputPat
 
 	now := time.Now().Unix()
 	externalMTime := info.ModTime().Unix()
-	if err := repository.UpsertSyncState(&model.SyncState{
-		NoteID:        note.ID,
-		TargetID:      target.ID,
-		ExternalPath:  outputPath,
-		ContentHash:   contentHash,
-		ExternalHash:  contentHash,
-		ExternalMTime: &externalMTime,
-		LastDirection: "push",
-		LastSyncedAt:  &now,
-		Status:        "synced",
-		ErrorMessage:  nil,
-	}); err != nil {
+	if err := recordObsidianFilePushSuccess(note, target, outputPath, contentHash, externalMTime, now); err != nil {
 		return nil, fmt.Errorf("record sync state: %w", err)
 	}
 
@@ -216,6 +223,83 @@ func writeNoteToOutputPath(note *model.Note, target *model.SyncTarget, outputPat
 		Status:       "synced",
 		ExternalPath: outputPath,
 	}, nil
+}
+
+func obsidianExternalKey(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("obsidian external path is required")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	canonical := filepath.Clean(absPath)
+	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
+		canonical = filepath.Clean(realPath)
+	}
+	return "obsidian:" + strings.ToLower(canonical), nil
+}
+
+func reserveObsidianFileClaim(note *model.Note, target *model.SyncTarget, externalPath string, externalKey string) error {
+	store := repository.CurrentStore()
+	if store == nil {
+		return nil
+	}
+	ctx := context.Background()
+	return store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := txStore.Sync().LockBindingSlot(ctx, "external_claim:"+externalKey); err != nil {
+			return err
+		}
+		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		existing, err := txStore.Sync().GetExternalClaim(ctx, externalKey)
+		if err == nil && (existing.NoteID != note.ID || existing.TargetID != target.ID) {
+			return ErrSyncClaimConflict
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return txStore.Sync().PutExternalClaim(ctx, model.SyncExternalClaim{
+			ExternalKey:  externalKey,
+			NoteID:       note.ID,
+			TargetID:     target.ID,
+			ExternalType: "obsidian_file",
+			ExternalPath: externalPath,
+		})
+	})
+}
+
+func recordObsidianFilePushSuccess(note *model.Note, target *model.SyncTarget, outputPath string, contentHash string, externalMTime int64, syncedAt int64) error {
+	state := &model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  outputPath,
+		ContentHash:   contentHash,
+		ExternalHash:  contentHash,
+		ExternalMTime: &externalMTime,
+		LastDirection: "push",
+		LastSyncedAt:  &syncedAt,
+		Status:        "synced",
+		ErrorMessage:  nil,
+	}
+	store := repository.CurrentStore()
+	if store == nil {
+		return repository.UpsertSyncState(state)
+	}
+	ctx := context.Background()
+	return store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		return txStore.Sync().UpsertState(ctx, state)
+	})
 }
 
 func recordSyncFailure(note *model.Note, target *model.SyncTarget, outputPath, contentHash string, cause error) error {

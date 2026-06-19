@@ -51,6 +51,32 @@ func SyncTargetBidirectional(c *gin.Context) {
 	success(c, gin.H{"result": result})
 }
 
+func ListTargetDeletions(c *gin.Context) {
+	items, err := service.ListObsidianDeletionCandidatesForTarget(strings.TrimSpace(c.Param("target_id")))
+	if err != nil {
+		obsidianDeletionError(c, err)
+		return
+	}
+	success(c, gin.H{"items": items})
+}
+
+func ConfirmTargetDeletion(c *gin.Context) {
+	if err := service.ConfirmObsidianDeletionForTarget(strings.TrimSpace(c.Param("note_id")), strings.TrimSpace(c.Param("target_id"))); err != nil {
+		obsidianDeletionError(c, err)
+		return
+	}
+	noContent(c)
+}
+
+func RestoreTargetDeletion(c *gin.Context) {
+	item, err := service.RestoreObsidianDeletionForTarget(strings.TrimSpace(c.Param("note_id")), strings.TrimSpace(c.Param("target_id")))
+	if err != nil {
+		obsidianDeletionError(c, err)
+		return
+	}
+	success(c, gin.H{"item": item})
+}
+
 func syncDispatchError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrSyncBindingRequired):

@@ -15,6 +15,7 @@ import (
 var (
 	ErrSyncBindingRequired = errors.New("note sync binding is required")
 	ErrSyncBindingConflict = errors.New("note is bound to another sync target")
+	ErrSyncClaimConflict   = errors.New("external resource is already claimed by another sync target")
 	ErrSyncTargetNotFound  = errors.New("sync target not found")
 )
 
@@ -189,6 +190,28 @@ func ensureNoteBoundToSyncTargetInStore(ctx context.Context, store storage.Store
 		return ErrSyncBindingConflict
 	}
 	return nil
+}
+
+func ensureOrCreatePullBindingInStore(ctx context.Context, store storage.Store, noteID string, targetID string) error {
+	binding, err := store.Sync().GetBinding(ctx, noteID)
+	if err == nil {
+		if binding.TargetID != targetID {
+			return ErrSyncBindingConflict
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load sync binding: %w", err)
+	}
+	if _, err := store.Sync().GetSuppression(ctx, noteID, targetID); err == nil {
+		return ErrSyncBindingRequired
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load sync suppression: %w", err)
+	}
+	return store.Sync().PutBinding(ctx, model.NoteSyncBinding{
+		NoteID:   noteID,
+		TargetID: targetID,
+	})
 }
 
 func bindImportedNoteToSyncTargetInStore(ctx context.Context, store storage.Store, noteID string, targetID string) error {
