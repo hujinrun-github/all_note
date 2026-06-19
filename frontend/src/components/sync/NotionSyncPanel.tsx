@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type {
   SaveSyncTargetInput,
-  NotionBidirectionalResult,
   SyncBatchResult,
+  TargetSyncResult,
 } from '../../api/sync'
 import { parseSyncTagsInput, syncTagsInputFromConfig } from './syncTagInput'
 import { SyncTagsField } from './SyncTagsField'
 import {
-  useConfirmNotionDeletion,
-  useNotionDeletions,
-  useRestoreNotionDeletion,
+  useConfirmTargetDeletion,
+  usePullTarget,
+  usePushTarget,
+  useRestoreTargetDeletion,
   useSaveSyncTarget,
-  useSyncNotionAll,
-  useSyncNotionPull,
   useSyncTargets,
+  useTargetDeletions,
   useTestNotionTarget,
 } from '../../hooks/useSync'
 
@@ -38,15 +38,17 @@ export function NotionSyncPanel() {
   const targetsQ = useSyncTargets()
   const saveTarget = useSaveSyncTarget()
   const testTarget = useTestNotionTarget()
-  const syncAll = useSyncNotionAll()
-  const syncPull = useSyncNotionPull()
-  const deletionsQ = useNotionDeletions()
-  const confirmDeletion = useConfirmNotionDeletion()
-  const restoreDeletion = useRestoreNotionDeletion()
+  const syncAll = usePushTarget()
+  const syncPull = usePullTarget()
+  const confirmDeletion = useConfirmTargetDeletion()
+  const restoreDeletion = useRestoreTargetDeletion()
   const target = useMemo(
-    () => targetsQ.data?.find((item) => item.type === 'notion'),
+    () =>
+      targetsQ.data?.find((item) => item.type === 'notion' && item.is_default) ??
+      targetsQ.data?.find((item) => item.type === 'notion'),
     [targetsQ.data]
   )
+  const deletionsQ = useTargetDeletions(target?.id)
 
   const [name, setName] = useState(DEFAULT_TARGET_NAME)
   const [dataSourceID, setDataSourceID] = useState('')
@@ -59,7 +61,7 @@ export function NotionSyncPanel() {
     null
   )
   const [lastPullResult, setLastPullResult] =
-    useState<NotionBidirectionalResult | null>(null)
+    useState<TargetSyncResult | null>(null)
 
   useEffect(() => {
     if (!target) return
@@ -95,8 +97,13 @@ export function NotionSyncPanel() {
     try {
       await saveTarget.mutateAsync(payload)
       setMessage({ tone: 'success', text: 'Notion 设置已保存' })
-    } catch {
-      setMessage({ tone: 'error', text: '无法保存 Notion 设置' })
+    } catch (error) {
+      setMessage({
+        tone: 'error',
+        text: isTargetIdentityLocked(error)
+          ? 'Data Source ID 已被使用中的同步目标锁定'
+          : '无法保存 Notion 设置',
+      })
     }
   }
 
@@ -117,8 +124,12 @@ export function NotionSyncPanel() {
     setMessage(null)
     setLastPushResult(null)
     setLastPullResult(null)
+    if (!target?.id) {
+      setMessage({ tone: 'error', text: '请先保存 Notion 同步目标' })
+      return
+    }
     try {
-      const result = await syncAll.mutateAsync()
+      const result = await syncAll.mutateAsync(target.id)
       setLastPushResult(result)
       setMessage({ tone: 'success', text: 'FlowSpace 笔记已同步到 Notion' })
     } catch {
@@ -133,8 +144,12 @@ export function NotionSyncPanel() {
     setMessage(null)
     setLastPushResult(null)
     setLastPullResult(null)
+    if (!target?.id) {
+      setMessage({ tone: 'error', text: '请先保存 Notion 同步目标' })
+      return
+    }
     try {
-      const result = await syncPull.mutateAsync()
+      const result = await syncPull.mutateAsync(target.id)
       setLastPullResult(result)
       setMessage({
         tone: 'success',
@@ -150,8 +165,9 @@ export function NotionSyncPanel() {
 
   async function handleConfirmDeletion(noteID: string) {
     setMessage(null)
+    if (!target?.id) return
     try {
-      await confirmDeletion.mutateAsync(noteID)
+      await confirmDeletion.mutateAsync({ targetID: target.id, noteID })
       setMessage({ tone: 'success', text: '已确认删除 FlowSpace 笔记' })
     } catch {
       setMessage({ tone: 'error', text: '无法确认删除' })
@@ -160,8 +176,9 @@ export function NotionSyncPanel() {
 
   async function handleRestoreDeletion(noteID: string) {
     setMessage(null)
+    if (!target?.id) return
     try {
-      await restoreDeletion.mutateAsync(noteID)
+      await restoreDeletion.mutateAsync({ targetID: target.id, noteID })
       setMessage({ tone: 'success', text: 'Notion 页面已恢复' })
     } catch {
       setMessage({ tone: 'error', text: '无法恢复 Notion 页面' })
@@ -413,4 +430,8 @@ function parseNotionConfig(raw: string | undefined): NotionConfig {
   } catch {
     return defaults
   }
+}
+
+function isTargetIdentityLocked(error: unknown) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'target_identity_locked')
 }

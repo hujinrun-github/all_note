@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { APIError } from '../../api/client'
 import { NotionSyncPanel } from './NotionSyncPanel'
 import * as syncApi from '../../api/sync'
 
@@ -71,6 +72,27 @@ describe('NotionSyncPanel', () => {
     })
     vi.mocked(syncApi.confirmNotionDeletion).mockResolvedValue(undefined)
     vi.mocked(syncApi.restoreNotionDeletion).mockResolvedValue({
+      note_id: 'note-1',
+      status: 'restored',
+    })
+    vi.mocked(syncApi.pushTarget).mockResolvedValue({
+      synced: 4,
+      failed: 1,
+      items: [],
+    })
+    vi.mocked(syncApi.pullTarget).mockResolvedValue({
+      imported: 3,
+      pulled: 2,
+      conflict_pulled: 1,
+      pushed: 0,
+      unsupported: 5,
+      external_deleted: 6,
+      failed: 7,
+      items: [],
+    })
+    vi.mocked(syncApi.getTargetDeletions).mockResolvedValue([])
+    vi.mocked(syncApi.confirmTargetDeletion).mockResolvedValue(undefined)
+    vi.mocked(syncApi.restoreTargetDeletion).mockResolvedValue({
       note_id: 'note-1',
       status: 'restored',
     })
@@ -217,6 +239,25 @@ describe('NotionSyncPanel', () => {
   })
 
   it('separates pushing FlowSpace notes from manually pulling Notion notes', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'notion-1',
+        type: 'notion',
+        name: 'Personal Notion',
+        vault_path: '',
+        base_folder: '',
+        config_json: JSON.stringify({
+          data_source_id: 'ds-123',
+          token_env: 'FLOWSPACE_NOTION_TOKEN',
+          title_property: 'Name',
+        }),
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
     renderPanel()
     const user = userEvent.setup()
 
@@ -224,14 +265,16 @@ describe('NotionSyncPanel', () => {
       await screen.findByRole('button', { name: '同步到 Notion' })
     )
 
-    expect(syncApi.syncNotionAll).toHaveBeenCalledTimes(1)
+    expect(syncApi.pushTarget).toHaveBeenCalledWith('notion-1')
+    expect(syncApi.syncNotionAll).not.toHaveBeenCalled()
     expect(syncApi.syncNotionPull).not.toHaveBeenCalled()
     expect(await screen.findByText('已同步 4')).toBeVisible()
     expect(screen.getByText('失败 1')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: '从 Notion 手动拉取' }))
 
-    expect(syncApi.syncNotionPull).toHaveBeenCalledTimes(1)
+    expect(syncApi.pullTarget).toHaveBeenCalledWith('notion-1')
+    expect(syncApi.syncNotionPull).not.toHaveBeenCalled()
     expect(syncApi.syncNotionBidirectional).not.toHaveBeenCalled()
     expect(await screen.findByText('导入 3')).toBeVisible()
     expect(screen.getByText('Notion 更新 2')).toBeVisible()
@@ -243,7 +286,26 @@ describe('NotionSyncPanel', () => {
   })
 
   it('renders notion deletion candidates with restore and confirm actions', async () => {
-    vi.mocked(syncApi.getNotionDeletions).mockResolvedValue([
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'notion-1',
+        type: 'notion',
+        name: 'Personal Notion',
+        vault_path: '',
+        base_folder: '',
+        config_json: JSON.stringify({
+          data_source_id: 'ds-123',
+          token_env: 'FLOWSPACE_NOTION_TOKEN',
+          title_property: 'Name',
+        }),
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    vi.mocked(syncApi.getTargetDeletions).mockResolvedValue([
       {
         note_id: 'note-1',
         title: 'Deleted Notion Note',
@@ -259,11 +321,75 @@ describe('NotionSyncPanel', () => {
     expect(screen.getByText('notion:page-1')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: '恢复 Notion 页面' }))
-    expect(syncApi.restoreNotionDeletion).toHaveBeenCalledWith('note-1')
+    expect(syncApi.restoreTargetDeletion).toHaveBeenCalledWith('notion-1', 'note-1')
 
     await user.click(
       screen.getByRole('button', { name: '确认删除 FlowSpace 笔记' })
     )
-    expect(syncApi.confirmNotionDeletion).toHaveBeenCalledWith('note-1')
+    expect(syncApi.confirmTargetDeletion).toHaveBeenCalledWith('notion-1', 'note-1')
+  })
+
+  it('uses target scoped push and pull', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'notion-1',
+        type: 'notion',
+        name: 'Personal Notion',
+        vault_path: '',
+        base_folder: '',
+        config_json: JSON.stringify({
+          data_source_id: 'ds-123',
+          token_env: 'FLOWSPACE_NOTION_TOKEN',
+          title_property: 'Name',
+        }),
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    renderPanel()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: '同步到 Notion' }))
+    await waitFor(() => expect(syncApi.pushTarget).toHaveBeenCalledWith('notion-1'))
+    expect(syncApi.syncNotionAll).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '从 Notion 手动拉取' }))
+    await waitFor(() => expect(syncApi.pullTarget).toHaveBeenCalledWith('notion-1'))
+    expect(syncApi.syncNotionPull).not.toHaveBeenCalled()
+  })
+
+  it('shows data source id as locked when backend reports lock', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'notion-locked',
+        type: 'notion',
+        name: 'Locked Notion',
+        vault_path: '',
+        base_folder: '',
+        config_json: JSON.stringify({
+          data_source_id: 'ds-locked',
+          token_env: 'FLOWSPACE_NOTION_TOKEN',
+          title_property: 'Name',
+        }),
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    vi.mocked(syncApi.saveSyncTarget).mockRejectedValueOnce(new APIError(409, 'target_identity_locked', 'locked'))
+    renderPanel()
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(screen.getByLabelText('Data Source ID')).toHaveValue('ds-locked'))
+    await user.clear(screen.getByLabelText('Data Source ID'))
+    await user.type(screen.getByLabelText('Data Source ID'), 'ds-new')
+    await user.click(screen.getByRole('button', { name: '保存 Notion 设置' }))
+
+    expect(await screen.findByText('Data Source ID 已被使用中的同步目标锁定')).toBeVisible()
   })
 })

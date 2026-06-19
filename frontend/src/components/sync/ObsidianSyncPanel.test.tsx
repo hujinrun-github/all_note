@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { APIError } from '../../api/client'
 import { ObsidianSyncPanel } from './ObsidianSyncPanel'
 import * as syncApi from '../../api/sync'
 
@@ -58,9 +59,43 @@ describe('ObsidianSyncPanel', () => {
       note_id: 'note-1',
       status: 'synced',
     })
+    vi.mocked(syncApi.pushTarget).mockResolvedValue({
+      synced: 2,
+      failed: 1,
+      items: [],
+    })
+    vi.mocked(syncApi.pullTarget).mockResolvedValue({
+      imported: 3,
+      pulled: 2,
+      pushed: 0,
+      external_deleted: 1,
+      failed: 0,
+      items: [],
+    })
+    vi.mocked(syncApi.getTargetDeletions).mockResolvedValue([])
+    vi.mocked(syncApi.confirmTargetDeletion).mockResolvedValue(undefined)
+    vi.mocked(syncApi.restoreTargetDeletion).mockResolvedValue({
+      note_id: 'note-1',
+      status: 'synced',
+    })
   })
 
   it('separates pushing FlowSpace notes from manually pulling Obsidian notes', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'obs-1',
+        type: 'obsidian',
+        name: 'Work Vault',
+        vault_path: 'D:\\Vault',
+        base_folder: 'FlowSpace Notes',
+        config_json: '{}',
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
     renderPanel()
     const user = userEvent.setup()
 
@@ -68,9 +103,8 @@ describe('ObsidianSyncPanel', () => {
       await screen.findByRole('button', { name: '同步到 Obsidian' })
     )
 
-    await waitFor(() =>
-      expect(syncApi.syncObsidianAll).toHaveBeenCalledTimes(1)
-    )
+    await waitFor(() => expect(syncApi.pushTarget).toHaveBeenCalledWith('obs-1'))
+    expect(syncApi.syncObsidianAll).not.toHaveBeenCalled()
     expect(syncApi.syncObsidianPull).not.toHaveBeenCalled()
     expect(await screen.findByText('同步完成：成功 2，失败 1')).toBeVisible()
 
@@ -78,9 +112,8 @@ describe('ObsidianSyncPanel', () => {
       screen.getByRole('button', { name: '从 Obsidian 手动拉取' })
     )
 
-    await waitFor(() =>
-      expect(syncApi.syncObsidianPull).toHaveBeenCalledTimes(1)
-    )
+    await waitFor(() => expect(syncApi.pullTarget).toHaveBeenCalledWith('obs-1'))
+    expect(syncApi.syncObsidianPull).not.toHaveBeenCalled()
     expect(syncApi.syncObsidianBidirectional).not.toHaveBeenCalled()
     expect(
       await screen.findByText(
@@ -125,5 +158,68 @@ describe('ObsidianSyncPanel', () => {
     expect(JSON.parse(payload.config_json ?? '{}')).toEqual({
       required_tags: ['sync', 'publish', 'work'],
     })
+  })
+
+  it('uses target scoped deletion candidates', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'obs-1',
+        type: 'obsidian',
+        name: 'Work Vault',
+        vault_path: 'D:\\Vault',
+        base_folder: 'FlowSpace Notes',
+        config_json: '{}',
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    vi.mocked(syncApi.getTargetDeletions).mockResolvedValue([
+      {
+        note_id: 'note-1',
+        title: 'Deleted Obsidian Note',
+        external_path: 'D:\\Vault\\note.md',
+        last_synced_at: 1800000000,
+      },
+    ])
+    renderPanel()
+    const user = userEvent.setup()
+
+    expect(await screen.findByText('Deleted Obsidian Note')).toBeVisible()
+    expect(syncApi.getTargetDeletions).toHaveBeenCalledWith('obs-1')
+
+    await user.click(screen.getByRole('button', { name: '保留并重新导出' }))
+    expect(syncApi.restoreTargetDeletion).toHaveBeenCalledWith('obs-1', 'note-1')
+
+    await user.click(screen.getByRole('button', { name: '确认删除' }))
+    expect(syncApi.confirmTargetDeletion).toHaveBeenCalledWith('obs-1', 'note-1')
+  })
+
+  it('shows vault path as locked when backend reports lock', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'obs-locked',
+        type: 'obsidian',
+        name: 'Locked Vault',
+        vault_path: 'D:\\Vault',
+        base_folder: 'FlowSpace Notes',
+        config_json: '{}',
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    vi.mocked(syncApi.saveSyncTarget).mockRejectedValueOnce(new APIError(409, 'target_identity_locked', 'locked'))
+    renderPanel()
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(screen.getByLabelText('Vault 路径')).toHaveValue('D:\\Vault'))
+    await user.click(screen.getByRole('button', { name: '保存 Obsidian 设置' }))
+
+    expect(await screen.findByText('Vault 路径已被使用中的同步目标锁定')).toBeVisible()
   })
 })

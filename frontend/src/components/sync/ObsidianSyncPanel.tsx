@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  useConfirmObsidianDeletion,
-  useObsidianDeletions,
-  useRestoreObsidianDeletion,
+  useConfirmTargetDeletion,
+  usePullTarget,
+  usePushTarget,
+  useRestoreTargetDeletion,
   useSaveSyncTarget,
-  useSyncObsidianAll,
-  useSyncObsidianPull,
   useSyncTargets,
+  useTargetDeletions,
   useTestObsidianTarget,
 } from '../../hooks/useSync'
 import {
   listLocalDirectories,
   type LocalDirectoryEntry,
   type LocalDirectoryList,
-  type ObsidianBidirectionalResult,
+  type TargetSyncResult,
 } from '../../api/sync'
 import { parseSyncTagsInput, syncTagsInputFromConfig } from './syncTagInput'
 import { SyncTagsField } from './SyncTagsField'
@@ -35,15 +35,17 @@ export function ObsidianSyncPanel({
   const targetsQ = useSyncTargets()
   const saveTarget = useSaveSyncTarget()
   const testTarget = useTestObsidianTarget()
-  const syncAll = useSyncObsidianAll()
-  const syncPull = useSyncObsidianPull()
-  const deletionsQ = useObsidianDeletions()
-  const confirmDeletion = useConfirmObsidianDeletion()
-  const restoreDeletion = useRestoreObsidianDeletion()
+  const syncAll = usePushTarget()
+  const syncPull = usePullTarget()
+  const confirmDeletion = useConfirmTargetDeletion()
+  const restoreDeletion = useRestoreTargetDeletion()
   const target = useMemo(
-    () => targetsQ.data?.find((item) => item.type === 'obsidian'),
+    () =>
+      targetsQ.data?.find((item) => item.type === 'obsidian' && item.is_default) ??
+      targetsQ.data?.find((item) => item.type === 'obsidian'),
     [targetsQ.data]
   )
+  const deletionsQ = useTargetDeletions(target?.id)
 
   const [name, setName] = useState('Obsidian Vault')
   const [vaultPath, setVaultPath] = useState('')
@@ -52,7 +54,7 @@ export function ObsidianSyncPanel({
   const [autoSync, setAutoSync] = useState(false)
   const [message, setMessage] = useState<SyncMessage | null>(null)
   const [lastPullResult, setLastPullResult] =
-    useState<ObsidianBidirectionalResult | null>(null)
+    useState<TargetSyncResult | null>(null)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryList, setDirectoryList] = useState<LocalDirectoryList | null>(
     null
@@ -183,8 +185,11 @@ export function ObsidianSyncPanel({
     try {
       await saveTarget.mutateAsync(payload)
       setMessage({ tone: 'success', text: '同步设置已保存' })
-    } catch {
-      setMessage({ tone: 'error', text: '保存失败，请检查路径和后端服务' })
+    } catch (error) {
+      setMessage({
+        tone: 'error',
+        text: isTargetIdentityLocked(error) ? 'Vault 路径已被使用中的同步目标锁定' : '保存失败，请检查路径和后端服务',
+      })
     }
   }
 
@@ -200,8 +205,12 @@ export function ObsidianSyncPanel({
 
   async function handleSyncAll() {
     setMessage(null)
+    if (!target?.id) {
+      setMessage({ tone: 'error', text: '请先保存 Obsidian 同步目标' })
+      return
+    }
     try {
-      const result = await syncAll.mutateAsync()
+      const result = await syncAll.mutateAsync(target.id)
       setMessage({
         tone: 'success',
         text: `同步完成：成功 ${result.synced}，失败 ${result.failed}`,
@@ -214,8 +223,12 @@ export function ObsidianSyncPanel({
   async function handlePullRemote() {
     setMessage(null)
     setLastPullResult(null)
+    if (!target?.id) {
+      setMessage({ tone: 'error', text: '请先保存 Obsidian 同步目标' })
+      return
+    }
     try {
-      const result = await syncPull.mutateAsync()
+      const result = await syncPull.mutateAsync(target.id)
       setLastPullResult(result)
       setMessage({
         tone: 'success',
@@ -231,8 +244,9 @@ export function ObsidianSyncPanel({
 
   async function handleConfirmDeletion(noteID: string) {
     setMessage(null)
+    if (!target?.id) return
     try {
-      await confirmDeletion.mutateAsync(noteID)
+      await confirmDeletion.mutateAsync({ targetID: target.id, noteID })
       setLastPullResult(null)
       setMessage({ tone: 'success', text: '已确认删除该笔记' })
     } catch {
@@ -245,8 +259,9 @@ export function ObsidianSyncPanel({
 
   async function handleRestoreDeletion(noteID: string) {
     setMessage(null)
+    if (!target?.id) return
     try {
-      await restoreDeletion.mutateAsync(noteID)
+      await restoreDeletion.mutateAsync({ targetID: target.id, noteID })
       setLastPullResult(null)
       setMessage({ tone: 'success', text: '已保留并重新导出该笔记' })
     } catch {
@@ -640,4 +655,8 @@ function formatDirectoryModifiedAt(value: number) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value * 1000))
+}
+
+function isTargetIdentityLocked(error: unknown) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'target_identity_locked')
 }
