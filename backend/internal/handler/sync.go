@@ -138,7 +138,11 @@ func TestNotionTarget(c *gin.Context) {
 }
 
 func SyncObsidianNote(c *gin.Context) {
-	item, err := service.SyncNoteToObsidian(c.Param("id"))
+	noteID := strings.TrimSpace(c.Param("id"))
+	if !ensureLegacyNoteSyncCompatible(c, noteID, "obsidian") {
+		return
+	}
+	item, err := service.SyncNoteToObsidian(noteID)
 	if err != nil {
 		internalError(c, err.Error())
 		return
@@ -152,6 +156,9 @@ func SyncNotionNote(c *gin.Context) {
 		badRequest(c, "note id is required")
 		return
 	}
+	if !ensureLegacyNoteSyncCompatible(c, noteID, "notion") {
+		return
+	}
 	item, err := service.SyncNoteToNotion(noteID)
 	if err != nil {
 		notionNoteSyncError(c, err)
@@ -161,6 +168,9 @@ func SyncNotionNote(c *gin.Context) {
 }
 
 func SyncObsidianFolder(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
 	notes, _, err := service.GetNotes(c.Param("folder_id"), "", "recent", false, 1, 10000)
 	if err != nil {
 		internalError(c, "failed to load notes")
@@ -171,6 +181,9 @@ func SyncObsidianFolder(c *gin.Context) {
 }
 
 func SyncObsidianAll(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
 	notes, _, err := service.GetNotes("", "", "recent", false, 1, 10000)
 	if err != nil {
 		internalError(c, "failed to load notes")
@@ -181,26 +194,41 @@ func SyncObsidianAll(c *gin.Context) {
 }
 
 func SyncNotionAll(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "notion") {
+		return
+	}
 	result := service.SyncNotionAll()
 	success(c, gin.H{"result": result})
 }
 
 func SyncObsidianPull(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
 	result := service.SyncObsidianPull()
 	success(c, gin.H{"result": result})
 }
 
 func SyncNotionPull(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "notion") {
+		return
+	}
 	result := service.SyncNotionPull()
 	success(c, gin.H{"result": result})
 }
 
 func SyncObsidianBidirectional(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
 	result := service.SyncObsidianBidirectional()
 	success(c, gin.H{"result": result})
 }
 
 func SyncNotionBidirectional(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "notion") {
+		return
+	}
 	result := service.SyncNotionBidirectional()
 	success(c, gin.H{"result": result})
 }
@@ -293,6 +321,10 @@ func notionNoteSyncError(c *gin.Context, err error) {
 }
 
 func GetNoteSyncState(c *gin.Context) {
+	if store := repository.CurrentStore(); store != nil {
+		getNoteSyncStateWithStore(c, store)
+		return
+	}
 	targetType := strings.TrimSpace(c.Query("target"))
 	if targetType == "" {
 		targetType = "obsidian"
