@@ -6,6 +6,6 @@ export const taskProjectTypeLabels: Record<TaskProject['type'], string> = {
   learning: '学习项目',
 }
 
-export function formatTaskProjectOption(project: TaskProject) {
+export function formatTaskProjectOption(project: Pick<TaskProject, 'name' | 'type'>) {
   return `${project.name} · ${taskProjectTypeLabels[project.type]}`
 }

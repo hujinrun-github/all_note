@@ -41,7 +41,7 @@ import {
 import { TaskRow } from '../components/ui/TaskRow'
 import { getNotes, createNote } from '../api/notes'
 import { dateInputToUnix, dateToInputValue, todayDateInputValue } from '../utils/taskForm'
-import { formatTaskProjectOption, taskProjectTypeLabels } from '../utils/taskProjects'
+import { taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
