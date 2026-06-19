@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 const bidirectionalPendingPushStatus = "pending_push"
@@ -192,13 +194,19 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 }
 
 func SyncObsidianPull() model.ObsidianBidirectionalResult {
-	result := model.ObsidianBidirectionalResult{
-		Items: make([]model.SyncResultItem, 0),
-	}
-
 	target, err := repository.GetDefaultSyncTarget("obsidian")
 	if err != nil {
 		return failedObsidianBidirectionalResult(fmt.Errorf("load obsidian sync target: %w", err))
+	}
+	return syncObsidianPullTarget(target)
+}
+
+func syncObsidianPullTarget(target *model.SyncTarget) model.ObsidianBidirectionalResult {
+	result := model.ObsidianBidirectionalResult{
+		Items: make([]model.SyncResultItem, 0),
+	}
+	if target == nil {
+		return failedObsidianBidirectionalResult(errors.New("obsidian sync target is required"))
 	}
 	if err := TestObsidianTarget(target); err != nil {
 		return failedObsidianBidirectionalResult(err)
@@ -604,6 +612,9 @@ func importObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget) mod
 			ErrorMessage: err.Error(),
 		}
 	}
+	if store := repository.CurrentStore(); store != nil {
+		return importObsidianFileWithStore(store, file, target, folderID)
+	}
 
 	note, err := repository.CreateNoteWithID(&model.CreateNoteWithIDRequest{
 		ID:       validImportedID(file.Note),
@@ -635,6 +646,54 @@ func importObsidianFile(file obsidianMarkdownFile, target *model.SyncTarget) mod
 	}
 }
 
+func importObsidianFileWithStore(store storage.Store, file obsidianMarkdownFile, target *model.SyncTarget, folderID string) model.SyncResultItem {
+	note := &model.Note{
+		ID:       validImportedID(file.Note),
+		Title:    file.Note.Title,
+		Body:     file.Note.Body,
+		FolderID: folderID,
+		Tags:     file.Note.TagsJSON,
+	}
+	ctx := context.Background()
+	err := store.Transact(ctx, func(txStore storage.Store) error {
+		if strings.TrimSpace(note.ID) != "" {
+			if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+				return err
+			}
+		}
+		if err := txStore.Notes().CreateWithID(ctx, note); err != nil {
+			return fmt.Errorf("import obsidian note: %w", err)
+		}
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := bindImportedNoteToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		state, err := obsidianSyncedState(note, target.ID, file, "import")
+		if err != nil {
+			return err
+		}
+		if err := txStore.Sync().UpsertState(ctx, state); err != nil {
+			return fmt.Errorf("record imported obsidian sync state: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.SyncResultItem{
+			NoteID:       note.ID,
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: err.Error(),
+		}
+	}
+	return model.SyncResultItem{
+		NoteID:       note.ID,
+		Status:       "imported",
+		ExternalPath: file.Path,
+	}
+}
+
 func pullObsidianIntoNote(note model.Note, file obsidianMarkdownFile, target *model.SyncTarget) model.SyncResultItem {
 	if file.Note == nil {
 		return model.SyncResultItem{
@@ -653,6 +712,9 @@ func pullObsidianIntoNote(note model.Note, file obsidianMarkdownFile, target *mo
 			ExternalPath: file.Path,
 			ErrorMessage: err.Error(),
 		}
+	}
+	if store := repository.CurrentStore(); store != nil {
+		return pullObsidianIntoNoteWithStore(store, note, file, target, folderID)
 	}
 
 	updated, err := repository.UpdateNote(note.ID, &model.UpdateNoteRequest{
@@ -685,17 +747,69 @@ func pullObsidianIntoNote(note model.Note, file obsidianMarkdownFile, target *mo
 	}
 }
 
+func pullObsidianIntoNoteWithStore(store storage.Store, note model.Note, file obsidianMarkdownFile, target *model.SyncTarget, folderID string) model.SyncResultItem {
+	ctx := context.Background()
+	var updated *model.Note
+	err := store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		var err error
+		updated, err = txStore.Notes().Update(ctx, note.ID, &model.UpdateNoteRequest{
+			Title:    &file.Note.Title,
+			Body:     &file.Note.Body,
+			FolderID: &folderID,
+			Tags:     &file.Note.TagsJSON,
+		})
+		if err != nil {
+			return fmt.Errorf("pull obsidian note: %w", err)
+		}
+		state, err := obsidianSyncedState(updated, target.ID, file, "pull")
+		if err != nil {
+			return err
+		}
+		if err := txStore.Sync().UpsertState(ctx, state); err != nil {
+			return fmt.Errorf("record pulled obsidian sync state: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.SyncResultItem{
+			NoteID:       note.ID,
+			Status:       "failed",
+			ExternalPath: file.Path,
+			ErrorMessage: err.Error(),
+		}
+	}
+	return model.SyncResultItem{
+		NoteID:       updated.ID,
+		Status:       "pulled",
+		ExternalPath: file.Path,
+	}
+}
+
 func recordSyncedExternal(note *model.Note, targetID string, file obsidianMarkdownFile, direction string) error {
+	state, err := obsidianSyncedState(note, targetID, file, direction)
+	if err != nil {
+		return err
+	}
+	return repository.UpsertSyncState(state)
+}
+
+func obsidianSyncedState(note *model.Note, targetID string, file obsidianMarkdownFile, direction string) (*model.SyncState, error) {
 	if note == nil {
-		return errors.New("note is required")
+		return nil, errors.New("note is required")
 	}
 	if strings.TrimSpace(targetID) == "" {
-		return errors.New("target id is required")
+		return nil, errors.New("target id is required")
 	}
 
 	now := time.Now().Unix()
 	externalMTime := file.MTime
-	return repository.UpsertSyncState(&model.SyncState{
+	return &model.SyncState{
 		NoteID:        note.ID,
 		TargetID:      targetID,
 		ExternalPath:  file.Path,
@@ -706,7 +820,7 @@ func recordSyncedExternal(note *model.Note, targetID string, file obsidianMarkdo
 		LastSyncedAt:  &now,
 		Status:        "synced",
 		ErrorMessage:  nil,
-	})
+	}, nil
 }
 
 func markExternalDeleted(state model.SyncState, target *model.SyncTarget) model.SyncResultItem {

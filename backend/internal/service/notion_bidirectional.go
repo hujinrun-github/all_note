@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 type notionRemoteNote struct {
@@ -695,6 +697,9 @@ func (svc *NotionSyncService) pushNotionLocalNote(config notionTargetConfig, tar
 }
 
 func importNotionRemoteNote(remote notionRemoteNote, target model.SyncTarget) model.SyncResultItem {
+	if store := repository.CurrentStore(); store != nil {
+		return importNotionRemoteNoteWithStore(store, remote, target)
+	}
 	note, err := repository.CreateNoteWithID(&model.CreateNoteWithIDRequest{
 		ID:       strings.TrimSpace(remote.FlowSpaceID),
 		Title:    notionRemoteTitle(remote),
@@ -730,7 +735,62 @@ func importNotionRemoteNote(remote notionRemoteNote, target model.SyncTarget) mo
 	}
 }
 
+func importNotionRemoteNoteWithStore(store storage.Store, remote notionRemoteNote, target model.SyncTarget) model.SyncResultItem {
+	note := &model.Note{
+		ID:       strings.TrimSpace(remote.FlowSpaceID),
+		Title:    notionRemoteTitle(remote),
+		Body:     remote.Markdown,
+		FolderID: "__uncategorized",
+		Tags:     syncTagsJSON(remote.Tags),
+	}
+	ctx := context.Background()
+	err := store.Transact(ctx, func(txStore storage.Store) error {
+		if strings.TrimSpace(note.ID) != "" {
+			if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+				return err
+			}
+		}
+		if err := txStore.Notes().CreateWithID(ctx, note); err != nil {
+			return fmt.Errorf("import notion note: %w", err)
+		}
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := bindImportedNoteToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		state, err := notionSyncedState(note, target, remote, "import")
+		if err != nil {
+			return err
+		}
+		if err := txStore.Sync().UpsertState(ctx, state); err != nil {
+			return fmt.Errorf("record imported notion sync state: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.SyncResultItem{
+			NoteID:       note.ID,
+			Status:       "failed",
+			ExternalPath: notionExternalPath(remote.PageID),
+			ExternalID:   remote.PageID,
+			ExternalURL:  remote.URL,
+			ErrorMessage: err.Error(),
+		}
+	}
+	return model.SyncResultItem{
+		NoteID:       note.ID,
+		Status:       "imported",
+		ExternalPath: notionExternalPath(remote.PageID),
+		ExternalID:   remote.PageID,
+		ExternalURL:  remote.URL,
+	}
+}
+
 func pullNotionRemoteIntoNote(note model.Note, remote notionRemoteNote, target model.SyncTarget) model.SyncResultItem {
+	if store := repository.CurrentStore(); store != nil {
+		return pullNotionRemoteIntoNoteWithStore(store, note, remote, target)
+	}
 	title := notionRemoteTitle(remote)
 	body := remote.Markdown
 	tags := syncTagsJSON(remote.Tags)
@@ -768,20 +828,78 @@ func pullNotionRemoteIntoNote(note model.Note, remote notionRemoteNote, target m
 	}
 }
 
+func pullNotionRemoteIntoNoteWithStore(store storage.Store, note model.Note, remote notionRemoteNote, target model.SyncTarget) model.SyncResultItem {
+	ctx := context.Background()
+	title := notionRemoteTitle(remote)
+	body := remote.Markdown
+	tags := syncTagsJSON(remote.Tags)
+	var updated *model.Note
+	err := store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		var err error
+		updated, err = txStore.Notes().Update(ctx, note.ID, &model.UpdateNoteRequest{
+			Title: &title,
+			Body:  &body,
+			Tags:  &tags,
+		})
+		if err != nil {
+			return fmt.Errorf("pull notion note: %w", err)
+		}
+		state, err := notionSyncedState(updated, target, remote, "pull")
+		if err != nil {
+			return err
+		}
+		if err := txStore.Sync().UpsertState(ctx, state); err != nil {
+			return fmt.Errorf("record pulled notion sync state: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.SyncResultItem{
+			NoteID:       note.ID,
+			Status:       "failed",
+			ExternalPath: notionExternalPath(remote.PageID),
+			ExternalID:   remote.PageID,
+			ExternalURL:  remote.URL,
+			ErrorMessage: err.Error(),
+		}
+	}
+	return model.SyncResultItem{
+		NoteID:       updated.ID,
+		Status:       "pulled",
+		ExternalPath: notionExternalPath(remote.PageID),
+		ExternalID:   remote.PageID,
+		ExternalURL:  remote.URL,
+	}
+}
+
 func recordSyncedNotionRemote(note *model.Note, target model.SyncTarget, remote notionRemoteNote, direction string) error {
+	state, err := notionSyncedState(note, target, remote, direction)
+	if err != nil {
+		return err
+	}
+	return repository.UpsertSyncState(state)
+}
+
+func notionSyncedState(note *model.Note, target model.SyncTarget, remote notionRemoteNote, direction string) (*model.SyncState, error) {
 	if note == nil {
-		return errors.New("note is required")
+		return nil, errors.New("note is required")
 	}
 	if target.ID == "" {
-		return errors.New("target id is required")
+		return nil, errors.New("target id is required")
 	}
 	if strings.TrimSpace(remote.PageID) == "" {
-		return errors.New("notion page id is required")
+		return nil, errors.New("notion page id is required")
 	}
 
 	now := time.Now().Unix()
 	externalMTime := remote.LastEditedAt
-	return repository.UpsertSyncState(&model.SyncState{
+	return &model.SyncState{
 		NoteID:        note.ID,
 		TargetID:      target.ID,
 		ExternalPath:  notionExternalPath(remote.PageID),
@@ -794,7 +912,7 @@ func recordSyncedNotionRemote(note *model.Note, target model.SyncTarget, remote 
 		LastSyncedAt:  &now,
 		Status:        "synced",
 		ErrorMessage:  nil,
-	})
+	}, nil
 }
 
 func markNotionExternalDeleted(state model.SyncState, target model.SyncTarget) model.SyncResultItem {
