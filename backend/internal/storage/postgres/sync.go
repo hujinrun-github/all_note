@@ -245,6 +245,11 @@ func (r syncRepository) ListExternalDeletedStates(ctx context.Context, targetID 
 	return items, rows.Err()
 }
 
+func (r syncRepository) LockBindingSlot(ctx context.Context, noteID string) error {
+	_, err := r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, "note_sync_binding:"+noteID)
+	return err
+}
+
 func (r syncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
 	return scanPostgresNoteSyncBinding(r.db.QueryRowContext(ctx, postgresBindingSelectSQL()+`
 		WHERE note_id = $1

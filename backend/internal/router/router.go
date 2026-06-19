@@ -20,6 +20,9 @@ func Setup() *gin.Engine {
 		api.POST("/notes", handler.CreateNote)
 		api.PATCH("/notes/:id", handler.UpdateNote)
 		api.DELETE("/notes/:id", handler.DeleteNote)
+		api.GET("/notes/:id/sync-binding", handler.GetNoteSyncBinding)
+		api.PUT("/notes/:id/sync-binding", handler.PutNoteSyncBinding)
+		api.DELETE("/notes/:id/sync-binding", handler.DeleteNoteSyncBinding)
 		api.GET("/notes/:id/sync-state", handler.GetNoteSyncState)
 
 		api.GET("/sync/targets", handler.ListSyncTargets)

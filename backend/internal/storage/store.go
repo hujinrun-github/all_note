@@ -146,6 +146,7 @@ type SyncRepository interface {
 	ListStatesByTarget(context.Context, string) ([]model.SyncState, error)
 	DeleteState(context.Context, string, string) error
 	ListExternalDeletedStates(context.Context, string) ([]model.ExternalDeletedNote, error)
+	LockBindingSlot(ctx context.Context, noteID string) error
 	GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error)
 	PutBinding(ctx context.Context, binding model.NoteSyncBinding) error
 	DeleteBinding(ctx context.Context, noteID string) error
