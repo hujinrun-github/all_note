@@ -1,10 +1,12 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hujinrun/flowspace/internal/model"
@@ -151,6 +153,159 @@ func TestSyncNoteIgnoresRequiredTagsForExplicitBoundNote(t *testing.T) {
 	}
 }
 
+func TestNotionUpdateUsesExistingClaim(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123"}`)
+	note := createServiceStoreNote(t, "Existing Claim", "Body\n", "[]")
+	putServiceStoreBinding(t, store, note.ID, target.ID)
+	if err := store.Sync().PutExternalClaim(t.Context(), model.SyncExternalClaim{
+		ExternalKey:  "notion:page-existing",
+		NoteID:       note.ID,
+		TargetID:     target.ID,
+		ExternalType: "notion_page",
+		ExternalID:   "page-existing",
+	}); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	item, err := SyncNote(note.ID)
+
+	if err != nil {
+		t.Fatalf("sync note: %v", err)
+	}
+	if item.ExternalID != "page-existing" || len(fake.updated) != 1 || fake.updated[0] != "page-existing" {
+		t.Fatalf("item = %+v created = %#v updated = %#v", item, fake.created, fake.updated)
+	}
+	if len(fake.created) != 0 {
+		t.Fatalf("created = %#v, want none", fake.created)
+	}
+}
+
+func TestNotionUpdateRejectsStaleStateClaimBeforeRemoteWrite(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123"}`)
+	noteA := createServiceStoreNote(t, "Stale State A", "Body A\n", "[]")
+	noteB := createServiceStoreNote(t, "Claim Owner B", "Body B\n", "[]")
+	putServiceStoreBinding(t, store, noteA.ID, target.ID)
+	putServiceStoreBinding(t, store, noteB.ID, target.ID)
+	if err := store.Sync().UpsertState(t.Context(), &model.SyncState{
+		NoteID:        noteA.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-conflict",
+		ExternalID:    "page-conflict",
+		ContentHash:   "old-local",
+		ExternalHash:  "old-remote",
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("put stale state: %v", err)
+	}
+	if err := store.Sync().PutExternalClaim(t.Context(), model.SyncExternalClaim{
+		ExternalKey:  "notion:page-conflict",
+		NoteID:       noteB.ID,
+		TargetID:     target.ID,
+		ExternalType: "notion_page",
+		ExternalID:   "page-conflict",
+	}); err != nil {
+		t.Fatalf("put conflicting claim: %v", err)
+	}
+
+	_, err := SyncNote(noteA.ID)
+
+	if err == nil || !strings.Contains(err.Error(), ErrSyncClaimConflict.Error()) {
+		t.Fatalf("error = %v, want claim conflict", err)
+	}
+	if len(fake.updated) != 0 {
+		t.Fatalf("updated = %#v, want no remote write before claim conflict", fake.updated)
+	}
+}
+
+func TestNotionCreatePageRecordsClaimAndState(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123"}`)
+	note := createServiceStoreNote(t, "Claimed Notion", "Body\n", "[]")
+	putServiceStoreBinding(t, store, note.ID, target.ID)
+
+	item, err := SyncNote(note.ID)
+
+	if err != nil {
+		t.Fatalf("sync note: %v", err)
+	}
+	if item.ExternalID != "created-"+note.ID {
+		t.Fatalf("item = %+v", item)
+	}
+	claim, err := store.Sync().GetExternalClaimByNote(t.Context(), note.ID)
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if claim.ExternalKey != "notion:"+item.ExternalID || claim.ExternalID != item.ExternalID || claim.TargetID != target.ID {
+		t.Fatalf("claim = %+v item = %+v", claim, item)
+	}
+	state, err := store.Sync().GetState(t.Context(), note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if state.ExternalID != item.ExternalID || state.ExternalPath != "notion:"+item.ExternalID {
+		t.Fatalf("state = %+v item = %+v", state, item)
+	}
+}
+
+func TestNotionCreatePageDatabaseFailureLeavesRecoverableFlowSpaceID(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &recoverableNotionGateway{fakeNotionGateway: &fakeNotionGateway{}}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123","required_tags":["sync"]}`)
+	note := createServiceStoreNote(t, "Recoverable Notion", "Body\n", `["sync"]`)
+	putServiceStoreBinding(t, store, note.ID, target.ID)
+	remainingFailures := 1
+	repository.SetStore(&putClaimFailOnceStore{
+		Store:     store,
+		err:       errors.New("claim database unavailable"),
+		remaining: &remainingFailures,
+	})
+
+	_, err := SyncNote(note.ID)
+
+	if err == nil {
+		t.Fatal("expected first sync to fail after remote create")
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("created after first sync = %#v, want one created page", fake.created)
+	}
+
+	item, err := SyncNote(note.ID)
+
+	if err != nil {
+		t.Fatalf("retry sync note: %v", err)
+	}
+	if item.ExternalID != "created-"+note.ID {
+		t.Fatalf("item = %+v", item)
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("created after retry = %#v, want no duplicate page", fake.created)
+	}
+	claim, err := store.Sync().GetExternalClaimByNote(t.Context(), note.ID)
+	if err != nil {
+		t.Fatalf("get recovered claim: %v", err)
+	}
+	if claim.ExternalID != "created-"+note.ID || claim.TargetID != target.ID {
+		t.Fatalf("claim = %+v", claim)
+	}
+	state, err := store.Sync().GetState(t.Context(), note.ID, target.ID)
+	if err != nil {
+		t.Fatalf("get recovered state: %v", err)
+	}
+	if state.ExternalID != claim.ExternalID {
+		t.Fatalf("state = %+v claim = %+v", state, claim)
+	}
+}
+
 func TestTargetPushOnlyProcessesBoundNotesForTarget(t *testing.T) {
 	store := openServiceSyncStoreTestDB(t)
 	fake := &fakeNotionGateway{}
@@ -212,6 +367,117 @@ func TestTargetPullRejectsBindingConflict(t *testing.T) {
 
 	if !errors.Is(err, ErrSyncBindingConflict) {
 		t.Fatalf("error = %v, want ErrSyncBindingConflict", err)
+	}
+}
+
+func TestNotionPullDoesNotAutoBindSuppressedNote(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123","required_tags":["sync"]}`)
+	note := createServiceStoreNote(t, "Suppressed Notion", "Original\n", "[]")
+	if err := store.Sync().PutSuppression(t.Context(), model.NoteSyncSuppression{
+		NoteID:   note.ID,
+		TargetID: target.ID,
+		Reason:   "user_unbound",
+	}); err != nil {
+		t.Fatalf("put suppression: %v", err)
+	}
+	fake.pages = []notionRemoteNote{{
+		PageID:      "page-suppressed",
+		Title:       "Suppressed Notion",
+		Markdown:    "Remote body\n",
+		FlowSpaceID: note.ID,
+		Tags:        []string{"sync"},
+	}}
+
+	result, err := SyncTargetPull(target.ID)
+
+	if err != nil {
+		t.Fatalf("target pull: %v", err)
+	}
+	if result.Failed != 1 || len(result.Items) != 1 || result.Items[0].ErrorMessage != ErrSyncBindingRequired.Error() {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, err := store.Sync().GetBinding(t.Context(), note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+	if got.Body != "Original\n" {
+		t.Fatalf("body = %q, want unchanged", got.Body)
+	}
+}
+
+func TestNotionPullDetectsForeignBindingByFlowSpaceID(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	targetA := saveServiceStoreNotionTargetNamed(t, "Notion Foreign A", `{"data_source_id":"ds-a","required_tags":["sync"]}`)
+	targetB := saveServiceStoreNotionTargetNamed(t, "Notion Foreign B", `{"data_source_id":"ds-b","required_tags":["sync"]}`)
+	note := createServiceStoreNote(t, "Foreign Notion", "Original\n", "[]")
+	putServiceStoreBinding(t, store, note.ID, targetA.ID)
+	fake.pages = []notionRemoteNote{{
+		PageID:      "page-foreign",
+		Title:       "Foreign Notion",
+		Markdown:    "Remote body\n",
+		FlowSpaceID: note.ID,
+		Tags:        []string{"sync"},
+	}}
+
+	result, err := SyncTargetPull(targetB.ID)
+
+	if err != nil {
+		t.Fatalf("target pull: %v", err)
+	}
+	if result.Failed != 1 || len(result.Items) != 1 || result.Items[0].ErrorMessage != ErrSyncBindingConflict.Error() {
+		t.Fatalf("result = %+v", result)
+	}
+	got, err := repository.GetNoteByID(note.ID)
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+	if got.Body != "Original\n" {
+		t.Fatalf("body = %q, want unchanged", got.Body)
+	}
+}
+
+func TestNotionPullChecksTombstoneByFormerNoteID(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123","required_tags":["sync"]}`)
+	formerNoteID := "abcdef12-1234-1234-1234-abcdef123456"
+	if err := store.Sync().PutImportTombstone(t.Context(), model.SyncImportTombstone{
+		ExternalKey:  "notion:old-page",
+		TargetID:     target.ID,
+		FormerNoteID: formerNoteID,
+		ExternalType: "notion_page",
+		ExternalID:   "old-page",
+		Reason:       "note_deleted",
+	}); err != nil {
+		t.Fatalf("put tombstone: %v", err)
+	}
+	fake.pages = []notionRemoteNote{{
+		PageID:      "page-renamed",
+		Title:       "Renamed Tombstone",
+		Markdown:    "Remote body\n",
+		FlowSpaceID: formerNoteID,
+		Tags:        []string{"sync"},
+	}}
+
+	result, err := SyncTargetPull(target.ID)
+
+	if err != nil {
+		t.Fatalf("target pull: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != "import_tombstoned" {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, err := repository.GetNoteByID(formerNoteID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -470,6 +736,76 @@ func TestObsidianRestoreDeletionUsesTargetID(t *testing.T) {
 	}
 }
 
+func TestNotionDeleteCandidatesAreTargetScoped(t *testing.T) {
+	openServiceSyncStoreTestDB(t)
+	targetA := saveServiceStoreNotionTargetNamed(t, "Delete Notion A", `{"data_source_id":"ds-a"}`)
+	targetB := saveServiceStoreNotionTargetNamed(t, "Delete Notion B", `{"data_source_id":"ds-b"}`)
+	noteA := createServiceStoreNote(t, "Deleted Notion A", "Body\n", "[]")
+	noteB := createServiceStoreNote(t, "Deleted Notion B", "Body\n", "[]")
+	putNotionExternalDeletedStateForServiceTest(t, noteA.ID, targetA.ID, "page-a")
+	putNotionExternalDeletedStateForServiceTest(t, noteB.ID, targetB.ID, "page-b")
+
+	items, err := ListNotionDeletionCandidatesForTarget(targetB.ID)
+
+	if err != nil {
+		t.Fatalf("list deletions: %v", err)
+	}
+	if len(items) != 1 || items[0].NoteID != noteB.ID {
+		t.Fatalf("items = %+v, want only %s", items, noteB.ID)
+	}
+}
+
+func TestNotionConfirmDeletionUsesTargetID(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	target := saveServiceStoreNotionTargetNamed(t, "Confirm Notion", `{"data_source_id":"ds-confirm"}`)
+	note := createServiceStoreNote(t, "Confirm Notion", "Body\n", "[]")
+	putServiceStoreBinding(t, store, note.ID, target.ID)
+	putNotionExternalDeletedStateForServiceTest(t, note.ID, target.ID, "page-confirm")
+	if err := store.Sync().PutExternalClaim(t.Context(), model.SyncExternalClaim{
+		ExternalKey:  "notion:page-confirm",
+		NoteID:       note.ID,
+		TargetID:     target.ID,
+		ExternalType: "notion_page",
+		ExternalID:   "page-confirm",
+		ExternalPath: "notion:page-confirm",
+	}); err != nil {
+		t.Fatalf("put external claim: %v", err)
+	}
+
+	if err := ConfirmNotionDeletionForTarget(note.ID, target.ID); err != nil {
+		t.Fatalf("confirm deletion: %v", err)
+	}
+	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
+	}
+	tombstone, err := store.Sync().FindImportTombstone(t.Context(), target.ID, "notion:page-confirm", note.ID, "notion_page")
+	if err != nil {
+		t.Fatalf("find tombstone: %v", err)
+	}
+	if tombstone.Reason != "note_deleted" || tombstone.ExternalID != "page-confirm" {
+		t.Fatalf("tombstone = %+v", tombstone)
+	}
+}
+
+func TestNotionRestoreDeletionUsesTargetID(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTargetNamed(t, "Restore Notion", `{"data_source_id":"ds-restore"}`)
+	note := createServiceStoreNote(t, "Restore Notion", "Body\n", "[]")
+	putServiceStoreBinding(t, store, note.ID, target.ID)
+	putNotionExternalDeletedStateForServiceTest(t, note.ID, target.ID, "page-restore")
+
+	item, err := RestoreNotionDeletionForTarget(note.ID, target.ID)
+
+	if err != nil {
+		t.Fatalf("restore deletion: %v", err)
+	}
+	if item.ExternalID == "" || len(fake.restored) != 1 || fake.restored[0] != note.ID {
+		t.Fatalf("item = %+v restored = %#v", item, fake.restored)
+	}
+}
+
 func TestTargetPullImportsNewObsidianNoteWithBinding(t *testing.T) {
 	store := openServiceSyncStoreTestDB(t)
 	vault := t.TempDir()
@@ -617,6 +953,57 @@ func withServiceNotionGateway(t *testing.T, gateway notionSyncGateway) {
 	})
 }
 
+type recoverableNotionGateway struct {
+	*fakeNotionGateway
+}
+
+func (fake *recoverableNotionGateway) CreateRemoteNote(config notionTargetConfig, note *model.Note) (notionRemoteNote, error) {
+	remote, err := fake.fakeNotionGateway.CreateRemoteNote(config, note)
+	if err != nil {
+		return notionRemoteNote{}, err
+	}
+	fake.pages = append(fake.pages, remote)
+	return remote, nil
+}
+
+type putClaimFailOnceStore struct {
+	storage.Store
+	err       error
+	remaining *int
+}
+
+func (store *putClaimFailOnceStore) Transact(ctx context.Context, fn func(storage.Store) error) error {
+	return store.Store.Transact(ctx, func(txStore storage.Store) error {
+		return fn(&putClaimFailOnceStore{
+			Store:     txStore,
+			err:       store.err,
+			remaining: store.remaining,
+		})
+	})
+}
+
+func (store *putClaimFailOnceStore) Sync() storage.SyncRepository {
+	return &putClaimFailOnceSyncRepository{
+		SyncRepository: store.Store.Sync(),
+		err:            store.err,
+		remaining:      store.remaining,
+	}
+}
+
+type putClaimFailOnceSyncRepository struct {
+	storage.SyncRepository
+	err       error
+	remaining *int
+}
+
+func (repo *putClaimFailOnceSyncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
+	if repo.remaining != nil && *repo.remaining > 0 {
+		*repo.remaining--
+		return repo.err
+	}
+	return repo.SyncRepository.PutExternalClaim(ctx, claim)
+}
+
 func putExternalDeletedStateForServiceTest(t *testing.T, noteID string, targetID string, externalPath string) {
 	t.Helper()
 	now := int64(1700000000)
@@ -631,5 +1018,24 @@ func putExternalDeletedStateForServiceTest(t *testing.T, noteID string, targetID
 		Status:        "external_deleted",
 	}); err != nil {
 		t.Fatalf("upsert external deleted state: %v", err)
+	}
+}
+
+func putNotionExternalDeletedStateForServiceTest(t *testing.T, noteID string, targetID string, pageID string) {
+	t.Helper()
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        noteID,
+		TargetID:      targetID,
+		ExternalPath:  notionExternalPath(pageID),
+		ExternalID:    pageID,
+		ExternalURL:   "https://www.notion.so/" + pageID,
+		ContentHash:   "content",
+		ExternalHash:  "external",
+		LastDirection: "delete_detected",
+		LastSyncedAt:  &now,
+		Status:        "external_deleted",
+	}); err != nil {
+		t.Fatalf("upsert notion external deleted state: %v", err)
 	}
 }

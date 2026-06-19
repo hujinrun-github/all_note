@@ -297,6 +297,24 @@ func syncNoteToExplicitNotionTarget(note *model.Note, target model.SyncTarget) (
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("load notion sync state: %w", err)
 	}
+	if !hasState {
+		if store := repository.CurrentStore(); store != nil {
+			claim, err := store.Sync().GetExternalClaimByNote(context.Background(), note.ID)
+			if err == nil && claim.TargetID == target.ID && claim.ExternalType == "notion_page" && strings.TrimSpace(claim.ExternalID) != "" {
+				state = model.SyncState{
+					NoteID:       note.ID,
+					TargetID:     target.ID,
+					ExternalPath: notionExternalPath(claim.ExternalID),
+					ExternalID:   claim.ExternalID,
+					ExternalURL:  "",
+					Status:       "synced",
+				}
+				hasState = true
+			} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("load notion external claim: %w", err)
+			}
+		}
+	}
 	item := NewNotionSyncService(gateway).pushNotionLocalNote(config, target, *note, state, hasState)
 	if item.Status == "failed" {
 		return &item, errors.New(item.ErrorMessage)

@@ -176,6 +176,14 @@ func ListNotionDeletionCandidates() ([]model.ExternalDeletedNote, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ListNotionDeletionCandidatesForTarget(target.ID)
+}
+
+func ListNotionDeletionCandidatesForTarget(targetID string) ([]model.ExternalDeletedNote, error) {
+	target, err := loadNotionTargetByID(targetID)
+	if err != nil {
+		return nil, err
+	}
 	return repository.ListExternalDeletedSyncStates(target.ID)
 }
 
@@ -184,11 +192,23 @@ func ConfirmNotionDeletion(noteID string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := loadNotionExternalDeletedState(noteID, target.ID); err != nil {
+	return ConfirmNotionDeletionForTarget(noteID, target.ID)
+}
+
+func ConfirmNotionDeletionForTarget(noteID string, targetID string) error {
+	target, err := loadNotionTargetByID(targetID)
+	if err != nil {
+		return err
+	}
+	state, err := loadNotionExternalDeletedState(noteID, target.ID)
+	if err != nil {
 		return err
 	}
 	if _, err := loadNotionDeletionNote(noteID); err != nil {
 		return err
+	}
+	if store := repository.CurrentStore(); store != nil {
+		return confirmNotionDeletionWithStore(store, noteID, target, state)
 	}
 	if err := repository.DeleteNote(noteID); err != nil {
 		return fmt.Errorf("delete note: %w", err)
@@ -199,8 +219,67 @@ func ConfirmNotionDeletion(noteID string) error {
 	return nil
 }
 
+func confirmNotionDeletionWithStore(store storage.Store, noteID string, target *model.SyncTarget, state *model.SyncState) error {
+	ctx := context.Background()
+	return store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, noteID); err != nil {
+			return err
+		}
+		tombstone, err := notionDeletionTombstone(ctx, txStore, noteID, target, state)
+		if err != nil {
+			return err
+		}
+		if err := txStore.Sync().PutImportTombstone(ctx, tombstone); err != nil {
+			return fmt.Errorf("write notion deletion tombstone: %w", err)
+		}
+		if err := txStore.Notes().Delete(ctx, noteID); err != nil {
+			return fmt.Errorf("delete note: %w", err)
+		}
+		if err := txStore.Sync().DeleteState(ctx, noteID, target.ID); err != nil {
+			return fmt.Errorf("delete notion sync state: %w", err)
+		}
+		return nil
+	})
+}
+
+func notionDeletionTombstone(ctx context.Context, store storage.Store, noteID string, target *model.SyncTarget, state *model.SyncState) (model.SyncImportTombstone, error) {
+	claim, err := store.Sync().GetExternalClaimByNote(ctx, noteID)
+	if err == nil {
+		return model.SyncImportTombstone{
+			ExternalKey:  claim.ExternalKey,
+			TargetID:     claim.TargetID,
+			FormerNoteID: noteID,
+			ExternalType: claim.ExternalType,
+			ExternalID:   claim.ExternalID,
+			ExternalPath: claim.ExternalPath,
+			Reason:       "note_deleted",
+		}, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.SyncImportTombstone{}, fmt.Errorf("load external claim: %w", err)
+	}
+	pageID := notionStateExternalID(*state)
+	return model.SyncImportTombstone{
+		ExternalKey:  notionExternalKey(pageID),
+		TargetID:     target.ID,
+		FormerNoteID: noteID,
+		ExternalType: "notion_page",
+		ExternalID:   pageID,
+		ExternalPath: notionExternalPath(pageID),
+		Reason:       "note_deleted",
+	}, nil
+}
+
 func RestoreNotionDeletion(noteID string) (*model.SyncResultItem, error) {
 	target, err := loadNotionDeletionTarget()
+	if err != nil {
+		return nil, err
+	}
+	return RestoreNotionDeletionForTarget(noteID, target.ID)
+}
+
+func RestoreNotionDeletionForTarget(noteID string, targetID string) (*model.SyncResultItem, error) {
+	target, err := loadNotionTargetByID(targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -263,6 +342,23 @@ func loadNotionDeletionTarget() (*model.SyncTarget, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load notion sync target: %w", err)
+	}
+	return target, nil
+}
+
+func loadNotionTargetByID(targetID string) (*model.SyncTarget, error) {
+	if strings.TrimSpace(targetID) == "" {
+		return nil, fmt.Errorf("%w: notion sync target not found", ErrNotionDeletionNotFound)
+	}
+	target, err := repository.GetSyncTarget(targetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: notion sync target not found", ErrNotionDeletionNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load notion sync target: %w", err)
+	}
+	if target.Type != "notion" {
+		return nil, fmt.Errorf("%w: sync target is not notion", ErrNotionDeletionNotFound)
 	}
 	return target, nil
 }
@@ -354,6 +450,10 @@ func (svc *NotionSyncService) SyncBidirectional(target model.SyncTarget) model.N
 		}
 
 		remoteExternalIDs[remote.PageID] = struct{}{}
+		if item := checkNotionExternalBlockers(remote, target, statesByExternal); item != nil {
+			addNotionBlockedItem(&result, *item)
+			continue
+		}
 		state, hasState := matchNotionSyncState(remote, statesByNote, statesByExternal)
 		note, hasNote := matchNotionLocalNote(remote, state, hasState, notes)
 
@@ -519,6 +619,10 @@ func (svc *NotionSyncService) PullRemote(target model.SyncTarget) model.NotionBi
 		if !tagsMatchRequiredSyncTags(remote.Tags, config.RequiredTags) {
 			continue
 		}
+		if item := checkNotionExternalBlockers(remote, target, statesByExternal); item != nil {
+			addNotionBlockedItem(&result, *item)
+			continue
+		}
 		state, hasState := matchNotionSyncState(remote, statesByNote, statesByExternal)
 		note, hasNote := matchNotionLocalNote(remote, state, hasState, notes)
 
@@ -655,8 +759,40 @@ func (svc *NotionSyncService) PushAll(target model.SyncTarget) model.SyncBatchRe
 func (svc *NotionSyncService) pushNotionLocalNote(config notionTargetConfig, target model.SyncTarget, note model.Note, state model.SyncState, hasState bool) model.SyncResultItem {
 	var remote notionRemoteNote
 	var err error
+	if !hasState {
+		recovered, ok, err := svc.findExistingNotionRemoteByFlowSpaceID(config, note.ID)
+		if err != nil {
+			return model.SyncResultItem{
+				NoteID:       note.ID,
+				Status:       "failed",
+				ErrorMessage: fmt.Errorf("query notion notes for recovery: %w", err).Error(),
+			}
+		}
+		if ok {
+			state = model.SyncState{
+				NoteID:       note.ID,
+				TargetID:     target.ID,
+				ExternalPath: notionExternalPath(recovered.PageID),
+				ExternalID:   recovered.PageID,
+				ExternalURL:  recovered.URL,
+				Status:       "synced",
+			}
+			hasState = true
+		}
+	}
 	if hasState && notionStateExternalID(state) != "" {
-		remote, err = svc.gateway.UpdateRemoteNote(config, notionStateExternalID(state), &note)
+		pageID := notionStateExternalID(state)
+		if err := reserveNotionClaimBeforeRemoteWrite(&note, target, pageID); err != nil {
+			return model.SyncResultItem{
+				NoteID:       note.ID,
+				Status:       "failed",
+				ExternalPath: notionExternalPath(pageID),
+				ExternalID:   pageID,
+				ExternalURL:  state.ExternalURL,
+				ErrorMessage: fmt.Errorf("reserve notion external claim: %w", err).Error(),
+			}
+		}
+		remote, err = svc.gateway.UpdateRemoteNote(config, pageID, &note)
 	} else {
 		remote, err = svc.gateway.CreateRemoteNote(config, &note)
 	}
@@ -694,6 +830,66 @@ func (svc *NotionSyncService) pushNotionLocalNote(config notionTargetConfig, tar
 		ExternalID:   remote.PageID,
 		ExternalURL:  remote.URL,
 	}
+}
+
+func (svc *NotionSyncService) findExistingNotionRemoteByFlowSpaceID(config notionTargetConfig, noteID string) (notionRemoteNote, bool, error) {
+	noteID = strings.TrimSpace(noteID)
+	if svc == nil || svc.gateway == nil || noteID == "" {
+		return notionRemoteNote{}, false, nil
+	}
+	remoteNotes, err := svc.gateway.QueryRemoteNotes(config)
+	if err != nil {
+		return notionRemoteNote{}, false, err
+	}
+	for _, remote := range remoteNotes {
+		remote = withNotionRemoteDefaults(remote)
+		if remote.PageID != "" && remote.FlowSpaceID == noteID {
+			return remote, true, nil
+		}
+	}
+	return notionRemoteNote{}, false, nil
+}
+
+func reserveNotionClaimBeforeRemoteWrite(note *model.Note, target model.SyncTarget, pageID string) error {
+	store := repository.CurrentStore()
+	if store == nil || note == nil {
+		return nil
+	}
+	pageID = strings.TrimSpace(pageID)
+	if pageID == "" {
+		return nil
+	}
+	ctx := context.Background()
+	return store.Transact(ctx, func(txStore storage.Store) error {
+		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+			return err
+		}
+		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+			return err
+		}
+		externalKey := notionExternalKey(pageID)
+		if err := txStore.Sync().LockBindingSlot(ctx, "external_claim:"+externalKey); err != nil {
+			return err
+		}
+		existing, err := txStore.Sync().GetExternalClaim(ctx, externalKey)
+		if err == nil {
+			if existing.NoteID != note.ID || existing.TargetID != target.ID {
+				return ErrSyncClaimConflict
+			}
+			return nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("load notion external claim: %w", err)
+		}
+		return txStore.Sync().PutExternalClaim(ctx, model.SyncExternalClaim{
+			ExternalKey:  externalKey,
+			NoteID:       note.ID,
+			TargetID:     target.ID,
+			ExternalType: "notion_page",
+			ExternalID:   pageID,
+			ExternalPath: notionExternalPath(pageID),
+		})
+	})
 }
 
 func importNotionRemoteNote(remote notionRemoteNote, target model.SyncTarget) model.SyncResultItem {
@@ -759,14 +955,7 @@ func importNotionRemoteNoteWithStore(store storage.Store, remote notionRemoteNot
 		if err := bindImportedNoteToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
 			return err
 		}
-		state, err := notionSyncedState(note, target, remote, "import")
-		if err != nil {
-			return err
-		}
-		if err := txStore.Sync().UpsertState(ctx, state); err != nil {
-			return fmt.Errorf("record imported notion sync state: %w", err)
-		}
-		return nil
+		return putNotionClaimAndStateInStore(ctx, txStore, note, target, remote, "import")
 	})
 	if err != nil {
 		return model.SyncResultItem{
@@ -850,14 +1039,7 @@ func pullNotionRemoteIntoNoteWithStore(store storage.Store, note model.Note, rem
 		if err != nil {
 			return fmt.Errorf("pull notion note: %w", err)
 		}
-		state, err := notionSyncedState(updated, target, remote, "pull")
-		if err != nil {
-			return err
-		}
-		if err := txStore.Sync().UpsertState(ctx, state); err != nil {
-			return fmt.Errorf("record pulled notion sync state: %w", err)
-		}
-		return nil
+		return putNotionClaimAndStateInStore(ctx, txStore, updated, target, remote, "pull")
 	})
 	if err != nil {
 		return model.SyncResultItem{
@@ -879,11 +1061,55 @@ func pullNotionRemoteIntoNoteWithStore(store storage.Store, note model.Note, rem
 }
 
 func recordSyncedNotionRemote(note *model.Note, target model.SyncTarget, remote notionRemoteNote, direction string) error {
+	if store := repository.CurrentStore(); store != nil {
+		ctx := context.Background()
+		return store.Transact(ctx, func(txStore storage.Store) error {
+			if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
+				return err
+			}
+			if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+				return err
+			}
+			return putNotionClaimAndStateInStore(ctx, txStore, note, target, remote, direction)
+		})
+	}
 	state, err := notionSyncedState(note, target, remote, direction)
 	if err != nil {
 		return err
 	}
 	return repository.UpsertSyncState(state)
+}
+
+func putNotionClaimAndStateInStore(ctx context.Context, store storage.Store, note *model.Note, target model.SyncTarget, remote notionRemoteNote, direction string) error {
+	externalKey := notionExternalKey(remote.PageID)
+	if err := store.Sync().LockBindingSlot(ctx, "external_claim:"+externalKey); err != nil {
+		return err
+	}
+	existing, err := store.Sync().GetExternalClaim(ctx, externalKey)
+	if err == nil && (existing.NoteID != note.ID || existing.TargetID != target.ID) {
+		return ErrSyncClaimConflict
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load notion external claim: %w", err)
+	}
+	if err := store.Sync().PutExternalClaim(ctx, model.SyncExternalClaim{
+		ExternalKey:  externalKey,
+		NoteID:       note.ID,
+		TargetID:     target.ID,
+		ExternalType: "notion_page",
+		ExternalID:   remote.PageID,
+		ExternalPath: notionExternalPath(remote.PageID),
+	}); err != nil {
+		return fmt.Errorf("record notion external claim: %w", err)
+	}
+	state, err := notionSyncedState(note, target, remote, direction)
+	if err != nil {
+		return err
+	}
+	if err := store.Sync().UpsertState(ctx, state); err != nil {
+		return fmt.Errorf("record notion sync state: %w", err)
+	}
+	return nil
 }
 
 func notionSyncedState(note *model.Note, target model.SyncTarget, remote notionRemoteNote, direction string) (*model.SyncState, error) {
@@ -1027,6 +1253,64 @@ func notionRemoteTitle(remote notionRemoteNote) string {
 	return title
 }
 
+func checkNotionExternalBlockers(remote notionRemoteNote, target model.SyncTarget, statesByExternal map[string]model.SyncState) *model.SyncResultItem {
+	store := repository.CurrentStore()
+	if store == nil {
+		return nil
+	}
+	externalKey := notionExternalKey(remote.PageID)
+	ctx := context.Background()
+	tombstone, err := store.Sync().FindImportTombstone(ctx, target.ID, externalKey, strings.TrimSpace(remote.FlowSpaceID), "notion_page")
+	if err == nil {
+		return &model.SyncResultItem{
+			NoteID:       tombstone.FormerNoteID,
+			Status:       "import_tombstoned",
+			ExternalPath: notionExternalPath(remote.PageID),
+			ExternalID:   remote.PageID,
+			ExternalURL:  remote.URL,
+			ErrorMessage: "external resource was previously removed from sync",
+		}
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return &model.SyncResultItem{
+			NoteID:       strings.TrimSpace(remote.FlowSpaceID),
+			Status:       "failed",
+			ExternalPath: notionExternalPath(remote.PageID),
+			ExternalID:   remote.PageID,
+			ExternalURL:  remote.URL,
+			ErrorMessage: fmt.Errorf("check import tombstone: %w", err).Error(),
+		}
+	}
+	claim, err := store.Sync().GetExternalClaim(ctx, externalKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return &model.SyncResultItem{
+			NoteID:       strings.TrimSpace(remote.FlowSpaceID),
+			Status:       "failed",
+			ExternalPath: notionExternalPath(remote.PageID),
+			ExternalID:   remote.PageID,
+			ExternalURL:  remote.URL,
+			ErrorMessage: fmt.Errorf("check external claim: %w", err).Error(),
+		}
+	}
+	if claim.TargetID == target.ID && claim.NoteID == strings.TrimSpace(remote.FlowSpaceID) && strings.TrimSpace(remote.FlowSpaceID) != "" {
+		return nil
+	}
+	if state, ok := statesByExternal[remote.PageID]; ok && claim.TargetID == target.ID && claim.NoteID == state.NoteID {
+		return nil
+	}
+	return &model.SyncResultItem{
+		NoteID:       claim.NoteID,
+		Status:       "external_claim_conflict",
+		ExternalPath: notionExternalPath(remote.PageID),
+		ExternalID:   remote.PageID,
+		ExternalURL:  remote.URL,
+		ErrorMessage: ErrSyncClaimConflict.Error(),
+	}
+}
+
 func notionExternalPath(pageID string) string {
 	pageID = strings.TrimSpace(pageID)
 	if pageID == "" {
@@ -1035,9 +1319,18 @@ func notionExternalPath(pageID string) string {
 	return "notion:" + pageID
 }
 
+func notionExternalKey(pageID string) string {
+	return notionExternalPath(pageID)
+}
+
 func addNotionFailure(result *model.NotionBidirectionalResult, item model.SyncResultItem) {
 	result.Failed++
 	item.Status = "failed"
+	result.Items = append(result.Items, item)
+}
+
+func addNotionBlockedItem(result *model.NotionBidirectionalResult, item model.SyncResultItem) {
+	result.Failed++
 	result.Items = append(result.Items, item)
 }
 
