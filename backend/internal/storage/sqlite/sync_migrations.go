@@ -84,6 +84,31 @@ func ensureSQLiteSyncSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	return backfillSingleDefaultSyncTargets(db)
+}
+
+func backfillSingleDefaultSyncTargets(db *sql.DB) error {
+	_, err := db.Exec(`
+		UPDATE sync_targets
+		SET is_default = 1
+		WHERE enabled = 1
+			AND is_default = 0
+			AND NOT EXISTS (
+				SELECT 1
+				FROM sync_targets existing_default
+				WHERE existing_default.type = sync_targets.type
+					AND existing_default.is_default = 1
+			)
+			AND (
+				SELECT COUNT(*)
+				FROM sync_targets enabled_target
+				WHERE enabled_target.type = sync_targets.type
+					AND enabled_target.enabled = 1
+			) = 1
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill single default sync target: %w", err)
+	}
 	return nil
 }
 

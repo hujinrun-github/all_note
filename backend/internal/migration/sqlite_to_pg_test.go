@@ -131,6 +131,73 @@ func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
 	}
 }
 
+func TestSQLiteToPostgresBackfillsInitialBindingBeforeServiceSwitch(t *testing.T) {
+	basePGURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
+	if basePGURL == "" {
+		t.Skip("FLOWSPACE_TEST_DATABASE_URL is required")
+	}
+	pgURL := createMigrationPostgresSchema(t, basePGURL, fmt.Sprintf("fs_test_migration_binding_backfill_%d", time.Now().UnixNano()))
+	sqlitePath := seedMigrationSQLiteForBindingBackfill(t)
+
+	if err := MigrateSQLiteToPostgres(sqlitePath, pgURL); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	pgDB, err := sql.Open("pgx", pgURL)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer pgDB.Close()
+
+	var defaultTarget bool
+	if err := pgDB.QueryRow(`SELECT is_default FROM sync_targets WHERE id = 'target-new'`).Scan(&defaultTarget); err != nil {
+		t.Fatalf("query default target: %v", err)
+	}
+	if !defaultTarget {
+		t.Fatal("expected single enabled obsidian target to be backfilled as default")
+	}
+
+	var bindingTarget string
+	if err := pgDB.QueryRow(`SELECT target_id FROM note_sync_bindings WHERE note_id = 'note-legacy'`).Scan(&bindingTarget); err != nil {
+		t.Fatalf("query backfilled binding: %v", err)
+	}
+	if bindingTarget != "target-new" {
+		t.Fatalf("binding target = %q, want target-new", bindingTarget)
+	}
+
+	var claimNoteID string
+	if err := pgDB.QueryRow(`SELECT note_id FROM sync_external_claims WHERE external_key = $1`, `obsidian:D:\Vault\FlowSpace Notes\New.md`).Scan(&claimNoteID); err != nil {
+		t.Fatalf("query backfilled claim: %v", err)
+	}
+	if claimNoteID != "note-legacy" {
+		t.Fatalf("claim note = %q, want note-legacy", claimNoteID)
+	}
+
+	var tombstoneReason string
+	if err := pgDB.QueryRow(`SELECT reason FROM sync_import_tombstones WHERE external_key = 'notion:old-page'`).Scan(&tombstoneReason); err != nil {
+		if err := pgDB.QueryRow(`
+			SELECT reason
+			FROM sync_import_tombstones
+			WHERE target_id = 'target-old'
+				AND former_note_id = 'note-legacy'
+				AND external_type = 'notion_page'
+		`).Scan(&tombstoneReason); err != nil {
+			t.Fatalf("query losing target tombstone: %v", err)
+		}
+	}
+	if tombstoneReason != "target_changed" {
+		t.Fatalf("tombstone reason = %q, want target_changed", tombstoneReason)
+	}
+
+	var lastDirection string
+	if err := pgDB.QueryRow(`SELECT last_direction FROM note_sync_state WHERE note_id = 'note-deleted'`).Scan(&lastDirection); err != nil {
+		t.Fatalf("query delete direction: %v", err)
+	}
+	if lastDirection != "delete_detected" {
+		t.Fatalf("last_direction = %q, want delete_detected", lastDirection)
+	}
+}
+
 func TestSQLiteToPostgresValidatesSourceBeforeTouchingPostgres(t *testing.T) {
 	basePGURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
 	if basePGURL == "" {
@@ -202,6 +269,60 @@ func TestSQLiteToPostgresRejectsNonEmptySeedTables(t *testing.T) {
 	if !strings.Contains(err.Error(), "folders") {
 		t.Fatalf("expected folders safety error, got %v", err)
 	}
+}
+
+func seedMigrationSQLiteForBindingBackfill(t *testing.T) string {
+	t.Helper()
+	sqlitePath := createSQLiteWithSchema(t)
+	sqliteDB, err := sql.Open("sqlite", sqlitePath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sqliteDB.Close()
+	if _, err := sqliteDB.Exec(`
+		INSERT INTO folders (id, name, sort_order, created_at)
+		VALUES ('folder-legacy', 'Legacy', 1, 1800000000);
+
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+		VALUES
+			('note-legacy', 'Legacy Synced', 'Body', 'folder-legacy', '[]', 1800000000, 1800000100),
+			('note-deleted', 'Deleted Externally', 'Body', 'folder-legacy', '[]', 1800000000, 1800000100);
+
+		INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at)
+		VALUES
+			('target-old', 'notion', 'Old Notion', '', '', '{}', 1, 0, 0, 1800000000, 1800000100),
+			('target-new', 'obsidian', 'New Vault', 'D:\Vault', 'FlowSpace Notes', '{}', 1, 0, 0, 1800000000, 1800000200);
+
+		INSERT INTO note_sync_state (
+			note_id, target_id, external_path, external_id, external_url, content_hash,
+			external_hash, external_mtime, last_direction, last_synced_at, status, error_message
+		)
+		VALUES
+			('note-legacy', 'target-old', 'notion/old-page', 'old-page', '', 'old-local', 'old-external', 1800000200, 'push', 1800000200, 'synced', NULL),
+			('note-legacy', 'target-new', 'D:\Vault\FlowSpace Notes\New.md', '', '', 'new-local', 'new-external', 1800000300, 'pull', 1800000300, 'synced', NULL),
+			('note-deleted', 'target-old', 'notion/deleted-page', 'deleted-page', '', 'deleted-local', 'deleted-external', 1800000400, 'delete_detected', 1800000400, 'external_deleted', NULL);
+	`); err != nil {
+		t.Fatalf("seed binding backfill sqlite: %v", err)
+	}
+	if _, err := sqliteDB.Exec(`
+		DELETE FROM note_sync_bindings;
+		DELETE FROM sync_external_claims;
+		DELETE FROM note_sync_suppressions;
+		DELETE FROM sync_import_tombstones;
+	`); err != nil {
+		t.Fatalf("clear new sync tables: %v", err)
+	}
+	if _, err := sqliteDB.Exec(`
+		INSERT INTO sync_import_tombstones (
+			external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+		)
+		VALUES (
+			'notion:renamed-old-page', 'target-old', 'note-legacy', 'notion_page', 'renamed-old-page', '', 'target_changed', 1800000100, 1800000100
+		);
+	`); err != nil {
+		t.Fatalf("seed preexisting tombstone: %v", err)
+	}
+	return sqlitePath
 }
 
 func seedMigrationSQLite(t *testing.T) string {

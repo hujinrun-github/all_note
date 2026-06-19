@@ -169,6 +169,35 @@ func TestInitDBAddsNotionSyncColumns(t *testing.T) {
 	assertTableColumns(t, "note_sync_state", []string{"external_id", "external_url"})
 }
 
+func TestInitDBAddsSingleSyncTargetTablesAndBackfillsDefault(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.db")
+	createOldSyncStateDB(t, dbPath)
+	insertOldSyncStateRow(t, dbPath, "note-legacy", "target-legacy", "legacy-content-hash", "synced")
+	chdirBackendRoot(t)
+	t.Cleanup(func() {
+		if DB != nil {
+			DB.Close()
+			DB = nil
+		}
+	})
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	assertTableColumns(t, "note_sync_bindings", []string{"note_id", "target_id", "created_at", "updated_at"})
+	assertTableColumns(t, "sync_external_claims", []string{"external_key", "note_id", "target_id", "external_type"})
+	assertTableColumns(t, "note_sync_suppressions", []string{"note_id", "target_id", "reason"})
+	assertTableColumns(t, "sync_import_tombstones", []string{"external_key", "target_id", "former_note_id"})
+	target, err := GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		t.Fatalf("get default target: %v", err)
+	}
+	if target.ID != "target-legacy" {
+		t.Fatalf("default target = %q, want target-legacy", target.ID)
+	}
+}
+
 func TestSyncTargetRoundTripIncludesConfigJSON(t *testing.T) {
 	openSyncTestDB(t)
 

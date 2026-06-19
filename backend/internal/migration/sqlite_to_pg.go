@@ -80,6 +80,7 @@ func MigrateSQLiteToPostgres(sqlitePath, postgresURL string) error {
 		migrateNoteSyncSuppressions,
 		migrateSyncImportTombstones,
 		migrateSyncStates,
+		backfillInitialSyncBindings,
 	}
 	for _, step := range steps {
 		if err := step(ctx, sqliteDB, tx); err != nil {
@@ -136,6 +137,31 @@ func runLegacySQLiteUpgrade(db *sql.DB) error {
 			return err
 		}
 	}
+	return backfillSingleDefaultSyncTargets(db)
+}
+
+func backfillSingleDefaultSyncTargets(db *sql.DB) error {
+	_, err := db.Exec(`
+		UPDATE sync_targets
+		SET is_default = 1
+		WHERE enabled = 1
+			AND is_default = 0
+			AND NOT EXISTS (
+				SELECT 1
+				FROM sync_targets existing_default
+				WHERE existing_default.type = sync_targets.type
+					AND existing_default.is_default = 1
+			)
+			AND (
+				SELECT COUNT(*)
+				FROM sync_targets enabled_target
+				WHERE enabled_target.type = sync_targets.type
+					AND enabled_target.enabled = 1
+			) = 1
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill single default sync target: %w", err)
+	}
 	return nil
 }
 
@@ -151,6 +177,7 @@ func validateSQLiteSource(db *sql.DB) error {
 		{"tasks.scope", `SELECT COUNT(*) FROM tasks WHERE scope NOT IN ('daily','weekly','monthly','yearly')`},
 		{"events.time_range", `SELECT COUNT(*) FROM events WHERE end_time <= start_time`},
 		{"sync_targets.type", `SELECT COUNT(*) FROM sync_targets WHERE type NOT IN ('obsidian','notion')`},
+		{"sync_targets.default", `SELECT COUNT(*) FROM (SELECT type FROM sync_targets WHERE is_default = 1 GROUP BY type HAVING COUNT(*) > 1)`},
 		{"note_sync_state.status", `SELECT COUNT(*) FROM note_sync_state WHERE status NOT IN ('synced','pending','failed','external_deleted')`},
 		{"note_sync_state.last_direction", `SELECT COUNT(*) FROM note_sync_state WHERE last_direction IS NOT NULL AND last_direction NOT IN ('push','pull','import','restore','delete','delete_detected')`},
 	}
@@ -748,6 +775,130 @@ func migrateSyncStates(ctx context.Context, sqliteDB *sql.DB, tx *sql.Tx) error 
 		}
 	}
 	return rows.Err()
+}
+
+func backfillInitialSyncBindings(ctx context.Context, _ *sql.DB, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `
+		WITH ranked AS (
+			SELECT
+				s.note_id,
+				s.target_id,
+				t.type AS target_type,
+				COALESCE(s.external_id, '') AS external_id,
+				COALESCE(s.external_path, '') AS external_path,
+				CASE
+					WHEN t.type = 'notion' AND COALESCE(s.external_id, '') <> '' THEN 'notion:' || COALESCE(s.external_id, '')
+					WHEN t.type = 'obsidian' AND trim(COALESCE(s.external_path, '')) <> '' THEN 'obsidian:' || COALESCE(s.external_path, '')
+					ELSE ''
+				END AS external_key,
+				CASE
+					WHEN t.type = 'notion' THEN 'notion_page'
+					ELSE 'obsidian_file'
+				END AS external_type,
+				row_number() OVER (
+					PARTITION BY s.note_id
+					ORDER BY s.last_synced_at DESC NULLS LAST, s.external_mtime DESC NULLS LAST, s.target_id DESC
+				) AS rn
+			FROM note_sync_state s
+			JOIN sync_targets t ON t.id = s.target_id
+			LEFT JOIN note_sync_bindings existing_binding ON existing_binding.note_id = s.note_id
+			WHERE existing_binding.note_id IS NULL
+				AND s.status <> 'external_deleted'
+		)
+		DELETE FROM sync_import_tombstones tombstone
+		USING ranked
+		WHERE ranked.rn > 1
+			AND ranked.external_key <> ''
+			AND (
+				tombstone.external_key = ranked.external_key
+				OR (
+					tombstone.target_id = ranked.target_id
+					AND tombstone.former_note_id = ranked.note_id
+					AND tombstone.external_type = ranked.external_type
+				)
+			)
+	`); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		WITH ranked AS (
+			SELECT
+				s.note_id,
+				s.target_id,
+				t.type AS target_type,
+				COALESCE(s.external_id, '') AS external_id,
+				COALESCE(s.external_path, '') AS external_path,
+				COALESCE(s.last_synced_at, s.external_mtime, now()) AS sync_time,
+				CASE
+					WHEN t.type = 'notion' AND COALESCE(s.external_id, '') <> '' THEN 'notion:' || COALESCE(s.external_id, '')
+					WHEN t.type = 'obsidian' AND trim(COALESCE(s.external_path, '')) <> '' THEN 'obsidian:' || COALESCE(s.external_path, '')
+					ELSE ''
+				END AS external_key,
+				CASE
+					WHEN t.type = 'notion' THEN 'notion_page'
+					ELSE 'obsidian_file'
+				END AS external_type,
+				row_number() OVER (
+					PARTITION BY s.note_id
+					ORDER BY s.last_synced_at DESC NULLS LAST, s.external_mtime DESC NULLS LAST, s.target_id DESC
+				) AS rn
+			FROM note_sync_state s
+			JOIN sync_targets t ON t.id = s.target_id
+			LEFT JOIN note_sync_bindings existing_binding ON existing_binding.note_id = s.note_id
+			WHERE existing_binding.note_id IS NULL
+				AND s.status <> 'external_deleted'
+		),
+		inserted_bindings AS (
+		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
+		SELECT note_id, target_id, sync_time, sync_time
+		FROM ranked
+		WHERE rn = 1
+		ON CONFLICT (note_id) DO NOTHING
+			RETURNING note_id, target_id
+		),
+		inserted_claims AS (
+			INSERT INTO sync_external_claims (
+				external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+		)
+		SELECT
+			external_key,
+			note_id,
+			target_id,
+			external_type,
+			CASE WHEN target_type = 'notion' THEN external_id ELSE '' END,
+			external_path,
+			sync_time,
+			sync_time
+		FROM ranked
+			JOIN inserted_bindings USING (note_id, target_id)
+			WHERE ranked.rn = 1 AND ranked.external_key <> ''
+			ON CONFLICT (external_key) DO NOTHING
+			RETURNING external_key
+		)
+		INSERT INTO sync_import_tombstones (
+			external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+		)
+		SELECT
+			external_key,
+			target_id,
+			note_id,
+			external_type,
+			CASE WHEN target_type = 'notion' THEN external_id ELSE '' END,
+			external_path,
+			'target_changed',
+			sync_time,
+			sync_time
+		FROM ranked
+		WHERE rn > 1
+			AND external_key <> ''
+			AND EXISTS (
+				SELECT 1
+				FROM inserted_bindings
+				WHERE inserted_bindings.note_id = ranked.note_id
+			)
+		ON CONFLICT (external_key) DO NOTHING
+	`)
+	return err
 }
 
 func unixToTime(value int64) interface{} {
