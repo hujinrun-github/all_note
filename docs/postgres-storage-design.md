@@ -559,6 +559,7 @@ CREATE TABLE sync_targets (
   config JSONB NOT NULL DEFAULT '{}',
   enabled BOOLEAN NOT NULL DEFAULT true,
   auto_sync BOOLEAN NOT NULL DEFAULT false,
+  is_default BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (type, name)
@@ -573,7 +574,7 @@ CREATE TABLE note_sync_state (
   content_hash TEXT NOT NULL,
   external_hash TEXT,
   external_mtime TIMESTAMPTZ,
-  last_direction TEXT CHECK (last_direction IN ('push', 'pull', 'import', 'restore', 'delete') OR last_direction IS NULL),
+  last_direction TEXT CHECK (last_direction IN ('push', 'pull', 'import', 'restore', 'delete', 'delete_detected') OR last_direction IS NULL),
   last_synced_at TIMESTAMPTZ,
   status TEXT NOT NULL CHECK (status IN ('synced', 'pending', 'failed', 'external_deleted')),
   error_message TEXT,
@@ -581,11 +582,73 @@ CREATE TABLE note_sync_state (
   PRIMARY KEY (note_id, target_id)
 );
 
+CREATE UNIQUE INDEX sync_targets_one_default_per_type_idx
+  ON sync_targets (type) WHERE is_default = true;
 CREATE INDEX sync_targets_type_enabled_idx ON sync_targets (type, enabled, updated_at DESC);
 CREATE INDEX note_sync_target_status_idx ON note_sync_state (target_id, status, last_synced_at DESC);
 CREATE INDEX note_sync_target_note_idx ON note_sync_state (target_id, note_id);
 CREATE INDEX note_sync_external_id_idx ON note_sync_state (target_id, external_id);
 CREATE INDEX note_sync_metadata_idx ON note_sync_state USING GIN (external_metadata);
+
+CREATE TABLE note_sync_bindings (
+  note_id TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE RESTRICT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (note_id, target_id)
+);
+
+CREATE INDEX note_sync_bindings_target_idx
+  ON note_sync_bindings (target_id, updated_at DESC);
+
+CREATE TABLE sync_external_claims (
+  external_key TEXT PRIMARY KEY,
+  note_id TEXT NOT NULL UNIQUE,
+  target_id TEXT NOT NULL,
+  external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+  external_id TEXT NOT NULL DEFAULT '',
+  external_path TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (note_id, target_id)
+    REFERENCES note_sync_bindings(note_id, target_id) ON DELETE CASCADE
+);
+
+CREATE INDEX sync_external_claims_target_idx
+  ON sync_external_claims (target_id, updated_at DESC);
+
+CREATE TABLE note_sync_suppressions (
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL DEFAULT 'user_unbound'
+    CHECK (reason IN ('user_unbound', 'target_changed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (note_id, target_id)
+);
+
+CREATE INDEX note_sync_suppressions_target_updated_idx
+  ON note_sync_suppressions (target_id, updated_at DESC);
+
+CREATE TABLE sync_import_tombstones (
+  external_key TEXT PRIMARY KEY,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+  former_note_id TEXT NOT NULL,
+  external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+  external_id TEXT NOT NULL DEFAULT '',
+  external_path TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT 'user_unbound'
+    CHECK (reason IN ('user_unbound', 'target_changed', 'note_deleted')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (target_id, former_note_id, external_type)
+);
+
+CREATE INDEX sync_import_tombstones_target_updated_idx
+  ON sync_import_tombstones (target_id, updated_at DESC);
+
+CREATE INDEX sync_import_tombstones_note_type_idx
+  ON sync_import_tombstones (former_note_id, external_type, updated_at DESC, created_at DESC);
 ```
 
 `sync_targets.config` 示例：
@@ -616,6 +679,10 @@ CREATE INDEX note_sync_metadata_idx ON note_sync_state USING GIN (external_metad
 - `sync_targets.type` 只允许 `obsidian`、`notion`，handler 必须在入库前返回 400，不能依赖 PostgreSQL CHECK 变成 500。
 - `sync_targets(type,name)` 唯一冲突必须映射为 409 或明确的冲突提示。
 - `config` 必须在 handler/repository 入库前校验为 JSON object；空配置规范化为 `{}`，不能接受 `null`、数组、字符串或数字。Notion token 仍然只保存环境变量名，不保存 token 值。
+- `note_sync_bindings.note_id` 是一篇笔记只能绑定一个同步目标的硬约束；没有 binding 行表示默认不同步。
+- `sync_external_claims(note_id, target_id)` 必须引用当前 binding，解除绑定时 claim 由外键级联删除，避免出现“笔记已解绑但外部资源仍 active”的状态。
+- 用户选择“不同步”或删除 FlowSpace 笔记时必须写入 suppression/tombstone。pull/import 命中这些记录时不得自动重新绑定，需要用户显式确认重新导入或重新绑定。
+- 已经存在 binding、claim 或历史 state 的 target，不能修改外部空间身份字段：Obsidian 的 `vault_path/base_folder`，Notion 的 `config.data_source_id`。这类请求应返回 `409 target_identity_locked`。
 
 ### 统一搜索
 
@@ -822,7 +889,11 @@ go run ./cmd/migrate_sqlite_to_pg
 10. `inbox`
 11. `sync_targets`
 12. `note_sync_state`
-13. rebuild `search_index`
+13. `note_sync_bindings`
+14. `sync_external_claims`
+15. `note_sync_suppressions`
+16. `sync_import_tombstones`
+17. rebuild `search_index`
 
 数据迁移事务规则：
 

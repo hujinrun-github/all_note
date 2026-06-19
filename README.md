@@ -184,24 +184,36 @@ $env:FLOWSPACE_DB_PATH = "tmp/local-sandbox.db"; go run ./cmd/server
 
 `FLOWSPACE_DB_PATH` 优先级最高，适合临时验证或 CI；服务启动日志会打印当前环境和数据库路径。
 
+### 笔记同步目标与绑定
+
+FlowSpace 可以配置多个 Notion 或 Obsidian 同步目标，但一篇笔记最多只能选择一个同步目标。新建笔记默认不同步；只有在编辑器右侧的 `笔记同步` 中选择了目标后，这篇笔记才会参与单篇同步或目标批量 push。
+
+使用规则：
+
+- 在 `笔记` 页面点击 `同步` 管理同步目标。目标名称用于编辑器下拉框展示，建议用能区分外部空间的名字，例如 `个人 Notion 知识库`、`写作 Vault`。
+- 在编辑器右侧 `笔记同步` 下拉框选择目标名；选择 `不同步` 表示该笔记不参与自动或批量 push。
+- `同步此笔记` 固定把 FlowSpace 当前内容推送到该笔记绑定的目标。Notion 或 Obsidian 中的内容进入 FlowSpace 需要在同步面板里对指定目标手动拉取。
+- 解除绑定后，旧 Obsidian 文件或 Notion page 即使仍带有 FlowSpace ID，也不会在下一次 pull/import 时自动把笔记重新绑定；需要用户在界面中手动确认重新绑定或重新导入。
+- 一个外部资源同一时间只能被一个同步配置管理。Obsidian 按规范化文件路径识别，Notion 按 page id 识别。
+- 目标已经被笔记绑定或已有外部资源声明后，不能再把 Obsidian `Vault path/base folder` 或 Notion `Data Source ID` 改成另一个外部空间；名称、启用状态、自动同步开关、`Sync tags`、Notion 标题属性和 token 环境变量名等非身份配置仍可编辑。要接入新的外部空间，请新建同步目标。
+
 ### Obsidian 同步
 
-Obsidian 同步支持配置一个 Vault 路径和一个同步目录。同步只扫描 `vault_path/base_folder` 中的 Markdown 文件，不会扫描整个 Vault。
+Obsidian 同步目标支持配置一个 Vault 路径和一个同步目录。同步只扫描 `vault_path/base_folder` 中的 Markdown 文件，不会扫描整个 Vault。
 
 同步规则：
 
-- `Sync tags` 为空时，默认不同步任何笔记。
-- 填写 `Sync tags` 后，只同步带有这些标签的 FlowSpace 笔记；从 Obsidian 手动拉取时，只导入或更新 frontmatter `tags` 命中的 Markdown。
-- 点击 `同步到 Obsidian` 时，只把 FlowSpace 新增或修改的笔记写入 Obsidian。
-- Obsidian 新增或修改的 Markdown 不会自动进入 FlowSpace；需要点击 `从 Obsidian 手动拉取`。
-- 手动拉取时，Obsidian 新增的 Markdown 会导入 FlowSpace，Obsidian 修改的 Markdown 会更新 FlowSpace。
+- 未绑定到该 Obsidian 目标的 FlowSpace 笔记不会被写入 Obsidian。
+- 点击目标的 `同步到 Obsidian` 时，只把已绑定到该目标的 FlowSpace 新增或修改笔记写入 Obsidian。
+- Obsidian 新增或修改的 Markdown 不会自动进入 FlowSpace；需要点击该目标的 `从 Obsidian 手动拉取`。
+- `Sync tags` 用于手动拉取时的过滤：填写后，只导入或更新 frontmatter `tags` 命中的 Markdown；留空时不主动扩大导入范围。
 - 手动拉取遇到两边都修改时，Obsidian 内容优先。
 - 手动拉取发现 Obsidian 删除已同步 Markdown 后，FlowSpace 只标记为“Obsidian 已删除”，需要在同步面板确认后才会删除 FlowSpace 笔记。
 - 选择“保留并重新导出”会重新生成 Obsidian Markdown 文件。
 
 ### Notion 同步
 
-FlowSpace 支持把一个个人 Notion Data Source 与本地笔记关联同步。默认同步方向是 FlowSpace 写入 Notion；Notion 内容进入 FlowSpace 需要手动拉取。手动拉取发生冲突时以 Notion 内容为准。
+FlowSpace 支持把一个或多个个人 Notion Data Source 配置为同步目标。默认同步方向是 FlowSpace 写入绑定目标；Notion 内容进入 FlowSpace 需要对指定目标手动拉取。手动拉取发生冲突时以 Notion 内容为准。
 
 用户关联自己的 Notion：
 
@@ -220,25 +232,26 @@ $env:FLOWSPACE_NOTION_TOKEN = "secret_xxx"
    - `Data Source ID`：填写第 4 步复制的 Data Source ID。
    - `Token environment variable`：默认保持 `FLOWSPACE_NOTION_TOKEN`。
    - `Title property`：默认保持 `Name`，如果你的 Notion 标题属性叫别的名字，在这里改成对应名称。
-   - `Sync tags`：同步白名单。留空时默认不同步任何笔记；填写后只同步命中标签的 FlowSpace 笔记或 Notion 页面。
-8. 点击 `Save Notion settings` 保存配置。
-9. 点击 `Test Notion connection` 验证后端能访问该 Data Source。
-10. 点击 `同步到 Notion`，把 FlowSpace 笔记写入 Notion。
-11. 如需把 Notion 中新增或修改的页面同步回 FlowSpace，点击 `从 Notion 手动拉取`。
+   - `Sync tags`：手动拉取过滤条件。填写后只导入或更新 `Tags` 属性命中的 Notion 页面。
+8. 点击 `保存 Notion 设置` 保存配置。
+9. 点击 `测试 Notion 连接` 验证后端能访问该 Data Source。
+10. 打开一篇 FlowSpace 笔记，在编辑器右侧 `笔记同步` 中选择这个 Notion 目标。
+11. 点击 `同步此笔记` 或目标面板里的 `同步到 Notion`，把已绑定的 FlowSpace 笔记写入 Notion。
+12. 如需把 Notion 中新增或修改的页面同步回 FlowSpace，点击该目标的 `从 Notion 手动拉取`。
 
 安全边界：
 
-- FlowSpace 不在前端收集 Notion token，也不会把 token 写入 SQLite。
-- SQLite 里只保存 `token_env` 这类环境变量名和 Data Source 配置。
+- FlowSpace 不在前端收集 Notion token，也不会把 token 写入 SQLite 或 PostgreSQL。
+- 数据库里只保存 `token_env` 这类环境变量名和 Data Source 配置。
 - 当前实现是单后端实例使用环境变量授权，不是 Notion OAuth。多人部署时，需要由部署者为该后端实例配置对应的 token 环境变量。
 
 同步规则：
 
-- `Sync tags` 为空时，默认不同步任何笔记。
-- 填写 `Sync tags` 后，只同步带有这些标签的 FlowSpace 笔记；从 Notion 手动拉取时，只导入或更新 `Tags` 属性命中的页面。
-- 点击 `同步到 Notion` 时，FlowSpace 新笔记会创建 Notion 页面，FlowSpace 修改会更新已有 Notion 页面。
+- 未绑定到该 Notion 目标的 FlowSpace 笔记不会被写入 Notion。
+- 点击目标的 `同步到 Notion` 时，FlowSpace 新笔记会创建 Notion 页面，FlowSpace 修改会更新已有 Notion 页面。
 - Notion 新页面不会自动进入 FlowSpace；需要点击 `从 Notion 手动拉取`。
 - 手动拉取时，Notion 新页面会导入 FlowSpace，Notion 修改会更新 FlowSpace。
+- `Sync tags` 用于手动拉取过滤：填写后只导入或更新 `Tags` 属性命中的页面。
 - 手动拉取遇到两边都修改时，Notion 覆盖 FlowSpace。
 - 手动拉取发现 Notion 页面删除、归档或进入回收站后，FlowSpace 先标记为待确认删除。
 - 包含暂不支持 Notion block 的页面会跳过写回，避免覆盖复杂内容。
