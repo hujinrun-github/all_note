@@ -98,6 +98,15 @@ func (r syncRepository) GetTarget(ctx context.Context, targetID string) (*model.
 	`, targetID))
 }
 
+func (r syncRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
+		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
+		FROM sync_targets
+		WHERE id = $1
+		FOR UPDATE
+	`, targetID))
+}
+
 func (r syncRepository) GetDefaultTarget(ctx context.Context, syncType string) (*model.SyncTarget, error) {
 	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at

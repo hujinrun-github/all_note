@@ -516,6 +516,7 @@ func saveNotionTargetForTest(t *testing.T) model.SyncTarget {
 		Name:       "Personal Notion",
 		ConfigJSON: `{"data_source_id":"ds-123"}`,
 		Enabled:    true,
+		IsDefault:  true,
 	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		t.Fatalf("save target: %v", err)

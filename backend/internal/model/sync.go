@@ -75,7 +75,7 @@ type SaveSyncTargetRequest struct {
 	ConfigJSON string `json:"config_json"`
 	Enabled    bool   `json:"enabled"`
 	AutoSync   bool   `json:"auto_sync"`
-	IsDefault  bool   `json:"is_default"`
+	IsDefault  *bool  `json:"is_default"`
 }
 
 type SaveNoteSyncBindingRequest struct {

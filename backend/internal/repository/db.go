@@ -26,6 +26,12 @@ func InitDB(dbPath string) error {
 		return err
 	}
 	_, err = DB.Exec(string(schema))
+	if err != nil && isNoSuchColumnError(err, "is_default") {
+		if _, alterErr := DB.Exec(`ALTER TABLE sync_targets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`); alterErr != nil && !isDuplicateColumnError(alterErr) {
+			return alterErr
+		}
+		_, err = DB.Exec(string(schema))
+	}
 	if err != nil {
 		return err
 	}
@@ -119,6 +125,7 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 		`ALTER TABLE tasks ADD COLUMN content TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE roadmap_nodes ADD COLUMN article_search_queries TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE sync_targets ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE sync_targets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_id TEXT`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_url TEXT`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_hash TEXT`,
@@ -144,6 +151,12 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 		return fmt.Errorf("create note_project_links table: %w", err)
 	}
 	if _, err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_type_idx
+			ON sync_targets (type) WHERE is_default = 1
+	`); err != nil {
+		return fmt.Errorf("create sync target default index: %w", err)
+	}
+	if _, err := db.Exec(`
 		UPDATE note_sync_state
 		SET external_hash = content_hash
 		WHERE status = 'synced'
@@ -166,6 +179,14 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 
 func isDuplicateColumnError(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name:")
+}
+
+func isNoSuchColumnError(err error, column string) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such column: "+strings.ToLower(column))
 }
 
 func migrateTaskProjects() error {

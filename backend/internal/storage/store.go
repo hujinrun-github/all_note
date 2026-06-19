@@ -134,6 +134,7 @@ type RoadmapRepository interface {
 type SyncRepository interface {
 	SaveTarget(context.Context, *model.SyncTarget) error
 	GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error)
+	LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error)
 	GetDefaultTarget(context.Context, string) (*model.SyncTarget, error)
 	ListTargets(context.Context) ([]model.SyncTarget, error)
 	DeleteTarget(ctx context.Context, targetID string) error

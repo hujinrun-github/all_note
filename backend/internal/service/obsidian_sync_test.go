@@ -1618,6 +1618,7 @@ func saveObsidianTargetForTest(t *testing.T, vault string) model.SyncTarget {
 		VaultPath:  vault,
 		BaseFolder: "FlowSpace Notes",
 		Enabled:    true,
+		IsDefault:  true,
 	}
 	if err := repository.SaveSyncTarget(&target); err != nil {
 		t.Fatalf("save sync target: %v", err)

@@ -94,6 +94,25 @@ describe('notion sync api', () => {
     expect(String(init?.body)).not.toContain('secret-value')
   })
 
+  it('includes explicit default flag when saving a target', async () => {
+    await saveSyncTarget({
+      id: 'target-1',
+      type: 'notion',
+      name: 'Personal Notion',
+      vault_path: '',
+      base_folder: '',
+      config_json: JSON.stringify({ data_source_id: 'ds-123' }),
+      enabled: true,
+      auto_sync: false,
+      is_default: true,
+    })
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      is_default: true,
+    })
+  })
+
   it('allowlists test notion target payload fields', async () => {
     await testNotionTarget({
       type: 'notion',

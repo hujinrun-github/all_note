@@ -99,6 +99,21 @@ func (r syncRepository) GetTarget(ctx context.Context, targetID string) (*model.
 	`, targetID))
 }
 
+func (r syncRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE sync_targets
+		SET updated_at = updated_at
+		WHERE id = ?
+	`, targetID)
+	if err != nil {
+		return nil, err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return r.GetTarget(ctx, targetID)
+}
+
 func (r syncRepository) GetDefaultTarget(ctx context.Context, syncType string) (*model.SyncTarget, error) {
 	return scanSQLiteSyncTarget(r.db.QueryRowContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at

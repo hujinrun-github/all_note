@@ -11,6 +11,7 @@ export interface SyncTarget {
   config_json: string
   enabled: boolean
   auto_sync: boolean
+  is_default?: boolean
   created_at: number
   updated_at: number
 }
@@ -24,6 +25,7 @@ export interface SaveSyncTargetInput {
   config_json?: string
   enabled: boolean
   auto_sync: boolean
+  is_default?: boolean
 }
 
 export type SyncStateStatus = 'synced' | 'pending' | 'failed' | 'external_deleted'
@@ -208,7 +210,16 @@ export async function getNoteSyncState(id: string, target?: SyncTargetType): Pro
 }
 
 function syncTargetPayload(input: SaveSyncTargetInput) {
-  return {
+  const payload: {
+    type: SyncTargetType | undefined
+    name: string
+    vault_path: string
+    base_folder: string
+    config_json: string | undefined
+    enabled: boolean
+    auto_sync: boolean
+    is_default?: boolean
+  } = {
     type: input.type,
     name: input.name,
     vault_path: input.vault_path,
@@ -217,4 +228,8 @@ function syncTargetPayload(input: SaveSyncTargetInput) {
     enabled: input.enabled,
     auto_sync: input.auto_sync,
   }
+  if (input.is_default !== undefined) {
+    payload.is_default = input.is_default
+  }
+  return payload
 }

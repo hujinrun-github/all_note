@@ -22,6 +22,7 @@ func RunSyncBindingSuite(t *testing.T, factory StoreFactory) {
 	t.Run("TestSyncBindingContractOneDefaultTargetPerType", suite.TestSyncBindingContractOneDefaultTargetPerType)
 	t.Run("TestSyncBindingContractDefaultTargetDoesNotUseUpdatedAtFallback", suite.TestSyncBindingContractDefaultTargetDoesNotUseUpdatedAtFallback)
 	t.Run("TestSyncBindingContractTargetIdentityLockCounts", suite.TestSyncBindingContractTargetIdentityLockCounts)
+	t.Run("TestSyncBindingContractLockTargetReturnsTarget", suite.TestSyncBindingContractLockTargetReturnsTarget)
 	t.Run("TestSyncBindingContractTargetDeleteRestrictedByBinding", suite.TestSyncBindingContractTargetDeleteRestrictedByBinding)
 	t.Run("TestSyncBindingContractSuppressionReasonDefaults", suite.TestSyncBindingContractSuppressionReasonDefaults)
 	t.Run("TestSyncBindingContractTombstoneReasonDefaults", suite.TestSyncBindingContractTombstoneReasonDefaults)
@@ -313,6 +314,35 @@ func (s syncBindingContractSuite) TestSyncBindingContractTargetIdentityLockCount
 	}
 	if bindings != 1 || claims != 1 || states != 1 {
 		t.Fatalf("unexpected counts: bindings=%d claims=%d states=%d", bindings, claims, states)
+	}
+}
+
+func (s syncBindingContractSuite) TestSyncBindingContractLockTargetReturnsTarget(t *testing.T) {
+	store := s.factory(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	target := createContractTarget(t, ctx, store, "lock-target", "obsidian", "Lock Target", true)
+	err := store.Transact(ctx, func(txStore storage.Store) error {
+		locked, err := txStore.Sync().LockTarget(ctx, target.ID)
+		if err != nil {
+			return err
+		}
+		if locked.ID != target.ID {
+			t.Fatalf("locked target id = %q, want %q", locked.ID, target.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("lock target: %v", err)
+	}
+
+	err = store.Transact(ctx, func(txStore storage.Store) error {
+		_, err := txStore.Sync().LockTarget(ctx, "missing-target")
+		return err
+	})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected missing lock to return sql.ErrNoRows, got %v", err)
 	}
 }
 

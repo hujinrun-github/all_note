@@ -104,6 +104,33 @@ func TestValidateSyncTargetRequestRejectsSaveObsidianWithoutPaths(t *testing.T) 
 	}
 }
 
+func TestSaveSyncTargetDefaultsNewTargetToDefaultWhenOmitted(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets", bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\"}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	SaveSyncTarget(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		t.Fatalf("new target should be default: %v", err)
+	}
+	if target.Name != "Personal Notion" || !target.IsDefault {
+		t.Fatalf("unexpected default target: %+v", target)
+	}
+}
+
 func TestValidateSyncTargetRequestRejectsUpdateObsidianWithoutPaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -119,6 +146,166 @@ func TestValidateSyncTargetRequestRejectsUpdateObsidianWithoutPaths(t *testing.T
 	}
 	if !strings.Contains(recorder.Body.String(), "obsidian sync target requires vault_path and base_folder") {
 		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestPatchSyncTargetAllowsDisplayFieldsWhenUsed(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerObsidianTarget(t)
+	note := insertHandlerNoteForTest(t, "Locked Display Update", "Body\n")
+	insertHandlerSyncBinding(t, note.ID, target.ID)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"obsidian",
+		"name":"Renamed Vault",
+		"vault_path":"D:/Vault",
+		"base_folder":"FlowSpace Notes",
+		"config_json":"{\"theme\":\"dark\"}",
+		"enabled":false,
+		"auto_sync":true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	updated, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get updated target: %v", err)
+	}
+	if updated.Name != "Renamed Vault" || updated.Enabled || !updated.AutoSync || !updated.IsDefault {
+		t.Fatalf("updated display fields = %+v", updated)
+	}
+	if updated.VaultPath != "D:/Vault" || updated.BaseFolder != "FlowSpace Notes" {
+		t.Fatalf("identity fields changed unexpectedly: %+v", updated)
+	}
+}
+
+func TestPatchSyncTargetRejectsObsidianIdentityChangeWhenUsed(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerObsidianTarget(t)
+	note := insertHandlerNoteForTest(t, "Locked Obsidian Identity", "Body\n")
+	insertHandlerSyncBinding(t, note.ID, target.ID)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"obsidian",
+		"name":"Local Vault",
+		"vault_path":"D:/OtherVault",
+		"base_folder":"FlowSpace Notes",
+		"config_json":"{}",
+		"enabled":true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(c)
+
+	assertTargetIdentityLocked(t, recorder)
+	unchanged, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get target: %v", err)
+	}
+	if unchanged.VaultPath != target.VaultPath {
+		t.Fatalf("vault_path = %q, want %q", unchanged.VaultPath, target.VaultPath)
+	}
+}
+
+func TestPatchSyncTargetRejectsNotionDataSourceChangeWhenUsed(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerNotionTarget(t)
+	note := insertHandlerNoteForTest(t, "Locked Notion Identity", "Body\n")
+	insertHandlerSyncBinding(t, note.ID, target.ID)
+	insertHandlerExternalClaim(t, note.ID, target.ID)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-other\",\"title_property\":\"Name\"}",
+		"enabled":true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(c)
+
+	assertTargetIdentityLocked(t, recorder)
+	unchanged, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get target: %v", err)
+	}
+	if unchanged.ConfigJSON != target.ConfigJSON {
+		t.Fatalf("config_json = %q, want %q", unchanged.ConfigJSON, target.ConfigJSON)
+	}
+}
+
+func TestPatchSyncTargetRejectsIdentityChangeWhenUsedByState(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerNotionTarget(t)
+	note := insertHandlerNoteForTest(t, "Locked State Identity", "Body\n")
+	insertHandlerSyncedState(t, note.ID, target.ID)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-state-other\"}",
+		"enabled":true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(c)
+
+	assertTargetIdentityLocked(t, recorder)
+}
+
+func TestDeleteSyncTargetRejectsBoundTarget(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerObsidianTarget(t)
+	note := insertHandlerNoteForTest(t, "Delete Bound Target", "Body\n")
+	insertHandlerSyncBinding(t, note.ID, target.ID)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/sync/targets/"+target.ID, nil)
+
+	DeleteSyncTarget(c)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if _, err := repository.GetSyncTarget(target.ID); err != nil {
+		t.Fatalf("target should remain: %v", err)
+	}
+}
+
+func TestDeleteSyncTargetDeletesUnusedTarget(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerNotionTarget(t)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/sync/targets/"+target.ID, nil)
+
+	DeleteSyncTarget(c)
+
+	if c.Writer.Status() != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
+	}
+	if _, err := repository.GetSyncTarget(target.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("get target error = %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -538,6 +725,7 @@ func saveHandlerNotionTarget(t *testing.T) model.SyncTarget {
 		Name:       "Personal Notion",
 		ConfigJSON: `{"data_source_id":"ds-123"}`,
 		Enabled:    true,
+		IsDefault:  true,
 	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		t.Fatalf("save target: %v", err)
@@ -554,11 +742,69 @@ func saveHandlerObsidianTarget(t *testing.T) model.SyncTarget {
 		BaseFolder: "FlowSpace Notes",
 		ConfigJSON: "{}",
 		Enabled:    true,
+		IsDefault:  true,
 	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		t.Fatalf("save obsidian target: %v", err)
 	}
 	return *target
+}
+
+func insertHandlerSyncBinding(t *testing.T, noteID, targetID string) {
+	t.Helper()
+	if _, err := repository.DB.Exec(`
+		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
+		VALUES (?, ?, 1700000000, 1700000000)
+	`, noteID, targetID); err != nil {
+		t.Fatalf("insert sync binding: %v", err)
+	}
+}
+
+func insertHandlerExternalClaim(t *testing.T, noteID, targetID string) {
+	t.Helper()
+	if _, err := repository.DB.Exec(`
+		INSERT INTO sync_external_claims (external_key, note_id, target_id, external_type, external_id, created_at, updated_at)
+		VALUES (?, ?, ?, 'notion_page', 'page-locked', 1700000000, 1700000000)
+	`, "notion:page-locked", noteID, targetID); err != nil {
+		t.Fatalf("insert external claim: %v", err)
+	}
+}
+
+func insertHandlerSyncedState(t *testing.T, noteID, targetID string) {
+	t.Helper()
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        noteID,
+		TargetID:      targetID,
+		ExternalPath:  "notion:page-state",
+		ExternalID:    "page-state",
+		ContentHash:   "content",
+		LastDirection: "push",
+		LastSyncedAt:  &now,
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert sync state: %v", err)
+	}
+}
+
+func assertTargetIdentityLocked(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	var body model.APIResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error == nil {
+		t.Fatalf("error = nil; body = %s", recorder.Body.String())
+	}
+	if body.Error.Code != "target_identity_locked" {
+		t.Fatalf("error code = %q, want target_identity_locked; body = %s", body.Error.Code, recorder.Body.String())
+	}
+	if !strings.Contains(body.Error.Message, "同步目标") {
+		t.Fatalf("message should be Chinese, got %q", body.Error.Message)
+	}
 }
 
 func insertHandlerNoteForTest(t *testing.T, title, body string) model.Note {

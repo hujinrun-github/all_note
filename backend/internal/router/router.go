@@ -25,6 +25,7 @@ func Setup() *gin.Engine {
 		api.GET("/sync/targets", handler.ListSyncTargets)
 		api.POST("/sync/targets", handler.SaveSyncTarget)
 		api.PATCH("/sync/targets/:id", handler.UpdateSyncTarget)
+		api.DELETE("/sync/targets/:id", handler.DeleteSyncTarget)
 		api.POST("/sync/obsidian/test", handler.TestObsidianTarget)
 		api.POST("/sync/obsidian/notes/:id", handler.SyncObsidianNote)
 		api.POST("/sync/obsidian/folders/:folder_id", handler.SyncObsidianFolder)
