@@ -1,7 +1,18 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api/client'
 import { useCreateEvent, useEventsList } from '../hooks/useEvents'
 import { EventChip } from '../components/ui/EventChip'
+import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import type { Event } from '../api/events'
+import { useUpdateTask } from '../hooks/useTasks'
+
+interface TodayData {
+  todayTasks: TaskData[]
+  overdueTasks: TaskData[]
+  events: unknown[]
+  recentNotes: unknown[]
+}
 
 export default function Calendar() {
   const [currentDate, setCurrentDate] = useState(new Date())
@@ -10,7 +21,15 @@ export default function Calendar() {
 
   const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`
   const { data, isLoading } = useEventsList({ month: monthStr })
+  const { data: todayData, isLoading: isTodayLoading } = useQuery({
+    queryKey: ['today'],
+    queryFn: async () => {
+      const res = await api.get<TodayData>('/api/today')
+      return res.data
+    },
+  })
   const createEvent = useCreateEvent()
+  const updateTask = useUpdateTask()
 
   const firstDay = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -34,6 +53,9 @@ export default function Calendar() {
   const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate())
   const [newEventTitle, setNewEventTitle] = useState('')
   const selectedEvents = selectedDay ? eventsByDay[selectedDay] ?? [] : []
+  const isSelectedToday = selectedDay === today.getDate() && month === today.getMonth() && year === today.getFullYear()
+  const todayTasks = todayData?.todayTasks ?? []
+  const overdueTasks = todayData?.overdueTasks ?? []
 
   async function handleAddEvent() {
     if (!selectedDay || !newEventTitle.trim()) return
@@ -46,6 +68,12 @@ export default function Calendar() {
       kind: 'work',
     })
     setNewEventTitle('')
+  }
+
+  async function handleToggleTask(id: string) {
+    const task = [...todayTasks, ...overdueTasks].find((item) => item.id === id)
+    if (!task) return
+    await updateTask.mutateAsync({ id, done: task.done ? 0 : 1 })
   }
 
   return (
@@ -149,10 +177,36 @@ export default function Calendar() {
             selectedEvents.map((e) => <EventChip key={e.id} event={e} />)
           )}
         </div>
-        <div className="inspector-section">
-          <span>关联笔记</span>
-          <div className="linked-note">设计评审记录</div>
-          <div className="linked-note">用户访谈摘要</div>
+        <div className="inspector-section calendar-task-flow" data-testid="calendar-today-task-flow">
+          <span>{isSelectedToday ? '今日任务流' : '任务流'}</span>
+          {!isSelectedToday ? (
+            <p className="empty-copy">选中今天查看任务流</p>
+          ) : isTodayLoading ? (
+            <div className="h-20 bg-fs-hover rounded-lg animate-pulse" />
+          ) : todayTasks.length === 0 && overdueTasks.length === 0 ? (
+            <p className="empty-copy">今天还没有任务</p>
+          ) : (
+            <>
+              {overdueTasks.length > 0 && (
+                <div className="task-section">
+                  <span>逾期</span>
+                  <div className="row-stack">
+                    {overdueTasks.map((task) => (
+                      <TaskRow key={task.id} task={task} onToggle={handleToggleTask} />
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="task-section">
+                <span>今天</span>
+                <div className="row-stack">
+                  {todayTasks.map((task) => (
+                    <TaskRow key={task.id} task={task} onToggle={handleToggleTask} />
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </aside>
     </div>

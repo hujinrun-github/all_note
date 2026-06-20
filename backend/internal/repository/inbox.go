@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,10 @@ import (
 )
 
 func GetInboxItems(kind string, page, pageSize int) ([]model.InboxItem, int, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().List(context.Background(), kind, page, pageSize)
+	}
+
 	where := "archived = 0 AND converted_to IS NULL"
 	args := []interface{}{}
 	if kind != "" && kind != "all" {
@@ -28,7 +33,7 @@ func GetInboxItems(kind string, page, pageSize int) ([]model.InboxItem, int, err
 	}
 	defer rows.Close()
 
-		items := make([]model.InboxItem, 0)
+	items := make([]model.InboxItem, 0)
 	for rows.Next() {
 		var it model.InboxItem
 		if err := rows.Scan(&it.ID, &it.Kind, &it.Title, &it.Body, &it.Source, &it.Archived, &it.ConvertedTo, &it.CreatedAt, &it.UpdatedAt); err != nil {
@@ -40,6 +45,10 @@ func GetInboxItems(kind string, page, pageSize int) ([]model.InboxItem, int, err
 }
 
 func CreateInboxItem(it *model.InboxItem) error {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().Create(context.Background(), it)
+	}
+
 	it.ID = newUUID()
 	now := nowUnix()
 	it.CreatedAt = now
@@ -55,6 +64,10 @@ func CreateInboxItem(it *model.InboxItem) error {
 }
 
 func GetInboxItemByID(id string) (*model.InboxItem, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().GetByID(context.Background(), id)
+	}
+
 	var it model.InboxItem
 	err := DB.QueryRow(`
 		SELECT id, kind, title, body, source, archived, converted_to, created_at, updated_at
@@ -67,16 +80,28 @@ func GetInboxItemByID(id string) (*model.InboxItem, error) {
 }
 
 func MarkInboxConverted(id, convertedTo string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().MarkConverted(context.Background(), id, convertedTo)
+	}
+
 	_, err := DB.Exec("UPDATE inbox SET converted_to = ?, updated_at = ? WHERE id = ?", convertedTo, nowUnix(), id)
 	return err
 }
 
 func DeleteInboxItem(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().Delete(context.Background(), id)
+	}
+
 	_, err := DB.Exec("DELETE FROM inbox WHERE id = ?", id)
 	return err
 }
 
 func BatchArchiveInbox(ids []string) (int64, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().BatchArchive(context.Background(), ids)
+	}
+
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
 	args := make([]interface{}, len(ids)+1)
@@ -92,6 +117,10 @@ func BatchArchiveInbox(ids []string) (int64, error) {
 }
 
 func BatchDeleteInbox(ids []string) (int64, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Inbox().BatchDelete(context.Background(), ids)
+	}
+
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
 	args := make([]interface{}, len(ids))

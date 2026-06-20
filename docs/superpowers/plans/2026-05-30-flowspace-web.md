@@ -2165,8 +2165,8 @@ func main() {
 	log.Println("database initialized")
 
 	r := router.Setup()
-	log.Println("server starting on :8080")
-	if err := r.Run(":8080"); err != nil {
+	log.Println("server starting on :4201")
+	if err := r.Run(":4201"); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
 }
@@ -2206,7 +2206,7 @@ cd backend && go mod tidy
 ```bash
 cd backend && make dev &
 sleep 2
-curl http://localhost:8080/api/folders
+curl http://localhost:4201/api/folders
 # Expected: {"data":{"folders":[{"id":"__uncategorized",...}]}}
 kill %1
 ```
@@ -2312,7 +2312,7 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, 'src') },
   },
   server: {
-    proxy: { '/api': 'http://localhost:8080' },
+    proxy: { '/api': 'http://localhost:4201' },
   },
 })
 ```
@@ -3343,13 +3343,13 @@ cd backend && make seed
 ```bash
 cd backend && make dev &
 # Test each endpoint:
-curl http://localhost:8080/api/today | jq
-curl http://localhost:8080/api/notes | jq
-curl http://localhost:8080/api/tasks | jq
-curl http://localhost:8080/api/events?month=2026-05 | jq
-curl http://localhost:8080/api/inbox | jq
-curl "http://localhost:8080/api/search?q=架构" | jq
-curl http://localhost:8080/api/folders | jq
+curl http://localhost:4201/api/today | jq
+curl http://localhost:4201/api/notes | jq
+curl http://localhost:4201/api/tasks | jq
+curl http://localhost:4201/api/events?month=2026-05 | jq
+curl http://localhost:4201/api/inbox | jq
+curl "http://localhost:4201/api/search?q=架构" | jq
+curl http://localhost:4201/api/folders | jq
 kill %1
 ```
 

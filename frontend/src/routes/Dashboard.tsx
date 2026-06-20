@@ -1,20 +1,14 @@
-import { type FormEvent, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { getTaskProjects } from '../api/tasks'
+import { listTaskProjects } from '../api/tasks'
 import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import { EventChip, type EventData } from '../components/ui/EventChip'
 import { NoteCard, type NoteData } from '../components/ui/NoteCard'
 import { MiniCalendar } from '../components/ui/MiniCalendar'
 import { useCreateTask, useUpdateTask } from '../hooks/useTasks'
-import {
-  DEFAULT_TASK_PROJECT,
-  dateInputToUnix,
-  mergeTaskProjects,
-  readStoredTaskProjects,
-  saveStoredTaskProjects,
-  todayDateInputValue,
-} from '../utils/taskForm'
+import { dateInputToUnix, todayDateInputValue } from '../utils/taskForm'
+import { formatTaskProjectOption } from '../utils/taskProjects'
 
 interface TodayData {
   todayTasks: TaskData[]
@@ -26,8 +20,8 @@ interface TodayData {
 export default function Dashboard() {
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskDate, setNewTaskDate] = useState(() => todayDateInputValue())
-  const [newTaskProject, setNewTaskProject] = useState(DEFAULT_TASK_PROJECT)
-  const [storedProjects, setStoredProjects] = useState(() => readStoredTaskProjects())
+  const [newTaskProjectID, setNewTaskProjectID] = useState('personal')
+  const [taskFilter, setTaskFilter] = useState<'all' | 'todo' | 'done'>('all')
   const createTask = useCreateTask()
   const updateTask = useUpdateTask()
 
@@ -41,33 +35,31 @@ export default function Dashboard() {
 
   const { data: taskProjects = [] } = useQuery({
     queryKey: ['task-projects'],
-    queryFn: getTaskProjects,
+    queryFn: listTaskProjects,
   })
 
-  const projectOptions = useMemo(
-    () =>
-      mergeTaskProjects(
-        storedProjects,
-        taskProjects,
-        data?.todayTasks.map((task) => task.project),
-        data?.overdueTasks.map((task) => task.project),
-      ),
-    [data?.overdueTasks, data?.todayTasks, storedProjects, taskProjects],
-  )
+  const selectedTaskProject = taskProjects.find((project) => project.id === newTaskProjectID)
+
+  useEffect(() => {
+    if (taskProjects.length === 0) return
+    if (!taskProjects.some((project) => project.id === newTaskProjectID)) {
+      setNewTaskProjectID(taskProjects[0].id)
+    }
+  }, [newTaskProjectID, taskProjects])
 
   async function handleAddTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const title = newTaskTitle.trim()
     if (!title) return
 
-    const nextProjects = mergeTaskProjects(storedProjects, [newTaskProject])
-    setStoredProjects(nextProjects)
-    saveStoredTaskProjects(nextProjects)
+    if (!selectedTaskProject) return
 
     await createTask.mutateAsync({
       title,
-      project: newTaskProject,
+      project_id: selectedTaskProject.id,
       due: dateInputToUnix(newTaskDate),
+      planned_date: newTaskDate,
+      horizon: 'week',
       scope: 'daily',
     })
     setNewTaskTitle('')
@@ -102,6 +94,14 @@ export default function Dashboard() {
 
   const taskTotal = data.todayTasks.length + data.overdueTasks.length
 
+  const filterTasks = (tasks: TaskData[]) => {
+    if (taskFilter === 'todo') return tasks.filter(t => !t.done)
+    if (taskFilter === 'done') return tasks.filter(t => t.done)
+    return tasks
+  }
+  const filteredOverdue = filterTasks(data.overdueTasks)
+  const filteredToday = filterTasks(data.todayTasks)
+
   return (
     <div className="dashboard-grid">
       <section className="metric-strip">
@@ -117,9 +117,9 @@ export default function Dashboard() {
             <h2>今天要完成</h2>
           </div>
           <div className="segmented-tabs">
-            <button className="is-active">全部</button>
-            <button>待办</button>
-            <button>已完成</button>
+            <button className={taskFilter === 'all' ? 'is-active' : ''} onClick={() => setTaskFilter('all')}>全部</button>
+            <button className={taskFilter === 'todo' ? 'is-active' : ''} onClick={() => setTaskFilter('todo')}>待办</button>
+            <button className={taskFilter === 'done' ? 'is-active' : ''} onClick={() => setTaskFilter('done')}>已完成</button>
           </div>
         </div>
 
@@ -131,12 +131,13 @@ export default function Dashboard() {
             placeholder="新增任务"
           />
           <select
-            value={newTaskProject}
-            onChange={(event) => setNewTaskProject(event.target.value)}
+            value={selectedTaskProject?.id ?? ''}
+            onChange={(event) => setNewTaskProjectID(event.target.value)}
             aria-label="任务项目"
           >
-            {projectOptions.map((project) => (
-              <option key={project} value={project}>{project}</option>
+            {taskProjects.length === 0 && <option value="">项目加载中</option>}
+            {taskProjects.map((project) => (
+              <option key={project.id} value={project.id}>{formatTaskProjectOption(project)}</option>
             ))}
           </select>
           <input
@@ -146,29 +147,31 @@ export default function Dashboard() {
             aria-label="任务日期"
             required
           />
-          <button type="submit" disabled={!newTaskTitle.trim() || createTask.isPending}>
+          <button type="submit" disabled={!newTaskTitle.trim() || !selectedTaskProject || createTask.isPending}>
             {createTask.isPending ? '添加中...' : '添加'}
           </button>
         </form>
 
-        {data.todayTasks.length === 0 && data.overdueTasks.length === 0 ? (
-          <p className="empty-copy">今天还没有任务</p>
+        {filteredOverdue.length === 0 && filteredToday.length === 0 ? (
+          <p className="empty-copy">{taskFilter === 'done' ? '没有已完成的任务' : taskFilter === 'todo' ? '没有待办任务' : '今天还没有任务'}</p>
         ) : (
           <>
-            {data.overdueTasks.length > 0 && (
+            {filteredOverdue.length > 0 && (
               <div className="task-section">
                 <span>逾期</span>
                 <div className="row-stack">
-                  {data.overdueTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
+                  {filteredOverdue.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
                 </div>
               </div>
             )}
-            <div className="task-section">
-              <span>今天</span>
-              <div className="row-stack">
-                {data.todayTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
+            {filteredToday.length > 0 && (
+              <div className="task-section">
+                <span>今天</span>
+                <div className="row-stack">
+                  {filteredToday.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
+                </div>
               </div>
-            </div>
+            )}
           </>
         )}
       </section>

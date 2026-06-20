@@ -25,7 +25,21 @@ class APIClient {
     const res = await fetch(`${this.basePath}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
+    }
+    if (res.status === 204) return { data: undefined as T }
+    return res.json()
+  }
+
+  async put<T>(path: string, body?: unknown): Promise<APIResponse<T>> {
+    const res = await fetch(`${this.basePath}${path}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
@@ -39,7 +53,7 @@ class APIClient {
     const res = await fetch(`${this.basePath}${path}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
@@ -48,9 +62,16 @@ class APIClient {
     return res.json()
   }
 
-  async del(path: string): Promise<void> {
-    const res = await fetch(`${this.basePath}${path}`, { method: 'DELETE' })
-    if (!res.ok) throw new APIError(res.status, 'UNKNOWN', 'Delete failed')
+  async del(path: string, body?: unknown): Promise<void> {
+    const res = await fetch(`${this.basePath}${path}`, {
+      method: 'DELETE',
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Delete failed')
+    }
   }
 }
 

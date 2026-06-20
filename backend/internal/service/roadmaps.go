@@ -3,14 +3,17 @@ package service
 import (
 	"bytes"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,14 +31,20 @@ type roadmapDraft struct {
 }
 
 const (
-	defaultAIProvider       = "deepseek"
-	defaultAIBaseURL        = "https://api.deepseek.com"
-	defaultAIModel          = "deepseek-v4-pro"
-	defaultAIRequestTimeout = 120 * time.Second
-	defaultArticleProvider  = "duckduckgo"
-	minArticleSearchResults = 10
-	maxArticleSearchResults = 20
-	autoResourceNodeLimit   = 6
+	defaultAIProvider          = "deepseek"
+	defaultAIBaseURL           = "https://api.deepseek.com"
+	defaultAIModel             = "deepseek-v4-pro"
+	defaultAIRequestTimeout    = 120 * time.Second
+	defaultArticleProvider     = "duckduckgo"
+	highSignalArticleHint      = `(popular OR "most read" OR upvoted) high quality technical article`
+	roadmapNodeMinGapX         = 250
+	roadmapNodeMinGapY         = 95
+	roadmapLayoutStepY         = 130
+	roadmapBranchHorizontalGap = 340
+	roadmapBranchVerticalGap   = 145
+	minArticleSearchResults    = 10
+	maxArticleSearchResults    = 20
+	autoResourceNodeLimit      = 6
 )
 
 type articleSearchSource struct {
@@ -57,6 +66,12 @@ var articleSearchSourceCatalog = []articleSearchSource{
 	{ID: "technical", Label: "技术博客", QueryHint: "site:freecodecamp.org OR site:web.dev OR site:martinfowler.com OR site:smashingmagazine.com", MockURL: "https://web.dev/s/results"},
 }
 
+var (
+	articleHTTPClient      = &http.Client{Timeout: 20 * time.Second}
+	devToArticlesURL       = "https://dev.to/api/articles"
+	stackExchangeSearchURL = "https://api.stackexchange.com/2.3/search/advanced"
+)
+
 func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	project, err := repository.GetTaskProjectByID(projectID)
 	if err != nil {
@@ -73,6 +88,7 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	}
 
 	ensureRoadmapBranching(draft, *project)
+	normalizeGeneratedRoadmapLayout(draft)
 
 	roadmap := &model.LearningRoadmap{
 		ProjectID: project.ID,
@@ -93,19 +109,116 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	if err != nil {
 		return saved, nil
 	}
+	normalizeRoadmapDisplayLayout(withResources)
 	return withResources, nil
 }
 
 func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
-	return repository.GetLearningRoadmap(projectID)
+	roadmap, err := repository.GetLearningRoadmap(projectID)
+	if err != nil {
+		return nil, err
+	}
+	normalizeRoadmapDisplayLayout(roadmap)
+	return roadmap, nil
 }
 
 func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
 	return repository.UpdateRoadmapNode(id, req)
 }
 
+func CreateRoadmapNode(roadmapID string, req *model.CreateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	if req == nil {
+		return nil, errors.New("request body is required")
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return nil, errors.New("title is required")
+	}
+
+	roadmap, err := repository.GetLearningRoadmapByID(roadmapID)
+	if err != nil {
+		return nil, err
+	}
+
+	pathType := normalizeRoadmapNodePathType(req.PathType)
+	nodeType := normalizeRoadmapNodeType(req.Type)
+	status := normalizeRoadmapNodeStatus(req.Status)
+	orderIndex, x, y := nextRoadmapNodePlacement(roadmap)
+
+	var parentID *string
+	var edge *model.RoadmapEdge
+	if req.ParentID != nil && strings.TrimSpace(*req.ParentID) != "" {
+		trimmedParentID := strings.TrimSpace(*req.ParentID)
+		parentNode, ok := roadmapNodeByID(roadmap.Nodes, trimmedParentID)
+		if !ok {
+			return nil, sql.ErrNoRows
+		}
+		parentID = &trimmedParentID
+		x, y = childRoadmapNodePlacement(parentNode, pathType)
+		edge = &model.RoadmapEdge{
+			RoadmapID:    roadmap.ID,
+			SourceNodeID: trimmedParentID,
+			Style:        normalizeRoadmapEdgeStyle(req.EdgeStyle, pathType),
+		}
+	}
+
+	if req.X != nil {
+		x = *req.X
+	}
+	if req.Y != nil {
+		y = *req.Y
+	}
+
+	return repository.CreateRoadmapNode(&model.RoadmapNode{
+		RoadmapID:          roadmap.ID,
+		ParentID:           parentID,
+		Type:               nodeType,
+		Title:              title,
+		Description:        strings.TrimSpace(req.Description),
+		PathType:           pathType,
+		Status:             status,
+		Deliverable:        strings.TrimSpace(req.Deliverable),
+		AcceptanceCriteria: strings.TrimSpace(req.AcceptanceCriteria),
+		X:                  x,
+		Y:                  y,
+		OrderIndex:         orderIndex,
+	}, edge)
+}
+
+func DeleteRoadmapNode(id string) error {
+	return repository.DeleteRoadmapNode(id)
+}
+
 func UpdateRoadmapLayout(roadmapID string, nodes []model.RoadmapLayoutNode) error {
 	return repository.UpdateRoadmapLayout(roadmapID, nodes)
+}
+
+func OptimizeRoadmapLayout(roadmapID string) (*model.LearningRoadmap, error) {
+	roadmap, err := repository.GetLearningRoadmapByID(roadmapID)
+	if err != nil {
+		return nil, err
+	}
+	draft := &roadmapDraft{
+		Title: roadmap.Title,
+		Goal:  roadmap.Goal,
+		Nodes: roadmap.Nodes,
+		Edges: roadmap.Edges,
+	}
+	optimizeRoadmapDraftLayout(draft)
+
+	layoutNodes := make([]model.RoadmapLayoutNode, 0, len(draft.Nodes))
+	for _, node := range draft.Nodes {
+		layoutNodes = append(layoutNodes, model.RoadmapLayoutNode{ID: node.ID, X: node.X, Y: node.Y})
+	}
+	if err := repository.UpdateRoadmapLayout(roadmap.ID, layoutNodes); err != nil {
+		return nil, err
+	}
+	optimized, err := repository.GetLearningRoadmapByID(roadmap.ID)
+	if err != nil {
+		return nil, err
+	}
+	normalizeRoadmapDisplayLayout(optimized)
+	return optimized, nil
 }
 
 func SearchRoadmapNodeResources(nodeID string, req *model.SearchRoadmapResourcesRequest) ([]model.RoadmapResource, error) {
@@ -368,6 +481,270 @@ func ensureRoadmapBranching(draft *roadmapDraft, project model.TaskProject) {
 	)
 }
 
+func normalizeGeneratedRoadmapLayout(draft *roadmapDraft) {
+	if draft == nil || len(draft.Nodes) < 2 {
+		return
+	}
+
+	separateRoadmapNodeOverlaps(draft.Nodes)
+	normalizeRoadmapBranchRows(draft)
+	separateRoadmapNodeOverlaps(draft.Nodes)
+}
+
+func optimizeRoadmapDraftLayout(draft *roadmapDraft) {
+	if draft == nil || len(draft.Nodes) == 0 {
+		return
+	}
+	order := make([]int, len(draft.Nodes))
+	for index := range draft.Nodes {
+		order[index] = index
+	}
+	sort.SliceStable(order, func(left, right int) bool {
+		leftNode := draft.Nodes[order[left]]
+		rightNode := draft.Nodes[order[right]]
+		if leftNode.OrderIndex != rightNode.OrderIndex {
+			return leftNode.OrderIndex < rightNode.OrderIndex
+		}
+		return leftNode.ID < rightNode.ID
+	})
+	for row, nodeIndex := range order {
+		draft.Nodes[nodeIndex].X = 0
+		draft.Nodes[nodeIndex].Y = float64(row * roadmapBranchVerticalGap)
+	}
+
+	normalizeRoadmapBranchRows(draft)
+	separateRoadmapNodeOverlaps(draft.Nodes)
+}
+
+func nextRoadmapNodePlacement(roadmap *model.LearningRoadmap) (int, float64, float64) {
+	if roadmap == nil || len(roadmap.Nodes) == 0 {
+		return 0, 0, 0
+	}
+	maxOrder := roadmap.Nodes[0].OrderIndex
+	maxY := roadmap.Nodes[0].Y
+	for _, node := range roadmap.Nodes {
+		if node.OrderIndex > maxOrder {
+			maxOrder = node.OrderIndex
+		}
+		if node.Y > maxY {
+			maxY = node.Y
+		}
+	}
+	return maxOrder + 1, 0, maxY + roadmapBranchVerticalGap
+}
+
+func childRoadmapNodePlacement(parent model.RoadmapNode, pathType string) (float64, float64) {
+	x := parent.X
+	switch pathType {
+	case "recommended", "optional":
+		x = parent.X - roadmapBranchHorizontalGap
+	case "alternative":
+		x = parent.X + roadmapBranchHorizontalGap
+	}
+	return x, parent.Y + roadmapBranchVerticalGap
+}
+
+func roadmapNodeByID(nodes []model.RoadmapNode, id string) (model.RoadmapNode, bool) {
+	for _, node := range nodes {
+		if node.ID == id {
+			return node, true
+		}
+	}
+	return model.RoadmapNode{}, false
+}
+
+func normalizeRoadmapNodeType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "phase":
+		return "phase"
+	case "module":
+		return "module"
+	case "choice":
+		return "choice"
+	default:
+		return "task"
+	}
+}
+
+func normalizeRoadmapNodePathType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "recommended":
+		return "recommended"
+	case "optional":
+		return "optional"
+	case "alternative":
+		return "alternative"
+	default:
+		return "required"
+	}
+}
+
+func normalizeRoadmapNodeStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "active":
+		return "active"
+	case "done":
+		return "done"
+	case "skipped":
+		return "skipped"
+	default:
+		return "todo"
+	}
+}
+
+func normalizeRoadmapEdgeStyle(value string, pathType string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "solid":
+		return "solid"
+	case "dotted":
+		return "dotted"
+	}
+	if pathType == "required" {
+		return "solid"
+	}
+	return "dotted"
+}
+
+func separateRoadmapNodeOverlaps(nodes []model.RoadmapNode) {
+	maxAttempts := len(nodes) * len(nodes)
+	for index := range nodes {
+		attempts := 0
+		for roadmapNodeOverlapsPrevious(nodes, index) && attempts < maxAttempts {
+			nodes[index].Y += roadmapLayoutStepY
+			attempts++
+		}
+	}
+}
+
+func normalizeRoadmapBranchRows(draft *roadmapDraft) {
+	if len(draft.Edges) < 2 {
+		return
+	}
+
+	nodeIndexByID := map[string]int{}
+	for index, node := range draft.Nodes {
+		nodeIndexByID[node.ID] = index
+	}
+
+	outgoing := map[string][]model.RoadmapEdge{}
+	incoming := map[string][]model.RoadmapEdge{}
+	for _, edge := range draft.Edges {
+		if _, ok := nodeIndexByID[edge.SourceNodeID]; !ok {
+			continue
+		}
+		if _, ok := nodeIndexByID[edge.TargetNodeID]; !ok {
+			continue
+		}
+		outgoing[edge.SourceNodeID] = append(outgoing[edge.SourceNodeID], edge)
+		incoming[edge.TargetNodeID] = append(incoming[edge.TargetNodeID], edge)
+	}
+
+	for sourceID, edges := range outgoing {
+		if len(edges) < 2 {
+			continue
+		}
+		source := draft.Nodes[nodeIndexByID[sourceID]]
+		sort.SliceStable(edges, func(left, right int) bool {
+			leftNode := draft.Nodes[nodeIndexByID[edges[left].TargetNodeID]]
+			rightNode := draft.Nodes[nodeIndexByID[edges[right].TargetNodeID]]
+			if leftRank, rightRank := roadmapBranchTargetRank(leftNode), roadmapBranchTargetRank(rightNode); leftRank != rightRank {
+				return leftRank < rightRank
+			}
+			if leftNode.OrderIndex != rightNode.OrderIndex {
+				return leftNode.OrderIndex < rightNode.OrderIndex
+			}
+			return leftNode.ID < rightNode.ID
+		})
+		branchY := source.Y + roadmapBranchVerticalGap
+		for slot, edge := range edges {
+			targetIndex := nodeIndexByID[edge.TargetNodeID]
+			draft.Nodes[targetIndex].X = source.X + roadmapBranchSlotOffset(slot, len(edges))*roadmapBranchHorizontalGap
+			draft.Nodes[targetIndex].Y = branchY
+		}
+	}
+
+	for targetID, edges := range incoming {
+		if len(edges) < 2 {
+			continue
+		}
+		var sourceXTotal float64
+		var maxSourceY float64
+		for index, edge := range edges {
+			source := draft.Nodes[nodeIndexByID[edge.SourceNodeID]]
+			sourceXTotal += source.X
+			if index == 0 || source.Y > maxSourceY {
+				maxSourceY = source.Y
+			}
+		}
+		targetIndex := nodeIndexByID[targetID]
+		draft.Nodes[targetIndex].X = sourceXTotal / float64(len(edges))
+		minTargetY := maxSourceY + roadmapBranchVerticalGap
+		if draft.Nodes[targetIndex].Y < minTargetY {
+			draft.Nodes[targetIndex].Y = minTargetY
+		}
+	}
+}
+
+func roadmapBranchTargetRank(node model.RoadmapNode) int {
+	switch node.PathType {
+	case "recommended", "optional":
+		return 0
+	case "required":
+		return 1
+	case "alternative":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func roadmapBranchSlotOffset(slot int, total int) float64 {
+	if total == 2 {
+		if slot == 0 {
+			return -1
+		}
+		return 1
+	}
+	return float64(slot) - (float64(total)-1)/2
+}
+
+func normalizeRoadmapDisplayLayout(roadmap *model.LearningRoadmap) {
+	if roadmap == nil || len(roadmap.Nodes) < 2 {
+		return
+	}
+	draft := &roadmapDraft{
+		Title: roadmap.Title,
+		Goal:  roadmap.Goal,
+		Nodes: roadmap.Nodes,
+		Edges: roadmap.Edges,
+	}
+	normalizeGeneratedRoadmapLayout(draft)
+	roadmap.Nodes = draft.Nodes
+}
+
+func roadmapNodeOverlapsPrevious(nodes []model.RoadmapNode, index int) bool {
+	if index <= 0 || index >= len(nodes) {
+		return false
+	}
+	for previous := 0; previous < index; previous++ {
+		if roadmapNodesOverlap(nodes[index], nodes[previous]) {
+			return true
+		}
+	}
+	return false
+}
+
+func roadmapNodesOverlap(left, right model.RoadmapNode) bool {
+	return absFloat(left.X-right.X) < roadmapNodeMinGapX && absFloat(left.Y-right.Y) < roadmapNodeMinGapY
+}
+
+func absFloat(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 func hasRoadmapBranching(draft *roadmapDraft) bool {
 	choiceCount := 0
 	for _, node := range draft.Nodes {
@@ -621,7 +998,176 @@ func searchArticleResources(node model.RoadmapNode, requestedSources []string, l
 		}
 		return searchTavilyResourcesForNode(node, sources, limit)
 	}
-	return searchDuckDuckGoResources(node, sources, limit)
+	publicResources := searchPublicSourceResources(node, sources, limit)
+	if len(publicResources) >= limit {
+		return publicResources, nil
+	}
+	duckDuckGoResources, err := searchDuckDuckGoResources(node, sources, limit-len(publicResources))
+	if err != nil {
+		if len(publicResources) > 0 {
+			return publicResources, nil
+		}
+		return nil, err
+	}
+	return limitArticleResources(append(publicResources, duckDuckGoResources...), limit), nil
+}
+
+func searchPublicSourceResources(node model.RoadmapNode, sources []articleSearchSource, limit int) []model.RoadmapResource {
+	limit = normalizeArticleSearchLimit(limit)
+	resources := make([]model.RoadmapResource, 0, limit)
+	for _, source := range sources {
+		if len(resources) >= limit {
+			break
+		}
+		remaining := limit - len(resources)
+		switch source.ID {
+		case "devto":
+			resources = append(resources, searchDevToResources(node, remaining)...)
+		case "stackoverflow":
+			resources = append(resources, searchStackOverflowResources(node, remaining)...)
+		}
+	}
+	return limitArticleResources(resources, limit)
+}
+
+func searchDevToResources(node model.RoadmapNode, limit int) []model.RoadmapResource {
+	limit = normalizeArticleSearchLimit(limit)
+	values := url.Values{}
+	values.Set("tag", articleTopicTag(node))
+	values.Set("top", "365")
+	values.Set("per_page", strconv.Itoa(limit))
+	requestURL := devToArticlesURL + "?" + values.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "FlowSpaceRoadmap/1.0")
+	resp, err := articleHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil
+	}
+
+	var decoded []struct {
+		Title                string `json:"title"`
+		URL                  string `json:"url"`
+		Description          string `json:"description"`
+		PublicReactionsCount int    `json:"public_reactions_count"`
+		ReadingTimeMinutes   int    `json:"reading_time_minutes"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1_000_000)).Decode(&decoded); err != nil {
+		return nil
+	}
+
+	resources := make([]model.RoadmapResource, 0, len(decoded))
+	for _, article := range decoded {
+		title := strings.TrimSpace(article.Title)
+		link := strings.TrimSpace(article.URL)
+		if title == "" || link == "" {
+			continue
+		}
+		summaryParts := []string{fmt.Sprintf("Dev.to 热门文章 · %d reactions", article.PublicReactionsCount)}
+		if article.ReadingTimeMinutes > 0 {
+			summaryParts = append(summaryParts, fmt.Sprintf("%d min read", article.ReadingTimeMinutes))
+		}
+		if description := strings.TrimSpace(article.Description); description != "" {
+			summaryParts = append(summaryParts, description)
+		}
+		resources = append(resources, model.RoadmapResource{
+			Title:   title,
+			URL:     link,
+			Summary: strings.Join(summaryParts, " · "),
+		})
+	}
+	return resources
+}
+
+func searchStackOverflowResources(node model.RoadmapNode, limit int) []model.RoadmapResource {
+	limit = normalizeArticleSearchLimit(limit)
+	values := url.Values{}
+	values.Set("order", "desc")
+	values.Set("sort", "votes")
+	values.Set("q", baseArticleSearchQuery(node))
+	values.Set("site", "stackoverflow")
+	values.Set("pagesize", strconv.Itoa(limit))
+	requestURL := stackExchangeSearchURL + "?" + values.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "FlowSpaceRoadmap/1.0")
+	resp, err := articleHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil
+	}
+
+	var decoded struct {
+		Items []struct {
+			Title       string `json:"title"`
+			Link        string `json:"link"`
+			Score       int    `json:"score"`
+			AnswerCount int    `json:"answer_count"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1_000_000)).Decode(&decoded); err != nil {
+		return nil
+	}
+
+	resources := make([]model.RoadmapResource, 0, len(decoded.Items))
+	for _, item := range decoded.Items {
+		title := strings.TrimSpace(stdhtml.UnescapeString(item.Title))
+		link := strings.TrimSpace(item.Link)
+		if title == "" || link == "" {
+			continue
+		}
+		resources = append(resources, model.RoadmapResource{
+			Title:   title,
+			URL:     link,
+			Summary: fmt.Sprintf("Stack Overflow 高票讨论 · %d votes · %d answers", item.Score, item.AnswerCount),
+		})
+	}
+	return resources
+}
+
+func articleTopicTag(node model.RoadmapNode) string {
+	text := strings.ToLower(strings.Join(nonEmptyStrings([]string{
+		node.Title,
+		node.Deliverable,
+		strings.Join(node.ArticleSearchQueries, " "),
+	}), " "))
+	switch {
+	case strings.Contains(text, "golang") || strings.Contains(text, " go ") || strings.HasPrefix(text, "go "):
+		return "go"
+	case strings.Contains(text, "python"):
+		return "python"
+	case strings.Contains(text, "docker") || strings.Contains(text, "container"):
+		return "docker"
+	case strings.Contains(text, "kubernetes") || strings.Contains(text, "k8s"):
+		return "kubernetes"
+	case strings.Contains(text, "react"):
+		return "react"
+	case strings.Contains(text, "typescript"):
+		return "typescript"
+	case strings.Contains(text, "javascript"):
+		return "javascript"
+	case strings.Contains(text, "postgres") || strings.Contains(text, "database") || strings.Contains(text, "sql"):
+		return "database"
+	case strings.Contains(text, "devops") || strings.Contains(text, "infra") || strings.Contains(text, "deploy"):
+		return "devops"
+	case strings.Contains(text, "ai") || strings.Contains(text, "llm") || strings.Contains(text, "model") || strings.Contains(text, "gpu"):
+		return "ai"
+	default:
+		return "programming"
+	}
 }
 
 func mockArticleResources(node model.RoadmapNode, sources []articleSearchSource, limit int) []model.RoadmapResource {
@@ -731,16 +1277,19 @@ func searchDuckDuckGoResources(node model.RoadmapNode, sources []articleSearchSo
 }
 
 func buildArticleSearchQuery(node model.RoadmapNode, sources []articleSearchSource) string {
+	return strings.Join(nonEmptyStrings([]string{baseArticleSearchQuery(node), highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
+}
+
+func baseArticleSearchQuery(node model.RoadmapNode) string {
 	for _, query := range node.ArticleSearchQueries {
 		if trimmed := strings.TrimSpace(query); trimmed != "" {
-			return strings.Join(nonEmptyStrings([]string{trimmed, articleSearchSourceQuery(sources)}), " ")
+			return trimmed
 		}
 	}
 	return strings.Join(nonEmptyStrings([]string{
 		node.Title,
 		node.Deliverable,
-		"official documentation tutorial technical article",
-		articleSearchSourceQuery(sources),
+		"official documentation tutorial",
 	}), " ")
 }
 
@@ -787,7 +1336,10 @@ func articleSearchSourceQuery(sources []articleSearchSource) string {
 			hints = append(hints, source.QueryHint)
 		}
 	}
-	return strings.Join(hints, " ")
+	if len(hints) == 1 {
+		return hints[0]
+	}
+	return "(" + strings.Join(hints, " OR ") + ")"
 }
 
 func articleSearchMaxResults() int {
@@ -822,7 +1374,8 @@ func limitArticleResources(resources []model.RoadmapResource, limit int) []model
 	for _, resource := range resources {
 		resource.URL = strings.TrimSpace(resource.URL)
 		resource.Title = strings.TrimSpace(resource.Title)
-		if resource.URL == "" || seen[resource.URL] {
+		resource.Summary = strings.TrimSpace(resource.Summary)
+		if resource.URL == "" || seen[resource.URL] || isArticleSearchEntry(resource) {
 			continue
 		}
 		if resource.Title == "" {
@@ -840,44 +1393,51 @@ func limitArticleResources(resources []model.RoadmapResource, limit int) []model
 func ensureArticleResourceChoices(node model.RoadmapNode, sources []articleSearchSource, resources []model.RoadmapResource, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
 	limited := limitArticleResources(resources, limit)
-	if len(limited) >= limit {
-		return limited
-	}
-	if len(sources) == 0 {
-		sources = selectedArticleSearchSources(nil)
-	}
-
-	seen := map[string]bool{}
-	for _, resource := range limited {
-		seen[resource.URL] = true
-	}
-	query := strings.Join(nonEmptyStrings([]string{node.Title, node.Deliverable, "technical article tutorial"}), " ")
-	for index := 0; len(limited) < limit; index++ {
-		source := sources[index%len(sources)]
-		searchURL := sourceSearchURL(source, query, index)
-		if seen[searchURL] {
-			continue
-		}
-		seen[searchURL] = true
-		limited = append(limited, model.RoadmapResource{
-			Title:   fmt.Sprintf("%s %s 搜索入口 %d", node.Title, source.Label, index+1),
-			URL:     searchURL,
-			Summary: source.Label + " 源内搜索入口，真实搜索结果不足时用于继续筛选技术文章。",
-		})
-	}
 	return limited
 }
 
-func sourceSearchURL(source articleSearchSource, query string, index int) string {
-	values := url.Values{"q": []string{query}}
-	if index > 0 {
-		values.Set("page", strconv.Itoa(index+1))
+func isArticleSearchEntry(resource model.RoadmapResource) bool {
+	lowerTitle := strings.ToLower(resource.Title)
+	lowerSummary := strings.ToLower(resource.Summary)
+	if strings.Contains(resource.Title, "搜索入口") ||
+		strings.Contains(resource.Summary, "搜索入口") ||
+		strings.Contains(lowerTitle, "search entry") ||
+		strings.Contains(lowerSummary, "search entry") {
+		return true
 	}
-	separator := "?"
-	if strings.Contains(source.MockURL, "?") {
-		separator = "&"
+
+	parsed, err := url.Parse(resource.URL)
+	if err != nil {
+		return false
 	}
-	return source.MockURL + separator + values.Encode()
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	path := strings.TrimRight(strings.ToLower(parsed.EscapedPath()), "/")
+	if path == "" {
+		path = "/"
+	}
+
+	switch host {
+	case "google.com":
+		return path == "/search"
+	case "duckduckgo.com":
+		return path == "/" || path == "/html"
+	case "medium.com":
+		return path == "/search"
+	case "reddit.com":
+		return path == "/search"
+	case "dev.to":
+		return path == "/search"
+	case "hashnode.com":
+		return path == "/search"
+	case "stackoverflow.com":
+		return path == "/search"
+	case "github.com":
+		return path == "/search"
+	case "web.dev":
+		return path == "/s/results"
+	default:
+		return false
+	}
 }
 
 func extractDuckDuckGoResults(root *html.Node, limit int) []model.RoadmapResource {

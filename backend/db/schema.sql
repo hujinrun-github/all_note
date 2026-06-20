@@ -54,10 +54,21 @@ CREATE TABLE IF NOT EXISTS task_projects (
 INSERT OR IGNORE INTO task_projects (id, name, type, description, created_at, updated_at) VALUES
   ('personal', '个人', 'personal', '默认个人任务项目', unixepoch(), unixepoch());
 
+CREATE TABLE IF NOT EXISTS note_project_links (
+  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (note_id, project_id)
+);
+
+CREATE INDEX IF NOT EXISTS note_project_links_project_note_idx
+  ON note_project_links (project_id, note_id);
+
 CREATE TABLE IF NOT EXISTS tasks (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT UNIQUE NOT NULL,
   title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
   project TEXT,
   project_id TEXT NOT NULL DEFAULT 'personal' REFERENCES task_projects(id) ON DELETE SET DEFAULT,
   due INTEGER,
@@ -71,7 +82,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
   roadmap_node_id TEXT REFERENCES roadmap_nodes(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
@@ -113,6 +125,7 @@ CREATE TABLE IF NOT EXISTS roadmap_nodes (
   x REAL NOT NULL DEFAULT 0,
   y REAL NOT NULL DEFAULT 0,
   order_index INTEGER NOT NULL DEFAULT 0,
+  article_search_queries TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -180,24 +193,93 @@ CREATE TABLE IF NOT EXISTS inbox (
 
 CREATE TABLE IF NOT EXISTS sync_targets (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('obsidian', 'notion')),
   name TEXT NOT NULL,
   vault_path TEXT NOT NULL,
   base_folder TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 1,
   auto_sync INTEGER NOT NULL DEFAULT 0,
+  is_default INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  UNIQUE (type, name)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_type_idx
+  ON sync_targets (type) WHERE is_default = 1;
+
+CREATE TABLE IF NOT EXISTS note_sync_bindings (
+  note_id TEXT PRIMARY KEY,
+  target_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (note_id, target_id),
+  FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS note_sync_bindings_target_idx
+  ON note_sync_bindings (target_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS sync_external_claims (
+  external_key TEXT PRIMARY KEY,
+  note_id TEXT NOT NULL UNIQUE,
+  target_id TEXT NOT NULL,
+  external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+  external_id TEXT NOT NULL DEFAULT '',
+  external_path TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (note_id, target_id) REFERENCES note_sync_bindings(note_id, target_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS sync_external_claims_target_idx
+  ON sync_external_claims (target_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS note_sync_suppressions (
+  note_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT 'user_unbound' CHECK (reason IN ('user_unbound', 'target_changed')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (note_id, target_id),
+  FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS note_sync_suppressions_target_updated_idx
+  ON note_sync_suppressions (target_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS sync_import_tombstones (
+  external_key TEXT PRIMARY KEY,
+  target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+  former_note_id TEXT NOT NULL,
+  external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+  external_id TEXT NOT NULL DEFAULT '',
+  external_path TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT 'user_unbound' CHECK (reason IN ('user_unbound', 'target_changed', 'note_deleted')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (target_id, former_note_id, external_type)
+);
+
+CREATE INDEX IF NOT EXISTS sync_import_tombstones_target_updated_idx
+  ON sync_import_tombstones (target_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS sync_import_tombstones_note_type_idx
+  ON sync_import_tombstones (former_note_id, external_type, updated_at DESC, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS note_sync_state (
   note_id TEXT NOT NULL,
   target_id TEXT NOT NULL,
   external_path TEXT NOT NULL,
+  external_id TEXT,
+  external_url TEXT,
   content_hash TEXT NOT NULL,
   external_hash TEXT,
   external_mtime INTEGER,
-  last_direction TEXT,
+  last_direction TEXT CHECK (last_direction IN ('push', 'pull', 'import', 'restore', 'delete', 'delete_detected') OR last_direction IS NULL),
   last_synced_at INTEGER,
   status TEXT NOT NULL,
   error_message TEXT,

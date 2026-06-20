@@ -1,12 +1,17 @@
 package repository
 
 import (
+	"context"
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
 func GetFolders() ([]model.Folder, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Folders().List(context.Background())
+	}
+
 	rows, err := DB.Query(`
 		SELECT f.id, f.name, f.sort_order, COUNT(n.rowid) as note_count, f.created_at
 		FROM folders f
@@ -31,6 +36,10 @@ func GetFolders() ([]model.Folder, error) {
 }
 
 func FolderExists(id string) (bool, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Folders().Exists(context.Background(), id)
+	}
+
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return false, nil

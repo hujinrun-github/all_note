@@ -204,6 +204,167 @@ func TestSyncObsidianBidirectionalGeneratesIDForUnsafeFlowSpaceFrontmatterID(t *
 	}
 }
 
+func TestSyncObsidianPullDoesNotPushLocalOnlyChange(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	note := createNoteForSyncTest(t, "Local Pull Guard", "Local changed\n")
+	markdown := renderObsidianMarkdown(&model.Note{
+		ID:        note.ID,
+		Title:     "Local Pull Guard",
+		Body:      "Old body\n",
+		FolderID:  "__uncategorized",
+		Tags:      "[]",
+		CreatedAt: note.CreatedAt,
+		UpdatedAt: note.UpdatedAt,
+	})
+	outputPath := filepath.Join(base, "Local Pull Guard.md")
+	if err := os.WriteFile(outputPath, []byte(markdown), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+	lastSync := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  outputPath,
+		ContentHash:   markdownHash(markdown),
+		ExternalHash:  markdownHash(markdown),
+		ExternalMTime: &lastSync,
+		LastSyncedAt:  &lastSync,
+		LastDirection: "pull",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+
+	result := SyncObsidianPull()
+
+	if result.Pushed != 0 {
+		t.Fatalf("pull should not push local changes: %+v", result)
+	}
+	after, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read markdown: %v", err)
+	}
+	if string(after) != markdown {
+		t.Fatalf("obsidian file was changed during pull:\n%s", string(after))
+	}
+}
+
+func TestSyncNotesToObsidianSkipsAllNotesWhenSyncTagsAreEmpty(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	note := createTaggedNoteForSyncTest(t, "Tagged But Disabled", "Body\n", `["sync"]`)
+
+	result := SyncNotesToObsidian([]model.Note{note})
+
+	if result.Synced != 0 || result.Failed != 0 || len(result.Items) != 0 {
+		t.Fatalf("expected empty sync result, got %+v", result)
+	}
+	base := filepath.Join(vault, target.BaseFolder)
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("read obsidian base folder: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no exported files, got %+v", entries)
+	}
+}
+
+func TestSyncNotesToObsidianOnlyExportsNotesWithRequiredTag(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	target.ConfigJSON = `{"required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save sync target config: %v", err)
+	}
+	matching := createTaggedNoteForSyncTest(t, "Tagged Export", "Body\n", `["sync","work"]`)
+	skipped := createTaggedNoteForSyncTest(t, "Skipped Export", "Body\n", `["private"]`)
+
+	result := SyncNotesToObsidian([]model.Note{matching, skipped})
+
+	if result.Synced != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Items) != 1 || result.Items[0].NoteID != matching.ID {
+		t.Fatalf("unexpected items: %+v", result.Items)
+	}
+	if _, err := os.Stat(filepath.Join(vault, target.BaseFolder, "Tagged Export.md")); err != nil {
+		t.Fatalf("expected tagged note export: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, target.BaseFolder, "Skipped Export.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("skipped note should not be exported, stat err=%v", err)
+	}
+}
+
+func TestSyncObsidianPullSkipsAllFilesWhenSyncTagsAreEmpty(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	markdown := "---\ntags:\n  - sync\n---\n\n# Remote Tagged\n\nBody\n"
+	if err := os.WriteFile(filepath.Join(base, "Remote Tagged.md"), []byte(markdown), 0644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result := SyncObsidianPull()
+
+	if result.Imported != 0 || result.Pulled != 0 || result.ExternalDeleted != 0 || result.Failed != 0 || len(result.Items) != 0 {
+		t.Fatalf("expected empty pull result, got %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("expected no imported notes, got %+v", notes)
+	}
+}
+
+func TestSyncObsidianPullOnlyImportsFilesWithRequiredTag(t *testing.T) {
+	openObsidianSyncTestDB(t)
+	vault := t.TempDir()
+	target := saveObsidianTargetForTest(t, vault)
+	target.ConfigJSON = `{"required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save sync target config: %v", err)
+	}
+	base := filepath.Join(vault, target.BaseFolder)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	tagged := "---\ntags:\n  - sync\n---\n\n# Remote Tagged\n\nBody\n"
+	untagged := "---\ntags:\n  - private\n---\n\n# Remote Private\n\nBody\n"
+	if err := os.WriteFile(filepath.Join(base, "Remote Tagged.md"), []byte(tagged), 0644); err != nil {
+		t.Fatalf("write tagged markdown: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "Remote Private.md"), []byte(untagged), 0644); err != nil {
+		t.Fatalf("write private markdown: %v", err)
+	}
+
+	result := SyncObsidianPull()
+
+	if result.Imported != 1 || result.Pulled != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected pull result: %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 || notes[0].Title != "Remote Tagged" {
+		t.Fatalf("unexpected imported notes: %+v", notes)
+	}
+}
+
 func TestParseObsidianMarkdownWithoutFrontmatterUsesFileName(t *testing.T) {
 	raw := "Loose note body\nSecond line\n"
 	parsed, err := parseObsidianMarkdown([]byte(raw), "Loose Note.md")
@@ -1457,6 +1618,7 @@ func saveObsidianTargetForTest(t *testing.T, vault string) model.SyncTarget {
 		VaultPath:  vault,
 		BaseFolder: "FlowSpace Notes",
 		Enabled:    true,
+		IsDefault:  true,
 	}
 	if err := repository.SaveSyncTarget(&target); err != nil {
 		t.Fatalf("save sync target: %v", err)
@@ -1466,11 +1628,16 @@ func saveObsidianTargetForTest(t *testing.T, vault string) model.SyncTarget {
 
 func createNoteForSyncTest(t *testing.T, title, body string) model.Note {
 	t.Helper()
+	return createTaggedNoteForSyncTest(t, title, body, "[]")
+}
+
+func createTaggedNoteForSyncTest(t *testing.T, title, body, tags string) model.Note {
+	t.Helper()
 	note, err := CreateNote(&model.CreateNoteRequest{
 		Title:    title,
 		Body:     body,
 		FolderID: "__uncategorized",
-		Tags:     "[]",
+		Tags:     tags,
 	})
 	if err != nil {
 		t.Fatalf("create note: %v", err)

@@ -3,6 +3,7 @@ package model
 type Task struct {
 	ID            string  `json:"id"`
 	Title         string  `json:"title"`
+	Content       string  `json:"content"`
 	Project       *string `json:"project"`
 	ProjectID     *string `json:"project_id"`
 	ProjectType   *string `json:"project_type,omitempty"`
@@ -18,10 +19,12 @@ type Task struct {
 	RoadmapNodeID *string `json:"roadmap_node_id"`
 	CreatedAt     int64   `json:"created_at"`
 	UpdatedAt     int64   `json:"updated_at"`
+	CompletedAt   *int64  `json:"completed_at,omitempty"`
 }
 
 type CreateTaskRequest struct {
 	Title         string  `json:"title" binding:"required"`
+	Content       string  `json:"content"`
 	Project       *string `json:"project"`
 	ProjectID     *string `json:"project_id"`
 	Due           *int64  `json:"due"`
@@ -34,6 +37,7 @@ type CreateTaskRequest struct {
 
 type UpdateTaskRequest struct {
 	Title         *string  `json:"title"`
+	Content       *string  `json:"content"`
 	Project       *string  `json:"project"`
 	ProjectID     *string  `json:"project_id"`
 	Due           *int64   `json:"due"`
@@ -129,6 +133,20 @@ type CreateRoadmapResourceRequest struct {
 
 type SearchRoadmapResourcesRequest struct {
 	Sources []string `json:"sources"`
+}
+
+type CreateRoadmapNodeRequest struct {
+	ParentID           *string  `json:"parent_id"`
+	Title              string   `json:"title" binding:"required"`
+	Type               string   `json:"type"`
+	Description        string   `json:"description"`
+	PathType           string   `json:"path_type"`
+	Status             string   `json:"status"`
+	Deliverable        string   `json:"deliverable"`
+	AcceptanceCriteria string   `json:"acceptance_criteria"`
+	X                  *float64 `json:"x"`
+	Y                  *float64 `json:"y"`
+	EdgeStyle          string   `json:"edge_style"`
 }
 
 type UpdateRoadmapNodeRequest struct {

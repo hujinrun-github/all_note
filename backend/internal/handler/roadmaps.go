@@ -46,6 +46,24 @@ func UpdateRoadmapNode(c *gin.Context) {
 	success(c, gin.H{"node": node})
 }
 
+func CreateRoadmapNode(c *gin.Context) {
+	var req model.CreateRoadmapNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, "node title is required")
+		return
+	}
+	node, err := service.CreateRoadmapNode(c.Param("id"), &req)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			notFound(c, "roadmap or parent node not found")
+			return
+		}
+		badRequest(c, err.Error())
+		return
+	}
+	created(c, gin.H{"node": node})
+}
+
 func UpdateRoadmapLayout(c *gin.Context) {
 	var req model.UpdateRoadmapLayoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -54,6 +72,27 @@ func UpdateRoadmapLayout(c *gin.Context) {
 	}
 	if err := service.UpdateRoadmapLayout(c.Param("id"), req.Nodes); err != nil {
 		internalError(c, "failed to save roadmap layout")
+		return
+	}
+	noContent(c)
+}
+
+func OptimizeRoadmapLayout(c *gin.Context) {
+	roadmap, err := service.OptimizeRoadmapLayout(c.Param("id"))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			notFound(c, "roadmap not found")
+			return
+		}
+		internalError(c, "failed to optimize roadmap layout")
+		return
+	}
+	success(c, gin.H{"roadmap": roadmap})
+}
+
+func DeleteRoadmapNode(c *gin.Context) {
+	if err := service.DeleteRoadmapNode(c.Param("id")); err != nil {
+		notFound(c, "roadmap node not found")
 		return
 	}
 	noContent(c)

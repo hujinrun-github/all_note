@@ -1,4 +1,5 @@
 import { type ComponentType, type FormEvent, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Background,
@@ -17,15 +18,20 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   addRoadmapNodeResource,
+  createRoadmapNode,
   createTask,
   createTaskProject,
+  deleteRoadmapNode,
+  deleteTaskProject,
   generateLearningRoadmap,
   getLearningRoadmap,
   getTasks,
   listTaskProjects,
+  optimizeRoadmapLayout,
   saveRoadmapLayout,
   searchRoadmapNodeResources,
   updateTask,
+  updateRoadmapNode,
   type LearningRoadmap,
   type RoadmapNode,
   type RoadmapResource,
@@ -33,25 +39,24 @@ import {
   type TaskProject,
 } from '../api/tasks'
 import { TaskRow } from '../components/ui/TaskRow'
-import { dateInputToUnix, todayDateInputValue } from '../utils/taskForm'
+import { getNotes, createNote } from '../api/notes'
+import { dateInputToUnix, dateToInputValue, todayDateInputValue } from '../utils/taskForm'
+import { taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'roadmap'
+type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
 
 interface RoadmapNodeData extends Record<string, unknown> {
   node: RoadmapNode
   onOpen: (id: string) => void
+  onCreateAfter: (id: string) => void
+  isCreatingNode: boolean
 }
 
 const tabLabels: Record<TaskTab, string> = {
   week: '本周',
-  long: '长期项目',
+  long: '长期任务',
   roadmap: '学习 Roadmap',
-}
-
-const projectTypeLabels: Record<TaskProject['type'], string> = {
-  personal: '个人',
-  regular: '普通项目',
-  learning: '学习项目',
 }
 
 const nodeTypeLabels: Record<RoadmapNode['type'], string> = {
@@ -66,6 +71,22 @@ const pathTypeLabels: Record<RoadmapNode['path_type'], string> = {
   recommended: '推荐',
   optional: '可选',
   alternative: '替代',
+}
+
+const nodeStatusLabels: Record<RoadmapNode['status'], string> = {
+  todo: '未开始',
+  active: '学习中',
+  done: '已完成',
+  skipped: '已跳过',
+}
+
+const longTaskStatusOrder: LongTaskStatus[] = ['active', 'blocked', 'open', 'done']
+
+const longTaskStatusLabels: Record<LongTaskStatus, string> = {
+  active: '进行中',
+  blocked: '阻塞',
+  open: '未开始',
+  done: '完成',
 }
 
 const articleSearchSourceOptions = [
@@ -88,6 +109,7 @@ function resourceCandidateKey(resource: RoadmapResource) {
 
 export default function Tasks() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TaskTab>('week')
   const [projectName, setProjectName] = useState('')
   const [projectType, setProjectType] = useState<TaskProject['type']>('regular')
@@ -99,12 +121,16 @@ export default function Tasks() {
   const [longProjectID, setLongProjectID] = useState('')
   const [selectedLearningProjectID, setSelectedLearningProjectID] = useState('')
   const [selectedNodeID, setSelectedNodeID] = useState('')
+  const [isNodeDialogOpen, setIsNodeDialogOpen] = useState(false)
+  const [isCreateNodeDialogOpen, setIsCreateNodeDialogOpen] = useState(false)
+  const [createNodeParentID, setCreateNodeParentID] = useState('')
   const [manualResourceTitle, setManualResourceTitle] = useState('')
   const [manualResourceURL, setManualResourceURL] = useState('')
   const [resourcePickerNodeID, setResourcePickerNodeID] = useState('')
   const [resourceCandidates, setResourceCandidates] = useState<RoadmapResource[]>([])
   const [selectedResourceCandidateIDs, setSelectedResourceCandidateIDs] = useState<string[]>([])
   const [articleSearchSources, setArticleSearchSources] = useState<string[]>(defaultArticleSearchSources)
+  const [pendingDeleteProjectID, setPendingDeleteProjectID] = useState('')
 
   const projectsQuery = useQuery({
     queryKey: ['task-projects'],
@@ -117,6 +143,8 @@ export default function Tasks() {
   const learningProjects = projects.filter((project) => project.type === 'learning')
   const weekProjects = projects.filter((project) => project.type !== 'learning')
   const selectedLearningProject = learningProjects.find((project) => project.id === selectedLearningProjectID)
+  const activeProjectID =
+    activeTab === 'week' ? weekProjectID : activeTab === 'long' ? longProjectID : selectedLearningProjectID
 
   useEffect(() => {
     if (!projects.length) return
@@ -133,12 +161,12 @@ export default function Tasks() {
 
   const weekTasksQuery = useQuery({
     queryKey: ['tasks', 'week'],
-    queryFn: () => getTasks({ horizon: 'week', status: 'all', page_size: 300 }),
+    queryFn: () => getTasks({ horizon: 'week', status: 'all', page_size: 100 }),
   })
 
   const longTasksQuery = useQuery({
     queryKey: ['tasks', 'long'],
-    queryFn: () => getTasks({ horizon: 'long', status: 'all', page_size: 300 }),
+    queryFn: () => getTasks({ horizon: 'long', status: 'all', page_size: 100 }),
   })
 
   const roadmapQuery = useQuery({
@@ -146,6 +174,13 @@ export default function Tasks() {
     queryFn: () => getLearningRoadmap(selectedLearningProjectID),
     enabled: Boolean(selectedLearningProjectID),
   })
+
+  const { data: projectNotesData } = useQuery({
+    queryKey: ['notes', { project_id: activeProjectID }],
+    queryFn: () => getNotes({ project_id: activeProjectID!, page_size: 6 }),
+    enabled: !!activeProjectID,
+  })
+  const projectNotes = projectNotesData?.notes || []
 
   const createProjectMutation = useMutation({
     mutationFn: createTaskProject,
@@ -163,19 +198,90 @@ export default function Tasks() {
     },
   })
 
+  const deleteProjectMutation = useMutation({
+    mutationFn: async (project: TaskProject) => {
+      await deleteTaskProject(project.id)
+      return project
+    },
+    onSuccess: (project) => {
+      setPendingDeleteProjectID('')
+      if (weekProjectID === project.id) {
+        setWeekProjectID(personalProject?.id ?? 'personal')
+        setActiveTab('week')
+      }
+      if (longProjectID === project.id) {
+        setLongProjectID('')
+      }
+      if (selectedLearningProjectID === project.id) {
+        setSelectedLearningProjectID('')
+        setSelectedNodeID('')
+        setIsNodeDialogOpen(false)
+        setIsCreateNodeDialogOpen(false)
+        setCreateNodeParentID('')
+        setActiveTab('week')
+      }
+      queryClient.invalidateQueries({ queryKey: ['task-projects'] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
+    },
+  })
+
   const createTaskMutation = useMutation({
     mutationFn: createTask,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    },
+  })
+
+  const updateTaskMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<Task> }) => updateTask(id, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
     },
   })
 
-  const updateTaskMutation = useMutation({
-    mutationFn: ({ id, done }: { id: string; done: number }) => updateTask(id, { done }),
-    onSuccess: () => {
+  const updateRoadmapNodeMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<RoadmapNode> }) => updateRoadmapNode(id, body),
+    onSuccess: (node) => {
+      setSelectedNodeID(node.id)
+      queryClient.invalidateQueries({ queryKey: ['learning-roadmap', selectedLearningProjectID] })
+    },
+  })
+
+  const createRoadmapNodeMutation = useMutation({
+    mutationFn: ({
+      roadmapID,
+      body,
+    }: {
+      roadmapID: string
+      body: Parameters<typeof createRoadmapNode>[1]
+    }) => createRoadmapNode(roadmapID, body),
+    onSuccess: (node) => {
+      setSelectedNodeID(node.id)
+      setIsCreateNodeDialogOpen(false)
+      setCreateNodeParentID('')
+      queryClient.invalidateQueries({ queryKey: ['learning-roadmap', selectedLearningProjectID] })
+    },
+  })
+
+  const deleteRoadmapNodeMutation = useMutation({
+    mutationFn: deleteRoadmapNode,
+    onSuccess: (_unused, nodeID) => {
+      if (selectedNodeID === nodeID) {
+        setSelectedNodeID('')
+        setIsNodeDialogOpen(false)
+      }
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
+      queryClient.invalidateQueries({ queryKey: ['learning-roadmap', selectedLearningProjectID] })
+    },
+  })
+
+  const optimizeRoadmapLayoutMutation = useMutation({
+    mutationFn: optimizeRoadmapLayout,
+    onSuccess: (optimizedRoadmap) => {
+      queryClient.setQueryData(['learning-roadmap', selectedLearningProjectID], optimizedRoadmap)
+      queryClient.invalidateQueries({ queryKey: ['learning-roadmap', selectedLearningProjectID] })
     },
   })
 
@@ -273,7 +379,15 @@ export default function Tasks() {
   }
 
   async function handleToggleTask(task: Task) {
-    await updateTaskMutation.mutateAsync({ id: task.id, done: task.done ? 0 : 1 })
+    await updateTaskMutation.mutateAsync({ id: task.id, body: { done: task.done ? 0 : 1 } })
+  }
+
+  async function handleUpdateLongTaskStatus(task: Task, status: LongTaskStatus) {
+    await updateTaskMutation.mutateAsync({ id: task.id, body: { status } })
+  }
+
+  async function handleUpdateTaskContent(task: Task, content: string) {
+    await updateTaskMutation.mutateAsync({ id: task.id, body: { content } })
   }
 
   function handleToggleResourceCandidate(candidateID: string) {
@@ -294,7 +408,77 @@ export default function Tasks() {
     )
   }
 
+  function handleOpenRoadmapNode(nodeID: string) {
+    if (!nodeID) {
+      setSelectedNodeID('')
+      setIsNodeDialogOpen(false)
+      return
+    }
+    setSelectedNodeID(nodeID)
+    setIsNodeDialogOpen(true)
+  }
+
+  function handleOpenCreateRoadmapNode(parentID: string) {
+    if (!parentID) return
+    setCreateNodeParentID(parentID)
+    setSelectedNodeID(parentID)
+    setIsCreateNodeDialogOpen(true)
+  }
+
+  async function handleSaveRoadmapNode(nodeID: string, body: Partial<RoadmapNode>) {
+    await updateRoadmapNodeMutation.mutateAsync({ id: nodeID, body })
+  }
+
+  async function handleCreateRoadmapNode(body: Parameters<typeof createRoadmapNode>[1]) {
+    if (!roadmap?.id) return
+    await createRoadmapNodeMutation.mutateAsync({ roadmapID: roadmap.id, body })
+  }
+
+  async function handleDeleteRoadmapNode(nodeID: string) {
+    await deleteRoadmapNodeMutation.mutateAsync(nodeID)
+  }
+
+  async function handleAddNodeToWeek(node: RoadmapNode) {
+    if (!selectedLearningProjectID) return
+    const plannedDate = todayDateInputValue()
+    const linkedNodeTasks = (weekTasksQuery.data?.tasks ?? []).filter(
+      (task) =>
+        task.roadmap_node_id === node.id &&
+        (!task.project_id || task.project_id === selectedLearningProjectID),
+    )
+    const hasExistingTaskToday = linkedNodeTasks.some(
+      (task) =>
+        isTaskPlannedOnDate(task, plannedDate),
+    )
+    if (hasExistingTaskToday) {
+      setSelectedNodeID(node.id)
+      return
+    }
+    await createTaskMutation.mutateAsync({
+      title: formatRoadmapTaskTitle(node.title, linkedNodeTasks.length + 1),
+      project_id: selectedLearningProjectID,
+      roadmap_node_id: node.id,
+      planned_date: plannedDate,
+      due: dateInputToUnix(plannedDate),
+      horizon: 'week',
+      scope: 'daily',
+    })
+    setSelectedNodeID(node.id)
+  }
+
   const roadmap = roadmapQuery.data
+  const selectedRoadmapNode = roadmap?.nodes.find((node) => node.id === selectedNodeID)
+  const createNodeParent = roadmap?.nodes.find((node) => node.id === createNodeParentID)
+  const selectedNodeTasks = useMemo(() => {
+    if (!selectedNodeID) return []
+    const taskByID = new Map<string, Task>()
+    for (const task of [...(weekTasksQuery.data?.tasks ?? []), ...(longTasksQuery.data?.tasks ?? [])]) {
+      if (task.roadmap_node_id === selectedNodeID) {
+        taskByID.set(task.id, task)
+      }
+    }
+    return [...taskByID.values()]
+  }, [longTasksQuery.data?.tasks, selectedNodeID, weekTasksQuery.data?.tasks])
   const resourcePickerNode = roadmap?.nodes.find((node) => node.id === resourcePickerNodeID)
 
   return (
@@ -318,7 +502,7 @@ export default function Tasks() {
               value={projectType}
               onChange={(event) => setProjectType(event.target.value as TaskProject['type'])}
             >
-              <option value="regular">普通项目</option>
+              <option value="regular">任务项目</option>
               <option value="learning">学习项目</option>
             </select>
           </label>
@@ -337,39 +521,102 @@ export default function Tasks() {
 
         <div className="task-project-list">
           {projects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              className={
-                project.id === weekProjectID || project.id === longProjectID || project.id === selectedLearningProjectID
-                  ? 'is-active'
-                  : ''
-              }
-              onClick={() => {
-                if (project.type === 'learning') {
-                  setSelectedLearningProjectID(project.id)
-                  setActiveTab('roadmap')
-                } else if (project.type === 'regular') {
-                  setLongProjectID(project.id)
-                  setActiveTab('long')
-                } else {
-                  setWeekProjectID(project.id)
-                  setActiveTab('week')
-                }
-              }}
-            >
-              <span>{project.name}</span>
-              <small>{projectTypeLabels[project.type]}</small>
-            </button>
+            <div className="task-project-item" key={project.id}>
+              <button
+                type="button"
+                className={project.id === activeProjectID ? 'task-project-select is-active' : 'task-project-select'}
+                onClick={() => {
+                  if (project.type === 'learning') {
+                    setSelectedLearningProjectID(project.id)
+                    setActiveTab('roadmap')
+                  } else if (project.type === 'regular') {
+                    setLongProjectID(project.id)
+                    setActiveTab('long')
+                  } else {
+                    setWeekProjectID(project.id)
+                    setActiveTab('week')
+                  }
+                }}
+              >
+                <span>{project.name}</span>
+                <small>{taskProjectTypeLabels[project.type]}</small>
+              </button>
+
+              {project.id !== 'personal' && (
+                pendingDeleteProjectID === project.id ? (
+                  <div className="task-project-delete-confirm">
+                    <button
+                      type="button"
+                      aria-label={`确认删除 ${project.name}`}
+                      disabled={deleteProjectMutation.isPending}
+                      onClick={() => deleteProjectMutation.mutate(project)}
+                    >
+                      确认
+                    </button>
+                    <button type="button" aria-label={`取消删除 ${project.name}`} onClick={() => setPendingDeleteProjectID('')}>
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="task-project-delete"
+                    type="button"
+                    aria-label={`删除项目 ${project.name}`}
+                    title="删除项目"
+                    onClick={() => setPendingDeleteProjectID(project.id)}
+                  >
+                    ×
+                  </button>
+                )
+              )}
+            </div>
           ))}
         </div>
+
+        {activeProjectID && (
+          <div className="mt-4">
+            <h4 className="text-xs font-semibold text-fs-text-muted mb-2">项目笔记</h4>
+            {projectNotes.length === 0 && (
+              <p className="text-xs text-fs-text-muted">暂无笔记</p>
+            )}
+            {projectNotes.map((note) => (
+              <button
+                key={note.id}
+                type="button"
+                className="block w-full text-left px-2 py-1 rounded hover:bg-fs-accent/5 text-sm"
+                onClick={() => navigate(`/editor/${encodeURIComponent(note.id)}`)}
+              >
+                <div className="truncate">{note.title || '未命名笔记'}</div>
+                <div className="text-xs text-fs-text-muted">
+                  {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}
+                </div>
+              </button>
+            ))}
+            <button
+              type="button"
+              className="mt-2 text-sm text-fs-accent hover:underline"
+              onClick={async () => {
+                const note = await createNote({
+                  title: '未命名笔记',
+                  body: '',
+                  folder_id: '__uncategorized',
+                  tags: '[]',
+                  project_ids: activeProjectID ? [activeProjectID] : undefined,
+                })
+                navigate(`/editor/${encodeURIComponent(note.id)}`)
+              }}
+            >
+              + 新建项目笔记
+            </button>
+          </div>
+        )}
       </aside>
 
       <section className="task-main-panel">
         <div className="panel-heading">
           <div>
             <span>任务工作台</span>
-            <h2>短期推进、长期项目和学习路线</h2>
+            <h2>短期推进、长期任务和学习路线</h2>
           </div>
           <div className="segmented-tabs" role="tablist" aria-label="任务视图">
             {(Object.keys(tabLabels) as TaskTab[]).map((tab) => (
@@ -414,6 +661,8 @@ export default function Tasks() {
             onTitleChange={setLongTitle}
             onSubmit={handleAddLongTask}
             onToggle={handleToggleTask}
+            onStatusChange={handleUpdateLongTaskStatus}
+            isUpdating={updateTaskMutation.isPending}
           />
         )}
 
@@ -431,9 +680,19 @@ export default function Tasks() {
             isGenerating={generateRoadmapMutation.isPending}
             isSearching={searchResourcesMutation.isPending}
             isAddingResource={addResourceMutation.isPending}
-            onSelectProject={setSelectedLearningProjectID}
-            onSelectNode={setSelectedNodeID}
+            isOptimizingLayout={optimizeRoadmapLayoutMutation.isPending}
+            isCreatingNode={createRoadmapNodeMutation.isPending}
+            onSelectProject={(projectID) => {
+              setSelectedLearningProjectID(projectID)
+              setSelectedNodeID('')
+              setIsNodeDialogOpen(false)
+              setIsCreateNodeDialogOpen(false)
+              setCreateNodeParentID('')
+            }}
+            onSelectNode={handleOpenRoadmapNode}
             onGenerate={() => selectedLearningProjectID && generateRoadmapMutation.mutate(selectedLearningProjectID)}
+            onOpenCreateNode={handleOpenCreateRoadmapNode}
+            onOptimizeLayout={(roadmapID) => optimizeRoadmapLayoutMutation.mutate(roadmapID)}
             onSearchResources={(nodeID) => searchResourcesMutation.mutate({ nodeID, sources: articleSearchSources })}
             onToggleArticleSearchSource={handleToggleArticleSearchSource}
             onManualTitleChange={setManualResourceTitle}
@@ -442,19 +701,7 @@ export default function Tasks() {
               if (!manualResourceTitle.trim() || !manualResourceURL.trim()) return
               addResourceMutation.mutate({ nodeID, title: manualResourceTitle.trim(), url: manualResourceURL.trim() })
             }}
-            onAddNodeToWeek={async (node) => {
-              if (!selectedLearningProjectID) return
-              await createTaskMutation.mutateAsync({
-                title: node.title,
-                project_id: selectedLearningProjectID,
-                roadmap_node_id: node.id,
-                planned_date: todayDateInputValue(),
-                due: dateInputToUnix(todayDateInputValue()),
-                horizon: 'week',
-                scope: 'daily',
-              })
-              setActiveTab('week')
-            }}
+            onAddNodeToWeek={handleAddNodeToWeek}
           />
         )}
       </section>
@@ -468,6 +715,33 @@ export default function Tasks() {
         onCancel={handleCloseResourcePicker}
         onConfirm={() => addSelectedResourcesMutation.mutate()}
       />
+      {roadmap && isCreateNodeDialogOpen && createNodeParent && (
+        <RoadmapNodeCreateDialog
+          parentNode={createNodeParent}
+          isSaving={createRoadmapNodeMutation.isPending}
+          onClose={() => {
+            setIsCreateNodeDialogOpen(false)
+            setCreateNodeParentID('')
+          }}
+          onCreate={handleCreateRoadmapNode}
+        />
+      )}
+      {selectedRoadmapNode && isNodeDialogOpen && (
+        <RoadmapNodeDialog
+          node={selectedRoadmapNode}
+          tasks={selectedNodeTasks}
+          isSaving={updateRoadmapNodeMutation.isPending}
+          isAddingTask={createTaskMutation.isPending}
+          isUpdatingTask={updateTaskMutation.isPending}
+          isDeleting={deleteRoadmapNodeMutation.isPending}
+          onClose={() => setIsNodeDialogOpen(false)}
+          onSave={handleSaveRoadmapNode}
+          onDelete={handleDeleteRoadmapNode}
+          onAddNodeToWeek={handleAddNodeToWeek}
+          onToggleTask={handleToggleTask}
+          onSaveTaskContent={handleUpdateTaskContent}
+        />
+      )}
     </div>
   )
 }
@@ -557,6 +831,8 @@ function LongTaskView({
   onTitleChange,
   onSubmit,
   onToggle,
+  onStatusChange,
+  isUpdating,
 }: {
   tasks: Task[]
   projects: TaskProject[]
@@ -567,56 +843,175 @@ function LongTaskView({
   onTitleChange: (value: string) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
   onToggle: (task: Task) => void
+  onStatusChange: (task: Task, status: LongTaskStatus) => void
+  isUpdating: boolean
 }) {
-  const tasksByProject = useMemo(() => {
-    const grouped = new Map<string, Task[]>()
+  const tasksByStatus = useMemo(() => {
+    const grouped = new Map<LongTaskStatus, Task[]>(longTaskStatusOrder.map((status) => [status, []]))
     for (const task of tasks) {
-      const key = task.project || '未命名项目'
-      grouped.set(key, [...(grouped.get(key) ?? []), task])
+      const status = normalizeLongTaskStatus(task)
+      grouped.set(status, [...(grouped.get(status) ?? []), task])
     }
-    return [...grouped.entries()]
+    return longTaskStatusOrder
+      .map((status) => ({ status, tasks: grouped.get(status) ?? [] }))
+      .filter((group) => group.tasks.length > 0)
   }, [tasks])
 
   return (
     <div className="task-tab-panel">
-      <form className="inline-create task-create-form" onSubmit={onSubmit}>
-        <input
-          className="task-title-input"
-          aria-label="长期任务内容"
-          value={title}
-          onChange={(event) => onTitleChange(event.target.value)}
-          placeholder="添加长期任务"
-        />
-        <select aria-label="长期项目" value={selectedProjectID} onChange={(event) => onProjectChange(event.target.value)}>
-          {projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-        <button type="submit" disabled={!title.trim() || !selectedProjectID || isPending}>
-          添加长期任务
-        </button>
-      </form>
+      {projects.length > 0 && (
+        <form className="inline-create task-create-form" onSubmit={onSubmit}>
+          <input
+            className="task-title-input"
+            aria-label="长期任务内容"
+            value={title}
+            onChange={(event) => onTitleChange(event.target.value)}
+            placeholder="添加长期任务"
+          />
+          <select aria-label="任务项目" value={selectedProjectID} onChange={(event) => onProjectChange(event.target.value)}>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+          <button type="submit" disabled={!title.trim() || !selectedProjectID || isPending}>
+            添加长期任务
+          </button>
+        </form>
+      )}
 
       {projects.length === 0 ? (
-        <p className="empty-copy">先在左侧新增一个普通项目</p>
-      ) : tasksByProject.length === 0 ? (
-        <p className="empty-copy">长期项目还没有任务</p>
+        <p className="empty-copy">先在左侧新增一个任务项目</p>
+      ) : tasksByStatus.length === 0 ? (
+        <p className="empty-copy">还没有长期任务</p>
       ) : (
-        tasksByProject.map(([project, projectTasks]) => (
-          <div key={project} className="task-section">
-            <span>{project}</span>
-            <div className="row-stack">
-              {projectTasks.map((task) => (
-                <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
-              ))}
-            </div>
-          </div>
-        ))
+        <div className="long-task-status-groups" data-testid="long-task-status-groups">
+          {tasksByStatus.map(({ status, tasks: statusTasks }) => (
+            <section
+              key={status}
+              className="task-section long-task-section"
+              data-testid={`long-task-status-${status}`}
+            >
+              <div className="long-task-section-heading">
+                <h3>{longTaskStatusLabels[status]}</h3>
+                <span>{statusTasks.length}</span>
+              </div>
+              <div className="row-stack">
+                {statusTasks.map((task) => (
+                  <LongTaskRow
+                    key={task.id}
+                    task={task}
+                    isUpdating={isUpdating}
+                    onToggle={() => onToggle(task)}
+                    onStatusChange={(nextStatus) => onStatusChange(task, nextStatus)}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       )}
     </div>
   )
+}
+
+function LongTaskRow({
+  task,
+  isUpdating,
+  onToggle,
+  onStatusChange,
+}: {
+  task: Task
+  isUpdating: boolean
+  onToggle: () => void
+  onStatusChange: (status: LongTaskStatus) => void
+}) {
+  const status = normalizeLongTaskStatus(task)
+  const project = task.project || '未命名项目'
+
+  return (
+    <div className={`task-row long-task-row long-task-row-${status}`}>
+      <button
+        type="button"
+        className="long-task-done-toggle"
+        aria-label={task.done ? `重新打开 ${task.title}` : `完成 ${task.title}`}
+        onClick={onToggle}
+      >
+        {status === 'done' ? '✓' : ''}
+      </button>
+      <div className="long-task-copy">
+        <strong className={status === 'done' ? 'is-done' : ''}>{task.title}</strong>
+        <small>
+          {project} · 最近进展 {formatLongTaskUpdatedAt(task.updated_at)}
+        </small>
+      </div>
+      <select
+        className="long-task-status-select"
+        aria-label={`更新长期任务状态：${task.title}`}
+        value={status}
+        disabled={isUpdating}
+        onChange={(event) => onStatusChange(event.target.value as LongTaskStatus)}
+      >
+        {longTaskStatusOrder.map((value) => (
+          <option key={value} value={value}>
+            {longTaskStatusLabels[value]}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+function normalizeLongTaskStatus(task: Task): LongTaskStatus {
+  if (task.done === 1 || task.status === 'done') return 'done'
+  if (task.status === 'active') return 'active'
+  if (task.status === 'blocked') return 'blocked'
+  return 'open'
+}
+
+function formatLongTaskUpdatedAt(updatedAt: number) {
+  if (!updatedAt) return '未知'
+  return new Date(updatedAt * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+function getTaskPlannedDate(task: Task) {
+  if (task.planned_date) return task.planned_date
+  if (!task.due) return ''
+  return dateToInputValue(new Date(task.due * 1000))
+}
+
+function isTaskPlannedOnDate(task: Task, plannedDate: string) {
+  return getTaskPlannedDate(task) === plannedDate
+}
+
+function compareRoadmapLinkedTasks(a: Task, b: Task) {
+  const dateCompare = getTaskPlannedDate(a).localeCompare(getTaskPlannedDate(b))
+  if (dateCompare !== 0) return dateCompare
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at
+  return a.id.localeCompare(b.id)
+}
+
+function formatRoadmapTaskStatus(task: Task) {
+  if (task.done === 1 || task.status === 'done') return '已完成'
+  if (task.status === 'active') return '进行中'
+  if (task.status === 'blocked') return '阻塞'
+  return '未完成'
+}
+
+function formatRoadmapTaskCreatedAt(createdAt: number) {
+  if (!createdAt) return '未知时间'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(createdAt * 1000))
+}
+
+function formatRoadmapTaskTitle(baseTitle: string, sequence: number) {
+  if (/第\s*\d+\s*次推进/.test(baseTitle)) return baseTitle
+  return `${baseTitle} · 第 ${sequence} 次推进`
 }
 
 function RoadmapTaskView({
@@ -632,9 +1027,13 @@ function RoadmapTaskView({
   isGenerating,
   isSearching,
   isAddingResource,
+  isOptimizingLayout,
+  isCreatingNode,
   onSelectProject,
   onSelectNode,
   onGenerate,
+  onOpenCreateNode,
+  onOptimizeLayout,
   onSearchResources,
   onToggleArticleSearchSource,
   onManualTitleChange,
@@ -654,9 +1053,13 @@ function RoadmapTaskView({
   isGenerating: boolean
   isSearching: boolean
   isAddingResource: boolean
+  isOptimizingLayout: boolean
+  isCreatingNode: boolean
   onSelectProject: (value: string) => void
   onSelectNode: (value: string) => void
   onGenerate: () => void
+  onOpenCreateNode: (nodeID: string) => void
+  onOptimizeLayout: (roadmapID: string) => void
   onSearchResources: (nodeID: string) => void
   onToggleArticleSearchSource: (sourceID: string) => void
   onManualTitleChange: (value: string) => void
@@ -699,7 +1102,15 @@ function RoadmapTaskView({
         <p className="empty-copy">正在加载 Roadmap</p>
       ) : roadmap ? (
         <div className="roadmap-content">
-          <RoadmapCanvas roadmap={roadmap} selectedNodeID={selectedNode?.id ?? ''} onSelectNode={onSelectNode} />
+          <RoadmapCanvas
+            roadmap={roadmap}
+            selectedNodeID={selectedNode?.id ?? ''}
+            isOptimizingLayout={isOptimizingLayout}
+            isCreatingNode={isCreatingNode}
+            onSelectNode={onSelectNode}
+            onOpenCreateNode={onOpenCreateNode}
+            onOptimizeLayout={onOptimizeLayout}
+          />
           <RoadmapInspector
             node={selectedNode}
             manualTitle={manualResourceTitle}
@@ -725,11 +1136,19 @@ function RoadmapTaskView({
 function RoadmapCanvas({
   roadmap,
   selectedNodeID,
+  isOptimizingLayout,
+  isCreatingNode,
   onSelectNode,
+  onOpenCreateNode,
+  onOptimizeLayout,
 }: {
   roadmap: LearningRoadmap
   selectedNodeID: string
+  isOptimizingLayout: boolean
+  isCreatingNode: boolean
   onSelectNode: (id: string) => void
+  onOpenCreateNode: (nodeID: string) => void
+  onOptimizeLayout: (roadmapID: string) => void
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<RoadmapNodeData>>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -742,7 +1161,7 @@ function RoadmapCanvas({
         id: node.id,
         type: 'roadmapNode',
         position: { x: node.x, y: node.y },
-        data: { node, onOpen: onSelectNode },
+        data: { node, onOpen: onSelectNode, onCreateAfter: onOpenCreateNode, isCreatingNode },
         selected: node.id === selectedNodeID,
       })),
     )
@@ -761,7 +1180,7 @@ function RoadmapCanvas({
         },
       })),
     )
-  }, [onSelectNode, roadmap.edges, roadmap.nodes, selectedNodeID, setEdges, setNodes])
+  }, [isCreatingNode, onOpenCreateNode, onSelectNode, roadmap.edges, roadmap.nodes, selectedNodeID, setEdges, setNodes])
 
   async function handleSaveLayout() {
     setIsSaving(true)
@@ -791,6 +1210,14 @@ function RoadmapCanvas({
       <button className="roadmap-save-layout" type="button" onClick={handleSaveLayout} disabled={isSaving}>
         {isSaving ? '保存中' : '保存布局'}
       </button>
+      <button
+        className="roadmap-optimize-layout"
+        type="button"
+        onClick={() => onOptimizeLayout(roadmap.id)}
+        disabled={isOptimizingLayout}
+      >
+        {isOptimizingLayout ? '优化中...' : '自动优化布局'}
+      </button>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -810,7 +1237,7 @@ function RoadmapCanvas({
 }
 
 function RoadmapFlowNode(props: NodeProps) {
-  const { node, onOpen } = props.data as RoadmapNodeData
+  const { node, onOpen, onCreateAfter, isCreatingNode } = props.data as RoadmapNodeData
 
   return (
     <div
@@ -827,6 +1254,21 @@ function RoadmapFlowNode(props: NodeProps) {
       <Handle type="target" position={Position.Left} />
       <span className={`status-dot status-${node.status}`} />
       <strong>{node.title}</strong>
+      <button
+        className="roadmap-node-add-after nodrag nopan"
+        type="button"
+        aria-label="添加后续节点"
+        title="添加后续节点"
+        disabled={isCreatingNode}
+        onClick={(event) => {
+          event.stopPropagation()
+          onCreateAfter(node.id)
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        +
+      </button>
       <small>{nodeTypeLabels[node.type]} · {pathTypeLabels[node.path_type]}</small>
       <Handle type="source" position={Position.Bottom} />
       <Handle type="source" position={Position.Right} />
@@ -944,6 +1386,358 @@ function RoadmapInspector({
         )}
       </div>
     </aside>
+  )
+}
+
+function RoadmapNodeCreateDialog({
+  parentNode,
+  isSaving,
+  onClose,
+  onCreate,
+}: {
+  parentNode: RoadmapNode
+  isSaving: boolean
+  onClose: () => void
+  onCreate: (body: Parameters<typeof createRoadmapNode>[1]) => Promise<void>
+}) {
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [nodeType, setNodeType] = useState<RoadmapNode['type']>('task')
+  const [pathType, setPathType] = useState<RoadmapNode['path_type']>('required')
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmedTitle = title.trim()
+    if (!trimmedTitle) return
+    await onCreate({
+      parent_id: parentNode.id,
+      title: trimmedTitle,
+      type: nodeType,
+      description: description.trim(),
+      path_type: pathType,
+      status: 'todo',
+      edge_style: pathType === 'required' ? 'solid' : 'dotted',
+    })
+  }
+
+  return (
+    <div className="roadmap-node-create-overlay">
+      <section className="roadmap-node-create-dialog" role="dialog" aria-modal="true" aria-label="新增 Roadmap 节点">
+        <div className="roadmap-node-dialog-heading">
+          <div>
+            <span>Roadmap</span>
+            <h2>新增节点</h2>
+          </div>
+          <button type="button" aria-label="关闭新增节点" onClick={onClose}>
+            ×
+          </button>
+        </div>
+
+        <form className="roadmap-node-create-form" onSubmit={handleSubmit}>
+          <label>
+            <span>节点标题</span>
+            <input aria-label="节点标题" value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
+          </label>
+          <div className="roadmap-node-parent-context">
+            <span>接在</span>
+            <strong>{parentNode.title}</strong>
+            <small>之后创建后续节点</small>
+          </div>
+          <label>
+            <span>节点类型</span>
+            <select
+              aria-label="节点类型"
+              value={nodeType}
+              onChange={(event) => setNodeType(event.target.value as RoadmapNode['type'])}
+            >
+              {(Object.keys(nodeTypeLabels) as RoadmapNode['type'][]).map((value) => (
+                <option key={value} value={value}>
+                  {nodeTypeLabels[value]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>路径类型</span>
+            <select
+              aria-label="路径类型"
+              value={pathType}
+              onChange={(event) => setPathType(event.target.value as RoadmapNode['path_type'])}
+            >
+              {(Object.keys(pathTypeLabels) as RoadmapNode['path_type'][]).map((value) => (
+                <option key={value} value={value}>
+                  {pathTypeLabels[value]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>节点说明</span>
+            <textarea
+              aria-label="节点说明"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          <div className="roadmap-node-create-actions">
+            <button type="button" onClick={onClose}>
+              取消
+            </button>
+            <button type="submit" disabled={!title.trim() || isSaving}>
+              {isSaving ? '创建中...' : '创建节点'}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function RoadmapNodeDialog({
+  node,
+  tasks,
+  isSaving,
+  isAddingTask,
+  isUpdatingTask,
+  isDeleting,
+  onClose,
+  onSave,
+  onDelete,
+  onAddNodeToWeek,
+  onToggleTask,
+  onSaveTaskContent,
+}: {
+  node: RoadmapNode
+  tasks: Task[]
+  isSaving: boolean
+  isAddingTask: boolean
+  isUpdatingTask: boolean
+  isDeleting: boolean
+  onClose: () => void
+  onSave: (nodeID: string, body: Partial<RoadmapNode>) => Promise<void>
+  onDelete: (nodeID: string) => Promise<void>
+  onAddNodeToWeek: (node: RoadmapNode) => Promise<void>
+  onToggleTask: (task: Task) => Promise<void>
+  onSaveTaskContent: (task: Task, content: string) => Promise<void>
+}) {
+  const [title, setTitle] = useState(node.title)
+  const [description, setDescription] = useState(node.description)
+  const [deliverable, setDeliverable] = useState(node.deliverable)
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState(node.acceptance_criteria)
+  const [status, setStatus] = useState<RoadmapNode['status']>(node.status)
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
+
+  useEffect(() => {
+    setTitle(node.title)
+    setDescription(node.description)
+    setDeliverable(node.deliverable)
+    setAcceptanceCriteria(node.acceptance_criteria)
+    setStatus(node.status)
+    setIsConfirmingDelete(false)
+  }, [node.acceptance_criteria, node.deliverable, node.description, node.id, node.status, node.title])
+
+  const doneCount = tasks.filter((task) => task.done === 1 || task.status === 'done').length
+  const progressPercent = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0
+  const linkedTasks = useMemo(() => [...tasks].sort(compareRoadmapLinkedTasks), [tasks])
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmedTitle = title.trim()
+    if (!trimmedTitle) return
+    await onSave(node.id, {
+      title: trimmedTitle,
+      description: description.trim(),
+      deliverable: deliverable.trim(),
+      acceptance_criteria: acceptanceCriteria.trim(),
+      status,
+    })
+  }
+
+  return (
+    <div className="roadmap-node-dialog-overlay">
+      <section
+        className="roadmap-node-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="节点详情"
+        data-testid="roadmap-node-dialog"
+      >
+        <div className="roadmap-node-dialog-heading">
+          <div>
+            <span>{nodeTypeLabels[node.type]} · {pathTypeLabels[node.path_type]}</span>
+            <h2>{title || node.title}</h2>
+          </div>
+          <button type="button" aria-label="关闭节点详情" onClick={onClose}>
+            ×
+          </button>
+        </div>
+
+        <form className="roadmap-node-edit-form" onSubmit={handleSubmit}>
+          <label>
+            <span>节点标题</span>
+            <input aria-label="节点标题" value={title} onChange={(event) => setTitle(event.target.value)} />
+          </label>
+          <label>
+            <span>节点说明</span>
+            <textarea
+              aria-label="节点说明"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>学习状态</span>
+            <select
+              aria-label="学习状态"
+              value={status}
+              onChange={(event) => setStatus(event.target.value as RoadmapNode['status'])}
+            >
+              {(Object.keys(nodeStatusLabels) as RoadmapNode['status'][]).map((value) => (
+                <option key={value} value={value}>
+                  {nodeStatusLabels[value]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>交付物</span>
+            <textarea aria-label="交付物" value={deliverable} onChange={(event) => setDeliverable(event.target.value)} />
+          </label>
+          <label>
+            <span>验收标准</span>
+            <textarea
+              aria-label="验收标准"
+              value={acceptanceCriteria}
+              onChange={(event) => setAcceptanceCriteria(event.target.value)}
+            />
+          </label>
+          <div className="roadmap-node-dialog-actions">
+            <button type="submit" disabled={!title.trim() || isSaving}>
+              {isSaving ? '保存中...' : '保存节点'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onAddNodeToWeek({ ...node, title: title.trim() || node.title })}
+              disabled={isAddingTask}
+            >
+              {isAddingTask ? '添加中...' : '加入本周'}
+            </button>
+          </div>
+          <div className="roadmap-node-danger-actions">
+            {isConfirmingDelete ? (
+              <>
+                <button type="button" onClick={() => onDelete(node.id)} disabled={isDeleting}>
+                  {isDeleting ? '删除中...' : '确认删除节点'}
+                </button>
+                <button type="button" onClick={() => setIsConfirmingDelete(false)} disabled={isDeleting}>
+                  取消
+                </button>
+              </>
+            ) : (
+              <button type="button" onClick={() => setIsConfirmingDelete(true)}>
+                删除节点
+              </button>
+            )}
+          </div>
+        </form>
+
+        <div className="roadmap-node-progress" data-testid="roadmap-node-progress">
+          <div>
+            <span>任务进度</span>
+            <strong>{doneCount} / {tasks.length}</strong>
+          </div>
+          <div className="roadmap-node-progress-track" aria-hidden="true">
+            <i style={{ width: `${progressPercent}%` }} />
+          </div>
+        </div>
+
+        <div className="roadmap-linked-task-list" data-testid="roadmap-linked-task-list">
+          <span>关联学习任务</span>
+          {tasks.length === 0 ? (
+            <p className="empty-copy">暂无关联任务</p>
+          ) : (
+            linkedTasks.map((task, index) => (
+              <RoadmapLinkedTaskRow
+                key={task.id}
+                task={task}
+                sequence={index + 1}
+                isUpdating={isUpdatingTask}
+                onToggle={() => onToggleTask(task)}
+                onSaveContent={(content) => onSaveTaskContent(task, content)}
+              />
+            ))
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function RoadmapLinkedTaskRow({
+  task,
+  sequence,
+  isUpdating,
+  onToggle,
+  onSaveContent,
+}: {
+  task: Task
+  sequence: number
+  isUpdating: boolean
+  onToggle: () => void
+  onSaveContent: (content: string) => Promise<void>
+}) {
+  const [content, setContent] = useState(task.content ?? '')
+  const isDone = task.done === 1 || task.status === 'done'
+  const plannedDate = getTaskPlannedDate(task)
+  const title = formatRoadmapTaskTitle(task.title, sequence)
+  const actionLabel = isDone ? `重新打开 ${title}` : `完成 ${title}`
+  const isDirty = content.trim() !== (task.content ?? '').trim()
+
+  useEffect(() => {
+    setContent(task.content ?? '')
+  }, [task.content, task.id])
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await onSaveContent(content)
+  }
+
+  return (
+    <article className={`roadmap-linked-task-row${isDone ? ' is-done' : ''}${isUpdating ? ' is-updating' : ''}`}>
+      <button
+        type="button"
+        className="roadmap-linked-task-check"
+        aria-label={actionLabel}
+        disabled={isUpdating}
+        onClick={onToggle}
+      >
+        {isDone ? '✓' : ''}
+      </button>
+      <div className="roadmap-linked-task-copy">
+        <strong>{title}</strong>
+        <small className="roadmap-linked-task-meta">
+          <span>第 {sequence} 次</span>
+          {plannedDate && <span>{plannedDate}</span>}
+          <span>{formatRoadmapTaskStatus(task)}</span>
+          <span>创建 {formatRoadmapTaskCreatedAt(task.created_at)}</span>
+          {task.project && <span>{task.project}</span>}
+        </small>
+        <form className="roadmap-linked-task-content-form" onSubmit={handleSubmit}>
+          <label>
+            <span>具体任务内容</span>
+            <textarea
+              aria-label={`任务内容：${title}`}
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder="写下这次推进要完成的具体步骤、材料或验收点"
+            />
+          </label>
+          <button type="submit" disabled={isUpdating || !isDirty}>
+            保存任务内容
+          </button>
+        </form>
+      </div>
+    </article>
   )
 }
 

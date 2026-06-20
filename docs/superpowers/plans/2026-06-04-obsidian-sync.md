@@ -788,7 +788,7 @@ Run backend and use a temporary vault path:
 
 ```powershell
 cd backend
-$env:PORT='8080'
+$env:PORT='4201'
 .\server-flowspace.exe
 ```
 
@@ -797,14 +797,14 @@ In another shell:
 ```powershell
 $vault = Join-Path $env:TEMP 'flowspace-obsidian-vault'
 New-Item -ItemType Directory -Force -Path $vault
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/sync/targets -ContentType 'application/json' -Body (@{
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4201/api/sync/targets -ContentType 'application/json' -Body (@{
   name='Temp Vault'
   vault_path=$vault
   base_folder='FlowSpace Notes'
   enabled=$true
   auto_sync=$false
 } | ConvertTo-Json)
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/sync/obsidian/all
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:4201/api/sync/obsidian/all
 Get-ChildItem "$vault\FlowSpace Notes" -Filter *.md
 ```
 

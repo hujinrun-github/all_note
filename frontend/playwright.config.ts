@@ -26,6 +26,8 @@ export default defineConfig({
         FLOWSPACE_DB_PATH: '../.codex-run/playwright-roadmap.db',
         AI_PROVIDER: 'mock',
         ARTICLE_SEARCH_PROVIDER: 'mock',
+        NOTION_PROVIDER: 'mock',
+        FLOWSPACE_NOTION_TOKEN: 'mock-token',
       },
       url: `http://127.0.0.1:${backendPort}/api/task-projects`,
       reuseExistingServer: false,

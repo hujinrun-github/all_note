@@ -21,8 +21,13 @@ export function dateInputToUnix(value: string) {
   return Math.floor(date.getTime() / 1000)
 }
 
-export function normalizeTaskProject(value: string) {
-  return value.trim()
+export function normalizeTaskProject(value: unknown) {
+  if (typeof value === 'string') return value.trim()
+  if (value && typeof value === 'object' && 'name' in value) {
+    const name = (value as { name?: unknown }).name
+    return typeof name === 'string' ? name.trim() : ''
+  }
+  return ''
 }
 
 export function readStoredTaskProjects() {
@@ -46,7 +51,7 @@ export function saveStoredTaskProjects(projects: string[]) {
   }
 }
 
-export function mergeTaskProjects(...groups: Array<Array<string | null | undefined> | undefined>) {
+export function mergeTaskProjects(...groups: Array<Array<unknown> | undefined>) {
   const seen = new Set<string>()
   const projects: string[] = []
 
@@ -61,8 +66,8 @@ export function mergeTaskProjects(...groups: Array<Array<string | null | undefin
 
   return projects
 
-  function appendProject(value: string | null | undefined) {
-    const project = normalizeTaskProject(value ?? '')
+  function appendProject(value: unknown) {
+    const project = normalizeTaskProject(value)
     if (!project || seen.has(project)) return
     seen.add(project)
     projects.push(project)
