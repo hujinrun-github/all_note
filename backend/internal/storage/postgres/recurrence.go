@@ -83,7 +83,7 @@ func (r recurrenceRepository) ListActiveRules(ctx context.Context, from, to stri
 
 func (r recurrenceRepository) ListOccurrences(ctx context.Context, from, to string) ([]model.TaskOccurrence, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT o.task_id, o.occurrence_date, o.status, o.completed_at, o.note,
+		SELECT o.task_id, o.occurrence_date, o.status, EXTRACT(EPOCH FROM o.completed_at)::bigint AS completed_at, o.note,
 			t.title, COALESCE(t.content, ''), t.project_id, COALESCE(p.name, t.project),
 			t.roadmap_node_id, t.sort_order,
 			EXTRACT(EPOCH FROM o.created_at)::bigint
@@ -102,7 +102,7 @@ func (r recurrenceRepository) ListOccurrences(ctx context.Context, from, to stri
 
 func (r recurrenceRepository) GetCompletedOccurrencesByRange(ctx context.Context, from, to int64) ([]model.TaskSummary, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT o.task_id AS id, t.title, o.completed_at,
+		SELECT o.task_id AS id, t.title, EXTRACT(EPOCH FROM o.completed_at)::bigint AS completed_at,
 			t.project_id, p.name AS project_name, p.type AS project_type,
 			t.due, o.occurrence_date
 		FROM task_occurrences o
@@ -264,3 +264,4 @@ func scanOccurrences(rows *sql.Rows) ([]model.TaskOccurrence, error) {
 
 // Ensure interface compliance
 var _ storage.RecurrenceRepository = (*recurrenceRepository)(nil)
+
