@@ -121,6 +121,22 @@ func TestSQLiteSyncContract(t *testing.T) {
 	})
 }
 
+func TestSQLiteRecurrenceContract(t *testing.T) {
+	contracttest.RunRecurrenceSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+
+		store, err := (Provider{}).Open(context.Background(), storage.Config{
+			Env:        "test",
+			Driver:     storage.DriverSQLite,
+			SQLitePath: filepath.Join(t.TempDir(), "flowspace.test.db"),
+		})
+		if err != nil {
+			t.Fatalf("open sqlite store: %v", err)
+		}
+		return store
+	})
+}
+
 func TestSQLiteSyncBindingContract(t *testing.T) {
 	contracttest.RunSyncBindingSuite(t, func(t *testing.T) storage.Store {
 		t.Helper()
