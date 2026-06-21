@@ -219,6 +219,10 @@ func (s *storeTx) Roadmaps() storage.RoadmapRepository {
 	return roadmapRepository{db: s.tx}
 }
 
+func (s *storeTx) Sync() storage.SyncRepository {
+	return syncRepository{db: s.tx}
+}
+
 type recurrenceRepository struct {
 	db sqliteRunner
 }
