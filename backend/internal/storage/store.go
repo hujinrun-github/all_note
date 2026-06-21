@@ -35,6 +35,7 @@ type Store interface {
 	Folders() FolderRepository
 	Notes() NoteRepository
 	Tasks() TaskRepository
+	Recurrence() RecurrenceRepository
 	Events() EventRepository
 	Inbox() InboxRepository
 	Roadmaps() RoadmapRepository
@@ -77,6 +78,7 @@ type TaskFilter struct {
 	ProjectID     string
 	PlannedDate   string
 	RoadmapNodeID string
+	ExecutionType string // "" (default=single), "single", "recurring", "all"
 	Page          int
 	PageSize      int
 }
@@ -97,6 +99,20 @@ type TaskRepository interface {
 	GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error)
 	GetSummaryStats(ctx context.Context, from, to int64) (activeDays, projectCount int, err error)
 }
+
+type RecurrenceRepository interface {
+	UpsertRule(ctx context.Context, rule *model.RecurrenceRule) error
+	GetRule(ctx context.Context, taskID string) (*model.RecurrenceRule, error)
+	DeleteRule(ctx context.Context, taskID string) error
+	ListActiveRules(ctx context.Context, from, to string) ([]model.RecurrenceRule, error)
+	ListOccurrences(ctx context.Context, from, to string) ([]model.TaskOccurrence, error)
+	GetCompletedOccurrencesByRange(ctx context.Context, from, to int64) ([]model.TaskSummary, error)
+	CompleteOccurrence(ctx context.Context, taskID, date string, completedAt int64) (*model.TaskOccurrence, error)
+	ReopenOccurrence(ctx context.Context, taskID, date string) (*model.TaskOccurrence, error)
+	SkipOccurrence(ctx context.Context, taskID, date string) (*model.TaskOccurrence, error)
+	CountOccurrencesByTask(ctx context.Context, taskID string) (int, error)
+}
+
 type EventRepository interface {
 	List(context.Context, int64, int64, int, int) ([]model.Event, int, error)
 	Create(context.Context, *model.Event) error
