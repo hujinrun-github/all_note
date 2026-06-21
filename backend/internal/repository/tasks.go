@@ -113,6 +113,58 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 	return tasks, total, nil
 }
 
+func GetTasksByRoadmapNodeID(nodeID string) ([]model.Task, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return []model.Task{}, nil
+	}
+	if store := CurrentStore(); store != nil {
+		tasks, _, err := store.Tasks().List(context.Background(), storage.TaskFilter{
+			RoadmapNodeID: nodeID,
+			Page:          1,
+			PageSize:      100,
+		})
+		return tasks, err
+	}
+
+	rows, err := DB.Query(`
+		SELECT
+			t.id,
+			t.title,
+			COALESCE(t.content, ''),
+			COALESCE(p.name, t.project),
+			t.project_id,
+			p.type,
+			t.due,
+			t.planned_date,
+			t.priority,
+			t.done,
+			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
+			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
+			t.scope,
+			t.sort_order,
+			t.note_id,
+			t.roadmap_node_id,
+			t.created_at,
+			t.updated_at,
+			t.completed_at
+		FROM tasks t
+		LEFT JOIN task_projects p ON p.id = t.project_id
+		WHERE t.roadmap_node_id = ?
+		ORDER BY
+			CASE WHEN t.planned_date IS NULL THEN 1 ELSE 0 END ASC,
+			t.planned_date DESC,
+			t.sort_order ASC,
+			t.created_at DESC
+		LIMIT 100
+	`, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTaskRows(rows)
+}
+
 func ListTaskProjects() ([]model.TaskProject, error) {
 	if store := CurrentStore(); store != nil {
 		return store.Tasks().ListProjects(context.Background())
@@ -533,7 +585,6 @@ func GetSummaryStats(from, to int64) (int, int, error) {
 	).Scan(&activeDays, &projectCount)
 	return activeDays, projectCount, err
 }
-
 
 func GetTodayTasks(todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []model.Task, error) {
 	if store := CurrentStore(); store != nil {

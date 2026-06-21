@@ -100,6 +100,10 @@ func sqliteTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
 		where = append(where, "t.planned_date = ?")
 		args = append(args, filter.PlannedDate)
 	}
+	if filter.RoadmapNodeID != "" {
+		where = append(where, "t.roadmap_node_id = ?")
+		args = append(args, filter.RoadmapNodeID)
+	}
 	return where, args
 }
 

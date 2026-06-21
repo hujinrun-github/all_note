@@ -53,6 +53,82 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	t.Run("TasksFilterByRoadmapNodeID", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := context.Background()
+		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Roadmap Context", Type: "learning"})
+		if err != nil {
+			t.Fatalf("create project: %v", err)
+		}
+		nodeID := "roadmap-node-article-context"
+		otherNodeID := "roadmap-node-other"
+		if _, err := store.Roadmaps().ReplaceLearningRoadmap(ctx, &model.LearningRoadmap{
+			ProjectID: project.ID,
+			Title:     "Roadmap context",
+			Goal:      "Search with task context",
+			Status:    "ready",
+			Nodes: []model.RoadmapNode{
+				{
+					ID:         nodeID,
+					Type:       "task",
+					Title:      "检索索引",
+					PathType:   "required",
+					Status:     "active",
+					OrderIndex: 1,
+				},
+				{
+					ID:         otherNodeID,
+					Type:       "task",
+					Title:      "其他任务",
+					PathType:   "optional",
+					Status:     "active",
+					OrderIndex: 2,
+				},
+			},
+		}); err != nil {
+			t.Fatalf("create roadmap: %v", err)
+		}
+		matching := &model.Task{
+			Title:         "调研向量检索索引",
+			Content:       "比较 HNSW、IVF 和 rerank 的系统设计取舍",
+			Status:        "open",
+			Horizon:       "week",
+			Scope:         "daily",
+			RoadmapNodeID: &nodeID,
+		}
+		other := &model.Task{
+			Title:         " unrelated roadmap task ",
+			Content:       "unrelated content",
+			Status:        "open",
+			Horizon:       "week",
+			Scope:         "daily",
+			RoadmapNodeID: &otherNodeID,
+		}
+		if err := store.Tasks().Create(ctx, matching); err != nil {
+			t.Fatalf("create matching task: %v", err)
+		}
+		if err := store.Tasks().Create(ctx, other); err != nil {
+			t.Fatalf("create other task: %v", err)
+		}
+
+		tasks, total, err := store.Tasks().List(ctx, storage.TaskFilter{
+			RoadmapNodeID: nodeID,
+			Page:          1,
+			PageSize:      20,
+		})
+		if err != nil {
+			t.Fatalf("list roadmap node tasks: %v", err)
+		}
+		if total != 1 || len(tasks) != 1 {
+			t.Fatalf("expected one linked task, total=%d tasks=%+v", total, tasks)
+		}
+		if tasks[0].Title != matching.Title || tasks[0].Content != matching.Content {
+			t.Fatalf("expected linked task content to round-trip, got %+v", tasks[0])
+		}
+	})
+
 	t.Run("TaskProjectsSortCaseInsensitively", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()

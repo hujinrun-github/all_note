@@ -575,7 +575,7 @@ func TestArticleSearchQueryTargetsPopularHighSignalArticles(t *testing.T) {
 		Deliverable:          "REST API",
 		ArticleSearchQueries: []string{"go api performance tutorial"},
 	}
-	query := buildArticleSearchQuery(node, selectedArticleSearchSources([]string{"medium", "reddit"}))
+	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"medium", "reddit"}))
 
 	for _, term := range []string{"popular", "most read", "upvoted"} {
 		if !strings.Contains(strings.ToLower(query), term) {
@@ -590,10 +590,89 @@ func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
 		Deliverable:          "REST API",
 		ArticleSearchQueries: []string{"go api performance tutorial"},
 	}
-	query := buildArticleSearchQuery(node, selectedArticleSearchSources([]string{"medium", "reddit"}))
+	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"medium", "reddit"}))
 
 	if !strings.Contains(query, "site:medium.com OR site:reddit.com") {
 		t.Fatalf("selected sources should be alternatives, got %q", query)
+	}
+}
+
+func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	t.Setenv("ARTICLE_SEARCH_PROVIDER", "")
+
+	project := createLearningProjectForTest(t, "向量检索系统")
+	roadmap, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
+		ProjectID: project.ID,
+		Title:     "向量检索 Roadmap",
+		Goal:      "完成向量检索系统设计",
+		Status:    "ready",
+		Nodes: []model.RoadmapNode{
+			{
+				ID:                   "node-vector-index",
+				Type:                 "task",
+				Title:                "检索架构概述",
+				Description:          "理解系统总体结构",
+				PathType:             "required",
+				Status:               "active",
+				Deliverable:          "架构说明",
+				AcceptanceCriteria:   "能解释核心链路",
+				ArticleSearchQueries: []string{"generic vector database overview"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save roadmap: %v", err)
+	}
+	node := roadmap.Nodes[0]
+	linkedTask := &model.Task{
+		Title:         "调研 HNSW 索引调参",
+		Content:       "比较 efConstruction、M 参数和 rerank 对召回率的影响",
+		Status:        "open",
+		Horizon:       "week",
+		Scope:         "daily",
+		RoadmapNodeID: &node.ID,
+	}
+	if err := repository.CreateTask(linkedTask); err != nil {
+		t.Fatalf("create linked task: %v", err)
+	}
+
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search/advanced" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		capturedQuery = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"title":"HNSW Parameter Tuning Guide","link":"https://stackoverflow.com/questions/1","score":42,"answer_count":3},
+			{"title":"Vector Search Rerank Tradeoffs","link":"https://stackoverflow.com/questions/2","score":31,"answer_count":2},
+			{"title":"Approximate Nearest Neighbor Recall","link":"https://stackoverflow.com/questions/3","score":29,"answer_count":4},
+			{"title":"ANN Index Benchmarks","link":"https://stackoverflow.com/questions/4","score":25,"answer_count":1},
+			{"title":"HNSW efConstruction Explained","link":"https://stackoverflow.com/questions/5","score":22,"answer_count":2},
+			{"title":"Vector Database Ranking","link":"https://stackoverflow.com/questions/6","score":20,"answer_count":1},
+			{"title":"Embedding Search Evaluation","link":"https://stackoverflow.com/questions/7","score":19,"answer_count":1},
+			{"title":"Hybrid Search Design","link":"https://stackoverflow.com/questions/8","score":18,"answer_count":1},
+			{"title":"Recall Precision Tradeoff","link":"https://stackoverflow.com/questions/9","score":17,"answer_count":1},
+			{"title":"Rerank Pipeline Design","link":"https://stackoverflow.com/questions/10","score":16,"answer_count":1}
+		]}`))
+	}))
+	defer server.Close()
+	oldStackExchangeURL := stackExchangeSearchURL
+	stackExchangeSearchURL = server.URL + "/search/advanced"
+	t.Cleanup(func() { stackExchangeSearchURL = oldStackExchangeURL })
+
+	resources, err := SearchRoadmapNodeResources(node.ID, &model.SearchRoadmapResourcesRequest{Sources: []string{"stackoverflow"}})
+	if err != nil {
+		t.Fatalf("search resources: %v", err)
+	}
+	if len(resources) < 10 {
+		t.Fatalf("expected stackoverflow resources, got %+v", resources)
+	}
+	for _, term := range []string{"HNSW", "efConstruction", "rerank"} {
+		if !strings.Contains(capturedQuery, term) {
+			t.Fatalf("expected linked task term %q in article query %q", term, capturedQuery)
+		}
 	}
 }
 
@@ -627,7 +706,7 @@ func TestPublicSourceArticleSearchReturnsRealArticlesOnRepeatedCalls(t *testing.
 	sources := selectedArticleSearchSources([]string{"devto"})
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		resources := searchPublicSourceResources(node, sources, 10)
+		resources := searchPublicSourceResources(node, nil, sources, 10)
 		if len(resources) != 1 {
 			t.Fatalf("attempt %d resources = %d, want 1: %+v", attempt, len(resources), resources)
 		}

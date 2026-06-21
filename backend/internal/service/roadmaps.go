@@ -231,7 +231,11 @@ func SearchRoadmapNodeResources(nodeID string, req *model.SearchRoadmapResources
 	if req != nil {
 		sources = req.Sources
 	}
-	results, err := searchArticleResources(*node, sources, articleSearchMaxResults())
+	linkedTasks, err := repository.GetTasksByRoadmapNodeID(node.ID)
+	if err != nil {
+		return nil, err
+	}
+	results, err := searchArticleResources(*node, linkedTasks, sources, articleSearchMaxResults())
 	if err != nil {
 		return nil, err
 	}
@@ -779,7 +783,7 @@ func attachInitialRoadmapResources(draft *roadmapDraft) error {
 		if attachedNodes >= autoResourceNodeLimit {
 			return nil
 		}
-		resources, err := searchArticleResources(node, nil, 2)
+		resources, err := searchArticleResources(node, nil, nil, 2)
 		if err != nil {
 			continue
 		}
@@ -979,7 +983,7 @@ func searchTavilyResources(node model.RoadmapNode) ([]model.RoadmapResource, err
 	return resources, nil
 }
 
-func searchArticleResources(node model.RoadmapNode, requestedSources []string, limit int) ([]model.RoadmapResource, error) {
+func searchArticleResources(node model.RoadmapNode, linkedTasks []model.Task, requestedSources []string, limit int) ([]model.RoadmapResource, error) {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("ARTICLE_SEARCH_PROVIDER")))
 	if provider == "" {
 		provider = defaultArticleProvider
@@ -990,19 +994,19 @@ func searchArticleResources(node model.RoadmapNode, requestedSources []string, l
 		return []model.RoadmapResource{}, nil
 	}
 	if provider == "mock" {
-		return mockArticleResources(node, sources, limit), nil
+		return mockArticleResources(node, linkedTasks, sources, limit), nil
 	}
 	if provider == "tavily" {
 		if strings.TrimSpace(os.Getenv("ARTICLE_SEARCH_API_KEY")) == "" {
 			return nil, errors.New("ARTICLE_SEARCH_API_KEY is required for tavily")
 		}
-		return searchTavilyResourcesForNode(node, sources, limit)
+		return searchTavilyResourcesForNode(node, linkedTasks, sources, limit)
 	}
-	publicResources := searchPublicSourceResources(node, sources, limit)
+	publicResources := searchPublicSourceResources(node, linkedTasks, sources, limit)
 	if len(publicResources) >= limit {
 		return publicResources, nil
 	}
-	duckDuckGoResources, err := searchDuckDuckGoResources(node, sources, limit-len(publicResources))
+	duckDuckGoResources, err := searchDuckDuckGoResources(node, linkedTasks, sources, limit-len(publicResources))
 	if err != nil {
 		if len(publicResources) > 0 {
 			return publicResources, nil
@@ -1012,7 +1016,7 @@ func searchArticleResources(node model.RoadmapNode, requestedSources []string, l
 	return limitArticleResources(append(publicResources, duckDuckGoResources...), limit), nil
 }
 
-func searchPublicSourceResources(node model.RoadmapNode, sources []articleSearchSource, limit int) []model.RoadmapResource {
+func searchPublicSourceResources(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
 	resources := make([]model.RoadmapResource, 0, limit)
 	for _, source := range sources {
@@ -1022,18 +1026,18 @@ func searchPublicSourceResources(node model.RoadmapNode, sources []articleSearch
 		remaining := limit - len(resources)
 		switch source.ID {
 		case "devto":
-			resources = append(resources, searchDevToResources(node, remaining)...)
+			resources = append(resources, searchDevToResources(node, linkedTasks, remaining)...)
 		case "stackoverflow":
-			resources = append(resources, searchStackOverflowResources(node, remaining)...)
+			resources = append(resources, searchStackOverflowResources(node, linkedTasks, remaining)...)
 		}
 	}
 	return limitArticleResources(resources, limit)
 }
 
-func searchDevToResources(node model.RoadmapNode, limit int) []model.RoadmapResource {
+func searchDevToResources(node model.RoadmapNode, linkedTasks []model.Task, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
 	values := url.Values{}
-	values.Set("tag", articleTopicTag(node))
+	values.Set("tag", articleTopicTag(node, linkedTasks))
 	values.Set("top", "365")
 	values.Set("per_page", strconv.Itoa(limit))
 	requestURL := devToArticlesURL + "?" + values.Encode()
@@ -1086,12 +1090,12 @@ func searchDevToResources(node model.RoadmapNode, limit int) []model.RoadmapReso
 	return resources
 }
 
-func searchStackOverflowResources(node model.RoadmapNode, limit int) []model.RoadmapResource {
+func searchStackOverflowResources(node model.RoadmapNode, linkedTasks []model.Task, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
 	values := url.Values{}
 	values.Set("order", "desc")
 	values.Set("sort", "votes")
-	values.Set("q", baseArticleSearchQuery(node))
+	values.Set("q", baseArticleSearchQuery(node, linkedTasks))
 	values.Set("site", "stackoverflow")
 	values.Set("pagesize", strconv.Itoa(limit))
 	requestURL := stackExchangeSearchURL + "?" + values.Encode()
@@ -1138,11 +1142,12 @@ func searchStackOverflowResources(node model.RoadmapNode, limit int) []model.Roa
 	return resources
 }
 
-func articleTopicTag(node model.RoadmapNode) string {
+func articleTopicTag(node model.RoadmapNode, linkedTasks []model.Task) string {
 	text := strings.ToLower(strings.Join(nonEmptyStrings([]string{
 		node.Title,
 		node.Deliverable,
 		strings.Join(node.ArticleSearchQueries, " "),
+		linkedTaskArticleSearchContext(linkedTasks),
 	}), " "))
 	switch {
 	case strings.Contains(text, "golang") || strings.Contains(text, " go ") || strings.HasPrefix(text, "go "):
@@ -1170,10 +1175,11 @@ func articleTopicTag(node model.RoadmapNode) string {
 	}
 }
 
-func mockArticleResources(node model.RoadmapNode, sources []articleSearchSource, limit int) []model.RoadmapResource {
+func mockArticleResources(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) []model.RoadmapResource {
 	if len(sources) == 0 {
 		sources = selectedArticleSearchSources(nil)
 	}
+	searchQuery := baseArticleSearchQuery(node, linkedTasks)
 	titleSuffixes := []string{
 		"官方文档",
 		"项目实战教程",
@@ -1189,7 +1195,7 @@ func mockArticleResources(node model.RoadmapNode, sources []articleSearchSource,
 	resources := make([]model.RoadmapResource, 0, limit)
 	for index := 0; index < limit; index++ {
 		source := sources[index%len(sources)]
-		query := url.Values{"q": []string{node.Title}}.Encode()
+		query := url.Values{"q": []string{searchQuery}}.Encode()
 		separator := "?"
 		if strings.Contains(source.MockURL, "?") {
 			separator = "&"
@@ -1203,10 +1209,10 @@ func mockArticleResources(node model.RoadmapNode, sources []articleSearchSource,
 	return resources
 }
 
-func searchTavilyResourcesForNode(node model.RoadmapNode, sources []articleSearchSource, limit int) ([]model.RoadmapResource, error) {
+func searchTavilyResourcesForNode(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) ([]model.RoadmapResource, error) {
 	payload, err := json.Marshal(map[string]interface{}{
 		"api_key":     strings.TrimSpace(os.Getenv("ARTICLE_SEARCH_API_KEY")),
-		"query":       buildArticleSearchQuery(node, sources),
+		"query":       buildArticleSearchQuery(node, linkedTasks, sources),
 		"max_results": limit,
 	})
 	if err != nil {
@@ -1252,8 +1258,8 @@ func searchTavilyResourcesForNode(node model.RoadmapNode, sources []articleSearc
 	return ensureArticleResourceChoices(node, sources, resources, limit), nil
 }
 
-func searchDuckDuckGoResources(node model.RoadmapNode, sources []articleSearchSource, limit int) ([]model.RoadmapResource, error) {
-	searchURL := "https://duckduckgo.com/html/?" + url.Values{"q": []string{buildArticleSearchQuery(node, sources)}}.Encode()
+func searchDuckDuckGoResources(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) ([]model.RoadmapResource, error) {
+	searchURL := "https://duckduckgo.com/html/?" + url.Values{"q": []string{buildArticleSearchQuery(node, linkedTasks, sources)}}.Encode()
 	req, err := http.NewRequest(http.MethodGet, searchURL, nil)
 	if err != nil {
 		return nil, err
@@ -1276,21 +1282,60 @@ func searchDuckDuckGoResources(node model.RoadmapNode, sources []articleSearchSo
 	return ensureArticleResourceChoices(node, sources, extractDuckDuckGoResults(doc, limit), limit), nil
 }
 
-func buildArticleSearchQuery(node model.RoadmapNode, sources []articleSearchSource) string {
-	return strings.Join(nonEmptyStrings([]string{baseArticleSearchQuery(node), highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
+func buildArticleSearchQuery(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource) string {
+	return strings.Join(nonEmptyStrings([]string{baseArticleSearchQuery(node, linkedTasks), highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
 }
 
-func baseArticleSearchQuery(node model.RoadmapNode) string {
+func baseArticleSearchQuery(node model.RoadmapNode, linkedTasks []model.Task) string {
+	taskContext := linkedTaskArticleSearchContext(linkedTasks)
+	if taskContext != "" {
+		return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
+			taskContext,
+			node.Title,
+			node.Deliverable,
+			"official documentation tutorial",
+		}), " "))
+	}
 	for _, query := range node.ArticleSearchQueries {
 		if trimmed := strings.TrimSpace(query); trimmed != "" {
 			return trimmed
 		}
 	}
-	return strings.Join(nonEmptyStrings([]string{
+	return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
 		node.Title,
 		node.Deliverable,
 		"official documentation tutorial",
-	}), " ")
+	}), " "))
+}
+
+func linkedTaskArticleSearchContext(tasks []model.Task) string {
+	parts := make([]string, 0, len(tasks)*2)
+	for _, task := range tasks {
+		parts = append(parts, task.Title, task.Content)
+	}
+	return compactArticleSearchQuery(strings.Join(nonEmptyStrings(parts), " "))
+}
+
+func compactArticleSearchQuery(raw string) string {
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) == 0 {
+		return ""
+	}
+	const maxLength = 280
+	compacted := make([]string, 0, len(fields))
+	currentLength := 0
+	for _, field := range fields {
+		nextLength := len(field)
+		if currentLength > 0 {
+			nextLength++
+		}
+		if currentLength+nextLength > maxLength {
+			break
+		}
+		compacted = append(compacted, field)
+		currentLength += nextLength
+	}
+	return strings.Join(compacted, " ")
 }
 
 func selectedArticleSearchSources(requested []string) []articleSearchSource {

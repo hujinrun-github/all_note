@@ -70,14 +70,15 @@ type NoteRepository interface {
 }
 
 type TaskFilter struct {
-	Project     string
-	Status      string
-	Scope       string
-	Horizon     string
-	ProjectID   string
-	PlannedDate string
-	Page        int
-	PageSize    int
+	Project       string
+	Status        string
+	Scope         string
+	Horizon       string
+	ProjectID     string
+	PlannedDate   string
+	RoadmapNodeID string
+	Page          int
+	PageSize      int
 }
 
 type TaskRepository interface {

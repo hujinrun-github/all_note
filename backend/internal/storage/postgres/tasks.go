@@ -97,6 +97,11 @@ func postgresTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
 	if filter.PlannedDate != "" {
 		where = append(where, fmt.Sprintf("t.planned_date = %s::date", pgPlaceholder(next)))
 		args = append(args, filter.PlannedDate)
+		next++
+	}
+	if filter.RoadmapNodeID != "" {
+		where = append(where, fmt.Sprintf("t.roadmap_node_id = %s", pgPlaceholder(next)))
+		args = append(args, filter.RoadmapNodeID)
 	}
 	return where, args
 }
@@ -381,7 +386,6 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	}
 	return todayTasks, overdueTasks, nil
 }
-
 
 func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
 	var total int
