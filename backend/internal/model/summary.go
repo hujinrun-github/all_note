@@ -28,7 +28,9 @@ type TaskSummary struct {
 	CompletedAt *int64       `json:"completed_at,omitempty"`
 	NoteID      *string      `json:"note_id,omitempty"`
 	Project     *TaskProject `json:"project,omitempty"`
-	LinkedNotes []NoteRef    `json:"linked_notes,omitempty"`
+	LinkedNotes   []NoteRef `json:"linked_notes,omitempty"`
+	ExecutionType  string   `json:"execution_type,omitempty"`
+	OccurrenceDate string   `json:"occurrence_date,omitempty"`
 }
 
 type NoteRef struct {
