@@ -502,6 +502,10 @@ func (r taskRepository) normalizeTaskDefaults(ctx context.Context, task *model.T
 		task.Done = 1
 		task.Status = "done"
 	}
+	// Recurring templates never get planned_date
+	if task.ExecutionType == "recurring" {
+		return nil
+	}
 	if task.PlannedDate == nil {
 		planned := time.Now().Format("2006-01-02")
 		if task.Due != nil {

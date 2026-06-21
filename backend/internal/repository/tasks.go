@@ -700,6 +700,10 @@ func normalizeTaskDefaults(t *model.Task) {
 	if t.Done == 1 {
 		t.Status = "done"
 	}
+	// Recurring templates never get planned_date
+	if t.ExecutionType == "recurring" {
+		return
+	}
 	if t.PlannedDate == nil {
 		planned := time.Now().Format("2006-01-02")
 		if t.Due != nil {
