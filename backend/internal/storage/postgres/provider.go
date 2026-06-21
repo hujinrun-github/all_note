@@ -130,6 +130,10 @@ func (s *store) Tasks() storage.TaskRepository {
 	return taskRepository{db: s.db}
 }
 
+func (s *store) Recurrence() storage.RecurrenceRepository {
+	return recurrenceRepository{db: s.db}
+}
+
 func (s *store) Events() storage.EventRepository {
 	return eventRepository{db: s.db}
 }
@@ -169,6 +173,10 @@ func (s *storeTx) Search() storage.SearchRepository {
 
 func (s *storeTx) Tasks() storage.TaskRepository {
 	return taskRepository{db: s.tx}
+}
+
+func (s *storeTx) Recurrence() storage.RecurrenceRepository {
+	return recurrenceRepository{db: s.tx}
 }
 
 func (s *storeTx) Events() storage.EventRepository {
