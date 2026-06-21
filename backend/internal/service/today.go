@@ -22,7 +22,7 @@ func GetToday(ctx context.Context, store storage.Store, recurrenceSvc *Recurrenc
 	now := time.Now()
 	todayStr := now.Format("2006-01-02")
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
-	todayEnd := todayStart + 86400
+	todayEnd := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location()).Unix()
 	overdueCutoff := todayStart - int64(OverdueWindowDays*86400)
 
 	// 1. Get single tasks (filtered to execution_type=single)

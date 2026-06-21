@@ -362,7 +362,7 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	todayDate := time.Unix(todayStart, 0).In(time.Local).Format("2006-01-02")
 	overdueCutoffDate := time.Unix(overdueCutoff, 0).In(time.Local).Format("2006-01-02")
 	rows, err := r.db.QueryContext(ctx, postgresTaskSelectSQL()+`
-		WHERE t.done = false AND (
+		WHERE t.done = false AND (t.execution_type IS NULL OR t.execution_type = 'single') AND (
 			(t.due_at >= $1 AND t.due_at < $2)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long' AND t.planned_date = $3::date)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) = 'long'
@@ -381,6 +381,7 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 
 	rows, err = r.db.QueryContext(ctx, postgresTaskSelectSQL()+`
 		WHERE t.done = false
+			AND (t.execution_type IS NULL OR t.execution_type = 'single')
 			AND COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long'
 			AND ((t.due_at < $1 AND t.due_at >= $2) OR (t.due_at IS NULL AND t.planned_date < $3::date AND t.planned_date >= $4::date))
 			AND (t.planned_date IS NULL OR t.planned_date <> $3::date)
