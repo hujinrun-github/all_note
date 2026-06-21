@@ -45,6 +45,11 @@ import { taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
+type RoadmapLinkedTaskInput = {
+  title: string
+  content: string
+  plannedDate: string
+}
 
 interface RoadmapNodeData extends Record<string, unknown> {
   node: RoadmapNode
@@ -466,6 +471,22 @@ export default function Tasks() {
     setSelectedNodeID(node.id)
   }
 
+  async function handleCreateLinkedRoadmapTask(node: RoadmapNode, input: RoadmapLinkedTaskInput) {
+    if (!selectedLearningProjectID) return
+    const plannedDate = input.plannedDate || todayDateInputValue()
+    await createTaskMutation.mutateAsync({
+      title: input.title,
+      content: input.content,
+      project_id: selectedLearningProjectID,
+      roadmap_node_id: node.id,
+      planned_date: plannedDate,
+      due: dateInputToUnix(plannedDate),
+      horizon: 'week',
+      scope: 'daily',
+    })
+    setSelectedNodeID(node.id)
+  }
+
   const roadmap = roadmapQuery.data
   const selectedRoadmapNode = roadmap?.nodes.find((node) => node.id === selectedNodeID)
   const createNodeParent = roadmap?.nodes.find((node) => node.id === createNodeParentID)
@@ -738,6 +759,7 @@ export default function Tasks() {
           onSave={handleSaveRoadmapNode}
           onDelete={handleDeleteRoadmapNode}
           onAddNodeToWeek={handleAddNodeToWeek}
+          onCreateLinkedTask={handleCreateLinkedRoadmapTask}
           onToggleTask={handleToggleTask}
           onSaveTaskContent={handleUpdateTaskContent}
         />
@@ -1504,6 +1526,7 @@ function RoadmapNodeDialog({
   onSave,
   onDelete,
   onAddNodeToWeek,
+  onCreateLinkedTask,
   onToggleTask,
   onSaveTaskContent,
 }: {
@@ -1517,6 +1540,7 @@ function RoadmapNodeDialog({
   onSave: (nodeID: string, body: Partial<RoadmapNode>) => Promise<void>
   onDelete: (nodeID: string) => Promise<void>
   onAddNodeToWeek: (node: RoadmapNode) => Promise<void>
+  onCreateLinkedTask: (node: RoadmapNode, input: RoadmapLinkedTaskInput) => Promise<void>
   onToggleTask: (task: Task) => Promise<void>
   onSaveTaskContent: (task: Task, content: string) => Promise<void>
 }) {
@@ -1525,6 +1549,9 @@ function RoadmapNodeDialog({
   const [deliverable, setDeliverable] = useState(node.deliverable)
   const [acceptanceCriteria, setAcceptanceCriteria] = useState(node.acceptance_criteria)
   const [status, setStatus] = useState<RoadmapNode['status']>(node.status)
+  const [linkedTaskTitle, setLinkedTaskTitle] = useState('')
+  const [linkedTaskContent, setLinkedTaskContent] = useState('')
+  const [linkedTaskDate, setLinkedTaskDate] = useState(() => todayDateInputValue())
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
 
   useEffect(() => {
@@ -1533,6 +1560,9 @@ function RoadmapNodeDialog({
     setDeliverable(node.deliverable)
     setAcceptanceCriteria(node.acceptance_criteria)
     setStatus(node.status)
+    setLinkedTaskTitle('')
+    setLinkedTaskContent('')
+    setLinkedTaskDate(todayDateInputValue())
     setIsConfirmingDelete(false)
   }, [node.acceptance_criteria, node.deliverable, node.description, node.id, node.status, node.title])
 
@@ -1551,6 +1581,20 @@ function RoadmapNodeDialog({
       acceptance_criteria: acceptanceCriteria.trim(),
       status,
     })
+  }
+
+  async function handleCreateLinkedTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmedTitle = linkedTaskTitle.trim()
+    if (!trimmedTitle) return
+    await onCreateLinkedTask(node, {
+      title: trimmedTitle,
+      content: linkedTaskContent.trim(),
+      plannedDate: linkedTaskDate || todayDateInputValue(),
+    })
+    setLinkedTaskTitle('')
+    setLinkedTaskContent('')
+    setLinkedTaskDate(todayDateInputValue())
   }
 
   return (
@@ -1650,6 +1694,49 @@ function RoadmapNodeDialog({
             <i style={{ width: `${progressPercent}%` }} />
           </div>
         </div>
+
+        <form className="roadmap-linked-task-create-form" onSubmit={handleCreateLinkedTask}>
+          <div>
+            <span>新增关联学习任务</span>
+          </div>
+          <label>
+            <span>任务标题</span>
+            <input
+              data-testid="roadmap-linked-task-title-input"
+              aria-label="关联任务标题"
+              value={linkedTaskTitle}
+              onChange={(event) => setLinkedTaskTitle(event.target.value)}
+              placeholder="例如：调研 HNSW 参数"
+            />
+          </label>
+          <label className="roadmap-linked-task-create-content">
+            <span>具体任务内容</span>
+            <textarea
+              data-testid="roadmap-linked-task-content-input"
+              aria-label="关联任务内容"
+              value={linkedTaskContent}
+              onChange={(event) => setLinkedTaskContent(event.target.value)}
+              placeholder="写下这次要完成的阅读、实验、输出或验收点"
+            />
+          </label>
+          <label>
+            <span>计划日期</span>
+            <input
+              data-testid="roadmap-linked-task-date-input"
+              aria-label="关联任务计划日期"
+              type="date"
+              value={linkedTaskDate}
+              onChange={(event) => setLinkedTaskDate(event.target.value)}
+            />
+          </label>
+          <button
+            data-testid="roadmap-linked-task-create-button"
+            type="submit"
+            disabled={!linkedTaskTitle.trim() || isAddingTask}
+          >
+            {isAddingTask ? '添加中...' : '添加关联任务'}
+          </button>
+        </form>
 
         <div className="roadmap-linked-task-list" data-testid="roadmap-linked-task-list">
           <span>关联学习任务</span>

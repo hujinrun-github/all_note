@@ -597,6 +597,22 @@ func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
 	}
 }
 
+func TestArticleSearchQueryIncludesNodeDescription(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "向量检索基础",
+		Description:          "重点比较 HNSW 冷启动召回策略和增量索引维护",
+		Deliverable:          "调研笔记",
+		ArticleSearchQueries: []string{"generic vector database overview"},
+	}
+	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"technical"}))
+
+	for _, term := range []string{"HNSW", "冷启动", "增量索引"} {
+		if !strings.Contains(query, term) {
+			t.Fatalf("expected node description term %q in article query %q", term, query)
+		}
+	}
+}
+
 func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "")

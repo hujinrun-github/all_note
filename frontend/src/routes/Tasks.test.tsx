@@ -461,4 +461,49 @@ describe('Tasks learning roadmap weekly linking', () => {
       }),
     )
   })
+
+  it('creates a custom linked learning task from the roadmap node dialog', async () => {
+    const today = todayDateInputValue()
+    vi.mocked(tasksApi.createTask).mockResolvedValue(
+      task({
+        id: 'manual-linked-task',
+        title: '调研 HNSW 参数',
+        content: '比较 efConstruction、M 和 rerank 的实际取舍',
+        project: learningProject.name,
+        project_id: learningProject.id,
+        project_type: 'learning',
+        roadmap_node_id: 'node-1',
+        planned_date: today,
+        due: dateInputToUnix(today),
+        horizon: 'week',
+        scope: 'daily',
+      }),
+    )
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(await screen.findByTestId('roadmap-node'))
+
+    await user.type(await screen.findByTestId('roadmap-linked-task-title-input'), '调研 HNSW 参数')
+    await user.type(
+      screen.getByTestId('roadmap-linked-task-content-input'),
+      '比较 efConstruction、M 和 rerank 的实际取舍',
+    )
+    await user.click(screen.getByTestId('roadmap-linked-task-create-button'))
+
+    await waitFor(() => expect(tasksApi.createTask).toHaveBeenCalled())
+    expect(vi.mocked(tasksApi.createTask).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        title: '调研 HNSW 参数',
+        content: '比较 efConstruction、M 和 rerank 的实际取舍',
+        project_id: learningProject.id,
+        roadmap_node_id: 'node-1',
+        planned_date: today,
+        due: dateInputToUnix(today),
+        horizon: 'week',
+        scope: 'daily',
+      }),
+    )
+  })
 })

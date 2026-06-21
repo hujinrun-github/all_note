@@ -1292,17 +1292,24 @@ func baseArticleSearchQuery(node model.RoadmapNode, linkedTasks []model.Task) st
 		return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
 			taskContext,
 			node.Title,
+			node.Description,
 			node.Deliverable,
 			"official documentation tutorial",
 		}), " "))
 	}
 	for _, query := range node.ArticleSearchQueries {
 		if trimmed := strings.TrimSpace(query); trimmed != "" {
-			return trimmed
+			return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
+				trimmed,
+				node.Title,
+				node.Description,
+				node.Deliverable,
+			}), " "))
 		}
 	}
 	return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
 		node.Title,
+		node.Description,
 		node.Deliverable,
 		"official documentation tutorial",
 	}), " "))
