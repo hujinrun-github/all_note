@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   sort_order REAL NOT NULL DEFAULT 0,
   note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
   roadmap_node_id TEXT REFERENCES roadmap_nodes(id) ON DELETE SET NULL,
+  execution_type TEXT NOT NULL DEFAULT 'single',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   completed_at INTEGER

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 	_ "modernc.org/sqlite"
@@ -177,6 +178,10 @@ func (s *store) Search() storage.SearchRepository {
 	return searchRepository{db: s.db}
 }
 
+func (s *store) Recurrence() storage.RecurrenceRepository {
+	return recurrenceRepository{db: s.db}
+}
+
 type storeTx struct {
 	*store
 	tx *sql.Tx
@@ -192,6 +197,10 @@ func (s *storeTx) Notes() storage.NoteRepository {
 
 func (s *storeTx) Search() storage.SearchRepository {
 	return searchRepository{db: s.tx}
+}
+
+func (s *storeTx) Recurrence() storage.RecurrenceRepository {
+	return recurrenceRepository{db: s.tx}
 }
 
 func (s *storeTx) Tasks() storage.TaskRepository {
@@ -210,6 +219,46 @@ func (s *storeTx) Roadmaps() storage.RoadmapRepository {
 	return roadmapRepository{db: s.tx}
 }
 
-func (s *storeTx) Sync() storage.SyncRepository {
-	return syncRepository{db: s.tx}
+type recurrenceRepository struct {
+	db sqliteRunner
+}
+
+func (r recurrenceRepository) UpsertRule(ctx context.Context, rule *model.RecurrenceRule) error {
+	return storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) GetRule(ctx context.Context, taskID string) (*model.RecurrenceRule, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) DeleteRule(ctx context.Context, taskID string) error {
+	return storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) ListActiveRules(ctx context.Context, from, to string) ([]model.RecurrenceRule, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) ListOccurrences(ctx context.Context, from, to string) ([]model.TaskOccurrence, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) GetCompletedOccurrencesByRange(ctx context.Context, from, to int64) ([]model.TaskSummary, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) CompleteOccurrence(ctx context.Context, taskID, date string, completedAt int64) (*model.TaskOccurrence, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) ReopenOccurrence(ctx context.Context, taskID, date string) (*model.TaskOccurrence, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) SkipOccurrence(ctx context.Context, taskID, date string) (*model.TaskOccurrence, error) {
+	return nil, storage.ErrNotImplemented
+}
+
+func (r recurrenceRepository) CountOccurrencesByTask(ctx context.Context, taskID string) (int, error) {
+	return 0, storage.ErrNotImplemented
 }

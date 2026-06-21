@@ -16,6 +16,23 @@ type taskRepository struct {
 	db sqliteRunner
 }
 
+func (r taskRepository) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	db, ok := r.db.(*sql.DB)
+	if !ok {
+		// Already in a transaction, run directly
+		return fn(r.db.(*sql.Tx))
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (r taskRepository) List(ctx context.Context, filter storage.TaskFilter) ([]model.Task, int, error) {
 	where, args := sqliteTaskWhere(filter)
 	whereClause := strings.Join(where, " AND ")
@@ -216,13 +233,15 @@ func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
 	if err := r.normalizeTaskDefaults(ctx, task); err != nil {
 		return err
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO tasks (
-			id, title, content, project, project_id, due, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, created_at, updated_at
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, task.Due, task.PlannedDate, task.Priority, task.Done, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.CreatedAt, task.UpdatedAt)
-	return err
+	return r.withTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO tasks (
+				id, title, content, project, project_id, due, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, execution_type, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, task.Due, task.PlannedDate, task.Priority, task.Done, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.ExecutionType, task.CreatedAt, task.UpdatedAt)
+		return err
+	})
 }
 
 func (r taskRepository) Update(ctx context.Context, id string, req *model.UpdateTaskRequest) (*model.Task, error) {

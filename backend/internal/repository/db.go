@@ -131,6 +131,7 @@ func RunLegacySQLiteMigrations(db *sql.DB) error {
 		`ALTER TABLE note_sync_state ADD COLUMN external_hash TEXT`,
 		`ALTER TABLE note_sync_state ADD COLUMN external_mtime INTEGER`,
 		`ALTER TABLE note_sync_state ADD COLUMN last_direction TEXT`,
+			`ALTER TABLE tasks ADD COLUMN execution_type TEXT NOT NULL DEFAULT 'single'`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumnError(err) {
