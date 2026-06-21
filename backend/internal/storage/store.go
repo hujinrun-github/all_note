@@ -83,6 +83,19 @@ type TaskFilter struct {
 	PageSize      int
 }
 
+// ExecutionTypeFilter returns the WHERE clause and args for execution_type filtering.
+// emptyStr means "single" (default for backward compat).
+func ExecutionTypeFilter(execType string) (string, []any) {
+	switch execType {
+	case "recurring":
+		return "t.execution_type = 'recurring'", nil
+	case "all":
+		return "", nil // no filter
+	default: // "" or "single"
+		return "(t.execution_type IS NULL OR t.execution_type = 'single')", nil
+	}
+}
+
 type TaskRepository interface {
 	List(context.Context, TaskFilter) ([]model.Task, int, error)
 	ListProjects(context.Context) ([]model.TaskProject, error)

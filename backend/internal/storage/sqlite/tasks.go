@@ -121,6 +121,15 @@ func sqliteTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
 		where = append(where, "t.roadmap_node_id = ?")
 		args = append(args, filter.RoadmapNodeID)
 	}
+	if filter.ExecutionType != "all" {
+		if filter.ExecutionType == "recurring" {
+			where = append(where, "t.execution_type = ?")
+			args = append(args, "recurring")
+		} else {
+			where = append(where, "(t.execution_type IS NULL OR t.execution_type = ?)")
+			args = append(args, "single")
+		}
+	}
 	return where, args
 }
 

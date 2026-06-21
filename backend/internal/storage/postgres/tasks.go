@@ -102,6 +102,16 @@ func postgresTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
 	if filter.RoadmapNodeID != "" {
 		where = append(where, fmt.Sprintf("t.roadmap_node_id = %s", pgPlaceholder(next)))
 		args = append(args, filter.RoadmapNodeID)
+		next++
+	}
+	if filter.ExecutionType != "all" {
+		if filter.ExecutionType == "recurring" {
+			where = append(where, fmt.Sprintf("t.execution_type = %s", pgPlaceholder(next)))
+			args = append(args, "recurring")
+		} else {
+			where = append(where, fmt.Sprintf("(t.execution_type IS NULL OR t.execution_type = %s)", pgPlaceholder(next)))
+			args = append(args, "single")
+		}
 	}
 	return where, args
 }

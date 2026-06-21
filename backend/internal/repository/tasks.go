@@ -53,6 +53,8 @@ func GetTasks(project, status, scope, horizon, projectID, plannedDate string, pa
 		where = append(where, "t.planned_date = ?")
 		args = append(args, plannedDate)
 	}
+	// Default filter: exclude recurring templates
+	where = append(where, "(t.execution_type IS NULL OR t.execution_type = 'single')")
 
 	whereClause := strings.Join(where, " AND ")
 
