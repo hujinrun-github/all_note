@@ -611,6 +611,55 @@ body {
   line-height: 1.35;
 }
 
+.task-recurrence-tag {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgba(46, 144, 250, 0.22);
+  border-radius: 999px;
+  background: rgba(46, 144, 250, 0.08);
+  color: #2e90fa;
+  padding: 0.05rem 0.42rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.recurring-day-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0;
+  flex-wrap: wrap;
+}
+
+.recurring-day-picker > span {
+  font-size: 0.78rem;
+  color: var(--color-fs-text-muted);
+  margin-right: 0.25rem;
+}
+
+.day-chip {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--color-fs-border-hover);
+  background: transparent;
+  color: var(--color-fs-text);
+  font-size: 0.75rem;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s;
+}
+
+.day-chip.is-active {
+  background: var(--color-fs-accent);
+  border-color: var(--color-fs-accent);
+  color: #fff;
+}
+
 .priority-mark {
   align-self: start;
   border-radius: 999px;

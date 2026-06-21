@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { listTaskProjects } from '../api/tasks'
+import { completeOccurrence, listTaskProjects, reopenOccurrence } from '../api/tasks'
 import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import { EventChip, type EventData } from '../components/ui/EventChip'
 import { NoteCard, type NoteData } from '../components/ui/NoteCard'
@@ -24,6 +24,7 @@ export default function Dashboard() {
   const [taskFilter, setTaskFilter] = useState<'all' | 'todo' | 'done'>('all')
   const createTask = useCreateTask()
   const updateTask = useUpdateTask()
+  const queryClient = useQueryClient()
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['today'],
@@ -69,6 +70,15 @@ export default function Dashboard() {
     const task = [...(data?.todayTasks ?? []), ...(data?.overdueTasks ?? [])].find((item) => item.id === id)
     if (!task) return
     await updateTask.mutateAsync({ id, done: task.done ? 0 : 1 })
+  }
+
+  async function handleOccurrenceToggle(taskId: string, date: string, currentStatus: string) {
+    if (currentStatus === 'done') {
+      await reopenOccurrence(taskId, date)
+    } else {
+      await completeOccurrence(taskId, date)
+    }
+    queryClient.invalidateQueries({ queryKey: ['today'] })
   }
 
   if (isLoading) {
@@ -160,7 +170,7 @@ export default function Dashboard() {
               <div className="task-section">
                 <span>逾期</span>
                 <div className="row-stack">
-                  {filteredOverdue.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
+                  {filteredOverdue.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} onOccurrenceToggle={handleOccurrenceToggle} />)}
                 </div>
               </div>
             )}
@@ -168,7 +178,7 @@ export default function Dashboard() {
               <div className="task-section">
                 <span>今天</span>
                 <div className="row-stack">
-                  {filteredToday.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} />)}
+                  {filteredToday.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} onOccurrenceToggle={handleOccurrenceToggle} />)}
                 </div>
               </div>
             )}

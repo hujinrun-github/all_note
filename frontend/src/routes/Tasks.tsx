@@ -18,6 +18,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   addRoadmapNodeResource,
+  completeOccurrence,
   createRoadmapNode,
   createTask,
   createTaskProject,
@@ -25,14 +26,17 @@ import {
   deleteTaskProject,
   generateLearningRoadmap,
   getLearningRoadmap,
+  getRecurringTasks,
   getTasks,
   listTaskProjects,
   optimizeRoadmapLayout,
+  reopenOccurrence,
   saveRoadmapLayout,
   searchRoadmapNodeResources,
   updateTask,
   updateRoadmapNode,
   type LearningRoadmap,
+  type RecurrenceConfig,
   type RoadmapNode,
   type RoadmapResource,
   type Task,
@@ -43,7 +47,7 @@ import { getNotes, createNote } from '../api/notes'
 import { dateInputToUnix, dateToInputValue, todayDateInputValue } from '../utils/taskForm'
 import { taskProjectTypeLabels } from '../utils/taskProjects'
 
-type TaskTab = 'week' | 'long' | 'roadmap'
+type TaskTab = 'week' | 'long' | 'recurring' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
 type RoadmapLinkedTaskInput = {
   title: string
@@ -61,6 +65,7 @@ interface RoadmapNodeData extends Record<string, unknown> {
 const tabLabels: Record<TaskTab, string> = {
   week: '本周',
   long: '长期任务',
+  recurring: '重复任务',
   roadmap: '学习 Roadmap',
 }
 
@@ -136,6 +141,14 @@ export default function Tasks() {
   const [selectedResourceCandidateIDs, setSelectedResourceCandidateIDs] = useState<string[]>([])
   const [articleSearchSources, setArticleSearchSources] = useState<string[]>(defaultArticleSearchSources)
   const [pendingDeleteProjectID, setPendingDeleteProjectID] = useState('')
+  const [recurringTitle, setRecurringTitle] = useState('')
+  const [recurringFrequency, setRecurringFrequency] = useState<RecurrenceConfig['frequency']>('daily')
+  const [recurringInterval, setRecurringInterval] = useState(1)
+  const [recurringWeekdays, setRecurringWeekdays] = useState<number[]>([])
+  const [recurringMonthDays, setRecurringMonthDays] = useState<number[]>([])
+  const [recurringStartDate, setRecurringStartDate] = useState(() => todayDateInputValue())
+  const [recurringEndDate, setRecurringEndDate] = useState('')
+  const [recurringProjectID, setRecurringProjectID] = useState('')
 
   const projectsQuery = useQuery({
     queryKey: ['task-projects'],
@@ -172,6 +185,11 @@ export default function Tasks() {
   const longTasksQuery = useQuery({
     queryKey: ['tasks', 'long'],
     queryFn: () => getTasks({ horizon: 'long', status: 'all', page_size: 100 }),
+  })
+
+  const recurringTasksQuery = useQuery({
+    queryKey: ['tasks', 'recurring'],
+    queryFn: () => getRecurringTasks({ page_size: 100 }),
   })
 
   const roadmapQuery = useQuery({
@@ -471,6 +489,55 @@ export default function Tasks() {
     setSelectedNodeID(node.id)
   }
 
+  async function handleAddRecurringTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const title = recurringTitle.trim()
+    if (!title) return
+    const recurrence: RecurrenceConfig = {
+      start_date: recurringStartDate,
+      frequency: recurringFrequency,
+      interval: recurringInterval,
+      weekdays: recurringFrequency === 'weekly' ? recurringWeekdays : [],
+      month_days: recurringFrequency === 'monthly' ? recurringMonthDays : [],
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }
+    if (recurringEndDate) {
+      recurrence.end_date = recurringEndDate
+    }
+    await createTaskMutation.mutateAsync({
+      title,
+      project_id: recurringProjectID || activeProjectID || 'personal',
+      execution_type: 'recurring',
+      recurrence,
+      horizon: 'week',
+      scope: 'daily',
+    })
+    setRecurringTitle('')
+  }
+
+  async function handleToggleOccurrence(task: Task) {
+    if (task.execution_type !== 'recurring' || !task.occurrence_date) return
+    if (task.occurrence_status === 'done') {
+      await reopenOccurrence(task.id, task.occurrence_date)
+    } else {
+      await completeOccurrence(task.id, task.occurrence_date)
+    }
+    queryClient.invalidateQueries({ queryKey: ['tasks', 'recurring'] })
+    queryClient.invalidateQueries({ queryKey: ['today'] })
+  }
+
+  const toggleRecurringWeekday = (day: number) => {
+    setRecurringWeekdays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day],
+    )
+  }
+
+  const toggleRecurringMonthDay = (day: number) => {
+    setRecurringMonthDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day],
+    )
+  }
+
   async function handleCreateLinkedRoadmapTask(node: RoadmapNode, input: RoadmapLinkedTaskInput) {
     if (!selectedLearningProjectID) return
     const plannedDate = input.plannedDate || todayDateInputValue()
@@ -684,6 +751,32 @@ export default function Tasks() {
             onToggle={handleToggleTask}
             onStatusChange={handleUpdateLongTaskStatus}
             isUpdating={updateTaskMutation.isPending}
+          />
+        )}
+
+        {activeTab === 'recurring' && (
+          <RecurringTaskView
+            tasks={recurringTasksQuery.data?.tasks ?? []}
+            title={recurringTitle}
+            frequency={recurringFrequency}
+            interval={recurringInterval}
+            weekdays={recurringWeekdays}
+            monthDays={recurringMonthDays}
+            startDate={recurringStartDate}
+            endDate={recurringEndDate}
+            projectID={recurringProjectID}
+            projects={weekProjects.length ? weekProjects : projects}
+            isPending={createTaskMutation.isPending}
+            onTitleChange={setRecurringTitle}
+            onFrequencyChange={setRecurringFrequency}
+            onIntervalChange={(v) => setRecurringInterval(Number(v))}
+            onToggleWeekday={toggleRecurringWeekday}
+            onToggleMonthDay={toggleRecurringMonthDay}
+            onStartDateChange={setRecurringStartDate}
+            onEndDateChange={setRecurringEndDate}
+            onProjectChange={setRecurringProjectID}
+            onSubmit={handleAddRecurringTask}
+            onToggle={handleToggleOccurrence}
           />
         )}
 
@@ -1825,6 +1918,160 @@ function RoadmapLinkedTaskRow({
         </form>
       </div>
     </article>
+  )
+}
+
+function RecurringTaskView({
+  tasks,
+  title,
+  frequency,
+  interval: freqInterval,
+  weekdays,
+  monthDays,
+  startDate,
+  endDate,
+  projectID,
+  projects,
+  isPending,
+  onTitleChange,
+  onFrequencyChange,
+  onIntervalChange,
+  onToggleWeekday,
+  onToggleMonthDay,
+  onStartDateChange,
+  onEndDateChange,
+  onProjectChange,
+  onSubmit,
+  onToggle,
+}: {
+  tasks: Task[]
+  title: string
+  frequency: RecurrenceConfig['frequency']
+  interval: number
+  weekdays: number[]
+  monthDays: number[]
+  startDate: string
+  endDate: string
+  projectID: string
+  projects: TaskProject[]
+  isPending: boolean
+  onTitleChange: (v: string) => void
+  onFrequencyChange: (v: RecurrenceConfig['frequency']) => void
+  onIntervalChange: (v: number) => void
+  onToggleWeekday: (d: number) => void
+  onToggleMonthDay: (d: number) => void
+  onStartDateChange: (v: string) => void
+  onEndDateChange: (v: string) => void
+  onProjectChange: (v: string) => void
+  onSubmit: (e: FormEvent<HTMLFormElement>) => void
+  onToggle: (task: Task) => void
+}) {
+  const weekdayLabels = ['一', '二', '三', '四', '五', '六', '日']
+  const enabledTasks = tasks.filter((t) => {
+    const r = (t as any).recurrence
+    return r?.enabled !== false
+  })
+  const disabledTasks = tasks.filter((t) => {
+    const r = (t as any).recurrence
+    return r?.enabled === false
+  })
+
+  return (
+    <div className="task-tab-panel">
+      <form className="inline-create task-create-form recurring-create-form" onSubmit={onSubmit}>
+        <input
+          className="task-title-input"
+          aria-label="重复任务标题"
+          value={title}
+          onChange={(e) => onTitleChange(e.target.value)}
+          placeholder="例如：每天背单词"
+        />
+        <select value={frequency} onChange={(e) => onFrequencyChange(e.target.value as RecurrenceConfig['frequency'])}>
+          <option value="daily">每天</option>
+          <option value="weekly">每周</option>
+          <option value="monthly">每月</option>
+        </select>
+        {frequency !== 'daily' && (
+          <input
+            aria-label="间隔"
+            type="number"
+            min={1}
+            value={freqInterval}
+            onChange={(e) => onIntervalChange(Number(e.target.value))}
+            style={{ width: 60 }}
+          />
+        )}
+        <input type="date" aria-label="开始日期" value={startDate} onChange={(e) => onStartDateChange(e.target.value)} />
+        <input type="date" aria-label="结束日期" value={endDate} onChange={(e) => onEndDateChange(e.target.value)} placeholder="结束日期（可选）" />
+        <select value={projectID} onChange={(e) => onProjectChange(e.target.value)}>
+          <option value="">个人</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        <button type="submit" disabled={!title.trim() || isPending}>
+          添加
+        </button>
+      </form>
+
+      {frequency === 'weekly' && (
+        <div className="recurring-day-picker">
+          <span>每周几：</span>
+          {[1, 2, 3, 4, 5, 6, 7].map((d) => (
+            <button
+              key={d}
+              type="button"
+              className={weekdays.includes(d) ? 'day-chip is-active' : 'day-chip'}
+              onClick={() => onToggleWeekday(d)}
+            >
+              {weekdayLabels[d - 1]}
+            </button>
+          ))}
+        </div>
+      )}
+      {frequency === 'monthly' && (
+        <div className="recurring-day-picker">
+          <span>每月几号：</span>
+          {[1, 5, 10, 15, 20, 25, 28, 31].map((d) => (
+            <button
+              key={d}
+              type="button"
+              className={monthDays.includes(d) ? 'day-chip is-active' : 'day-chip'}
+              onClick={() => onToggleMonthDay(d)}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tasks.length === 0 ? (
+        <p className="empty-copy">还没有重复任务</p>
+      ) : (
+        <>
+          {enabledTasks.length > 0 && (
+            <div className="task-section">
+              <span>进行中</span>
+              <div className="row-stack">
+                {enabledTasks.map((task) => (
+                  <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
+                ))}
+              </div>
+            </div>
+          )}
+          {disabledTasks.length > 0 && (
+            <div className="task-section">
+              <span>已暂停</span>
+              <div className="row-stack">
+                {disabledTasks.map((task) => (
+                  <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
