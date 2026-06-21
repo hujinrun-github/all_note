@@ -254,129 +254,129 @@ func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
 }
 
 func (r taskRepository) Update(ctx context.Context, id string, req *model.UpdateTaskRequest) (*model.Task, error) {
-	db, ok := r.db.(*sql.DB)
-	if !ok {
-		return nil, fmt.Errorf("Update requires *sql.DB, got %T", r.db)
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
+	var task *model.Task
+	err := r.withTx(ctx, func(tx *sql.Tx) error {
+		// TOCTOU: read current state inside transaction
+		var currentDone int
+		if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE id = ?`, id).Scan(&currentDone); err != nil {
+			if err == sql.ErrNoRows {
+				return err
+			}
+			return err
+		}
 
-	// TOCTOU: read current state inside transaction
-	var currentDone int
-	if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE id = ?`, id).Scan(&currentDone); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, err
+		sets := []string{"updated_at = ?"}
+		args := []interface{}{nowUnix()}
+		if req.Title != nil {
+			sets = append(sets, "title = ?")
+			args = append(args, strings.TrimSpace(*req.Title))
 		}
-		return nil, err
-	}
-
-	sets := []string{"updated_at = ?"}
-	args := []interface{}{nowUnix()}
-	if req.Title != nil {
-		sets = append(sets, "title = ?")
-		args = append(args, strings.TrimSpace(*req.Title))
-	}
-	if req.Content != nil {
-		sets = append(sets, "content = ?")
-		args = append(args, strings.TrimSpace(*req.Content))
-	}
-	if req.ProjectID != nil {
-		project, err := r.getProjectByIDInTx(ctx, tx, *req.ProjectID)
+		if req.Content != nil {
+			sets = append(sets, "content = ?")
+			args = append(args, strings.TrimSpace(*req.Content))
+		}
+		if req.ProjectID != nil {
+			project, err := r.getProjectByIDInTx(ctx, tx, *req.ProjectID)
+			if err != nil {
+				return err
+			}
+			sets = append(sets, "project_id = ?", "project = ?")
+			args = append(args, project.ID, project.Name)
+		} else if req.Project != nil {
+			projectID, err := r.ensureTaskProjectByNameInTx(ctx, tx, *req.Project, "regular")
+			if err != nil {
+				return err
+			}
+			name := strings.TrimSpace(*req.Project)
+			sets = append(sets, "project_id = ?", "project = ?")
+			args = append(args, projectID, name)
+		}
+		if req.Due != nil {
+			sets = append(sets, "due = ?")
+			args = append(args, *req.Due)
+		}
+		if req.PlannedDate != nil {
+			sets = append(sets, "planned_date = ?")
+			args = append(args, strings.TrimSpace(*req.PlannedDate))
+		}
+		if req.Priority != nil {
+			sets = append(sets, "priority = ?")
+			args = append(args, *req.Priority)
+		}
+		if req.ExecutionType != nil {
+			sets = append(sets, "execution_type = ?")
+			args = append(args, *req.ExecutionType)
+		}
+		// Branch A: req.Done directly set
+		if req.Done != nil && req.Status == nil {
+			sets = append(sets, "done = ?")
+			args = append(args, *req.Done)
+			status := "open"
+			if *req.Done == 1 {
+				status = "done"
+			}
+			sets = append(sets, "status = ?")
+			args = append(args, status)
+			// TOCTOU: completed_at set/clear
+			if *req.Done == 1 && currentDone == 0 {
+				sets = append(sets, "completed_at = ?")
+				args = append(args, nowUnix())
+			} else if *req.Done == 0 && currentDone == 1 {
+				sets = append(sets, "completed_at = NULL")
+			}
+		}
+		// Branch B: req.Status indirectly changes done
+		if req.Status != nil {
+			newStatus := strings.ToLower(normalizeTaskStatus(*req.Status))
+			isCurrentlyDone := (currentDone == 1)
+			isBecomingDone := (newStatus == "done" && !isCurrentlyDone)
+			isBecomingUndone := (newStatus != "done" && isCurrentlyDone)
+			if isBecomingDone {
+				sets = append(sets, "completed_at = ?")
+				args = append(args, nowUnix())
+			} else if isBecomingUndone {
+				sets = append(sets, "completed_at = NULL")
+			}
+			status := normalizeTaskStatus(*req.Status)
+			done := 0
+			if status == "done" {
+				done = 1
+			}
+			sets = append(sets, "status = ?", "done = ?")
+			args = append(args, status, done)
+		}
+		if req.Scope != nil {
+			sets = append(sets, "scope = ?")
+			args = append(args, normalizeScope(*req.Scope))
+		}
+		if req.Horizon != nil {
+			sets = append(sets, "horizon = ?")
+			args = append(args, normalizeHorizon(*req.Horizon))
+		}
+		if req.SortOrder != nil {
+			sets = append(sets, "sort_order = ?")
+			args = append(args, *req.SortOrder)
+		}
+		if req.RoadmapNodeID != nil {
+			sets = append(sets, "roadmap_node_id = ?")
+			args = append(args, *req.RoadmapNodeID)
+		}
+		args = append(args, id)
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		sets = append(sets, "project_id = ?", "project = ?")
-		args = append(args, project.ID, project.Name)
-	} else if req.Project != nil {
-		projectID, err := r.ensureTaskProjectByNameInTx(ctx, tx, *req.Project, "regular")
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			return sql.ErrNoRows
+		}
+		// Read back inside transaction
+		t, err := scanSQLiteTaskRow(tx.QueryRowContext(ctx, sqliteTaskSelectSQL()+` WHERE t.id = ?`, id))
 		if err != nil {
-			return nil, err
+			return err
 		}
-		name := strings.TrimSpace(*req.Project)
-		sets = append(sets, "project_id = ?", "project = ?")
-		args = append(args, projectID, name)
-	}
-	if req.Due != nil {
-		sets = append(sets, "due = ?")
-		args = append(args, *req.Due)
-	}
-	if req.PlannedDate != nil {
-		sets = append(sets, "planned_date = ?")
-		args = append(args, strings.TrimSpace(*req.PlannedDate))
-	}
-	if req.Priority != nil {
-		sets = append(sets, "priority = ?")
-		args = append(args, *req.Priority)
-	}
-	// Branch A: req.Done directly set
-	if req.Done != nil && req.Status == nil {
-		sets = append(sets, "done = ?")
-		args = append(args, *req.Done)
-		status := "open"
-		if *req.Done == 1 {
-			status = "done"
-		}
-		sets = append(sets, "status = ?")
-		args = append(args, status)
-		// TOCTOU: completed_at set/clear
-		if *req.Done == 1 && currentDone == 0 {
-			sets = append(sets, "completed_at = ?")
-			args = append(args, nowUnix())
-		} else if *req.Done == 0 && currentDone == 1 {
-			sets = append(sets, "completed_at = NULL")
-		}
-	}
-	// Branch B: req.Status indirectly changes done
-	if req.Status != nil {
-		newStatus := strings.ToLower(normalizeTaskStatus(*req.Status))
-		isCurrentlyDone := (currentDone == 1)
-		isBecomingDone := (newStatus == "done" && !isCurrentlyDone)
-		isBecomingUndone := (newStatus != "done" && isCurrentlyDone)
-		if isBecomingDone {
-			sets = append(sets, "completed_at = ?")
-			args = append(args, nowUnix())
-		} else if isBecomingUndone {
-			sets = append(sets, "completed_at = NULL")
-		}
-		status := normalizeTaskStatus(*req.Status)
-		done := 0
-		if status == "done" {
-			done = 1
-		}
-		sets = append(sets, "status = ?", "done = ?")
-		args = append(args, status, done)
-	}
-	if req.Scope != nil {
-		sets = append(sets, "scope = ?")
-		args = append(args, normalizeScope(*req.Scope))
-	}
-	if req.Horizon != nil {
-		sets = append(sets, "horizon = ?")
-		args = append(args, normalizeHorizon(*req.Horizon))
-	}
-	if req.SortOrder != nil {
-		sets = append(sets, "sort_order = ?")
-		args = append(args, *req.SortOrder)
-	}
-	if req.RoadmapNodeID != nil {
-		sets = append(sets, "roadmap_node_id = ?")
-		args = append(args, *req.RoadmapNodeID)
-	}
-	args = append(args, id)
-	result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
-	if err != nil {
-		return nil, err
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return nil, sql.ErrNoRows
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	task, err := r.GetByID(ctx, id)
+		task = t
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}

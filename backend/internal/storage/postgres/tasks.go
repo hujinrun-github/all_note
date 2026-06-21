@@ -315,6 +315,9 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		if req.RoadmapNodeID != nil {
 			builder.Add("roadmap_node_id", *req.RoadmapNodeID)
 		}
+		if req.ExecutionType != nil {
+			builder.Add("execution_type", *req.ExecutionType)
+		}
 		clause, args := builder.ClauseAndArgs()
 		args = append(args, id)
 
