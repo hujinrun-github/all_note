@@ -468,7 +468,7 @@ func postgresTaskSelectSQL() string {
 			COALESCE(t.status, CASE WHEN t.done THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
 			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
-			t.completed_at
+			t.completed_at, t.execution_type
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 	`
@@ -677,7 +677,7 @@ func scanPostgresTaskRow(row rowScanner) (*model.Task, error) {
 		&task.ID, &task.Title, &task.Content, &project, &projectID, &projectType,
 		&dueAt, &plannedDate, &task.Priority, &done, &task.Status, &task.Horizon,
 		&task.Scope, &task.SortOrder, &noteID, &roadmapNodeID, &createdAt, &updatedAt,
-		&completedAt,
+		&completedAt, &task.ExecutionType,
 	); err != nil {
 		return nil, err
 	}

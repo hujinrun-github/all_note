@@ -63,7 +63,7 @@ func (r taskRepository) List(ctx context.Context, filter storage.TaskFilter) ([]
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
 			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
-			t.completed_at
+			t.completed_at, t.execution_type
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 		WHERE %s
@@ -491,7 +491,7 @@ func sqliteTaskSelectSQL() string {
 			COALESCE(t.status, CASE WHEN t.done = 1 THEN 'done' ELSE 'open' END),
 			COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END),
 			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
-			t.completed_at
+			t.completed_at, t.execution_type
 		FROM tasks t
 		LEFT JOIN task_projects p ON p.id = t.project_id
 	`
@@ -676,7 +676,7 @@ func scanSQLiteTaskRow(row sqliteRowScanner) (*model.Task, error) {
 		&task.ID, &task.Title, &task.Content, &task.Project, &task.ProjectID, &task.ProjectType,
 		&task.Due, &task.PlannedDate, &task.Priority, &task.Done, &task.Status, &task.Horizon,
 		&task.Scope, &task.SortOrder, &task.NoteID, &task.RoadmapNodeID, &task.CreatedAt, &task.UpdatedAt,
-		&task.CompletedAt,
+			&task.CompletedAt, &task.ExecutionType,
 	); err != nil {
 		return nil, err
 	}
