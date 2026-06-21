@@ -296,8 +296,13 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 			args = append(args, *req.Due)
 		}
 		if req.PlannedDate != nil {
-			sets = append(sets, "planned_date = ?")
-			args = append(args, strings.TrimSpace(*req.PlannedDate))
+			val := strings.TrimSpace(*req.PlannedDate)
+			if val == "" {
+				sets = append(sets, "planned_date = NULL")
+			} else {
+				sets = append(sets, "planned_date = ?")
+				args = append(args, val)
+			}
 		}
 		if req.Priority != nil {
 			sets = append(sets, "priority = ?")

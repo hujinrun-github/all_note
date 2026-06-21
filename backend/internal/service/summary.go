@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log"
 	"sort"
 	"time"
 
@@ -21,7 +22,8 @@ func GetSummary(ctx context.Context, store storage.Store, params model.SummaryPa
 	// 2. Recurring occurrences
 	recurringSummaries, err := store.Recurrence().GetCompletedOccurrencesByRange(ctx, params.From, params.To)
 	if err != nil {
-		recurringSummaries = nil // graceful degradation
+		log.Printf("summary: GetCompletedOccurrencesByRange failed (graceful degradation): %v", err)
+		recurringSummaries = nil
 	}
 
 	// 3. Merge and sort by CompletedAt descending
@@ -61,6 +63,7 @@ func GetSummary(ctx context.Context, store storage.Store, params model.SummaryPa
 	}
 	noteMap, err := store.Notes().GetNotesByProjectIDs(ctx, ids)
 	if err != nil {
+		log.Printf("summary: GetNotesByProjectIDs failed (graceful degradation): %v", err)
 		noteMap = map[string][]model.NoteRef{}
 	}
 	for i := range all {
@@ -78,6 +81,7 @@ func GetSummary(ctx context.Context, store storage.Store, params model.SummaryPa
 	// 7. Get active_days + project_count
 	activeDays, projectCount, err := store.Tasks().GetSummaryStats(ctx, params.From, params.To)
 	if err != nil {
+		log.Printf("summary: GetSummaryStats failed (graceful degradation): %v", err)
 		activeDays, projectCount = 0, 0
 	}
 

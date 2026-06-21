@@ -226,10 +226,10 @@ func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks (
-				id, title, content, project, project_id, due_at, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, created_at, updated_at
+				id, title, content, project, project_id, due_at, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, execution_type, created_at, updated_at
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, postgresTimePtr(task.Due), task.PlannedDate, task.Priority, task.Done == 1, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, unixToTime(task.CreatedAt), unixToTime(task.UpdatedAt)); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, postgresTimePtr(task.Due), task.PlannedDate, task.Priority, task.Done == 1, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.ExecutionType, unixToTime(task.CreatedAt), unixToTime(task.UpdatedAt)); err != nil {
 			return err
 		}
 		return upsertTaskSearchIndex(ctx, tx, task)
@@ -272,7 +272,12 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 			builder.Add("due_at", unixToTime(*req.Due))
 		}
 		if req.PlannedDate != nil {
-			builder.Add("planned_date", strings.TrimSpace(*req.PlannedDate))
+			val := strings.TrimSpace(*req.PlannedDate)
+			if val == "" {
+				builder.Add("planned_date", nil)
+			} else {
+				builder.Add("planned_date", val)
+			}
 		}
 		if req.Priority != nil {
 			builder.Add("priority", *req.Priority)
