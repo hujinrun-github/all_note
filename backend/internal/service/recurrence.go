@@ -10,6 +10,14 @@ import (
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
+// RecurrenceService holds dependencies for expanding recurring task occurrences.
+type RecurrenceService struct{}
+
+// NewRecurrenceService creates a new RecurrenceService.
+func NewRecurrenceService() *RecurrenceService {
+	return &RecurrenceService{}
+}
+
 // RecurrenceStore is the subset of Store needed by RecurrenceService.
 type RecurrenceStore interface {
 	// Methods defined via storage.Store in production.
