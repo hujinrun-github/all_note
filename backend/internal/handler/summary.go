@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/service"
 )
 
@@ -30,7 +31,8 @@ func GetSummary(c *gin.Context) {
 		From: fromTime.Unix(), To: toTime.Unix(),
 		Page: page, PageSize: pageSize,
 	}
-	data, err := service.GetSummary(params)
+	store := repository.ActiveStore()
+	data, err := service.GetSummary(c.Request.Context(), store, params)
 	if err != nil {
 		internalError(c, "获取总结失败")
 		return

@@ -1,21 +1,56 @@
 package service
 
 import (
+	"context"
 	"sort"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetSummary(params model.SummaryParams) (*model.SummaryData, error) {
-	tasks, total, err := repository.GetCompletedTasksByRange(params.From, params.To, params.Page, params.PageSize)
+func GetSummary(ctx context.Context, store storage.Store, params model.SummaryParams) (*model.SummaryData, error) {
+	const maxItems = 10000
+
+	// 1. Single tasks
+	singleTasks, singleTotal, err := store.Tasks().GetCompletedTasksByRange(ctx, params.From, params.To, 1, maxItems)
 	if err != nil {
 		return nil, err
 	}
 
+	// 2. Recurring occurrences
+	recurringSummaries, err := store.Recurrence().GetCompletedOccurrencesByRange(ctx, params.From, params.To)
+	if err != nil {
+		recurringSummaries = nil // graceful degradation
+	}
+
+	// 3. Merge and sort by CompletedAt descending
+	all := append(singleTasks, recurringSummaries...)
+	truncated := false
+	if len(all) > maxItems {
+		sortByCompletedAtDesc(all)
+		all = all[:maxItems]
+		truncated = true
+	} else {
+		sortByCompletedAtDesc(all)
+	}
+
+	// 4. Paginate in memory
+	total := singleTotal + len(recurringSummaries)
+	start := (params.Page - 1) * params.PageSize
+	if start > len(all) {
+		all = nil
+	} else {
+		end := start + params.PageSize
+		if end > len(all) {
+			end = len(all)
+		}
+		all = all[start:end]
+	}
+
+	// 5. Attach notes
 	projectIDs := make(map[string]bool)
-	for _, t := range tasks {
+	for _, t := range all {
 		if t.Project != nil {
 			projectIDs[t.Project.ID] = true
 		}
@@ -24,28 +59,47 @@ func GetSummary(params model.SummaryParams) (*model.SummaryData, error) {
 	for id := range projectIDs {
 		ids = append(ids, id)
 	}
-	noteMap, err := repository.GetNotesByProjectIDs(ids)
+	noteMap, err := store.Notes().GetNotesByProjectIDs(ctx, ids)
 	if err != nil {
 		noteMap = map[string][]model.NoteRef{}
 	}
-
-	// Attach notes and group by date
-	for i := range tasks {
-		if tasks[i].Project != nil {
-			tasks[i].LinkedNotes = noteMap[tasks[i].Project.ID]
+	for i := range all {
+		if all[i].Project != nil {
+			all[i].LinkedNotes = noteMap[all[i].Project.ID]
 		}
 	}
 
-	groups := groupByDate(tasks)
+	// 6. Group by date
+	groups := groupByDate(all)
 	if groups == nil {
 		groups = []model.DateGroup{}
 	}
-	activeDays, projectCount, err := repository.GetSummaryStats(params.From, params.To)
+
+	// 7. Get active_days + project_count
+	activeDays, projectCount, err := store.Tasks().GetSummaryStats(ctx, params.From, params.To)
 	if err != nil {
 		activeDays, projectCount = 0, 0
 	}
 
-	return model.NewSummaryData(groups, activeDays, projectCount, total), nil
+	result := model.NewSummaryData(groups, activeDays, projectCount, total)
+	_ = truncated
+	return result, nil
+}
+
+func sortByCompletedAtDesc(tasks []model.TaskSummary) {
+	sort.Slice(tasks, func(i, j int) bool {
+		a, b := tasks[i].CompletedAt, tasks[j].CompletedAt
+		if a == nil && b == nil {
+			return false
+		}
+		if a == nil {
+			return false
+		}
+		if b == nil {
+			return true
+		}
+		return *a > *b
+	})
 }
 
 func groupByDate(tasks []model.TaskSummary) []model.DateGroup {
