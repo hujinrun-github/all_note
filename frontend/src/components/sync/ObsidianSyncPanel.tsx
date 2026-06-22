@@ -79,9 +79,9 @@ export function ObsidianSyncPanel({
 
   const payload = {
     id: target?.id,
-    name,
-    vault_path: vaultPath,
-    base_folder: baseFolder,
+    name: name.trim(),
+    vault_path: vaultPath.trim(),
+    base_folder: baseFolder.trim(),
     config_json: JSON.stringify({
       required_tags: parseSyncTagsInput(syncTags),
     }),
@@ -182,6 +182,16 @@ export function ObsidianSyncPanel({
 
   async function handleSave() {
     setMessage(null)
+    const validationError = validateObsidianSettings({
+      name,
+      vaultPath,
+      baseFolder,
+      syncTags,
+    })
+    if (validationError) {
+      setMessage({ tone: 'error', text: validationError })
+      return
+    }
     try {
       await saveTarget.mutateAsync(payload)
       setMessage({ tone: 'success', text: '同步设置已保存' })
@@ -195,6 +205,16 @@ export function ObsidianSyncPanel({
 
   async function handleTest() {
     setMessage(null)
+    const validationError = validateObsidianSettings({
+      name,
+      vaultPath,
+      baseFolder,
+      syncTags,
+    })
+    if (validationError) {
+      setMessage({ tone: 'error', text: validationError })
+      return
+    }
     try {
       await testTarget.mutateAsync(payload)
       setMessage({ tone: 'success', text: '路径可用' })
@@ -288,12 +308,13 @@ export function ObsidianSyncPanel({
 
       <label className="sync-field">
         <span>目标名称</span>
-        <input value={name} onChange={(event) => setName(event.target.value)} />
+        <input required value={name} onChange={(event) => setName(event.target.value)} />
       </label>
       <div className="sync-field">
         <span>Vault 路径</span>
         <div className="sync-path-picker-row">
           <input
+            required
             value={vaultPath}
             readOnly
             placeholder="请选择 Obsidian Vault"
@@ -312,6 +333,7 @@ export function ObsidianSyncPanel({
       <label className="sync-field">
         <span>同步目录</span>
         <input
+          required
           value={baseFolder}
           onChange={(event) => setBaseFolder(event.target.value)}
         />
@@ -659,4 +681,29 @@ function formatDirectoryModifiedAt(value: number) {
 
 function isTargetIdentityLocked(error: unknown) {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'target_identity_locked')
+}
+
+function validateObsidianSettings({
+  name,
+  vaultPath,
+  baseFolder,
+  syncTags,
+}: {
+  name: string
+  vaultPath: string
+  baseFolder: string
+  syncTags: string
+}) {
+  const missing = [
+    { label: '目标名称', value: name },
+    { label: 'Vault 路径', value: vaultPath },
+    { label: '同步目录', value: baseFolder },
+  ]
+    .filter((field) => !field.value.trim())
+    .map((field) => field.label)
+  if (parseSyncTagsInput(syncTags).length === 0) {
+    missing.push('同步标签过滤')
+  }
+
+  return missing.length ? `请填写${missing.join('、')}` : null
 }

@@ -80,6 +80,32 @@ describe('ObsidianSyncPanel', () => {
     })
   })
 
+  it('rejects saving when required Obsidian settings are blank', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'obs-empty',
+        type: 'obsidian',
+        name: '',
+        vault_path: '',
+        base_folder: '',
+        config_json: '{}',
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    renderPanel()
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(screen.getByLabelText('目标名称')).toHaveValue(''))
+    await user.click(screen.getByRole('button', { name: '保存 Obsidian 设置' }))
+
+    expect(await screen.findByText('请填写目标名称、Vault 路径、同步目录、同步标签过滤')).toBeVisible()
+    expect(syncApi.saveSyncTarget).not.toHaveBeenCalled()
+  })
+
   it('separates pushing FlowSpace notes from manually pulling Obsidian notes', async () => {
     vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
       {
@@ -121,27 +147,56 @@ describe('ObsidianSyncPanel', () => {
       )
     ).toBeVisible()
   })
-  it('saves an explicit empty tag filter by default', async () => {
+  it('rejects saving when the Obsidian sync tag filter is blank', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'obs-1',
+        type: 'obsidian',
+        name: 'Work Vault',
+        vault_path: 'D:\\Vault',
+        base_folder: 'FlowSpace Notes',
+        config_json: '{}',
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
     renderPanel()
     const user = userEvent.setup()
 
     expect(await screen.findByText('只同步包含以下任一标签的笔记')).toBeVisible()
-    expect(screen.getByText('留空时不会同步任何笔记')).toBeVisible()
+    await waitFor(() => expect(screen.getByLabelText('Vault 路径')).toHaveValue('D:\\Vault'))
+    expect(screen.getByText('至少填写一个同步标签')).toBeVisible()
     await user.click(
       screen.getByRole('button', { name: '保存 Obsidian 设置' })
     )
 
-    await waitFor(() => expect(syncApi.saveSyncTarget).toHaveBeenCalledTimes(1))
-    const payload = vi.mocked(syncApi.saveSyncTarget).mock.calls[0][0]
-    expect(JSON.parse(payload.config_json ?? '{}')).toEqual({
-      required_tags: [],
-    })
+    expect(await screen.findByText('请填写同步标签过滤')).toBeVisible()
+    expect(syncApi.saveSyncTarget).not.toHaveBeenCalled()
   })
 
   it('saves comma-separated sync tags for Obsidian filtering', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'obs-1',
+        type: 'obsidian',
+        name: 'Work Vault',
+        vault_path: 'D:\\Vault',
+        base_folder: 'FlowSpace Notes',
+        config_json: '{}',
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
     renderPanel()
     const user = userEvent.setup()
 
+    await waitFor(() => expect(screen.getByLabelText('Vault 路径')).toHaveValue('D:\\Vault'))
     await user.type(
       await screen.findByLabelText('添加同步标签'),
       'sync, publish, #work{enter}'
@@ -205,7 +260,7 @@ describe('ObsidianSyncPanel', () => {
         name: 'Locked Vault',
         vault_path: 'D:\\Vault',
         base_folder: 'FlowSpace Notes',
-        config_json: '{}',
+        config_json: JSON.stringify({ required_tags: ['sync'] }),
         enabled: true,
         auto_sync: false,
         is_default: true,

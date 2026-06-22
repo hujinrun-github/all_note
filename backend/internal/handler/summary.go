@@ -20,7 +20,7 @@ func GetSummary(c *gin.Context) {
 		badRequest(c, "日期格式无效，需要 YYYY-MM-DD")
 		return
 	}
-	if !fromTime.Before(toTime) {
+	if fromTime.After(toTime) {
 		badRequest(c, "起始日期必须早于结束日期")
 		return
 	}

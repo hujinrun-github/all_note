@@ -28,12 +28,12 @@ export function SyncTagsField({ value, onChange }: SyncTagsFieldProps) {
       <div className="sync-field-heading">
         <span>同步标签过滤</span>
         <span className="sync-tags-status">
-          {tags.length > 0 ? `${tags.length} 个标签` : '默认不同步'}
+          {tags.length > 0 ? `${tags.length} 个标签` : '必填'}
         </span>
       </div>
       <p className="sync-field-help">只同步包含以下任一标签的笔记</p>
       <p className="sync-field-help sync-field-help-muted">
-        留空时不会同步任何笔记
+        至少填写一个同步标签
       </p>
       <div
         className="sync-tag-input-box"

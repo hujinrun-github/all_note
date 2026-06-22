@@ -49,10 +49,13 @@ import { taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'recurring' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
+type RoadmapLinkedTaskExecutionType = 'single' | 'recurring'
 type RoadmapLinkedTaskInput = {
   title: string
   content: string
   plannedDate: string
+  executionType: RoadmapLinkedTaskExecutionType
+  recurrence?: RecurrenceConfig
 }
 
 interface RoadmapNodeData extends Record<string, unknown> {
@@ -117,6 +120,22 @@ function resourceCandidateKey(resource: RoadmapResource) {
   return resource.id || resource.url
 }
 
+function parseDateInputValue(value: string) {
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function weekdayFromDateInput(value: string) {
+  const date = parseDateInputValue(value)
+  if (!date) return 1
+  const weekday = date.getDay()
+  return weekday === 0 ? 7 : weekday
+}
+
+function monthDayFromDateInput(value: string) {
+  return parseDateInputValue(value)?.getDate() ?? 1
+}
+
 export default function Tasks() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -172,10 +191,22 @@ export default function Tasks() {
     if (!longProjectID && regularProjects[0]) {
       setLongProjectID(regularProjects[0].id)
     }
+    if (!recurringProjectID && personalProject) {
+      setRecurringProjectID(personalProject.id)
+    }
     if (!selectedLearningProjectID && learningProjects[0]) {
       setSelectedLearningProjectID(learningProjects[0].id)
     }
-  }, [learningProjects, longProjectID, personalProject?.id, projects, regularProjects, selectedLearningProjectID, weekProjectID])
+  }, [
+    learningProjects,
+    longProjectID,
+    personalProject,
+    projects,
+    recurringProjectID,
+    regularProjects,
+    selectedLearningProjectID,
+    weekProjectID,
+  ])
 
   const weekTasksQuery = useQuery({
     queryKey: ['tasks', 'week'],
@@ -461,34 +492,6 @@ export default function Tasks() {
     await deleteRoadmapNodeMutation.mutateAsync(nodeID)
   }
 
-  async function handleAddNodeToWeek(node: RoadmapNode) {
-    if (!selectedLearningProjectID) return
-    const plannedDate = todayDateInputValue()
-    const linkedNodeTasks = (weekTasksQuery.data?.tasks ?? []).filter(
-      (task) =>
-        task.roadmap_node_id === node.id &&
-        (!task.project_id || task.project_id === selectedLearningProjectID),
-    )
-    const hasExistingTaskToday = linkedNodeTasks.some(
-      (task) =>
-        isTaskPlannedOnDate(task, plannedDate),
-    )
-    if (hasExistingTaskToday) {
-      setSelectedNodeID(node.id)
-      return
-    }
-    await createTaskMutation.mutateAsync({
-      title: formatRoadmapTaskTitle(node.title, linkedNodeTasks.length + 1),
-      project_id: selectedLearningProjectID,
-      roadmap_node_id: node.id,
-      planned_date: plannedDate,
-      due: dateInputToUnix(plannedDate),
-      horizon: 'week',
-      scope: 'daily',
-    })
-    setSelectedNodeID(node.id)
-  }
-
   async function handleAddRecurringTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const title = recurringTitle.trim()
@@ -541,15 +544,36 @@ export default function Tasks() {
   async function handleCreateLinkedRoadmapTask(node: RoadmapNode, input: RoadmapLinkedTaskInput) {
     if (!selectedLearningProjectID) return
     const plannedDate = input.plannedDate || todayDateInputValue()
-    await createTaskMutation.mutateAsync({
+    const baseTask = {
       title: input.title,
       content: input.content,
       project_id: selectedLearningProjectID,
       roadmap_node_id: node.id,
+      horizon: 'week' as const,
+      scope: 'daily' as const,
+    }
+
+    if (input.executionType === 'recurring') {
+      await createTaskMutation.mutateAsync({
+        ...baseTask,
+        execution_type: 'recurring',
+        recurrence: input.recurrence ?? {
+          start_date: plannedDate,
+          frequency: 'daily',
+          interval: 1,
+          weekdays: [],
+          month_days: [],
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
+      })
+      setSelectedNodeID(node.id)
+      return
+    }
+
+    await createTaskMutation.mutateAsync({
+      ...baseTask,
       planned_date: plannedDate,
       due: dateInputToUnix(plannedDate),
-      horizon: 'week',
-      scope: 'daily',
     })
     setSelectedNodeID(node.id)
   }
@@ -560,13 +584,17 @@ export default function Tasks() {
   const selectedNodeTasks = useMemo(() => {
     if (!selectedNodeID) return []
     const taskByID = new Map<string, Task>()
-    for (const task of [...(weekTasksQuery.data?.tasks ?? []), ...(longTasksQuery.data?.tasks ?? [])]) {
+    for (const task of [
+      ...(weekTasksQuery.data?.tasks ?? []),
+      ...(longTasksQuery.data?.tasks ?? []),
+      ...(recurringTasksQuery.data?.tasks ?? []),
+    ]) {
       if (task.roadmap_node_id === selectedNodeID) {
         taskByID.set(task.id, task)
       }
     }
     return [...taskByID.values()]
-  }, [longTasksQuery.data?.tasks, selectedNodeID, weekTasksQuery.data?.tasks])
+  }, [longTasksQuery.data?.tasks, recurringTasksQuery.data?.tasks, selectedNodeID, weekTasksQuery.data?.tasks])
   const resourcePickerNode = roadmap?.nodes.find((node) => node.id === resourcePickerNodeID)
 
   return (
@@ -765,7 +793,7 @@ export default function Tasks() {
             startDate={recurringStartDate}
             endDate={recurringEndDate}
             projectID={recurringProjectID}
-            projects={weekProjects.length ? weekProjects : projects}
+            projects={projects}
             isPending={createTaskMutation.isPending}
             onTitleChange={setRecurringTitle}
             onFrequencyChange={setRecurringFrequency}
@@ -815,7 +843,6 @@ export default function Tasks() {
               if (!manualResourceTitle.trim() || !manualResourceURL.trim()) return
               addResourceMutation.mutate({ nodeID, title: manualResourceTitle.trim(), url: manualResourceURL.trim() })
             }}
-            onAddNodeToWeek={handleAddNodeToWeek}
           />
         )}
       </section>
@@ -851,7 +878,6 @@ export default function Tasks() {
           onClose={() => setIsNodeDialogOpen(false)}
           onSave={handleSaveRoadmapNode}
           onDelete={handleDeleteRoadmapNode}
-          onAddNodeToWeek={handleAddNodeToWeek}
           onCreateLinkedTask={handleCreateLinkedRoadmapTask}
           onToggleTask={handleToggleTask}
           onSaveTaskContent={handleUpdateTaskContent}
@@ -1096,10 +1122,6 @@ function getTaskPlannedDate(task: Task) {
   return dateToInputValue(new Date(task.due * 1000))
 }
 
-function isTaskPlannedOnDate(task: Task, plannedDate: string) {
-  return getTaskPlannedDate(task) === plannedDate
-}
-
 function compareRoadmapLinkedTasks(a: Task, b: Task) {
   const dateCompare = getTaskPlannedDate(a).localeCompare(getTaskPlannedDate(b))
   if (dateCompare !== 0) return dateCompare
@@ -1154,7 +1176,6 @@ function RoadmapTaskView({
   onManualTitleChange,
   onManualURLChange,
   onAddResource,
-  onAddNodeToWeek,
 }: {
   projects: TaskProject[]
   selectedProjectID: string
@@ -1180,7 +1201,6 @@ function RoadmapTaskView({
   onManualTitleChange: (value: string) => void
   onManualURLChange: (value: string) => void
   onAddResource: (nodeID: string) => void
-  onAddNodeToWeek: (node: RoadmapNode) => Promise<void>
 }) {
   const selectedNode = roadmap?.nodes.find((node) => node.id === selectedNodeID) ?? roadmap?.nodes[0]
 
@@ -1238,7 +1258,6 @@ function RoadmapTaskView({
             onManualTitleChange={onManualTitleChange}
             onManualURLChange={onManualURLChange}
             onAddResource={onAddResource}
-            onAddNodeToWeek={onAddNodeToWeek}
           />
         </div>
       ) : (
@@ -1403,7 +1422,6 @@ function RoadmapInspector({
   onManualTitleChange,
   onManualURLChange,
   onAddResource,
-  onAddNodeToWeek,
 }: {
   node?: RoadmapNode
   manualTitle: string
@@ -1416,7 +1434,6 @@ function RoadmapInspector({
   onManualTitleChange: (value: string) => void
   onManualURLChange: (value: string) => void
   onAddResource: (nodeID: string) => void
-  onAddNodeToWeek: (node: RoadmapNode) => Promise<void>
 }) {
   if (!node) {
     return <aside className="roadmap-inspector"><p className="empty-copy">选择一个节点查看详情</p></aside>
@@ -1440,9 +1457,6 @@ function RoadmapInspector({
       </div>
 
       <div className="roadmap-inspector-actions">
-        <button type="button" onClick={() => onAddNodeToWeek(node)}>
-          加入本周
-        </button>
         <button type="button" onClick={() => onSearchResources(node.id)} disabled={isSearching || articleSearchSources.length === 0}>
           {isSearching ? '搜索中...' : '搜索文章'}
         </button>
@@ -1618,7 +1632,6 @@ function RoadmapNodeDialog({
   onClose,
   onSave,
   onDelete,
-  onAddNodeToWeek,
   onCreateLinkedTask,
   onToggleTask,
   onSaveTaskContent,
@@ -1632,7 +1645,6 @@ function RoadmapNodeDialog({
   onClose: () => void
   onSave: (nodeID: string, body: Partial<RoadmapNode>) => Promise<void>
   onDelete: (nodeID: string) => Promise<void>
-  onAddNodeToWeek: (node: RoadmapNode) => Promise<void>
   onCreateLinkedTask: (node: RoadmapNode, input: RoadmapLinkedTaskInput) => Promise<void>
   onToggleTask: (task: Task) => Promise<void>
   onSaveTaskContent: (task: Task, content: string) => Promise<void>
@@ -1645,6 +1657,9 @@ function RoadmapNodeDialog({
   const [linkedTaskTitle, setLinkedTaskTitle] = useState('')
   const [linkedTaskContent, setLinkedTaskContent] = useState('')
   const [linkedTaskDate, setLinkedTaskDate] = useState(() => todayDateInputValue())
+  const [linkedTaskExecutionType, setLinkedTaskExecutionType] = useState<RoadmapLinkedTaskExecutionType>('single')
+  const [linkedTaskFrequency, setLinkedTaskFrequency] = useState<RecurrenceConfig['frequency']>('daily')
+  const [linkedTaskInterval, setLinkedTaskInterval] = useState('1')
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
 
   useEffect(() => {
@@ -1656,6 +1671,9 @@ function RoadmapNodeDialog({
     setLinkedTaskTitle('')
     setLinkedTaskContent('')
     setLinkedTaskDate(todayDateInputValue())
+    setLinkedTaskExecutionType('single')
+    setLinkedTaskFrequency('daily')
+    setLinkedTaskInterval('1')
     setIsConfirmingDelete(false)
   }, [node.acceptance_criteria, node.deliverable, node.description, node.id, node.status, node.title])
 
@@ -1680,14 +1698,31 @@ function RoadmapNodeDialog({
     event.preventDefault()
     const trimmedTitle = linkedTaskTitle.trim()
     if (!trimmedTitle) return
+    const plannedDate = linkedTaskDate || todayDateInputValue()
+    const recurrence: RecurrenceConfig | undefined =
+      linkedTaskExecutionType === 'recurring'
+        ? {
+            start_date: plannedDate,
+            frequency: linkedTaskFrequency,
+            interval: Math.max(1, Number(linkedTaskInterval) || 1),
+            weekdays: linkedTaskFrequency === 'weekly' ? [weekdayFromDateInput(plannedDate)] : [],
+            month_days: linkedTaskFrequency === 'monthly' ? [monthDayFromDateInput(plannedDate)] : [],
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }
+        : undefined
     await onCreateLinkedTask(node, {
       title: trimmedTitle,
       content: linkedTaskContent.trim(),
-      plannedDate: linkedTaskDate || todayDateInputValue(),
+      plannedDate,
+      executionType: linkedTaskExecutionType,
+      recurrence,
     })
     setLinkedTaskTitle('')
     setLinkedTaskContent('')
     setLinkedTaskDate(todayDateInputValue())
+    setLinkedTaskExecutionType('single')
+    setLinkedTaskFrequency('daily')
+    setLinkedTaskInterval('1')
   }
 
   return (
@@ -1752,13 +1787,6 @@ function RoadmapNodeDialog({
             <button type="submit" disabled={!title.trim() || isSaving}>
               {isSaving ? '保存中...' : '保存节点'}
             </button>
-            <button
-              type="button"
-              onClick={() => onAddNodeToWeek({ ...node, title: title.trim() || node.title })}
-              disabled={isAddingTask}
-            >
-              {isAddingTask ? '添加中...' : '加入本周'}
-            </button>
           </div>
           <div className="roadmap-node-danger-actions">
             {isConfirmingDelete ? (
@@ -1813,7 +1841,19 @@ function RoadmapNodeDialog({
             />
           </label>
           <label>
-            <span>计划日期</span>
+            <span>任务类型</span>
+            <select
+              data-testid="roadmap-linked-task-execution-type"
+              aria-label="关联任务类型"
+              value={linkedTaskExecutionType}
+              onChange={(event) => setLinkedTaskExecutionType(event.target.value as RoadmapLinkedTaskExecutionType)}
+            >
+              <option value="single">普通任务</option>
+              <option value="recurring">重复任务</option>
+            </select>
+          </label>
+          <label>
+            <span>{linkedTaskExecutionType === 'recurring' ? '开始日期' : '计划日期'}</span>
             <input
               data-testid="roadmap-linked-task-date-input"
               aria-label="关联任务计划日期"
@@ -1822,6 +1862,36 @@ function RoadmapNodeDialog({
               onChange={(event) => setLinkedTaskDate(event.target.value)}
             />
           </label>
+          {linkedTaskExecutionType === 'recurring' && (
+            <div className="roadmap-linked-task-recurrence-fields">
+              <label>
+                <span>重复频率</span>
+                <select
+                  data-testid="roadmap-linked-task-frequency-select"
+                  aria-label="关联任务重复频率"
+                  value={linkedTaskFrequency}
+                  onChange={(event) => setLinkedTaskFrequency(event.target.value as RecurrenceConfig['frequency'])}
+                >
+                  <option value="daily">每天</option>
+                  <option value="weekly">每周</option>
+                  <option value="monthly">每月</option>
+                </select>
+              </label>
+              {linkedTaskFrequency !== 'daily' && (
+                <label>
+                  <span>间隔</span>
+                  <input
+                    data-testid="roadmap-linked-task-interval-input"
+                    aria-label="关联任务重复间隔"
+                    type="number"
+                    min={1}
+                    value={linkedTaskInterval}
+                    onChange={(event) => setLinkedTaskInterval(event.target.value)}
+                  />
+                </label>
+              )}
+            </div>
+          )}
           <button
             data-testid="roadmap-linked-task-create-button"
             type="submit"
@@ -2003,8 +2073,7 @@ function RecurringTaskView({
         )}
         <input type="date" aria-label="开始日期" value={startDate} onChange={(e) => onStartDateChange(e.target.value)} />
         <input type="date" aria-label="结束日期" value={endDate} onChange={(e) => onEndDateChange(e.target.value)} placeholder="结束日期（可选）" />
-        <select value={projectID} onChange={(e) => onProjectChange(e.target.value)}>
-          <option value="">个人</option>
+        <select aria-label="任务项目" value={projectID} onChange={(e) => onProjectChange(e.target.value)}>
           {projects.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}

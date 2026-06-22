@@ -1847,6 +1847,7 @@ body {
 }
 
 .roadmap-linked-task-create-form input,
+.roadmap-linked-task-create-form select,
 .roadmap-linked-task-create-form textarea {
   width: 100%;
   min-height: 34px;
@@ -1866,9 +1867,17 @@ body {
 }
 
 .roadmap-linked-task-create-form input:focus,
+.roadmap-linked-task-create-form select:focus,
 .roadmap-linked-task-create-form textarea:focus {
   border-color: rgba(184, 115, 51, 0.42);
   box-shadow: 0 0 0 3px rgba(184, 115, 51, 0.1);
+}
+
+.roadmap-linked-task-recurrence-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 180px));
+  gap: 0.55rem;
 }
 
 .roadmap-linked-task-create-form button {
@@ -2025,6 +2034,10 @@ body {
 
   .roadmap-linked-task-create-content {
     grid-column: auto;
+  }
+
+  .roadmap-linked-task-recurrence-fields {
+    grid-template-columns: 1fr;
   }
 }
 

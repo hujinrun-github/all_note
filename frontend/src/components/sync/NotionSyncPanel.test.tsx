@@ -98,11 +98,47 @@ describe('NotionSyncPanel', () => {
     })
   })
 
+  it('rejects saving when required Notion settings are blank', async () => {
+    vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
+      {
+        id: 'notion-empty',
+        type: 'notion',
+        name: '',
+        vault_path: '',
+        base_folder: '',
+        config_json: JSON.stringify({
+          data_source_id: '',
+          token_env: '',
+          title_property: '',
+        }),
+        enabled: true,
+        auto_sync: false,
+        is_default: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ])
+    renderPanel()
+    const user = userEvent.setup()
+
+    await waitFor(() => expect(syncApi.getTargetDeletions).toHaveBeenCalledWith('notion-empty'))
+    await user.clear(screen.getByLabelText('目标名称'))
+    await user.clear(screen.getByLabelText('Token environment variable'))
+    await user.clear(screen.getByLabelText('标题属性'))
+    await user.click(screen.getByRole('button', { name: '保存 Notion 设置' }))
+
+    expect(
+      await screen.findByText('请填写目标名称、Data Source ID、Token environment variable、标题属性、同步标签过滤')
+    ).toBeVisible()
+    expect(syncApi.saveSyncTarget).not.toHaveBeenCalled()
+  })
+
   it('saves notion config with data source id and token env but no raw token', async () => {
     renderPanel()
     const user = userEvent.setup()
 
     await user.type(await screen.findByLabelText('Data Source ID'), 'ds-123')
+    await user.type(screen.getByLabelText('添加同步标签'), 'sync{enter}')
     expect(screen.getByText('目标名称')).toBeVisible()
     expect(screen.getByText('Data Source ID（数据源 ID）')).toBeVisible()
     expect(screen.getByText('Token environment variable（令牌环境变量）')).toBeVisible()
@@ -138,7 +174,7 @@ describe('NotionSyncPanel', () => {
       data_source_id: 'ds-123',
       token_env: 'FLOWSPACE_NOTION_TOKEN',
       title_property: 'Name',
-      required_tags: [],
+      required_tags: ['sync'],
     })
     expect(JSON.stringify(payload)).not.toContain('secret')
     expect(payload).not.toHaveProperty('token')
@@ -150,7 +186,7 @@ describe('NotionSyncPanel', () => {
 
     await user.type(await screen.findByLabelText('Data Source ID'), 'ds-123')
     expect(screen.getByText('只同步包含以下任一标签的笔记')).toBeVisible()
-    expect(screen.getByText('留空时不会同步任何笔记')).toBeVisible()
+    expect(screen.getByText('至少填写一个同步标签')).toBeVisible()
 
     await user.type(
       screen.getByLabelText('添加同步标签'),
@@ -225,16 +261,18 @@ describe('NotionSyncPanel', () => {
     )
     expect(screen.getByLabelText('标题属性')).toHaveValue('Name')
 
+    await user.type(screen.getByLabelText('Data Source ID'), 'ds-123')
+    await user.type(screen.getByLabelText('添加同步标签'), 'sync{enter}')
     await user.click(screen.getByRole('button', { name: '保存 Notion 设置' }))
 
     await waitFor(() => expect(syncApi.saveSyncTarget).toHaveBeenCalledTimes(1))
     const payload = vi.mocked(syncApi.saveSyncTarget).mock.calls[0][0]
     expect(payload.id).toBe('target-bad-config')
     expect(JSON.parse(payload.config_json ?? '{}')).toEqual({
-      data_source_id: '',
+      data_source_id: 'ds-123',
       token_env: 'FLOWSPACE_NOTION_TOKEN',
       title_property: 'Name',
-      required_tags: [],
+      required_tags: ['sync'],
     })
   })
 
@@ -373,6 +411,7 @@ describe('NotionSyncPanel', () => {
           data_source_id: 'ds-locked',
           token_env: 'FLOWSPACE_NOTION_TOKEN',
           title_property: 'Name',
+          required_tags: ['sync'],
         }),
         enabled: true,
         auto_sync: false,

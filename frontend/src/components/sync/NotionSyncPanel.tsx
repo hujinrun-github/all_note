@@ -94,6 +94,17 @@ export function NotionSyncPanel() {
 
   async function handleSave() {
     setMessage(null)
+    const validationError = validateNotionSettings({
+      name,
+      dataSourceID,
+      tokenEnv,
+      titleProperty,
+      syncTags,
+    })
+    if (validationError) {
+      setMessage({ tone: 'error', text: validationError })
+      return
+    }
     try {
       await saveTarget.mutateAsync(payload)
       setMessage({ tone: 'success', text: 'Notion 设置已保存' })
@@ -109,6 +120,17 @@ export function NotionSyncPanel() {
 
   async function handleTest() {
     setMessage(null)
+    const validationError = validateNotionSettings({
+      name,
+      dataSourceID,
+      tokenEnv,
+      titleProperty,
+      syncTags,
+    })
+    if (validationError) {
+      setMessage({ tone: 'error', text: validationError })
+      return
+    }
     try {
       await testTarget.mutateAsync(payload)
       setMessage({ tone: 'success', text: 'Notion 连接可用' })
@@ -189,7 +211,7 @@ export function NotionSyncPanel() {
     <>
       <label className="sync-field">
         <span>目标名称</span>
-        <input value={name} onChange={(event) => setName(event.target.value)} />
+        <input required value={name} onChange={(event) => setName(event.target.value)} />
       </label>
 
       <div className="sync-field">
@@ -208,6 +230,7 @@ export function NotionSyncPanel() {
           </a>
         </div>
         <input
+          required
           id="notion-data-source-id"
           aria-label="Data Source ID"
           value={dataSourceID}
@@ -231,6 +254,7 @@ export function NotionSyncPanel() {
           </a>
         </div>
         <input
+          required
           id="notion-token-env"
           aria-label="Token environment variable"
           value={tokenEnv}
@@ -241,6 +265,7 @@ export function NotionSyncPanel() {
       <label className="sync-field">
         <span>标题属性</span>
         <input
+          required
           value={titleProperty}
           onChange={(event) => setTitleProperty(event.target.value)}
         />
@@ -381,13 +406,13 @@ function buildPayload({
   return {
     id,
     type: 'notion',
-    name: name.trim() || DEFAULT_TARGET_NAME,
+    name: name.trim(),
     vault_path: '',
     base_folder: '',
     config_json: JSON.stringify({
       data_source_id: dataSourceID.trim(),
-      token_env: tokenEnv.trim() || DEFAULT_TOKEN_ENV,
-      title_property: titleProperty.trim() || DEFAULT_TITLE_PROPERTY,
+      token_env: tokenEnv.trim(),
+      title_property: titleProperty.trim(),
       required_tags: parseSyncTagsInput(syncTags),
     }),
     enabled: true,
@@ -434,4 +459,32 @@ function parseNotionConfig(raw: string | undefined): NotionConfig {
 
 function isTargetIdentityLocked(error: unknown) {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'target_identity_locked')
+}
+
+function validateNotionSettings({
+  name,
+  dataSourceID,
+  tokenEnv,
+  titleProperty,
+  syncTags,
+}: {
+  name: string
+  dataSourceID: string
+  tokenEnv: string
+  titleProperty: string
+  syncTags: string
+}) {
+  const missing = [
+    { label: '目标名称', value: name },
+    { label: 'Data Source ID', value: dataSourceID },
+    { label: 'Token environment variable', value: tokenEnv },
+    { label: '标题属性', value: titleProperty },
+  ]
+    .filter((field) => !field.value.trim())
+    .map((field) => field.label)
+  if (parseSyncTagsInput(syncTags).length === 0) {
+    missing.push('同步标签过滤')
+  }
+
+  return missing.length ? `请填写${missing.join('、')}` : null
 }

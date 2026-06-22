@@ -20,9 +20,10 @@ func GetTasks(c *gin.Context) {
 	horizon := c.Query("horizon")
 	projectID := c.Query("project_id")
 	plannedDate := c.Query("planned_date")
+	executionType := c.Query("execution_type")
 
 	store := repository.ActiveStore()
-	tasks, total, err := service.GetTasks(c.Request.Context(), store, project, status, scope, horizon, projectID, plannedDate, page, pageSize)
+	tasks, total, err := service.GetTasks(c.Request.Context(), store, project, status, scope, horizon, projectID, plannedDate, executionType, page, pageSize)
 	if err != nil {
 		internalError(c, "failed to get tasks")
 		return
