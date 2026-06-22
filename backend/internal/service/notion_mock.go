@@ -39,6 +39,7 @@ func (gateway *mockNotionGateway) QueryRemoteNotes(config notionTargetConfig) ([
 			Markdown:     markdown,
 			Hash:         notionTitleBodyHash("Mock Notion Note", markdown),
 			LastEditedAt: 1900000000,
+			Tags:         []string{"sync"},
 		},
 	}, nil
 }
@@ -96,6 +97,7 @@ func (gateway *realNotionSyncGateway) QueryRemoteNotes(config notionTargetConfig
 			Hash:             notionTitleBodyHash(title, converted.Markdown),
 			LastEditedAt:     notionPageEditedUnix(page.LastEditedTime),
 			FlowSpaceID:      notionPageRichTextProperty(page, config.FlowSpaceIDProperty),
+			Tags:             notionPageMultiSelectProperty(page, config.TagsProperty),
 			UnsupportedTypes: converted.UnsupportedTypes,
 		})
 	}
@@ -164,6 +166,7 @@ func notionRemoteFromLocalNote(pageID string, note *model.Note, editedAt int64) 
 		Hash:         notionTitleBodyHash(note.Title, note.Body),
 		LastEditedAt: editedAt,
 		FlowSpaceID:  note.ID,
+		Tags:         parseTags(note.Tags),
 	}
 }
 
@@ -185,6 +188,40 @@ func notionPageTitle(page notionPage, config notionTargetConfig) string {
 
 func notionPageRichTextProperty(page notionPage, propertyName string) string {
 	return notionPageTextProperty(page, propertyName, "rich_text")
+}
+
+func notionPageMultiSelectProperty(page notionPage, propertyName string) []string {
+	propertyName = strings.TrimSpace(propertyName)
+	if propertyName == "" || page.Properties == nil {
+		return nil
+	}
+	raw, ok := page.Properties[propertyName]
+	if !ok {
+		return nil
+	}
+	property, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawItems, ok := property["multi_select"]
+	if !ok {
+		return nil
+	}
+	items, ok := rawItems.([]any)
+	if !ok {
+		return nil
+	}
+	tags := make([]string, 0, len(items))
+	for _, item := range items {
+		node, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := node["name"].(string); ok {
+			tags = append(tags, name)
+		}
+	}
+	return cleanSyncTags(tags)
 }
 
 func notionPageTextProperty(page notionPage, propertyName, listKey string) string {

@@ -1,22 +1,49 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, error) {
-	where := "1=1"
+func GetNotes(folderID, projectID, sort string, unassigned bool, page, pageSize int) ([]model.Note, int, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().List(context.Background(), storage.NoteFilter{
+			FolderID:   folderID,
+			ProjectID:  projectID,
+			Unassigned: unassigned,
+			Sort:       sort,
+			Page:       page,
+			PageSize:   pageSize,
+		})
+	}
+
+	var where []string
 	args := []interface{}{}
 	if folderID != "" {
-		where = "n.folder_id = ?"
+		where = append(where, "n.folder_id = ?")
 		args = append(args, folderID)
+	}
+	if projectID != "" {
+		where = append(where,
+			`EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id AND npl.project_id = ?)`)
+		args = append(args, projectID)
+	}
+	if unassigned {
+		where = append(where,
+			`NOT EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id)`)
+	}
+
+	whereClause := "1=1"
+	if len(where) > 0 {
+		whereClause = strings.Join(where, " AND ")
 	}
 
 	var total int
-	DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", where), args...).Scan(&total)
+	DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM notes n WHERE %s", whereClause), args...).Scan(&total)
 
 	order := "n.created_at DESC"
 	if sort == "az" {
@@ -27,7 +54,7 @@ func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, err
 	query := fmt.Sprintf(`
 		SELECT n.id, n.title, n.body, n.folder_id, n.tags, n.created_at, n.updated_at
 		FROM notes n WHERE %s ORDER BY %s LIMIT ? OFFSET ?
-	`, where, order)
+	`, whereClause, order)
 	args = append(args, pageSize, offset)
 
 	rows, err := DB.Query(query, args...)
@@ -48,6 +75,10 @@ func GetNotes(folderID, sort string, page, pageSize int) ([]model.Note, int, err
 }
 
 func GetNoteByID(id string) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().GetByID(context.Background(), id)
+	}
+
 	var n model.Note
 	err := DB.QueryRow(`
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
@@ -60,6 +91,10 @@ func GetNoteByID(id string) (*model.Note, error) {
 }
 
 func CreateNote(n *model.Note) error {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().CreateWithID(context.Background(), n)
+	}
+
 	n.ID = newUUID()
 	now := nowUnix()
 	n.CreatedAt = now
@@ -77,7 +112,52 @@ func CreateNote(n *model.Note) error {
 	return err
 }
 
+// CreateNoteWithProjectIDs creates a note with project links.
+// Uses the store's Create method which handles project_ids in the same flow.
+func CreateNoteWithProjectIDs(req *model.CreateNoteRequest) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Create(context.Background(), req)
+	}
+	// Legacy SQLite path: create note, then insert project links
+	id := newUUID()
+	now := nowUnix()
+	folderID := req.FolderID
+	if folderID == "" {
+		folderID = "__uncategorized"
+	}
+	tags := req.Tags
+	if tags == "" {
+		tags = "[]"
+	}
+	_, err := DB.Exec(`
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, req.Title, req.Body, folderID, tags, now, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, pid := range req.ProjectIDs {
+		DB.Exec(`INSERT OR IGNORE INTO note_project_links (note_id, project_id, created_at)
+			VALUES (?, ?, ?)`, id, pid, now)
+	}
+	return GetNoteByID(id)
+}
+
 func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		note := &model.Note{
+			ID:       strings.TrimSpace(req.ID),
+			Title:    req.Title,
+			Body:     req.Body,
+			FolderID: req.FolderID,
+			Tags:     req.Tags,
+		}
+		if err := store.Notes().CreateWithID(context.Background(), note); err != nil {
+			return nil, err
+		}
+		return store.Notes().GetByID(context.Background(), note.ID)
+	}
+
 	id := strings.TrimSpace(req.ID)
 	if id == "" {
 		id = newUUID()
@@ -102,6 +182,10 @@ func CreateNoteWithID(req *model.CreateNoteWithIDRequest) (*model.Note, error) {
 }
 
 func ListAllNotes() ([]model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().ListAll(context.Background())
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
 		FROM notes ORDER BY updated_at DESC
@@ -126,6 +210,10 @@ func ListAllNotes() ([]model.Note, error) {
 }
 
 func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Update(context.Background(), id, req)
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -155,11 +243,57 @@ func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {
 }
 
 func DeleteNote(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Delete(context.Background(), id)
+	}
+
 	_, err := DB.Exec("DELETE FROM notes WHERE id = ?", id)
 	return err
 }
 
+func GetNotesByProjectIDs(projectIDs []string) (map[string][]model.NoteRef, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().GetNotesByProjectIDs(context.Background(), projectIDs)
+	}
+
+	if len(projectIDs) == 0 {
+		return map[string][]model.NoteRef{}, nil
+	}
+	placeholders := make([]string, len(projectIDs))
+	args := make([]interface{}, len(projectIDs))
+	for i, id := range projectIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT n.id, n.title, npl.project_id
+		 FROM notes n
+		 JOIN note_project_links npl ON n.id = npl.note_id
+		 WHERE npl.project_id IN (%s)
+		 ORDER BY n.updated_at DESC`, strings.Join(placeholders, ","))
+	rows, err := DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]model.NoteRef)
+	for rows.Next() {
+		var ref model.NoteRef
+		var projectID string
+		if err := rows.Scan(&ref.ID, &ref.Title, &projectID); err != nil {
+			return nil, err
+		}
+		result[projectID] = append(result[projectID], ref)
+	}
+	return result, rows.Err()
+}
+
+
 func GetRecentNotes(limit int) ([]model.Note, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Notes().Recent(context.Background(), limit)
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
 		FROM notes ORDER BY updated_at DESC LIMIT ?

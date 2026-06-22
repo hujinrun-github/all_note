@@ -35,6 +35,7 @@ func (fake *fakeNotionGateway) CreateRemoteNote(config notionTargetConfig, note 
 		Hash:         notionTitleBodyHash(note.Title, note.Body),
 		LastEditedAt: 1900000000,
 		FlowSpaceID:  note.ID,
+		Tags:         parseTags(note.Tags),
 	}, nil
 }
 
@@ -48,6 +49,7 @@ func (fake *fakeNotionGateway) UpdateRemoteNote(config notionTargetConfig, pageI
 		Hash:         notionTitleBodyHash(note.Title, note.Body),
 		LastEditedAt: 1900000001,
 		FlowSpaceID:  note.ID,
+		Tags:         parseTags(note.Tags),
 	}, nil
 }
 
@@ -226,6 +228,159 @@ func TestSyncNotionPushesLocalChangeWhenRemoteUnchanged(t *testing.T) {
 	}
 }
 
+func TestSyncNotionPullDoesNotPushLocalOnlyChange(t *testing.T) {
+	openServiceSyncTestDB(t)
+	target := saveNotionTargetForTest(t)
+	note := insertServiceNoteForTest(t, "Local Pull Guard", "Local changed\n")
+	lastSync := int64(1700000000)
+	remoteHash := notionTitleBodyHash("Local Pull Guard", "Old body\n")
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-pull-guard",
+		ExternalID:    "page-pull-guard",
+		ExternalURL:   "https://www.notion.so/page-pull-guard",
+		ContentHash:   notionTitleBodyHash("Local Pull Guard", "Old body\n"),
+		ExternalHash:  remoteHash,
+		ExternalMTime: &lastSync,
+		LastSyncedAt:  &lastSync,
+		LastDirection: "pull",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+	gateway := &fakeNotionGateway{
+		pages: []notionRemoteNote{{
+			PageID:       "page-pull-guard",
+			URL:          "https://www.notion.so/page-pull-guard",
+			Title:        "Local Pull Guard",
+			Markdown:     "Old body\n",
+			Hash:         remoteHash,
+			LastEditedAt: lastSync,
+			FlowSpaceID:  note.ID,
+		}},
+	}
+
+	result := NewNotionSyncService(gateway).PullRemote(target)
+
+	if result.Pushed != 0 || len(gateway.updated) != 0 {
+		t.Fatalf("pull should not push local changes: result = %+v updated = %#v", result, gateway.updated)
+	}
+	if result.Pulled != 0 || result.Imported != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected pull result = %+v", result)
+	}
+}
+
+func TestSyncNotionPullSkipsAllRemotePagesWhenSyncTagsAreEmpty(t *testing.T) {
+	openServiceSyncTestDB(t)
+	target := saveNotionTargetForTest(t)
+	gateway := &fakeNotionGateway{
+		pages: []notionRemoteNote{{
+			PageID:       "page-tagged",
+			URL:          "https://www.notion.so/page-tagged",
+			Title:        "Remote Tagged",
+			Markdown:     "Remote body\n",
+			Hash:         notionTitleBodyHash("Remote Tagged", "Remote body\n"),
+			LastEditedAt: 1800000000,
+			Tags:         []string{"sync"},
+		}},
+	}
+
+	result := NewNotionSyncService(gateway).PullRemote(target)
+
+	if result.Imported != 0 || result.Pulled != 0 || result.Failed != 0 || len(result.Items) != 0 {
+		t.Fatalf("expected empty pull result, got %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("expected no imported notes, got %+v", notes)
+	}
+}
+
+func TestSyncNotionPullOnlyImportsRemotePagesWithRequiredTag(t *testing.T) {
+	openServiceSyncTestDB(t)
+	target := saveNotionTargetForTest(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	gateway := &fakeNotionGateway{
+		pages: []notionRemoteNote{
+			{
+				PageID:       "page-tagged",
+				URL:          "https://www.notion.so/page-tagged",
+				Title:        "Remote Tagged",
+				Markdown:     "Remote body\n",
+				Hash:         notionTitleBodyHash("Remote Tagged", "Remote body\n"),
+				LastEditedAt: 1800000000,
+				Tags:         []string{"sync", "work"},
+			},
+			{
+				PageID:       "page-private",
+				URL:          "https://www.notion.so/page-private",
+				Title:        "Remote Private",
+				Markdown:     "Private body\n",
+				Hash:         notionTitleBodyHash("Remote Private", "Private body\n"),
+				LastEditedAt: 1800000001,
+				Tags:         []string{"private"},
+			},
+		},
+	}
+
+	result := NewNotionSyncService(gateway).PullRemote(target)
+
+	if result.Imported != 1 || result.Pulled != 0 || result.Failed != 0 {
+		t.Fatalf("unexpected pull result = %+v", result)
+	}
+	notes, err := repository.ListAllNotes()
+	if err != nil {
+		t.Fatalf("list notes: %v", err)
+	}
+	if len(notes) != 1 || notes[0].Title != "Remote Tagged" || notes[0].Tags != `["sync","work"]` {
+		t.Fatalf("unexpected imported notes: %+v", notes)
+	}
+}
+
+func TestSyncNotionAllSkipsAllLocalNotesWhenSyncTagsAreEmpty(t *testing.T) {
+	openServiceSyncTestDB(t)
+	target := saveNotionTargetForTest(t)
+	insertServiceTaggedNoteForTest(t, "Tagged But Disabled", "Body\n", `["sync"]`)
+	gateway := &fakeNotionGateway{}
+
+	result := NewNotionSyncService(gateway).PushAll(target)
+
+	if result.Synced != 0 || result.Failed != 0 || len(result.Items) != 0 {
+		t.Fatalf("expected empty push result, got %+v", result)
+	}
+	if len(gateway.created) != 0 {
+		t.Fatalf("created = %#v, want none", gateway.created)
+	}
+}
+
+func TestSyncNotionAllPushesLocalNotes(t *testing.T) {
+	openServiceSyncTestDB(t)
+	target := saveNotionTargetForTest(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	note := insertServiceTaggedNoteForTest(t, "Local Push All", "Body\n", `["sync"]`)
+	insertServiceTaggedNoteForTest(t, "Local Private", "Body\n", `["private"]`)
+	gateway := &fakeNotionGateway{}
+
+	result := NewNotionSyncService(gateway).PushAll(target)
+
+	if result.Synced != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(gateway.created) != 1 || gateway.created[0] != note.ID {
+		t.Fatalf("created = %#v, want %s", gateway.created, note.ID)
+	}
+}
+
 func TestSyncNotionMarksMissingRemoteAsExternalDeleted(t *testing.T) {
 	openServiceSyncTestDB(t)
 	target := saveNotionTargetForTest(t)
@@ -361,6 +516,7 @@ func saveNotionTargetForTest(t *testing.T) model.SyncTarget {
 		Name:       "Personal Notion",
 		ConfigJSON: `{"data_source_id":"ds-123"}`,
 		Enabled:    true,
+		IsDefault:  true,
 	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		t.Fatalf("save target: %v", err)
@@ -370,7 +526,12 @@ func saveNotionTargetForTest(t *testing.T) model.SyncTarget {
 
 func insertServiceNoteForTest(t *testing.T, title, body string) model.Note {
 	t.Helper()
-	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: "[]"}
+	return insertServiceTaggedNoteForTest(t, title, body, "[]")
+}
+
+func insertServiceTaggedNoteForTest(t *testing.T, title, body, tags string) model.Note {
+	t.Helper()
+	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: tags}
 	if err := repository.CreateNote(note); err != nil {
 		t.Fatalf("create note: %v", err)
 	}

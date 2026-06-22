@@ -17,8 +17,37 @@ export interface Task {
   sort_order: number
   note_id?: string
   roadmap_node_id?: string
+  execution_type?: 'single' | 'recurring'
+  occurrence_date?: string
+  occurrence_status?: 'open' | 'done' | 'skipped'
+  recurrence_label?: string
+  completed_at?: number
   created_at: number
   updated_at: number
+}
+
+export interface RecurrenceConfig {
+  start_date: string
+  end_date?: string
+  frequency: 'daily' | 'weekly' | 'monthly'
+  interval?: number
+  weekdays?: number[]
+  month_days?: number[]
+  timezone?: string
+  enabled?: boolean
+}
+
+export interface TaskOccurrence {
+  task_id: string
+  occurrence_date: string
+  status: 'open' | 'done' | 'skipped'
+  completed_at?: number
+  title: string
+  content: string
+  project_id?: string
+  project?: string
+  roadmap_node_id?: string
+  recurrence_label: string
 }
 
 export interface TaskProject {
@@ -145,6 +174,8 @@ export async function createTask(body: {
   scope?: string
   horizon?: 'week' | 'long'
   roadmap_node_id?: string
+  execution_type?: 'single' | 'recurring'
+  recurrence?: RecurrenceConfig
 }) {
   const res = await api.post<{ task: Task }>('/api/tasks', body)
   return res.data.task
@@ -222,4 +253,39 @@ export async function addRoadmapNodeResource(nodeID: string, body: { title: stri
 
 export async function deleteRoadmapResource(id: string) {
   await api.del(`/api/roadmap-resources/${id}`)
+}
+
+export async function completeOccurrence(taskId: string, date: string) {
+  const res = await api.post<{ occurrence: TaskOccurrence }>(
+    `/api/tasks/${taskId}/occurrences/${date}/complete`,
+  )
+  return res.data.occurrence
+}
+
+export async function reopenOccurrence(taskId: string, date: string) {
+  const res = await api.post<{ occurrence: TaskOccurrence }>(
+    `/api/tasks/${taskId}/occurrences/${date}/reopen`,
+  )
+  return res.data.occurrence
+}
+
+export async function skipOccurrence(taskId: string, date: string) {
+  const res = await api.post<{ occurrence: TaskOccurrence }>(
+    `/api/tasks/${taskId}/occurrences/${date}/skip`,
+  )
+  return res.data.occurrence
+}
+
+export async function getTaskOccurrences(from: string, to: string) {
+  const res = await api.get<{ occurrences: TaskOccurrence[] }>('/api/task-occurrences', { from, to })
+  return res.data.occurrences
+}
+
+export async function getRecurringTasks(params?: { page?: number; page_size?: number }) {
+  const res = await api.get<{ tasks: Task[] }>('/api/tasks', {
+    execution_type: 'recurring',
+    page: String(params?.page ?? 1),
+    page_size: String(params?.page_size ?? 100),
+  })
+  return { tasks: res.data.tasks, pagination: res.pagination! }
 }

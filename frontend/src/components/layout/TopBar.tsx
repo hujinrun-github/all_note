@@ -8,6 +8,7 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/calendar': { title: '日历', subtitle: '查看月份安排，连接任务、提醒和关联笔记' },
   '/inbox': { title: '未整理捕获', subtitle: '把临时想法转为笔记、任务或日程' },
   '/search': { title: '全局搜索', subtitle: '跨笔记、任务和日程找回上下文' },
+  '/summary': { title: '每日总结', subtitle: '回顾你已经完成的事项和产出' },
 }
 
 export function TopBar() {

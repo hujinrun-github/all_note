@@ -54,6 +54,7 @@ func TestSyncTargetRoundTrip(t *testing.T) {
 		BaseFolder: "FlowSpace Notes",
 		Enabled:    true,
 		AutoSync:   true,
+		IsDefault:  true,
 	}
 
 	if err := SaveSyncTarget(target); err != nil {
@@ -73,6 +74,52 @@ func TestSyncTargetRoundTrip(t *testing.T) {
 	}
 	if !got.AutoSync {
 		t.Fatal("expected auto sync to be enabled")
+	}
+}
+
+func TestGetDefaultSyncTargetRequiresExplicitDefault(t *testing.T) {
+	openTestDB(t)
+
+	first := &model.SyncTarget{
+		Type:       "obsidian",
+		Name:       "First Vault",
+		VaultPath:  "D:\\Vault1",
+		BaseFolder: "FlowSpace Notes",
+		Enabled:    true,
+	}
+	if err := SaveSyncTarget(first); err != nil {
+		t.Fatalf("save first target: %v", err)
+	}
+	second := &model.SyncTarget{
+		Type:       "obsidian",
+		Name:       "Second Vault",
+		VaultPath:  "D:\\Vault2",
+		BaseFolder: "FlowSpace Notes",
+		Enabled:    true,
+	}
+	if err := SaveSyncTarget(second); err != nil {
+		t.Fatalf("save second target: %v", err)
+	}
+
+	if _, err := GetDefaultSyncTarget("obsidian"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected no implicit default target, got %v", err)
+	}
+
+	first.IsDefault = true
+	if err := SaveSyncTarget(first); err != nil {
+		t.Fatalf("save explicit default: %v", err)
+	}
+	second.Name = "Second Vault Renamed"
+	if err := SaveSyncTarget(second); err != nil {
+		t.Fatalf("save non-default update: %v", err)
+	}
+
+	got, err := GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		t.Fatalf("get explicit default: %v", err)
+	}
+	if got.ID != first.ID {
+		t.Fatalf("default target drifted to %q, want %q", got.ID, first.ID)
 	}
 }
 
@@ -122,6 +169,35 @@ func TestInitDBAddsNotionSyncColumns(t *testing.T) {
 	assertTableColumns(t, "note_sync_state", []string{"external_id", "external_url"})
 }
 
+func TestInitDBAddsSingleSyncTargetTablesAndBackfillsDefault(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.db")
+	createOldSyncStateDB(t, dbPath)
+	insertOldSyncStateRow(t, dbPath, "note-legacy", "target-legacy", "legacy-content-hash", "synced")
+	chdirBackendRoot(t)
+	t.Cleanup(func() {
+		if DB != nil {
+			DB.Close()
+			DB = nil
+		}
+	})
+
+	if err := InitDB(dbPath); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	assertTableColumns(t, "note_sync_bindings", []string{"note_id", "target_id", "created_at", "updated_at"})
+	assertTableColumns(t, "sync_external_claims", []string{"external_key", "note_id", "target_id", "external_type"})
+	assertTableColumns(t, "note_sync_suppressions", []string{"note_id", "target_id", "reason"})
+	assertTableColumns(t, "sync_import_tombstones", []string{"external_key", "target_id", "former_note_id"})
+	target, err := GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		t.Fatalf("get default target: %v", err)
+	}
+	if target.ID != "target-legacy" {
+		t.Fatalf("default target = %q, want target-legacy", target.ID)
+	}
+}
+
 func TestSyncTargetRoundTripIncludesConfigJSON(t *testing.T) {
 	openSyncTestDB(t)
 
@@ -133,6 +209,7 @@ func TestSyncTargetRoundTripIncludesConfigJSON(t *testing.T) {
 		ConfigJSON: `{"data_source_id":"ds-123","title_property":"Name"}`,
 		Enabled:    true,
 		AutoSync:   false,
+		IsDefault:  true,
 	}
 
 	if err := SaveSyncTarget(target); err != nil {
@@ -338,6 +415,70 @@ func TestListExternalDeletedSyncStates(t *testing.T) {
 	}
 }
 
+func TestUpdateSyncTargetGuardedRejectsIdentityChangeWhenStateExists(t *testing.T) {
+	openSyncTestDB(t)
+	target := insertSyncTargetForTest(t)
+	note := insertNoteForTest(t, "Synced Note", "Body")
+	now := nowUnix()
+	if err := UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "D:\\Vault\\FlowSpace Notes\\Synced Note.md",
+		ContentHash:   "flow-hash",
+		ExternalHash:  "external-hash",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+
+	next := target
+	next.VaultPath = "D:\\OtherVault"
+	err := UpdateSyncTargetGuarded(&next, false, func(existing, proposed *model.SyncTarget) (bool, error) {
+		return existing.VaultPath != proposed.VaultPath, nil
+	})
+	if !errors.Is(err, ErrSyncTargetIdentityLocked) {
+		t.Fatalf("expected identity lock error, got %v", err)
+	}
+
+	unchanged, err := GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get target: %v", err)
+	}
+	if unchanged.VaultPath != target.VaultPath {
+		t.Fatalf("vault path changed to %q, want %q", unchanged.VaultPath, target.VaultPath)
+	}
+}
+
+func TestDeleteSyncTargetGuardedRejectsTargetWithState(t *testing.T) {
+	openSyncTestDB(t)
+	target := insertSyncTargetForTest(t)
+	note := insertNoteForTest(t, "Synced Note", "Body")
+	now := nowUnix()
+	if err := UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "D:\\Vault\\FlowSpace Notes\\Synced Note.md",
+		ContentHash:   "flow-hash",
+		ExternalHash:  "external-hash",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+
+	if err := DeleteSyncTargetGuarded(target.ID); !errors.Is(err, ErrSyncTargetInUse) {
+		t.Fatalf("expected target in use error, got %v", err)
+	}
+	if _, err := GetSyncTarget(target.ID); err != nil {
+		t.Fatalf("target should still exist: %v", err)
+	}
+}
+
 func insertSyncTargetForTest(t *testing.T) model.SyncTarget {
 	t.Helper()
 	target := &model.SyncTarget{
@@ -347,6 +488,7 @@ func insertSyncTargetForTest(t *testing.T) model.SyncTarget {
 		BaseFolder: "FlowSpace Notes",
 		Enabled:    true,
 		AutoSync:   false,
+		IsDefault:  true,
 	}
 	if err := SaveSyncTarget(target); err != nil {
 		t.Fatalf("save target: %v", err)

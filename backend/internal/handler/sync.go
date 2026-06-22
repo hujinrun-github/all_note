@@ -2,8 +2,10 @@ package handler
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +35,9 @@ func SaveSyncTarget(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
+	if req.IsDefault == nil {
+		target.IsDefault = true
+	}
 	if err := repository.SaveSyncTarget(target); err != nil {
 		internalError(c, "failed to save sync target")
 		return
@@ -57,11 +62,46 @@ func UpdateSyncTarget(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	if err := repository.SaveSyncTarget(target); err != nil {
+	err := repository.UpdateSyncTargetGuarded(target, req.IsDefault == nil, syncTargetIdentityChanged)
+	if errors.Is(err, sql.ErrNoRows) {
+		notFound(c, "sync target not found")
+		return
+	}
+	if errors.Is(err, repository.ErrSyncTargetIdentityLocked) {
+		errorResponse(c, http.StatusConflict, "target_identity_locked", "同步目标已被使用，不能修改身份字段")
+		return
+	}
+	if err != nil && strings.Contains(err.Error(), "sync target config") {
+		badRequest(c, err.Error())
+		return
+	}
+	if err != nil {
 		internalError(c, "failed to update sync target")
 		return
 	}
 	success(c, gin.H{"target": target})
+}
+
+func DeleteSyncTarget(c *gin.Context) {
+	targetID := strings.TrimSpace(c.Param("id"))
+	if targetID == "" {
+		badRequest(c, "sync target id is required")
+		return
+	}
+	err := repository.DeleteSyncTargetGuarded(targetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		notFound(c, "sync target not found")
+		return
+	}
+	if errors.Is(err, repository.ErrSyncTargetInUse) {
+		errorResponse(c, http.StatusConflict, "target_in_use", "同步目标已被使用，不能删除")
+		return
+	}
+	if err != nil {
+		internalError(c, "failed to delete sync target")
+		return
+	}
+	noContent(c)
 }
 
 func TestObsidianTarget(c *gin.Context) {
@@ -98,7 +138,11 @@ func TestNotionTarget(c *gin.Context) {
 }
 
 func SyncObsidianNote(c *gin.Context) {
-	item, err := service.SyncNoteToObsidian(c.Param("id"))
+	noteID := strings.TrimSpace(c.Param("id"))
+	if !ensureLegacyNoteSyncCompatible(c, noteID, "obsidian") {
+		return
+	}
+	item, err := service.SyncNoteToObsidian(noteID)
 	if err != nil {
 		internalError(c, err.Error())
 		return
@@ -112,6 +156,9 @@ func SyncNotionNote(c *gin.Context) {
 		badRequest(c, "note id is required")
 		return
 	}
+	if !ensureLegacyNoteSyncCompatible(c, noteID, "notion") {
+		return
+	}
 	item, err := service.SyncNoteToNotion(noteID)
 	if err != nil {
 		notionNoteSyncError(c, err)
@@ -121,7 +168,10 @@ func SyncNotionNote(c *gin.Context) {
 }
 
 func SyncObsidianFolder(c *gin.Context) {
-	notes, _, err := service.GetNotes(c.Param("folder_id"), "recent", 1, 10000)
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
+	notes, _, err := service.GetNotes(c.Param("folder_id"), "", "recent", false, 1, 10000)
 	if err != nil {
 		internalError(c, "failed to load notes")
 		return
@@ -131,7 +181,10 @@ func SyncObsidianFolder(c *gin.Context) {
 }
 
 func SyncObsidianAll(c *gin.Context) {
-	notes, _, err := service.GetNotes("", "recent", 1, 10000)
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
+	notes, _, err := service.GetNotes("", "", "recent", false, 1, 10000)
 	if err != nil {
 		internalError(c, "failed to load notes")
 		return
@@ -140,12 +193,42 @@ func SyncObsidianAll(c *gin.Context) {
 	success(c, gin.H{"result": result})
 }
 
+func SyncNotionAll(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "notion") {
+		return
+	}
+	result := service.SyncNotionAll()
+	success(c, gin.H{"result": result})
+}
+
+func SyncObsidianPull(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
+	result := service.SyncObsidianPull()
+	success(c, gin.H{"result": result})
+}
+
+func SyncNotionPull(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "notion") {
+		return
+	}
+	result := service.SyncNotionPull()
+	success(c, gin.H{"result": result})
+}
+
 func SyncObsidianBidirectional(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
+		return
+	}
 	result := service.SyncObsidianBidirectional()
 	success(c, gin.H{"result": result})
 }
 
 func SyncNotionBidirectional(c *gin.Context) {
+	if !ensureLegacyBatchSyncCompatible(c, "notion") {
+		return
+	}
 	result := service.SyncNotionBidirectional()
 	success(c, gin.H{"result": result})
 }
@@ -238,6 +321,10 @@ func notionNoteSyncError(c *gin.Context, err error) {
 }
 
 func GetNoteSyncState(c *gin.Context) {
+	if store := repository.CurrentStore(); store != nil {
+		getNoteSyncStateWithStore(c, store)
+		return
+	}
 	targetType := strings.TrimSpace(c.Query("target"))
 	if targetType == "" {
 		targetType = "obsidian"
@@ -278,6 +365,10 @@ func syncTargetFromRequest(req *model.SaveSyncTargetRequest) *model.SyncTarget {
 	if configJSON == "" {
 		configJSON = "{}"
 	}
+	isDefault := false
+	if req.IsDefault != nil {
+		isDefault = *req.IsDefault
+	}
 	return &model.SyncTarget{
 		Type:       syncType,
 		Name:       req.Name,
@@ -286,6 +377,7 @@ func syncTargetFromRequest(req *model.SaveSyncTargetRequest) *model.SyncTarget {
 		ConfigJSON: configJSON,
 		Enabled:    req.Enabled,
 		AutoSync:   req.AutoSync,
+		IsDefault:  isDefault,
 	}
 }
 
@@ -294,4 +386,75 @@ func validateSyncTargetRequest(target *model.SyncTarget) error {
 		return errors.New("obsidian sync target requires vault_path and base_folder")
 	}
 	return nil
+}
+
+func syncTargetIdentityChanged(existing, next *model.SyncTarget) (bool, error) {
+	if strings.TrimSpace(existing.Type) != strings.TrimSpace(next.Type) {
+		return true, nil
+	}
+	switch strings.TrimSpace(existing.Type) {
+	case "obsidian":
+		return obsidianIdentity(existing) != obsidianIdentity(next), nil
+	case "notion":
+		existingDataSourceID, err := notionDataSourceID(existing.ConfigJSON)
+		if err != nil {
+			return false, err
+		}
+		nextDataSourceID, err := notionDataSourceID(next.ConfigJSON)
+		if err != nil {
+			return false, err
+		}
+		return existingDataSourceID != nextDataSourceID, nil
+	default:
+		return false, nil
+	}
+}
+
+func obsidianIdentity(target *model.SyncTarget) string {
+	windowsLike := isWindowsLikePath(target.VaultPath)
+	return normalizeSyncPathIdentity(target.VaultPath, windowsLike) + "\n" + normalizeSyncPathIdentity(target.BaseFolder, windowsLike)
+}
+
+func normalizeSyncPathIdentity(value string, windowsLike bool) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(trimmed, "\\", "/")
+	normalized = path.Clean(normalized)
+	if normalized == "." {
+		return ""
+	}
+	if windowsLike || isWindowsLikePath(trimmed) {
+		normalized = strings.ToLower(normalized)
+	}
+	return normalized
+}
+
+func isWindowsLikePath(value string) bool {
+	if strings.Contains(value, "\\") {
+		return true
+	}
+	trimmed := strings.TrimSpace(value)
+	return len(trimmed) >= 2 && trimmed[1] == ':'
+}
+
+func notionDataSourceID(configJSON string) (string, error) {
+	raw := strings.TrimSpace(configJSON)
+	if raw == "" {
+		return "", nil
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return "", errors.New("sync target config_json must be a JSON object")
+	}
+	value, ok := config["data_source_id"]
+	if !ok || value == nil {
+		return "", nil
+	}
+	dataSourceID, ok := value.(string)
+	if !ok {
+		return "", errors.New("sync target config.data_source_id must be a string")
+	}
+	return strings.TrimSpace(dataSourceID), nil
 }

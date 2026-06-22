@@ -15,8 +15,9 @@ loadLocalEnvFile(path.join(rootDir, '.codex-run', 'flowspace.local.env'))
 const defaults = {
   env: process.env.FLOWSPACE_ENV || 'prod',
   dbPath: process.env.FLOWSPACE_DB_PATH || '',
-  backendPort: process.env.PORT || '8080',
-  frontendPort: process.env.FRONTEND_PORT || '5199',
+  proxyHost: process.env.VITE_BACKEND_HOST || '',
+  backendPort: process.env.PORT || '',
+  frontendPort: process.env.FRONTEND_PORT || '',
   frontendBase: process.env.VITE_APP_BASE || '',
   backendCmd: process.env.FLOWSPACE_BACKEND_CMD || 'go run ./cmd/server',
   frontendCmd: process.env.FLOWSPACE_FRONTEND_CMD || '',
@@ -68,6 +69,9 @@ async function main() {
   console.log(`[flowspace] db=${options.dbPath || defaultDBForEnv(options.env)}`)
   console.log(`[flowspace] backend port=${options.backendPort}`)
   console.log(`[flowspace] frontend port=${options.frontendPort}`)
+  if (options.proxyHost) {
+    console.log(`[flowspace] frontend proxy host=${options.proxyHost}`)
+  }
   if (options.frontendBase) {
     console.log(`[flowspace] frontend base=${options.frontendBase}`)
   }
@@ -91,6 +95,7 @@ async function main() {
       command: options.frontendCmd,
       cwd: frontendDir,
       env: {
+        ...(options.proxyHost ? { VITE_BACKEND_HOST: options.proxyHost } : {}),
         VITE_BACKEND_PORT: options.backendPort,
         ...(options.frontendBase ? { VITE_APP_BASE: options.frontendBase } : {}),
       },
@@ -122,6 +127,10 @@ function parseArgs(args, base) {
       case '--db':
       case '--db-path':
         parsed.dbPath = next()
+        break
+      case '--proxy-host':
+      case '--backend-host':
+        parsed.proxyHost = next()
         break
       case '--backend-port':
         parsed.backendPort = next()
@@ -163,6 +172,9 @@ function parseArgs(args, base) {
   }
 
   parsed.env = normalizeEnv(parsed.env)
+  parsed.proxyHost = normalizeProxyHost(parsed.proxyHost)
+  if (!parsed.backendPort) parsed.backendPort = defaultBackendPortForEnv(parsed.env)
+  if (!parsed.frontendPort) parsed.frontendPort = defaultFrontendPortForEnv(parsed.env)
   parsed.backendPort = normalizePort(parsed.backendPort, 'backend port')
   parsed.frontendPort = normalizePort(parsed.frontendPort, 'frontend port')
   parsed.frontendBase = parsed.frontendBase ? normalizeBasePath(parsed.frontendBase) : ''
@@ -177,6 +189,18 @@ function normalizeEnv(value) {
 
 function defaultDBForEnv(env) {
   return env === 'test' ? 'flowspace.test.db' : 'flowspace.db'
+}
+
+function normalizeProxyHost(value) {
+  return String(value || '').trim()
+}
+
+function defaultBackendPortForEnv(env) {
+  return env === 'test' ? '4101' : '4201'
+}
+
+function defaultFrontendPortForEnv(env) {
+  return env === 'test' ? '4100' : '4200'
 }
 
 function normalizeBasePath(value) {
@@ -349,8 +373,9 @@ function printHelp() {
 Options:
   --env <prod|test>              Storage environment (default: prod)
   --db, --db-path <path>         Explicit SQLite DB path; overrides --env default
-  --backend-port <port>          Backend port (default: 8080)
-  --frontend-port <port>         Frontend port (default: 5199)
+  --proxy-host <host>            Frontend proxy host, e.g. localhost, 127.0.0.1, [::1]
+  --backend-port <port>          Backend port (prod default: 4201; test default: 4101)
+  --frontend-port <port>         Frontend port (prod default: 4200; test default: 4100)
   --frontend-base <path>         Frontend base path, e.g. /all-note-test/
   --backend-cmd <command>        Backend startup command (default: go run ./cmd/server)
   --frontend-cmd <command>       Frontend startup command
@@ -363,6 +388,7 @@ Options:
 Environment variables:
   FLOWSPACE_ENV                  Same as --env
   FLOWSPACE_DB_PATH              Same as --db
+  VITE_BACKEND_HOST              Same as --proxy-host
   PORT                           Same as --backend-port
   FRONTEND_PORT                  Same as --frontend-port
   VITE_APP_BASE                  Same as --frontend-base
@@ -381,8 +407,9 @@ Examples:
   node scripts/start-flowspace.mjs --env prod
   node scripts/start-flowspace.mjs --env test
   node scripts/start-flowspace.mjs --db tmp/sandbox.db
-  node scripts/start-flowspace.mjs --env test --frontend-port 15198 --frontend-base /all-note-test/ --frontend-only
-  node scripts/start-flowspace.mjs --backend-cmd "go run ./cmd/server" --frontend-cmd "npm run dev -- --host 127.0.0.1 --port 5199"
+  node scripts/start-flowspace.mjs --env prod --proxy-host [::1] --frontend-port 4200 --frontend-base /all-note/ --frontend-only
+  node scripts/start-flowspace.mjs --env test --frontend-port 4100 --frontend-base /all-note-test/ --frontend-only
+  node scripts/start-flowspace.mjs --env test --backend-cmd "go run ./cmd/server" --frontend-cmd "npm run dev -- --host 127.0.0.1 --port 4100"
 `)
 }
 

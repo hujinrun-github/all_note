@@ -30,6 +30,12 @@ func TestNotionRealGatewayQueryRemoteNotesLoadsBlocksAndProperties(t *testing.T)
 						"FlowSpace ID": map[string]any{
 							"rich_text": []map[string]any{{"plain_text": "note-123"}},
 						},
+						"Tags": map[string]any{
+							"multi_select": []map[string]any{
+								{"name": "sync"},
+								{"name": "work"},
+							},
+						},
 					},
 				}},
 				"has_more": false,
@@ -80,6 +86,9 @@ func TestNotionRealGatewayQueryRemoteNotesLoadsBlocksAndProperties(t *testing.T)
 	if got.Title != "Remote Title" || got.FlowSpaceID != "note-123" {
 		t.Fatalf("remote properties = %+v", got)
 	}
+	if strings.Join(got.Tags, ",") != "sync,work" {
+		t.Fatalf("remote tags = %#v", got.Tags)
+	}
 	wantMarkdown := "# Heading\n\nRemote paragraph\n"
 	if got.Markdown != wantMarkdown || got.Hash != notionTitleBodyHash("Remote Title", wantMarkdown) {
 		t.Fatalf("markdown = %q hash = %q", got.Markdown, got.Hash)
@@ -107,7 +116,7 @@ func TestNotionRealGatewayCreateRemoteNoteSendsPagePayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	note := &model.Note{ID: "note-create", Title: "Created Title", Body: "Created body\n"}
+	note := &model.Note{ID: "note-create", Title: "Created Title", Body: "Created body\n", Tags: `["sync","work"]`}
 	remote, err := newTestRealNotionGateway(server.URL).CreateRemoteNote(testNotionGatewayConfig(), note)
 	if err != nil {
 		t.Fatalf("create remote note: %v", err)
@@ -120,6 +129,7 @@ func TestNotionRealGatewayCreateRemoteNoteSendsPagePayload(t *testing.T) {
 	assertStringAt(t, payload, "ds-123", "parent", "data_source_id")
 	assertStringAt(t, payload, "Created Title", "properties", "Name", "title", "0", "text", "content")
 	assertStringAt(t, payload, "note-create", "properties", "FlowSpace ID", "rich_text", "0", "text", "content")
+	assertStringAt(t, payload, "sync", "properties", "Tags", "multi_select", "0", "name")
 	assertStringAt(t, payload, "paragraph", "children", "0", "type")
 	assertStringAt(t, payload, "Created body", "children", "0", "paragraph", "rich_text", "0", "text", "content")
 }
@@ -168,7 +178,7 @@ func TestNotionRealGatewayUpdateRemoteNoteReplacesChildren(t *testing.T) {
 	}))
 	defer server.Close()
 
-	note := &model.Note{ID: "note-1", Title: "Updated Title", Body: "# Updated\n"}
+	note := &model.Note{ID: "note-1", Title: "Updated Title", Body: "# Updated\n", Tags: `["sync"]`}
 	remote, err := newTestRealNotionGateway(server.URL).UpdateRemoteNote(testNotionGatewayConfig(), "page-1", note)
 	if err != nil {
 		t.Fatalf("update remote note: %v", err)
@@ -184,6 +194,7 @@ func TestNotionRealGatewayUpdateRemoteNoteReplacesChildren(t *testing.T) {
 		t.Fatalf("archived = %#v", archived)
 	}
 	assertStringAt(t, pagePatch, "Updated Title", "properties", "Name", "title", "0", "text", "content")
+	assertStringAt(t, pagePatch, "sync", "properties", "Tags", "multi_select", "0", "name")
 	assertStringAt(t, appendPayload, "heading_1", "children", "0", "type")
 	assertStringAt(t, appendPayload, "Updated", "children", "0", "heading_1", "rich_text", "0", "text", "content")
 }
@@ -309,6 +320,7 @@ func testNotionGatewayConfig() notionTargetConfig {
 		DataSourceID:        "ds-123",
 		TitleProperty:       "Name",
 		FlowSpaceIDProperty: "FlowSpace ID",
+		TagsProperty:        "Tags",
 	}
 }
 

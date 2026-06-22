@@ -11,13 +11,14 @@ import (
 )
 
 type notionTargetConfig struct {
-	DataSourceID             string `json:"data_source_id"`
-	TokenEnv                 string `json:"token_env"`
-	TitleProperty            string `json:"title_property"`
-	FlowSpaceIDProperty      string `json:"flowspace_id_property"`
-	FolderProperty           string `json:"folder_property"`
-	TagsProperty             string `json:"tags_property"`
-	FlowSpaceUpdatedProperty string `json:"flowspace_updated_property"`
+	DataSourceID             string   `json:"data_source_id"`
+	TokenEnv                 string   `json:"token_env"`
+	TitleProperty            string   `json:"title_property"`
+	FlowSpaceIDProperty      string   `json:"flowspace_id_property"`
+	FolderProperty           string   `json:"folder_property"`
+	TagsProperty             string   `json:"tags_property"`
+	FlowSpaceUpdatedProperty string   `json:"flowspace_updated_property"`
+	RequiredTags             []string `json:"required_tags"`
 }
 
 func parseNotionTargetConfig(target *model.SyncTarget) (notionTargetConfig, error) {
@@ -47,6 +48,7 @@ func parseNotionTargetConfig(target *model.SyncTarget) (notionTargetConfig, erro
 	config.FolderProperty = defaultString(config.FolderProperty, "Folder")
 	config.TagsProperty = defaultString(config.TagsProperty, "Tags")
 	config.FlowSpaceUpdatedProperty = defaultString(config.FlowSpaceUpdatedProperty, "FlowSpace Updated At")
+	config.RequiredTags = normalizeSyncTags(config.RequiredTags)
 
 	if config.DataSourceID == "" {
 		return notionTargetConfig{}, errors.New("notion data source id is required")

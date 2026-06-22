@@ -2,6 +2,8 @@ package service
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -526,18 +528,209 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 	}
 }
 
-func TestArticleSearchFallbackPadsSelectedSourcesToTenChoices(t *testing.T) {
+func TestArticleSearchDoesNotInventSearchEntryCandidates(t *testing.T) {
 	node := model.RoadmapNode{Title: "Go API 项目", Deliverable: "REST API"}
 	sources := selectedArticleSearchSources([]string{"medium", "reddit"})
 
 	resources := ensureArticleResourceChoices(node, sources, nil, 10)
 
-	if len(resources) != 10 {
-		t.Fatalf("fallback resources = %d, want 10", len(resources))
+	if len(resources) != 0 {
+		t.Fatalf("expected no invented search-entry candidates, got %+v", resources)
 	}
-	for _, resource := range resources {
-		if !strings.Contains(resource.URL, "medium.com") && !strings.Contains(resource.URL, "reddit.com") {
-			t.Fatalf("fallback resource did not honor selected sources: %+v", resource)
+}
+
+func TestArticleSearchKeepsArticleTitlesAndFiltersSearchEntryURLs(t *testing.T) {
+	node := model.RoadmapNode{Title: "Go API 项目", Deliverable: "REST API"}
+	sources := selectedArticleSearchSources([]string{"medium", "reddit"})
+
+	resources := ensureArticleResourceChoices(node, sources, []model.RoadmapResource{
+		{
+			Title:   "Go API 项目 Medium 搜索入口 1",
+			URL:     "https://medium.com/search?q=go+api",
+			Summary: "Medium 源内搜索入口",
+		},
+		{
+			Title:   "How to design high throughput Go APIs",
+			URL:     "https://medium.com/example/how-to-design-high-throughput-go-apis",
+			Summary: "A popular technical article.",
+		},
+		{
+			Title:   "Go API 项目 Reddit 搜索入口 2",
+			URL:     "https://www.reddit.com/search/?q=go+api",
+			Summary: "Reddit 源内搜索入口",
+		},
+	}, 10)
+
+	if len(resources) != 1 {
+		t.Fatalf("filtered resources = %d, want 1: %+v", len(resources), resources)
+	}
+	if resources[0].Title != "How to design high throughput Go APIs" {
+		t.Fatalf("expected real article title, got %+v", resources[0])
+	}
+}
+
+func TestArticleSearchQueryTargetsPopularHighSignalArticles(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "Go API 项目",
+		Deliverable:          "REST API",
+		ArticleSearchQueries: []string{"go api performance tutorial"},
+	}
+	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"medium", "reddit"}))
+
+	for _, term := range []string{"popular", "most read", "upvoted"} {
+		if !strings.Contains(strings.ToLower(query), term) {
+			t.Fatalf("search query should target high-signal articles with %q, got %q", term, query)
+		}
+	}
+}
+
+func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "Go API 项目",
+		Deliverable:          "REST API",
+		ArticleSearchQueries: []string{"go api performance tutorial"},
+	}
+	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"medium", "reddit"}))
+
+	if !strings.Contains(query, "site:medium.com OR site:reddit.com") {
+		t.Fatalf("selected sources should be alternatives, got %q", query)
+	}
+}
+
+func TestArticleSearchQueryIncludesNodeDescription(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "向量检索基础",
+		Description:          "重点比较 HNSW 冷启动召回策略和增量索引维护",
+		Deliverable:          "调研笔记",
+		ArticleSearchQueries: []string{"generic vector database overview"},
+	}
+	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"technical"}))
+
+	for _, term := range []string{"HNSW", "冷启动", "增量索引"} {
+		if !strings.Contains(query, term) {
+			t.Fatalf("expected node description term %q in article query %q", term, query)
+		}
+	}
+}
+
+func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	t.Setenv("ARTICLE_SEARCH_PROVIDER", "")
+
+	project := createLearningProjectForTest(t, "向量检索系统")
+	roadmap, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
+		ProjectID: project.ID,
+		Title:     "向量检索 Roadmap",
+		Goal:      "完成向量检索系统设计",
+		Status:    "ready",
+		Nodes: []model.RoadmapNode{
+			{
+				ID:                   "node-vector-index",
+				Type:                 "task",
+				Title:                "检索架构概述",
+				Description:          "理解系统总体结构",
+				PathType:             "required",
+				Status:               "active",
+				Deliverable:          "架构说明",
+				AcceptanceCriteria:   "能解释核心链路",
+				ArticleSearchQueries: []string{"generic vector database overview"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save roadmap: %v", err)
+	}
+	node := roadmap.Nodes[0]
+	linkedTask := &model.Task{
+		Title:         "调研 HNSW 索引调参",
+		Content:       "比较 efConstruction、M 参数和 rerank 对召回率的影响",
+		Status:        "open",
+		Horizon:       "week",
+		Scope:         "daily",
+		RoadmapNodeID: &node.ID,
+	}
+	if err := repository.CreateTask(linkedTask); err != nil {
+		t.Fatalf("create linked task: %v", err)
+	}
+
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search/advanced" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		capturedQuery = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"title":"HNSW Parameter Tuning Guide","link":"https://stackoverflow.com/questions/1","score":42,"answer_count":3},
+			{"title":"Vector Search Rerank Tradeoffs","link":"https://stackoverflow.com/questions/2","score":31,"answer_count":2},
+			{"title":"Approximate Nearest Neighbor Recall","link":"https://stackoverflow.com/questions/3","score":29,"answer_count":4},
+			{"title":"ANN Index Benchmarks","link":"https://stackoverflow.com/questions/4","score":25,"answer_count":1},
+			{"title":"HNSW efConstruction Explained","link":"https://stackoverflow.com/questions/5","score":22,"answer_count":2},
+			{"title":"Vector Database Ranking","link":"https://stackoverflow.com/questions/6","score":20,"answer_count":1},
+			{"title":"Embedding Search Evaluation","link":"https://stackoverflow.com/questions/7","score":19,"answer_count":1},
+			{"title":"Hybrid Search Design","link":"https://stackoverflow.com/questions/8","score":18,"answer_count":1},
+			{"title":"Recall Precision Tradeoff","link":"https://stackoverflow.com/questions/9","score":17,"answer_count":1},
+			{"title":"Rerank Pipeline Design","link":"https://stackoverflow.com/questions/10","score":16,"answer_count":1}
+		]}`))
+	}))
+	defer server.Close()
+	oldStackExchangeURL := stackExchangeSearchURL
+	stackExchangeSearchURL = server.URL + "/search/advanced"
+	t.Cleanup(func() { stackExchangeSearchURL = oldStackExchangeURL })
+
+	resources, err := SearchRoadmapNodeResources(node.ID, &model.SearchRoadmapResourcesRequest{Sources: []string{"stackoverflow"}})
+	if err != nil {
+		t.Fatalf("search resources: %v", err)
+	}
+	if len(resources) < 10 {
+		t.Fatalf("expected stackoverflow resources, got %+v", resources)
+	}
+	for _, term := range []string{"HNSW", "efConstruction", "rerank"} {
+		if !strings.Contains(capturedQuery, term) {
+			t.Fatalf("expected linked task term %q in article query %q", term, capturedQuery)
+		}
+	}
+}
+
+func TestPublicSourceArticleSearchReturnsRealArticlesOnRepeatedCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/articles" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{
+				"title": "Rate Limiting Strategies in Go",
+				"url": "https://dev.to/example/rate-limiting-strategies-in-go",
+				"description": "A practical Go API article.",
+				"public_reactions_count": 342,
+				"reading_time_minutes": 8
+			}
+		]`))
+	}))
+	t.Cleanup(server.Close)
+
+	originalDevToURL := devToArticlesURL
+	devToArticlesURL = server.URL + "/articles"
+	t.Cleanup(func() { devToArticlesURL = originalDevToURL })
+
+	node := model.RoadmapNode{
+		Title:                "Go API 项目",
+		Deliverable:          "REST API",
+		ArticleSearchQueries: []string{"go api performance tutorial"},
+	}
+	sources := selectedArticleSearchSources([]string{"devto"})
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		resources := searchPublicSourceResources(node, nil, sources, 10)
+		if len(resources) != 1 {
+			t.Fatalf("attempt %d resources = %d, want 1: %+v", attempt, len(resources), resources)
+		}
+		if resources[0].Title != "Rate Limiting Strategies in Go" {
+			t.Fatalf("attempt %d should show the real article title, got %+v", attempt, resources[0])
+		}
+		if strings.Contains(resources[0].URL, "/search") {
+			t.Fatalf("attempt %d returned a search entry instead of an article: %+v", attempt, resources[0])
 		}
 	}
 }

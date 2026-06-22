@@ -10,6 +10,7 @@ const Tasks = lazy(() => import('./routes/Tasks'))
 const Calendar = lazy(() => import('./routes/Calendar'))
 const Inbox = lazy(() => import('./routes/Inbox'))
 const Search = lazy(() => import('./routes/Search'))
+const DailySummary = lazy(() => import('./routes/DailySummary'))
 
 export const router = createBrowserRouter(
   [
@@ -25,6 +26,7 @@ export const router = createBrowserRouter(
         { path: 'calendar', element: <Calendar /> },
         { path: 'inbox', element: <Inbox /> },
         { path: 'search', element: <Search /> },
+        { path: 'summary', element: <DailySummary /> },
       ],
     },
   ],

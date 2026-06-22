@@ -49,6 +49,10 @@ func internalError(c *gin.Context, msg string) {
 	errorResponse(c, http.StatusInternalServerError, "INTERNAL_ERROR", msg)
 }
 
+func conflict(c *gin.Context, code, msg string) {
+	errorResponse(c, http.StatusConflict, code, msg)
+}
+
 func getPagination(c *gin.Context) (int, int) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))

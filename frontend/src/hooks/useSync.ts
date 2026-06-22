@@ -32,6 +32,38 @@ export function useNoteSyncState(noteID: string | undefined, target?: syncApi.Sy
   })
 }
 
+export function useNoteSyncBinding(noteID: string | undefined) {
+  return useQuery({
+    queryKey: ['note-sync-binding', noteID],
+    queryFn: () => syncApi.getNoteSyncBinding(noteID!),
+    enabled: Boolean(noteID),
+  })
+}
+
+export function usePutNoteSyncBinding(noteID: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: syncApi.SaveNoteSyncBindingRequest) => syncApi.putNoteSyncBinding(noteID!, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['note-sync-binding', noteID] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state', noteID] })
+      qc.invalidateQueries({ queryKey: ['sync-targets'] })
+    },
+  })
+}
+
+export function useDeleteNoteSyncBinding(noteID: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: syncApi.DeleteNoteSyncBindingRequest) => syncApi.deleteNoteSyncBinding(noteID!, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['note-sync-binding', noteID] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state', noteID] })
+      qc.invalidateQueries({ queryKey: ['sync-targets'] })
+    },
+  })
+}
+
 export function useObsidianDeletions() {
   return useQuery({
     queryKey: ['obsidian-deletions'],
@@ -57,12 +89,37 @@ export function useSyncObsidianNote(noteID: string | undefined) {
   })
 }
 
+export function useSyncNote(noteID: string | undefined) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => syncApi.syncNote(noteID!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['note-sync-state', noteID] })
+      qc.invalidateQueries({ queryKey: ['note-sync-binding', noteID] })
+      qc.invalidateQueries({ queryKey: ['sync-targets'] })
+    },
+  })
+}
+
 export function useSyncObsidianFolder() {
   return useMutation({ mutationFn: syncApi.syncObsidianFolder })
 }
 
 export function useSyncObsidianAll() {
   return useMutation({ mutationFn: syncApi.syncObsidianAll })
+}
+
+export function useSyncObsidianPull() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: syncApi.syncObsidianPull,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['note'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['obsidian-deletions'] })
+    },
+  })
 }
 
 export function useSyncObsidianBidirectional() {
@@ -78,6 +135,23 @@ export function useSyncObsidianBidirectional() {
   })
 }
 
+export function useSyncNotionAll() {
+  return useMutation({ mutationFn: () => syncApi.syncNotionAll() })
+}
+
+export function useSyncNotionPull() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => syncApi.syncNotionPull(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['note'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['notion-deletions'] })
+    },
+  })
+}
+
 export function useSyncNotionBidirectional() {
   const qc = useQueryClient()
   return useMutation({
@@ -88,6 +162,86 @@ export function useSyncNotionBidirectional() {
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
       qc.invalidateQueries({ queryKey: ['notion-deletions'] })
     },
+  })
+}
+
+export function usePushTarget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (targetID: string) => syncApi.pushTarget(targetID),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['sync-targets'] })
+    },
+  })
+}
+
+export function usePullTarget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (targetID: string) => syncApi.pullTarget(targetID),
+    onSuccess: (_result, targetID) => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['note'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-binding'] })
+      qc.invalidateQueries({ queryKey: ['target-deletions', targetID] })
+    },
+  })
+}
+
+export function useBidirectionalTarget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (targetID: string) => syncApi.bidirectionalTarget(targetID),
+    onSuccess: (_result, targetID) => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['note'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-binding'] })
+      qc.invalidateQueries({ queryKey: ['target-deletions', targetID] })
+    },
+  })
+}
+
+export function useTargetDeletions(targetID: string | undefined) {
+  return useQuery({
+    queryKey: ['target-deletions', targetID],
+    queryFn: () => syncApi.getTargetDeletions(targetID!),
+    enabled: Boolean(targetID),
+  })
+}
+
+export function useConfirmTargetDeletion() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ targetID, noteID }: { targetID: string; noteID: string }) => syncApi.confirmTargetDeletion(targetID, noteID),
+    onSuccess: (_result, variables) => {
+      qc.invalidateQueries({ queryKey: ['notes'] })
+      qc.invalidateQueries({ queryKey: ['target-deletions', variables.targetID] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-binding'] })
+    },
+  })
+}
+
+export function useRestoreTargetDeletion() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ targetID, noteID }: { targetID: string; noteID: string }) => syncApi.restoreTargetDeletion(targetID, noteID),
+    onSuccess: (_result, variables) => {
+      qc.invalidateQueries({ queryKey: ['target-deletions', variables.targetID] })
+      qc.invalidateQueries({ queryKey: ['note-sync-state'] })
+      qc.invalidateQueries({ queryKey: ['note-sync-binding'] })
+    },
+  })
+}
+
+export function useDeleteSyncTarget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (targetID: string) => syncApi.deleteSyncTarget(targetID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sync-targets'] }),
   })
 }
 

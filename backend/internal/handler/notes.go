@@ -9,9 +9,17 @@ import (
 func GetNotes(c *gin.Context) {
 	page, pageSize := getPagination(c)
 	folderID := c.Query("folder_id")
+	projectID := c.Query("project_id")
+	unassigned := c.Query("unassigned") == "true"
 	sort := c.DefaultQuery("sort", "recent")
 
-	notes, total, err := service.GetNotes(folderID, sort, page, pageSize)
+	// Validate conflicting params
+	if projectID != "" && unassigned {
+		badRequest(c, "project_id and unassigned cannot be used together")
+		return
+	}
+
+	notes, total, err := service.GetNotes(folderID, projectID, sort, unassigned, page, pageSize)
 	if err != nil {
 		internalError(c, "failed to get notes")
 		return
@@ -50,7 +58,11 @@ func UpdateNote(c *gin.Context) {
 	}
 	note, err := service.UpdateNote(c.Param("id"), &req)
 	if err != nil {
-		notFound(c, "note not found")
+		if err.Error() == "note not found" {
+			notFound(c, "note not found")
+		} else {
+			internalError(c, "failed to update note")
+		}
 		return
 	}
 	success(c, gin.H{"note": note})

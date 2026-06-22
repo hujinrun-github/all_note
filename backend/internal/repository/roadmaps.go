@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -9,6 +10,10 @@ import (
 )
 
 func ReplaceLearningRoadmap(roadmap *model.LearningRoadmap) (*model.LearningRoadmap, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().ReplaceLearningRoadmap(context.Background(), roadmap)
+	}
+
 	if roadmap.ID == "" {
 		roadmap.ID = newUUID()
 	}
@@ -89,6 +94,10 @@ func ReplaceLearningRoadmap(roadmap *model.LearningRoadmap) (*model.LearningRoad
 }
 
 func SaveFailedLearningRoadmap(projectID, title, goal string) (*model.LearningRoadmap, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().SaveFailedLearningRoadmap(context.Background(), projectID, title, goal)
+	}
+
 	now := nowUnix()
 	id := newUUID()
 	if strings.TrimSpace(title) == "" {
@@ -107,6 +116,10 @@ func SaveFailedLearningRoadmap(projectID, title, goal string) (*model.LearningRo
 }
 
 func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().GetLearningRoadmap(context.Background(), projectID)
+	}
+
 	var roadmap model.LearningRoadmap
 	err := DB.QueryRow(`
 		SELECT id, project_id, title, goal, status, created_at, updated_at
@@ -131,6 +144,10 @@ func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 }
 
 func GetLearningRoadmapByID(roadmapID string) (*model.LearningRoadmap, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().GetLearningRoadmapByID(context.Background(), roadmapID)
+	}
+
 	var roadmap model.LearningRoadmap
 	err := DB.QueryRow(`
 		SELECT id, project_id, title, goal, status, created_at, updated_at
@@ -155,6 +172,10 @@ func GetLearningRoadmapByID(roadmapID string) (*model.LearningRoadmap, error) {
 }
 
 func ListRoadmapNodes(roadmapID string) ([]model.RoadmapNode, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().ListRoadmapNodes(context.Background(), roadmapID)
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, roadmap_id, parent_id, type, title, description, path_type, status,
 			deliverable, acceptance_criteria, x, y, order_index, created_at, updated_at
@@ -194,6 +215,10 @@ func ListRoadmapNodes(roadmapID string) ([]model.RoadmapNode, error) {
 }
 
 func ListRoadmapEdges(roadmapID string) ([]model.RoadmapEdge, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().ListRoadmapEdges(context.Background(), roadmapID)
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, roadmap_id, source_node_id, target_node_id, style, created_at
 		FROM roadmap_edges
@@ -217,6 +242,10 @@ func ListRoadmapEdges(roadmapID string) ([]model.RoadmapEdge, error) {
 }
 
 func GetRoadmapNode(nodeID string) (*model.RoadmapNode, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().GetRoadmapNode(context.Background(), nodeID)
+	}
+
 	var node model.RoadmapNode
 	err := DB.QueryRow(`
 		SELECT id, roadmap_id, parent_id, type, title, description, path_type, status,
@@ -237,6 +266,10 @@ func GetRoadmapNode(nodeID string) (*model.RoadmapNode, error) {
 }
 
 func CreateRoadmapNode(node *model.RoadmapNode, edge *model.RoadmapEdge) (*model.RoadmapNode, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().CreateRoadmapNode(context.Background(), node, edge)
+	}
+
 	if node.ID == "" {
 		node.ID = newUUID()
 	}
@@ -299,6 +332,10 @@ func CreateRoadmapNode(node *model.RoadmapNode, edge *model.RoadmapEdge) (*model
 }
 
 func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().UpdateRoadmapNode(context.Background(), id, req)
+	}
+
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 
@@ -347,6 +384,10 @@ func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.R
 }
 
 func DeleteRoadmapNode(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().DeleteRoadmapNode(context.Background(), id)
+	}
+
 	result, err := DB.Exec(`DELETE FROM roadmap_nodes WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -358,6 +399,10 @@ func DeleteRoadmapNode(id string) error {
 }
 
 func UpdateRoadmapNodeStatus(id, status string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().UpdateRoadmapNodeStatus(context.Background(), id, status)
+	}
+
 	_, err := DB.Exec(`
 		UPDATE roadmap_nodes
 		SET status = ?, updated_at = ?
@@ -367,6 +412,10 @@ func UpdateRoadmapNodeStatus(id, status string) error {
 }
 
 func UpdateRoadmapLayout(roadmapID string, nodes []model.RoadmapLayoutNode) error {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().UpdateRoadmapLayout(context.Background(), roadmapID, nodes)
+	}
+
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
@@ -386,6 +435,10 @@ func UpdateRoadmapLayout(roadmapID string, nodes []model.RoadmapLayoutNode) erro
 }
 
 func ListRoadmapResources(nodeID string) ([]model.RoadmapResource, error) {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().ListRoadmapResources(context.Background(), nodeID)
+	}
+
 	rows, err := DB.Query(`
 		SELECT id, node_id, title, url, summary, source_type, added_by, created_at, updated_at
 		FROM roadmap_resources
@@ -409,6 +462,10 @@ func ListRoadmapResources(nodeID string) ([]model.RoadmapResource, error) {
 }
 
 func AddRoadmapResource(resource *model.RoadmapResource) error {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().AddRoadmapResource(context.Background(), resource)
+	}
+
 	resource.ID = newUUID()
 	now := nowUnix()
 	resource.CreatedAt = now
@@ -427,6 +484,10 @@ func AddRoadmapResource(resource *model.RoadmapResource) error {
 }
 
 func DeleteRoadmapResource(id string) error {
+	if store := CurrentStore(); store != nil {
+		return store.Roadmaps().DeleteRoadmapResource(context.Background(), id)
+	}
+
 	result, err := DB.Exec(`DELETE FROM roadmap_resources WHERE id = ?`, id)
 	if err != nil {
 		return err
