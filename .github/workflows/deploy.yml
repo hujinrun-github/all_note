@@ -14,12 +14,50 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Validate deploy configuration
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST || vars.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER || vars.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
+          FLOWSPACE_DATABASE_URL: ${{ secrets.FLOWSPACE_DATABASE_URL }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          set -eu
+
+          missing=0
+          for name in SERVER_HOST SERVER_USER APP_DIR; do
+            if [ -z "$(eval "printf '%s' \"\${$name:-}\"")" ]; then
+              echo "::error title=Missing deploy configuration::$name is required. Set it as a GitHub Secret or Variable."
+              missing=1
+            fi
+          done
+
+          if [ -z "${SERVER_SSH_KEY:-}" ] && [ -z "${SERVER_PASSWORD:-}" ]; then
+            echo "::error title=Missing deploy credential::Set SERVER_SSH_KEY or SERVER_PASSWORD as a GitHub Secret."
+            missing=1
+          fi
+
+          if [ -z "${FLOWSPACE_DATABASE_URL:-}" ] && [ -z "${POSTGRES_PASSWORD:-}" ]; then
+            echo "::error title=Missing database credential::Set FLOWSPACE_DATABASE_URL or POSTGRES_PASSWORD as a GitHub Secret."
+            missing=1
+          fi
+
+          exit "$missing"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
-          APP_DIR: ${{ secrets.APP_DIR }}
+          APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
+          DEPLOY_BRANCH: ${{ github.ref_name }}
           FLOWSPACE_DATABASE_URL: ${{ secrets.FLOWSPACE_DATABASE_URL }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST || vars.POSTGRES_HOST }}
+          POSTGRES_PORT: ${{ secrets.POSTGRES_PORT || vars.POSTGRES_PORT }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER || vars.POSTGRES_USER }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB || vars.POSTGRES_DB }}
+          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT || vars.MINIO_ENDPOINT }}
           MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
@@ -29,11 +67,12 @@ jobs:
           BACKEND_PORT: ${{ vars.BACKEND_PORT }}
           VITE_APP_BASE: ${{ vars.VITE_APP_BASE }}
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          host: ${{ secrets.SERVER_HOST || vars.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER || vars.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT }}
-          envs: APP_DIR,FLOWSPACE_DATABASE_URL,POSTGRES_PASSWORD,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: ${{ secrets.SERVER_PORT || vars.SERVER_PORT || '22' }}
+          envs: APP_DIR,DEPLOY_BRANCH,FLOWSPACE_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
           script: |
             set -eu
 
@@ -42,20 +81,26 @@ jobs:
 
             echo "Pull latest code"
             git fetch --all
-            git reset --hard origin/main
+            DEPLOY_BRANCH="${DEPLOY_BRANCH:-master}"
+            git reset --hard "origin/${DEPLOY_BRANCH}"
 
             if [ -z "${FLOWSPACE_DATABASE_URL:-}" ]; then
               : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD or FLOWSPACE_DATABASE_URL is required}"
-              FLOWSPACE_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@119.91.114.203:19588/flowspace_prod?sslmode=disable"
+              POSTGRES_HOST="${POSTGRES_HOST:-192.168.1.20}"
+              POSTGRES_PORT="${POSTGRES_PORT:-19588}"
+              POSTGRES_USER="${POSTGRES_USER:-postgres}"
+              POSTGRES_DB="${POSTGRES_DB:-flowspace_prod}"
+              FLOWSPACE_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
             fi
 
+            MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://192.168.1.20:19000}"
             FRONTEND_PORT="${FRONTEND_PORT:-4200}"
             BACKEND_PORT="${BACKEND_PORT:-4201}"
             VITE_APP_BASE="${VITE_APP_BASE:-/}"
 
             {
               printf 'FLOWSPACE_DATABASE_URL=%s\n' "$FLOWSPACE_DATABASE_URL"
-              printf 'MINIO_ENDPOINT=%s\n' 'http://119.91.114.203:19000'
+              printf 'MINIO_ENDPOINT=%s\n' "$MINIO_ENDPOINT"
               printf 'MINIO_ACCESS_KEY=%s\n' "${MINIO_ACCESS_KEY:-}"
               printf 'MINIO_SECRET_KEY=%s\n' "${MINIO_SECRET_KEY:-}"
               printf 'AI_API_KEY=%s\n' "${AI_API_KEY:-}"
