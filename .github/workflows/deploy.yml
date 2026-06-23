@@ -1,0 +1,78 @@
+name: Deploy to Tencent Cloud
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ secrets.APP_DIR }}
+          FLOWSPACE_DATABASE_URL: ${{ secrets.FLOWSPACE_DATABASE_URL }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          ARTICLE_SEARCH_API_KEY: ${{ secrets.ARTICLE_SEARCH_API_KEY }}
+          FLOWSPACE_NOTION_TOKEN: ${{ secrets.FLOWSPACE_NOTION_TOKEN }}
+          FRONTEND_PORT: ${{ vars.FRONTEND_PORT }}
+          BACKEND_PORT: ${{ vars.BACKEND_PORT }}
+          VITE_APP_BASE: ${{ vars.VITE_APP_BASE }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          envs: APP_DIR,FLOWSPACE_DATABASE_URL,POSTGRES_PASSWORD,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
+          script: |
+            set -eu
+
+            : "${APP_DIR:?APP_DIR is required}"
+            cd "$APP_DIR"
+
+            echo "Pull latest code"
+            git fetch --all
+            git reset --hard origin/main
+
+            if [ -z "${FLOWSPACE_DATABASE_URL:-}" ]; then
+              : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD or FLOWSPACE_DATABASE_URL is required}"
+              FLOWSPACE_DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@119.91.114.203:19588/flowspace_prod?sslmode=disable"
+            fi
+
+            FRONTEND_PORT="${FRONTEND_PORT:-4200}"
+            BACKEND_PORT="${BACKEND_PORT:-4201}"
+            VITE_APP_BASE="${VITE_APP_BASE:-/}"
+
+            {
+              printf 'FLOWSPACE_DATABASE_URL=%s\n' "$FLOWSPACE_DATABASE_URL"
+              printf 'MINIO_ENDPOINT=%s\n' 'http://119.91.114.203:19000'
+              printf 'MINIO_ACCESS_KEY=%s\n' "${MINIO_ACCESS_KEY:-}"
+              printf 'MINIO_SECRET_KEY=%s\n' "${MINIO_SECRET_KEY:-}"
+              printf 'AI_API_KEY=%s\n' "${AI_API_KEY:-}"
+              printf 'ARTICLE_SEARCH_API_KEY=%s\n' "${ARTICLE_SEARCH_API_KEY:-}"
+              printf 'FLOWSPACE_NOTION_TOKEN=%s\n' "${FLOWSPACE_NOTION_TOKEN:-}"
+              printf 'FRONTEND_PORT=%s\n' "$FRONTEND_PORT"
+              printf 'BACKEND_PORT=%s\n' "$BACKEND_PORT"
+              printf 'VITE_APP_BASE=%s\n' "$VITE_APP_BASE"
+            } > .env
+
+            echo "Build images"
+            docker compose build
+
+            echo "Restart service"
+            docker compose up -d --remove-orphans --wait
+            docker compose ps
+
+            echo "Clean unused images"
+            docker image prune -f
+            echo "Deploy success"
