@@ -1,0 +1,9 @@
+bin/
+*.db
+*.db-shm
+*.db-wal
+*.exe
+server
+server-flowspace.exe
+*.log
+tmp/

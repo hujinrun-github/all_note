@@ -1,0 +1,28 @@
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/flowspace-server ./cmd/server
+
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app/backend
+
+ENV FLOWSPACE_ENV=prod
+ENV PORT=4201
+ENV TZ=Asia/Shanghai
+
+COPY --from=builder /out/flowspace-server /usr/local/bin/flowspace-server
+COPY db ./db
+
+EXPOSE 4201
+
+CMD ["flowspace-server"]
