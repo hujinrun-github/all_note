@@ -2,7 +2,7 @@ name: Deploy to Tencent Cloud
 on:
   push:
     branches:
-      - main
+      - master
 
 concurrency:
   group: deploy-production
