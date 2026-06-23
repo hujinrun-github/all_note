@@ -466,11 +466,11 @@ FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace_t
 cd /mnt/d/MyGitProject/all_note/frontend && VITE_BACKEND_PORT=4101 npx vite --port 4100 --host 127.0.0.1 &
 
 # PostgreSQL 模式 — 正式后端 + 正式前端
-cd /mnt/d/MyGitProject/all_note/backend && go build -o server ./cmd/server && \
+cd ./backend && go build -o server ./cmd/server && \
 FLOWSPACE_ENV=prod \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@119.91.114.203:19588/flowspace?sslmode=disable" \
 ./server &
-cd /mnt/d/MyGitProject/all_note/frontend && VITE_BACKEND_PORT=4201 npx vite --port 4200 --host 127.0.0.1 &
+cd ./frontend && VITE_BACKEND_PORT=4201 npx vite --port 4200 --host 127.0.0.1 &
 
 # SQLite 模式 — 测试后端 + 测试前端
 cd /mnt/d/MyGitProject/all_note/backend && go build -o server ./cmd/server && \
