@@ -79,10 +79,23 @@ jobs:
             : "${APP_DIR:?APP_DIR is required}"
             cd "$APP_DIR"
 
+            echo "Deploy directory"
+            pwd
+            ls -la
+
             echo "Pull latest code"
             git fetch --all
             DEPLOY_BRANCH="${DEPLOY_BRANCH:-master}"
             git reset --hard "origin/${DEPLOY_BRANCH}"
+            git rev-parse --show-toplevel
+            git rev-parse --short HEAD
+
+            if [ ! -f docker-compose.yml ]; then
+              echo "docker-compose.yml was not found in APP_DIR after checkout."
+              echo "APP_DIR must point to the repository root that contains docker-compose.yml."
+              find . -maxdepth 2 \( -name 'docker-compose.yml' -o -name 'compose.yml' -o -name 'docker-compose.yaml' -o -name 'compose.yaml' \) -print
+              exit 1
+            fi
 
             if [ -z "${FLOWSPACE_DATABASE_URL:-}" ]; then
               : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD or FLOWSPACE_DATABASE_URL is required}"
@@ -112,11 +125,12 @@ jobs:
             } > .env
 
             echo "Build images"
-            docker compose build
+            docker compose -f docker-compose.yml config >/dev/null
+            docker compose -f docker-compose.yml build
 
             echo "Restart service"
-            docker compose up -d --remove-orphans --wait
-            docker compose ps
+            docker compose -f docker-compose.yml up -d --remove-orphans --wait
+            docker compose -f docker-compose.yml ps
 
             echo "Clean unused images"
             docker image prune -f
