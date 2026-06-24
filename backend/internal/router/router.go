@@ -12,6 +12,7 @@ func Setup() *gin.Engine {
 
 	api := r.Group("/api")
 	{
+		api.GET("/health", handler.Health)
 		api.GET("/folders", handler.GetFolders)
 		api.GET("/system/directories", handler.ListLocalDirectories)
 
