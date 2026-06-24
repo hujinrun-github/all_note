@@ -126,6 +126,7 @@ v1 规则：
 
 - 每个用户有且仅自动创建一个默认 workspace。
 - 用户登录后默认进入自己的默认 workspace。
+- 默认 workspace 由 `users.default_workspace_id` 指向；v1 同时用 `UNIQUE(workspaces.owner_user_id)` 保证一个用户只有一个 owned workspace。
 - 管理员也是普通用户，只是额外拥有账号管理权限。
 - 所有业务 repository 查询必须按 `workspace_id` 过滤。
 - URL 暂不暴露 workspace 切换入口；`workspace_id` 来自服务端会话，不信任客户端传入。
@@ -214,6 +215,7 @@ CREATE TABLE users (
   display_name TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   must_change_password BOOLEAN NOT NULL DEFAULT false,
+  default_workspace_id TEXT,
   role TEXT NOT NULL DEFAULT 'user'
     CHECK (role IN ('admin', 'user')),
   status TEXT NOT NULL DEFAULT 'active'
@@ -233,6 +235,14 @@ CREATE TABLE workspaces (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE users
+  ADD CONSTRAINT users_default_workspace_fk
+  FOREIGN KEY (default_workspace_id) REFERENCES workspaces(id)
+  DEFERRABLE INITIALLY DEFERRED;
+
+CREATE UNIQUE INDEX workspaces_single_owner_v1_idx
+  ON workspaces (owner_user_id);
 
 CREATE TABLE workspace_members (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -421,9 +431,11 @@ Go bootstrap/backfill 职责：
    - `FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD`
    - `FLOWSPACE_BOOTSTRAP_ADMIN_NAME`
 2. 使用 bcrypt 生成 `password_hash`。
-3. 在没有任何 user 时创建首个 admin、默认 workspace、默认 folders、默认 personal project。
-4. 将 legacy 单用户业务数据回填到该默认 workspace。
-5. 校验所有业务表 `workspace_id IS NOT NULL`，并校验跨表 workspace 一致性。
+3. 在没有任何 user 时创建首个 admin 和默认 workspace，并设置 `users.default_workspace_id`。
+4. 区分空库和 legacy 升级：
+   - 空库：直接写入默认 folders 和默认 personal task project。
+   - legacy 升级：先把现有 `folders`、`task_projects` 和业务数据回填到 bootstrap workspace；只在缺少 `__uncategorized`、`__work`、`__personal` 或 `personal` 时补默认项。
+5. legacy 回填完成后再校验所有业务表 `workspace_id IS NOT NULL`，并校验跨表 workspace 一致性。
 6. 调用 provider-specific finalizer 应用 NOT NULL、复合主键、复合唯一索引和复合外键。
 
 约束 finalizer 可以实现为 Go 代码中的幂等 DDL 步骤，也可以实现为单独 SQL 文件，但它必须在 bootstrap/backfill 成功后运行。不能让普通 migration runner 在 bootstrap 之前直接执行最终 NOT NULL 和复合外键，否则空库以外的升级路径会失败。
@@ -491,7 +503,8 @@ backend/internal/middleware/auth.go
 - 查找未过期、未撤销 session。
 - 校验 user status。
 - 校验 `sessions.workspace_id` 仍存在，且 `sessions.user_id` 仍是该 workspace 的 `workspace_members` 成员。
-- 把 `AuthContext{UserID, WorkspaceID, Role}` 放入 Gin context 和 request context。
+- 把 `AuthContext{UserID, WorkspaceID, Role, MustChangePassword}` 放入 Gin context 和 request context。
+- 提供 `RequirePasswordSettled()` middleware：当 `MustChangePassword=true` 时阻止 protected/admin/system 业务路由，返回 403 `PASSWORD_CHANGE_REQUIRED`。
 
 ```text
 backend/internal/storage/store.go
@@ -500,11 +513,23 @@ backend/internal/storage/store.go
 扩展：
 
 ```go
+// 在现有 Store 接口上新增 Auth()，保留 Folders/Notes/Tasks/Recurrence/Events/
+// Inbox/Roadmaps/Sync/Search 等现有 repository 方法。
 type Store interface {
     Close() error
     Health(context.Context) error
     Capabilities() Capabilities
     Transact(context.Context, func(Store) error) error
+
+    Folders() FolderRepository
+    Notes() NoteRepository
+    Tasks() TaskRepository
+    Recurrence() RecurrenceRepository
+    Events() EventRepository
+    Inbox() InboxRepository
+    Roadmaps() RoadmapRepository
+    Sync() SyncRepository
+    Search() SearchRepository
     Auth() AuthRepository
 }
 
@@ -533,9 +558,10 @@ type AuthRepository interface {
 
 ```go
 type RequestIdentity struct {
-    UserID      string
-    WorkspaceID string
-    Role        string
+    UserID             string
+    WorkspaceID        string
+    Role               string
+    MustChangePassword bool
 }
 ```
 
@@ -562,7 +588,7 @@ workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 
 1. 校验 email/password。
 2. 校验 user status 为 `active`。
-3. 找到用户默认 workspace。
+3. 读取 `users.default_workspace_id` 指向的 workspace。
 4. 校验 `workspace_members(workspace_id, user_id)` 存在。
 5. 创建 session。
 
@@ -591,7 +617,7 @@ authRoutes.GET("/me", authMiddleware.Required(), handler.Me)
 authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword)
 
 protected := api.Group("")
-protected.Use(authMiddleware.Required())
+protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
 {
     protected.GET("/folders", handler.GetFolders)
     protected.GET("/notes", handler.GetNotes)
@@ -672,7 +698,7 @@ systemAdmin.Use(authMiddleware.RequireAdmin())
 
 #### `GET /api/auth/me`
 
-用于前端启动时恢复登录态。返回当前用户、当前 workspace 和权限。
+用于前端启动时恢复登录态。返回当前用户、当前 workspace、权限和 `must_change_password`。前端看到 `must_change_password=true` 时只展示改密流程和退出入口，不加载业务查询。
 
 #### `POST /api/auth/logout`
 
@@ -748,18 +774,31 @@ active admin count must remain >= 1
 {
   "email": "new@example.com",
   "display_name": "New User",
-  "password": "initial-secret",
+  "temporary_password": "initial-secret",
   "role": "user"
 }
 ```
 
 副作用：
 
-- 创建 user。
+- 创建 user，写入 `must_change_password=true`。
 - 创建默认 workspace。
+- 设置 `users.default_workspace_id`。
 - 写入默认 folders 和 personal task project。
 - 写入 workspace_members owner 记录。
 - 写入 audit event `admin.user.create`。
+
+事务要求：
+
+- 创建用户必须在一个 `Store.Transact(ctx, fn)` 中完成 user、workspace、membership、默认 folders、personal project 和 audit event 写入。
+- 任一步失败都回滚整个事务，不能留下没有 workspace 的 user、没有 owner 的 workspace 或半写入默认数据。
+- 集成测试需要模拟默认 project 写入失败，验证 user/workspace/membership 均未落库。
+
+信任模型：
+
+- 创建用户和重置密码一样使用临时密码。
+- 管理员知道临时密码，但用户首次登录只能访问改密流程。
+- 用户完成改密前不能访问业务 API。
 
 ### 重置密码
 
@@ -785,9 +824,26 @@ active admin count must remain >= 1
 - v1 管理员可以设置临时密码，因此管理员在技术上具备登录成该用户的能力。
 - UI 必须在设置临时密码弹窗中明确提示这一点。
 - 所有重置操作写入 audit event，包含 actor、target、时间和请求来源。
+- audit metadata 禁止记录 `temporary_password`、明文密码、password hash、Cookie、session token、session token hash、Authorization header、Notion token、MinIO secret key 或任何外部服务密钥。
 - 被重置用户下次登录后只能访问 `/api/auth/me`、`/api/auth/change-password`、`/api/auth/logout`，业务 API 返回 403 `PASSWORD_CHANGE_REQUIRED`。
 - 用户完成改密后，后端设置 `must_change_password=false`、更新 `password_changed_at`，并撤销除当前 session 以外的其他 session。
 - 后续如果接入邮箱，可替换为邀请/找回密码链接，管理员不再看到或设置临时密码。
+
+### 审计 metadata 红线
+
+`audit_events.metadata` 只记录可审计的上下文，例如请求 IP、user agent、目标用户 id、目标 workspace id、操作结果和错误码。
+
+禁止写入：
+
+- `temporary_password` 或任何明文密码。
+- password hash。
+- Cookie 原文。
+- session token 或 session token hash。
+- `Authorization` header。
+- Notion token、MinIO secret key、AI API key 或任何外部服务密钥。
+- 用户笔记正文、任务正文等业务私密内容。
+
+审计写入前必须通过 sanitizer 过滤 metadata。测试需要覆盖 reset password 和 system directories 两类事件，确认敏感字段不会落库。
 
 ### 禁用/启用用户
 
@@ -1022,7 +1078,7 @@ frontend/src/routes/AccountAdmin.tsx
 
 - 顶部标题与创建用户按钮。
 - 用户表格：邮箱、名称、角色、状态、最后登录、创建时间、操作。
-- 创建用户 modal。
+- 创建用户 modal，字段为邮箱、显示名、角色、临时密码。
 - 设置临时密码 modal，并提示用户下次登录必须改密。
 - 禁用/启用确认。
 
@@ -1091,6 +1147,10 @@ FLOWSPACE_BOOTSTRAP_ADMIN_NAME
 11. session 恢复时 membership 缺失会撤销 session 并返回 401。
 12. `must_change_password=true` 用户访问业务 API 返回 `PASSWORD_CHANGE_REQUIRED`。
 13. `/api/system/directories` 对普通用户返回 403，对未开启配置的 admin 返回 404 或 403。
+14. `/api/auth/me` 返回 `must_change_password`，前端可据此进入改密流程。
+15. `RequirePasswordSettled()` 允许 `/api/auth/me`、`/api/auth/change-password`、`/api/auth/logout`，阻止 protected/admin/system 路由。
+16. 创建用户任一步写入失败会回滚 user、workspace、membership、默认数据和 audit event。
+17. audit metadata 不包含临时密码、Cookie、session token 或任何 secret。
 
 ### Storage contract tests
 
@@ -1108,6 +1168,8 @@ Postgres 和 SQLite 都要覆盖：
 10. `ListSyncTargets` 只返回当前 workspace targets。
 11. `GetDefaultTarget` 按 workspace + type 查找。
 12. `task_occurrences` 完成记录按 workspace 隔离。
+13. `users.default_workspace_id` 指向当前唯一 owned workspace。
+14. v1 `workspaces.owner_user_id` 唯一约束阻止同一用户创建第二个 owned workspace。
 
 ### API 集成测试
 
@@ -1119,6 +1181,8 @@ Postgres 和 SQLite 都要覆盖：
 6. 用户 C 退出后旧 Cookie 不再可访问 protected API。
 7. 管理员重置用户 C 密码后，用户 C 必须先改密才能访问业务 API。
 8. `/api/system/directories` 只能在 admin、开关开启、路径命中白名单时返回目录。
+9. legacy 数据库升级时先回填已有 folders/projects，再补缺失默认项，不因 `__uncategorized` 或 `personal` 已存在而失败。
+10. 创建用户提交的是临时密码，用户首次登录必须先改密。
 
 ### 前端测试
 
@@ -1213,12 +1277,18 @@ Postgres 和 SQLite 都要覆盖：
 13. 管理员重置密码采用临时密码 + 强制改密 + 审计，承认 v1 管理员具备潜在 impersonation 能力。
 14. `/api/system/directories` 是 admin-only、默认关闭、白名单路径限制的敏感端点。
 15. SQLite 搜索隔离通过 FTS JOIN 业务表 workspace_id 和 LIKE workspace filter 完成，不依赖 `search_index`。
-16. Postgres 和 SQLite provider 都要对齐接口，避免测试和本地模式产生第二套行为。
-17. v1 不启用 PostgreSQL RLS，但保留后续添加 RLS 的空间。
-18. 迁移时已有数据全部归入 bootstrap admin 默认 workspace。
-19. 如果已有数据但没有 bootstrap admin 配置，后端启动失败，避免产生不可登录系统。
-20. 禁用用户会撤销所有 session。
-21. 不能禁用或降级最后一个 active admin。
+16. legacy bootstrap 先创建 user/workspace 并回填已有 folders/projects，只补缺失默认项；空库才直接插默认项。
+17. v1 默认 workspace 用 `users.default_workspace_id` 明确记录，并用 `UNIQUE(workspaces.owner_user_id)` 保证一人一个 owned workspace。
+18. `must_change_password` 进入 `RequestIdentity`，由 `RequirePasswordSettled()` gate 阻止业务路由。
+19. 创建用户也使用临时密码 + 强制首次改密，不允许管理员设置用户长期密码。
+20. 创建用户的 user/workspace/membership/default data/audit 写入必须在单事务内完成。
+21. audit metadata 禁止记录密码、Cookie、session token、token hash 和外部服务密钥。
+22. Postgres 和 SQLite provider 都要对齐接口，避免测试和本地模式产生第二套行为。
+23. v1 不启用 PostgreSQL RLS，但保留后续添加 RLS 的空间。
+24. 迁移时已有数据全部归入 bootstrap admin 默认 workspace。
+25. 如果已有数据但没有 bootstrap admin 配置，后端启动失败，避免产生不可登录系统。
+26. 禁用用户会撤销所有 session。
+27. 不能禁用或降级最后一个 active admin。
 
 ## 风险与缓解
 
