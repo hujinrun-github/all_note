@@ -57,6 +57,7 @@ jobs:
           POSTGRES_PORT: ${{ secrets.POSTGRES_PORT || vars.POSTGRES_PORT }}
           POSTGRES_USER: ${{ secrets.POSTGRES_USER || vars.POSTGRES_USER }}
           POSTGRES_DB: ${{ secrets.POSTGRES_DB || vars.POSTGRES_DB }}
+          POSTGRES_MAINTENANCE_DB: ${{ secrets.POSTGRES_MAINTENANCE_DB || vars.POSTGRES_MAINTENANCE_DB }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT || vars.MINIO_ENDPOINT }}
           MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
@@ -73,7 +74,7 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           port: ${{ secrets.SERVER_PORT || vars.SERVER_PORT || '22' }}
           command_timeout: 60m
-          envs: APP_DIR,DEPLOY_BRANCH,FLOWSPACE_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
+          envs: APP_DIR,DEPLOY_BRANCH,FLOWSPACE_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,POSTGRES_MAINTENANCE_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
           script: |
             set -eu
 
@@ -124,6 +125,36 @@ jobs:
               printf 'BACKEND_PORT=%s\n' "$BACKEND_PORT"
               printf 'VITE_APP_BASE=%s\n' "$VITE_APP_BASE"
             } > .env
+
+            ensure_postgres_database() {
+              db_url="$1"
+              db_base="${db_url%%\?*}"
+              db_query=""
+              if [ "$db_base" != "$db_url" ]; then
+                db_query="${db_url#"$db_base"}"
+              fi
+
+              target_db="${db_base##*/}"
+              db_prefix="${db_base%/*}"
+              if [ -z "$target_db" ] || [ "$target_db" = "$db_base" ] || [ -z "$db_prefix" ] || [ "$db_prefix" = "$db_base" ]; then
+                echo "Cannot parse PostgreSQL database name from FLOWSPACE_DATABASE_URL"
+                exit 1
+              fi
+
+              maintenance_db="${POSTGRES_MAINTENANCE_DB:-postgres}"
+              maintenance_url="${db_prefix}/${maintenance_db}${db_query}"
+              escaped_db="$(printf '%s' "$target_db" | sed "s/'/''/g")"
+              create_db_sql="SELECT format('CREATE DATABASE %I', '${escaped_db}') WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${escaped_db}')\\gexec"
+
+              echo "Ensure PostgreSQL database exists: ${target_db}"
+              docker run --rm \
+                -e PG_URL="$maintenance_url" \
+                -e CREATE_DB_SQL="$create_db_sql" \
+                postgres:16-alpine \
+                sh -c 'printf "%s\n" "$CREATE_DB_SQL" | psql "$PG_URL" --set=ON_ERROR_STOP=1'
+            }
+
+            ensure_postgres_database "$FLOWSPACE_DATABASE_URL"
 
             echo "Build images"
             docker compose -f docker-compose.yml config >/dev/null
