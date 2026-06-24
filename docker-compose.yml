@@ -5,6 +5,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     image: flowspace-backend:latest
     container_name: flowspace-backend
     restart: unless-stopped
