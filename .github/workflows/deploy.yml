@@ -100,14 +100,14 @@ jobs:
 
             if [ -z "${FLOWSPACE_DATABASE_URL:-}" ]; then
               : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD or FLOWSPACE_DATABASE_URL is required}"
-              POSTGRES_HOST="${POSTGRES_HOST:-192.168.1.20}"
+              POSTGRES_HOST="${POSTGRES_HOST:-119.91.114.203}"
               POSTGRES_PORT="${POSTGRES_PORT:-19588}"
               POSTGRES_USER="${POSTGRES_USER:-postgres}"
               POSTGRES_DB="${POSTGRES_DB:-flowspace_prod}"
               FLOWSPACE_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
             fi
 
-            MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://192.168.1.20:19000}"
+            MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://119.91.114.203:19000}"
             FRONTEND_PORT="${FRONTEND_PORT:-4200}"
             BACKEND_PORT="${BACKEND_PORT:-4201}"
             VITE_APP_BASE="${VITE_APP_BASE:-/}"
