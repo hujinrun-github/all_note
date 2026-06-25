@@ -215,7 +215,7 @@ CREATE TABLE users (
   display_name TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   must_change_password BOOLEAN NOT NULL DEFAULT false,
-  default_workspace_id TEXT,
+  default_workspace_id TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user'
     CHECK (role IN ('admin', 'user')),
   status TEXT NOT NULL DEFAULT 'active'
@@ -236,13 +236,16 @@ CREATE TABLE workspaces (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE users
-  ADD CONSTRAINT users_default_workspace_fk
-  FOREIGN KEY (default_workspace_id) REFERENCES workspaces(id)
-  DEFERRABLE INITIALLY DEFERRED;
-
 CREATE UNIQUE INDEX workspaces_single_owner_v1_idx
   ON workspaces (owner_user_id);
+
+CREATE UNIQUE INDEX workspaces_owner_workspace_idx
+  ON workspaces (owner_user_id, id);
+
+ALTER TABLE users
+  ADD CONSTRAINT users_default_owned_workspace_fk
+  FOREIGN KEY (id, default_workspace_id) REFERENCES workspaces(owner_user_id, id)
+  DEFERRABLE INITIALLY DEFERRED;
 
 CREATE TABLE workspace_members (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -489,6 +492,13 @@ Go bootstrap/backfill 职责：
 
 bootstrap/backfill 写默认数据时没有 HTTP 请求身份，必须显式构造 bootstrap workspace 的 `WorkspaceScope`。不能调用依赖 session identity 的 handler 逻辑，也不能让 repository 在缺少 scope 时回退到全局写入。
 
+`users.default_workspace_id` 的迁移顺序：
+
+1. SQL schema migration 可以先添加 nullable `default_workspace_id`，因为 legacy 数据需要先创建 bootstrap user/workspace 后回填。
+2. Go bootstrap/backfill 必须为每个 user 设置默认 workspace，并写入对应 `workspace_members` owner 记录。
+3. finalizer 校验 `users.default_workspace_id IS NOT NULL`，且 `(users.id, users.default_workspace_id)` 能匹配 `workspaces(owner_user_id, id)`。
+4. 校验通过后再设置 `users.default_workspace_id NOT NULL`，并创建 `users_default_owned_workspace_fk` 复合外键。
+
 约束 finalizer 可以实现为 Go 代码中的幂等 DDL 步骤，也可以实现为单独 SQL 文件，但它必须在 bootstrap/backfill 成功后运行。不能让普通 migration runner 在 bootstrap 之前直接执行最终 NOT NULL 和复合外键，否则空库以外的升级路径会失败。
 
 启动保护：
@@ -709,9 +719,9 @@ admin.Use(authMiddleware.RequireAdmin())
     admin.POST("/users/:id/enable", handler.EnableUser)
 }
 
-systemAdmin := protected.Group("/system")
-systemAdmin.Use(authMiddleware.RequireAdmin())
-{
+if cfg.EnableLocalDirectoryBrowser {
+    systemAdmin := protected.Group("/system")
+    systemAdmin.Use(authMiddleware.RequireAdmin())
     systemAdmin.GET("/directories", handler.ListLocalDirectories)
 }
 ```
@@ -828,21 +838,51 @@ active admin count must remain >= 1
 
 ```json
 {
-  "users": [
-    {
-      "id": "user_alice_123",
-      "email": "user@example.com",
-      "display_name": "User",
-      "role": "user",
-      "status": "active",
-      "created_at": 1782220000,
-      "last_login_at": 1782223600
-    }
-  ]
+  "data": {
+    "users": [
+      {
+        "id": "user_alice_123",
+        "email": "user@example.com",
+        "display_name": "User",
+        "role": "user",
+        "status": "active",
+        "created_at": 1782220000,
+        "last_login_at": 1782223600
+      }
+    ]
+  },
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 1
+  }
 }
 ```
 
 不返回 `password_hash`、session token、业务数据统计明细。
+
+### 更新用户资料
+
+`PATCH /api/admin/users/:id`
+
+请求只允许以下字段：
+
+```json
+{
+  "email": "new-email@example.com",
+  "display_name": "New Name",
+  "role": "user"
+}
+```
+
+规则：
+
+- `email` 必须通过 `users_email_lower_idx` 唯一校验。
+- `role` 只允许 `admin` 和 `user`，且 role 变更必须在 `Store.Transact(ctx, fn)` 内完成。
+- `admin -> user` 降级必须使用和禁用 admin 相同的最后管理员并发保护。
+- role 变化后撤销目标用户所有 sessions，确保旧 session 不能继续使用旧权限。
+- `PATCH` 不接受 `status`、`password`、`temporary_password`、`must_change_password`、`default_workspace_id` 或 workspace membership 字段；禁用/启用必须走专用 endpoint，密码必须走 reset-password 或 change-password。
+- 成功写入 audit event `admin.user.update`，metadata 只记录变更字段名和非敏感摘要。
 
 ### 创建用户
 
@@ -968,6 +1008,20 @@ SELECT n.id, n.title, n.body
 FROM notes n
 WHERE n.id = $1
 ```
+
+### Inbox 转换隔离
+
+`inbox` 表新增 `workspace_id` 后，所有 list/create/delete/batch archive 都按当前 `WorkspaceScope` 过滤。`converted_to` 是多态字符串，数据库无法直接用单个 FK 约束到 note/task/event，因此转换流程必须用服务层事务保证一致性。
+
+`ConvertInboxItem` 规则：
+
+- 在 `Store.Transact(ctx, fn)` 内完成读取 inbox、创建目标实体、标记 inbox converted 三步。
+- 读取 inbox 时使用 `WHERE workspace_id = $1 AND id = $2 AND converted_to IS NULL`，避免重复转换和跨 workspace 转换。
+- 创建 note/task/event 时使用同一个 `WorkspaceScope`，不能从 request body 接收 workspace id。
+- `converted_to` 写入带类型前缀的稳定格式，例如 `note:<note_id>`、`task:<task_id>`、`event:<event_id>`；legacy id-only 值迁移时保留但新写入必须用 typed format。
+- 标记 converted 时使用条件更新：`WHERE workspace_id = $1 AND id = $2 AND converted_to IS NULL`，并要求 affected rows 等于 1。
+- 如果标记 converted 失败、affected rows 不为 1，或创建目标实体后任一步失败，整个事务回滚，不能留下孤儿 note/task/event。
+- 转换完成后返回同 workspace 的目标实体；最终 `GetByID` 仍必须带 workspace filter。
 
 ### Search 隔离
 
@@ -1244,6 +1298,9 @@ FLOWSPACE_BOOTSTRAP_ADMIN_NAME
 18. 管理员创建用户时默认 folders/project 写入新用户 workspace，而不是管理员 workspace。
 19. 两个 admin 并发禁用或降级时，不能把最后一个 active admin 消除。
 20. `/api/admin/users?q=alice` 会把 query 传入 repository filter，并只匹配 email/display_name。
+21. `PATCH /api/admin/users/:id` 拒绝 status/password/default_workspace 字段。
+22. admin 降级为 user 时套用最后管理员并发保护并撤销目标用户 sessions。
+23. `ConvertInboxItem` 标记 converted 失败时回滚已创建 note/task/event。
 
 ### Storage contract tests
 
@@ -1266,6 +1323,8 @@ Postgres 和 SQLite 都要覆盖：
 15. roadmap node 相关复合外键能阻止 task/resource/edge 指向其他 workspace 的 node。
 16. sync binding、claim、suppression、tombstone 相关复合外键能阻止跨 workspace note-target 关联。
 17. SQLite 表重建后 FTS rebuild 可用，搜索通过 rowid JOIN 仍返回正确结果。
+18. `users.default_workspace_id` 为 NOT NULL，且复合 FK 阻止它指向其他用户 owned workspace。
+19. inbox `converted_to` 新写入使用 typed format，转换查询和条件更新都按 workspace 过滤。
 
 ### API 集成测试
 
@@ -1281,6 +1340,9 @@ Postgres 和 SQLite 都要覆盖：
 10. 创建用户提交的是临时密码，用户首次登录必须先改密。
 11. legacy bootstrap 在没有请求身份时仍用 bootstrap workspace scope 写默认数据。
 12. 禁用或降级最后一个 active admin 的并发竞争只允许一个事务成功，另一个返回 `LAST_ADMIN_REQUIRED`。
+13. `/api/system/directories` 在未启用 `FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER` 时路由不存在。
+14. `PATCH /api/admin/users/:id` role 降级后旧 session 不能继续访问 admin API。
+15. inbox 转换创建目标实体和标记 converted 在单事务内完成，模拟 mark 失败时目标实体不落库。
 
 ### 前端测试
 
@@ -1376,7 +1438,7 @@ Postgres 和 SQLite 都要覆盖：
 14. `/api/system/directories` 是 admin-only、默认关闭、白名单路径限制的敏感端点。
 15. SQLite 搜索隔离通过 FTS JOIN 业务表 workspace_id 和 LIKE workspace filter 完成，不依赖 `search_index`。
 16. legacy bootstrap 先创建 user/workspace 并回填已有 folders/projects，只补缺失默认项；空库才直接插默认项。
-17. v1 默认 workspace 用 `users.default_workspace_id` 明确记录，并用 `UNIQUE(workspaces.owner_user_id)` 保证一人一个 owned workspace。
+17. v1 默认 workspace 用 `users.default_workspace_id` 明确记录；finalizer 后设为 NOT NULL，并用复合 FK 保证它指向该用户 owned workspace。
 18. `must_change_password` 进入 `RequestIdentity`，由 `RequirePasswordSettled()` gate 阻止业务路由。
 19. 创建用户也使用临时密码 + 强制首次改密，不允许管理员设置用户长期密码。
 20. 创建用户的 user/workspace/membership/default data/audit 写入必须在单事务内完成。
@@ -1393,6 +1455,9 @@ Postgres 和 SQLite 都要覆盖：
 31. 禁用或降级 admin 的最后管理员保护必须有事务级并发保护。
 32. 管理员用户列表保留 `q` 搜索参数，并在 repository filter 中实现。
 33. SQLite 表重建迁移后必须 rebuild FTS 虚表和 triggers，并通过搜索 contract tests 验证。
+34. `PATCH /api/admin/users/:id` 不负责 status/password/default workspace，只允许资料和 role；role 变化撤销目标用户 sessions。
+35. inbox `converted_to` 保持 TEXT，但新写入必须用 typed format，并通过单事务转换流程保证和目标实体同 workspace。
+36. `/api/system/directories` 必须配置开启才注册路由。
 
 ## 风险与缓解
 
