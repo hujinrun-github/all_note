@@ -22,6 +22,8 @@
 - If a test passes on the first run, it is not a RED test for that change. Rewrite the test so it fails for the intended missing behavior before touching production code.
 - If production code is written before its RED test, delete that production change and restart the task from the RED step.
 - Keep `FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD` out of SQL and out of audit metadata.
+- Hash session tokens with HMAC-SHA256 using `FLOWSPACE_SESSION_SECRET`; production startup must fail without this secret.
+- Use `FLOWSPACE_ALLOWED_ORIGINS` for CORS and CSRF origin checks; do not keep hardcoded localhost in middleware.
 - Never let a repository query fall back to global data when `WorkspaceScope` is absent.
 - Do not expose `/api/system/directories` unless `FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER=true`.
 - Do not allow Phase 1 auth endpoints to ship without Phase 2 workspace isolation in a multi-user deployment.
@@ -51,7 +53,8 @@ Tasks that only run baseline checks or create rollout notes do not change produc
 | `backend/internal/model/auth.go` | User, workspace, session, audit, auth/admin request models | Create |
 | `backend/internal/auth/context.go` | `RequestIdentity`, `WorkspaceScope`, context helpers | Create |
 | `backend/internal/auth/password.go` | bcrypt hash/verify and password policy | Create |
-| `backend/internal/auth/session.go` | session token generation and token hashing | Create |
+| `backend/internal/auth/session.go` | session token generation and HMAC token hashing | Create |
+| `backend/internal/auth/throttle.go` | login failure throttling | Create |
 | `backend/internal/auth/errors.go` | shared auth errors and error codes | Create |
 | `backend/internal/storage/store.go` | Store interface and repository interfaces | Add `Auth()`, `UserListFilter`, workspace-aware contracts |
 | `backend/internal/storage/contracttest/auth_contract_tests.go` | Auth storage contract tests | Create |
@@ -63,6 +66,8 @@ Tasks that only run baseline checks or create rollout notes do not change produc
 | `backend/internal/storage/sqlite/auth_migrations.go` | SQLite table rebuild, backfill, FTS rebuild | Create |
 | `backend/internal/bootstrap/auth_bootstrap.go` | bootstrap admin and legacy data assignment | Create |
 | `backend/internal/middleware/auth.go` | session restore, admin gate, password-settled gate | Create |
+| `backend/internal/middleware/csrf.go` | Origin/Referer CSRF check for mutating requests | Create |
+| `backend/internal/middleware/cors.go` | allowed-origin CORS configuration | Modify |
 | `backend/internal/handler/auth.go` | login, logout, me, change password | Create |
 | `backend/internal/handler/admin_users.go` | admin list/create/update/reset/enable/disable | Create |
 | `backend/internal/router/router.go` | public/auth/protected/admin route groups | Modify |
@@ -72,7 +77,9 @@ Tasks that only run baseline checks or create rollout notes do not change produc
 | `backend/internal/service/notes.go` | pass ctx/store through note service paths | Modify |
 | `backend/internal/service/tasks.go` | pass ctx/store through task service paths | Modify |
 | `backend/internal/service/events.go` | pass ctx/store through event service paths | Modify |
+| `backend/internal/service/session_cleanup.go` | periodic expired session deletion worker | Create |
 | `frontend/src/api/auth.ts` | auth and account API client | Create |
+| `frontend/src/api/client.ts` | credentials-included fetch and central 401 handling | Modify |
 | `frontend/src/hooks/useAuth.tsx` | auth provider, session restore, logout | Create |
 | `frontend/src/components/auth/ProtectedRoute.tsx` | protected route gate | Create |
 | `frontend/src/components/auth/AdminRoute.tsx` | admin route gate | Create |
@@ -103,10 +110,10 @@ Expected: current branch becomes `codex/multi-user-auth`.
 - [ ] **Step 2: Run backend baseline tests**
 
 ```bash
-cd backend && go test ./cmd/server ./cmd/seed ./internal/auth ./internal/bootstrap ./internal/config ./internal/handler ./internal/middleware ./internal/migration ./internal/model ./internal/repository ./internal/router ./internal/service ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite
+cd backend && go test ./...
 ```
 
-Expected: existing backend tests pass before auth work begins.
+Expected: existing backend packages pass before auth work begins. Do not name packages that will be created later; their RED tests are introduced in the task that creates them.
 
 - [ ] **Step 3: Run frontend baseline tests**
 
@@ -383,8 +390,10 @@ git commit -m "feat: add auth identity and workspace scope"
 **Files:**
 - Create: `backend/internal/auth/password.go`
 - Create: `backend/internal/auth/session.go`
+- Create: `backend/internal/config/auth.go`
 - Test: `backend/internal/auth/password_test.go`
 - Test: `backend/internal/auth/session_test.go`
+- Test: `backend/internal/config/auth_test.go`
 
 - [ ] **Step 1: Write failing password tests**
 
@@ -436,15 +445,35 @@ package auth
 
 import "testing"
 
-func TestSessionTokenHashIsStableAndNotPlaintext(t *testing.T) {
+func TestSessionTokenHashUsesSecretPepper(t *testing.T) {
+	secret := "test-session-secret-with-at-least-32-bytes"
 	token := "session-token-value"
-	hash1 := HashSessionToken(token)
-	hash2 := HashSessionToken(token)
+	hash1, err := HashSessionToken(secret, token)
+	if err != nil {
+		t.Fatalf("hash token: %v", err)
+	}
+	hash2, err := HashSessionToken(secret, token)
+	if err != nil {
+		t.Fatalf("hash token again: %v", err)
+	}
 	if hash1 != hash2 {
 		t.Fatal("hash must be deterministic")
 	}
 	if hash1 == token {
 		t.Fatal("hash must not equal token")
+	}
+	otherHash, err := HashSessionToken("other-session-secret-with-at-least-32-bytes", token)
+	if err != nil {
+		t.Fatalf("hash with other secret: %v", err)
+	}
+	if otherHash == hash1 {
+		t.Fatal("hash must change when secret changes")
+	}
+}
+
+func TestSessionTokenHashRequiresSecret(t *testing.T) {
+	if _, err := HashSessionToken("", "session-token-value"); err == nil {
+		t.Fatal("expected missing session secret error")
 	}
 }
 
@@ -459,7 +488,59 @@ func TestGenerateSessionToken(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Implement password and session utilities**
+- [ ] **Step 3: Write failing auth config tests**
+
+Create `backend/internal/config/auth_test.go`:
+
+```go
+package config
+
+import "testing"
+
+func TestLoadAuthConfigRequiresSessionSecretInProd(t *testing.T) {
+	t.Setenv("FLOWSPACE_SESSION_SECRET", "")
+	t.Setenv("FLOWSPACE_ALLOWED_ORIGINS", "https://flowspace.example.com")
+
+	_, err := LoadAuthConfig(EnvironmentProduction)
+	if err == nil {
+		t.Fatal("expected FLOWSPACE_SESSION_SECRET to be required in prod")
+	}
+}
+
+func TestLoadAuthConfigParsesRequiredSecuritySettings(t *testing.T) {
+	t.Setenv("FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
+	t.Setenv("FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD", "abc12345")
+	t.Setenv("FLOWSPACE_BOOTSTRAP_ADMIN_NAME", "Admin")
+	t.Setenv("FLOWSPACE_SESSION_SECRET", "prod-session-secret-with-at-least-32-bytes")
+	t.Setenv("FLOWSPACE_ALLOWED_ORIGINS", "https://flowspace.example.com,http://localhost:5173")
+	t.Setenv("FLOWSPACE_COOKIE_SECURE", "true")
+	t.Setenv("FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER", "false")
+
+	cfg, err := LoadAuthConfig(EnvironmentProduction)
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+	if cfg.SessionSecret != "prod-session-secret-with-at-least-32-bytes" {
+		t.Fatalf("session secret not loaded")
+	}
+	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "https://flowspace.example.com" {
+		t.Fatalf("allowed origins = %#v", cfg.AllowedOrigins)
+	}
+	if !cfg.Cookie.Secure {
+		t.Fatal("cookie secure should be true")
+	}
+}
+```
+
+- [ ] **Step 4: Run password, session, and config tests to verify RED**
+
+```bash
+cd backend && go test ./internal/auth ./internal/config -run 'TestHashAndVerifyPassword|TestValidatePasswordPolicy|TestSessionTokenHash|TestGenerateSessionToken|TestLoadAuthConfig' -count=1 -v
+```
+
+Expected: FAIL because `backend/internal/auth` does not exist yet and `LoadAuthConfig` is not implemented.
+
+- [ ] **Step 5: Implement password, session, and auth config utilities**
 
 Create `backend/internal/auth/password.go`:
 
@@ -514,11 +595,16 @@ Create `backend/internal/auth/session.go`:
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"strings"
 )
+
+var ErrMissingSessionSecret = errors.New("missing session secret")
 
 func GenerateSessionToken() (string, error) {
 	raw := make([]byte, 32)
@@ -528,25 +614,159 @@ func GenerateSessionToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func HashSessionToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+func HashSessionToken(secret string, token string) (string, error) {
+	if strings.TrimSpace(secret) == "" {
+		return "", ErrMissingSessionSecret
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 ```
 
-- [ ] **Step 4: Run tests**
+Create `backend/internal/config/auth.go`:
+
+```go
+package config
+
+import (
+	"errors"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type BootstrapAdminConfig struct {
+	Email    string
+	Password string
+	Name     string
+}
+
+type CookieConfig struct {
+	Name     string
+	Secure   bool
+	SameSite string
+	MaxAge   time.Duration
+}
+
+type LoginThrottleConfig struct {
+	MaxFailures int
+	Window     time.Duration
+}
+
+type SessionCleanupConfig struct {
+	Interval time.Duration
+}
+
+type AuthConfig struct {
+	Bootstrap                   BootstrapAdminConfig
+	Cookie                      CookieConfig
+	SessionSecret               string
+	AllowedOrigins              []string
+	LoginThrottle               LoginThrottleConfig
+	SessionCleanup              SessionCleanupConfig
+	EnableLocalDirectoryBrowser bool
+	AllowedLocalRoots           []string
+}
+
+func LoadAuthConfig(environment string) (AuthConfig, error) {
+	cfg := AuthConfig{
+		Bootstrap: BootstrapAdminConfig{
+			Email:    strings.TrimSpace(os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL")),
+			Password: os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD"),
+			Name:     strings.TrimSpace(os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_NAME")),
+		},
+		Cookie: CookieConfig{
+			Name:     "fs_session",
+			Secure:   envBool("FLOWSPACE_COOKIE_SECURE", environment == EnvironmentProduction),
+			SameSite: "Lax",
+			MaxAge:   30 * 24 * time.Hour,
+		},
+		SessionSecret:               strings.TrimSpace(os.Getenv("FLOWSPACE_SESSION_SECRET")),
+		AllowedOrigins:              splitCSV(os.Getenv("FLOWSPACE_ALLOWED_ORIGINS")),
+		LoginThrottle:               LoginThrottleConfig{MaxFailures: envInt("FLOWSPACE_LOGIN_MAX_FAILURES", 5), Window: envDuration("FLOWSPACE_LOGIN_WINDOW", 15*time.Minute)},
+		SessionCleanup:              SessionCleanupConfig{Interval: envDuration("FLOWSPACE_SESSION_CLEANUP_INTERVAL", time.Hour)},
+		EnableLocalDirectoryBrowser: envBool("FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER", false),
+		AllowedLocalRoots:           splitCSV(os.Getenv("FLOWSPACE_ALLOWED_LOCAL_ROOTS")),
+	}
+	if environment == EnvironmentProduction && cfg.SessionSecret == "" {
+		return AuthConfig{}, errors.New("FLOWSPACE_SESSION_SECRET is required in prod")
+	}
+	if environment == EnvironmentProduction && len(cfg.AllowedOrigins) == 0 {
+		return AuthConfig{}, errors.New("FLOWSPACE_ALLOWED_ORIGINS is required in prod")
+	}
+	if cfg.SessionSecret == "" {
+		cfg.SessionSecret = "dev-only-session-secret"
+	}
+	if len(cfg.AllowedOrigins) == 0 {
+		cfg.AllowedOrigins = []string{"http://localhost:5173"}
+	}
+	return cfg, nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func envBool(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envInt(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+```
+
+- [ ] **Step 6: Run tests**
 
 ```bash
-cd backend && go test ./internal/auth -count=1 -v
+cd backend && go test ./internal/auth ./internal/config -count=1 -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add backend/internal/auth/password.go backend/internal/auth/session.go backend/internal/auth/password_test.go backend/internal/auth/session_test.go
-git commit -m "feat: add password and session utilities"
+git add backend/internal/auth/password.go backend/internal/auth/session.go backend/internal/config/auth.go backend/internal/auth/password_test.go backend/internal/auth/session_test.go backend/internal/config/auth_test.go
+git commit -m "feat: add auth utilities and config"
 ```
 
 ---
@@ -975,10 +1195,14 @@ func EnsureDefaultWorkspaceData(ctx context.Context, store storage.Store) error
 Modify `backend/cmd/server/main.go` after opening store and before `repository.SetStore(store)`:
 
 ```go
+authCfg, err := config.LoadAuthConfig(runtimeConfig.Environment)
+if err != nil {
+	log.Fatalf("auth config: %v", err)
+}
 bootstrapCfg := bootstrap.Config{
-	AdminEmail:    os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL"),
-	AdminPassword: os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD"),
-	AdminName:     os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_NAME"),
+	AdminEmail:    authCfg.Bootstrap.Email,
+	AdminPassword: authCfg.Bootstrap.Password,
+	AdminName:     authCfg.Bootstrap.Name,
 }
 if err := bootstrap.EnsureAuthReady(startupCtx, store, bootstrapCfg); err != nil {
 	log.Fatalf("auth bootstrap: %v", err)
@@ -988,7 +1212,6 @@ if err := bootstrap.EnsureAuthReady(startupCtx, store, bootstrapCfg); err != nil
 Add imports:
 
 ```go
-"os"
 "github.com/hujinrun/flowspace/internal/bootstrap"
 ```
 
@@ -1292,7 +1515,8 @@ import (
 )
 
 type AuthMiddleware struct {
-	Store storage.Store
+	Store         storage.Store
+	SessionSecret string
 }
 
 func (m AuthMiddleware) Required() gin.HandlerFunc {
@@ -1302,7 +1526,12 @@ func (m AuthMiddleware) Required() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHENTICATED"}})
 			return
 		}
-		session, err := m.Store.Auth().GetSessionByTokenHash(c.Request.Context(), auth.HashSessionToken(cookie))
+		tokenHash, err := auth.HashSessionToken(m.SessionSecret, cookie)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHENTICATED"}})
+			return
+		}
+		session, err := m.Store.Auth().GetSessionByTokenHash(c.Request.Context(), tokenHash)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHENTICATED"}})
 			return
@@ -1358,7 +1587,7 @@ func (m AuthMiddleware) RequirePasswordSettled() gin.HandlerFunc {
 Create `backend/internal/handler/auth.go` with:
 
 ```go
-func Login(store storage.Store, cookieCfg config.CookieConfig) gin.HandlerFunc
+func Login(store storage.Store, authCfg config.AuthConfig) gin.HandlerFunc
 func Logout(store storage.Store) gin.HandlerFunc
 func Me(store storage.Store) gin.HandlerFunc
 func ChangePassword(store storage.Store) gin.HandlerFunc
@@ -1372,9 +1601,13 @@ err = auth.VerifyPassword(user.PasswordHash, req.Password)
 workspaceID := user.DefaultWorkspaceID
 _, err = store.Auth().GetWorkspaceMembership(ctx, workspaceID, user.ID)
 token, err := auth.GenerateSessionToken()
-session.TokenHash = auth.HashSessionToken(token)
+tokenHash, err := auth.HashSessionToken(authCfg.SessionSecret, token)
+if err != nil {
+	return err
+}
+session.TokenHash = tokenHash
 err = store.Auth().CreateSession(ctx, session)
-http.SetCookie(c.Writer, cookieFromConfig(token, req.RememberMe))
+http.SetCookie(c.Writer, cookieFromConfig(authCfg.Cookie, token, req.RememberMe))
 ```
 
 Change password must call:
@@ -1390,9 +1623,8 @@ Change `backend/internal/router/router.go` from `func Setup() *gin.Engine` to:
 
 ```go
 type Config struct {
-	Store                       storage.Store
-	Cookie                      config.CookieConfig
-	EnableLocalDirectoryBrowser bool
+	Store storage.Store
+	Auth  config.AuthConfig
 }
 
 func Setup(cfg Config) *gin.Engine
@@ -1402,8 +1634,9 @@ Register:
 
 ```go
 api.GET("/health", handler.Health)
+authMiddleware := middleware.AuthMiddleware{Store: cfg.Store, SessionSecret: cfg.Auth.SessionSecret}
 authRoutes := api.Group("/auth")
-authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Cookie))
+authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Auth))
 authRoutes.POST("/logout", handler.Logout(cfg.Store))
 authRoutes.GET("/me", authMiddleware.Required(), handler.Me(cfg.Store))
 authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(cfg.Store))
@@ -1419,11 +1652,20 @@ protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled()
 Register system directories only inside:
 
 ```go
-if cfg.EnableLocalDirectoryBrowser {
+if cfg.Auth.EnableLocalDirectoryBrowser {
 	systemAdmin := protected.Group("/system")
 	systemAdmin.Use(authMiddleware.RequireAdmin())
 	systemAdmin.GET("/directories", handler.ListLocalDirectories)
 }
+```
+
+Modify `backend/cmd/server/main.go` to pass the loaded auth config into the router:
+
+```go
+r := router.Setup(router.Config{
+	Store: store,
+	Auth:  authCfg,
+})
 ```
 
 - [ ] **Step 6: Run auth handler tests**
@@ -1621,6 +1863,26 @@ git commit -m "feat: add admin user management API"
 ### Task 8: Add WorkspaceScope To Business Repositories
 
 **Files:**
+- Modify: `backend/internal/service/notes.go`
+- Modify: `backend/internal/service/tasks.go`
+- Modify: `backend/internal/service/events.go`
+- Modify: `backend/internal/service/today.go`
+- Modify: `backend/internal/service/summary.go`
+- Modify: `backend/internal/service/inbox.go`
+- Modify: `backend/internal/service/search.go`
+- Modify: `backend/internal/service/sync_dispatch.go`
+- Modify: `backend/internal/service/roadmaps.go`
+- Modify: `backend/internal/handler/notes.go`
+- Modify: `backend/internal/handler/tasks.go`
+- Modify: `backend/internal/handler/events.go`
+- Modify: `backend/internal/handler/today.go`
+- Modify: `backend/internal/handler/summary.go`
+- Modify: `backend/internal/handler/inbox.go`
+- Modify: `backend/internal/handler/search.go`
+- Modify: `backend/internal/handler/sync.go`
+- Modify: `backend/internal/handler/sync_binding.go`
+- Modify: `backend/internal/handler/sync_compat.go`
+- Create: `backend/internal/service/no_global_repository_test.go`
 - Modify: `backend/internal/storage/postgres/folders.go`
 - Modify: `backend/internal/storage/postgres/notes.go`
 - Modify: `backend/internal/storage/postgres/tasks.go`
@@ -1633,7 +1895,86 @@ git commit -m "feat: add admin user management API"
 - Modify: `backend/internal/storage/sqlite/inbox.go`
 - Test: `backend/internal/storage/contracttest/workspace_isolation_contract_tests.go`
 
-- [ ] **Step 1: Write workspace isolation contract tests**
+- [ ] **Step 1: Write failing architecture guard test**
+
+Create `backend/internal/service/no_global_repository_test.go`:
+
+```go
+package service
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestProtectedServicesDoNotUseGlobalRepositoryFacade(t *testing.T) {
+	root := filepath.Join("..", "service")
+	forbidden := []string{"repository.", "context.Background()"}
+	allowedFiles := map[string]bool{
+		"no_global_repository_test.go": true,
+	}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if allowedFiles[filepath.Base(path)] {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		content := string(data)
+		for _, token := range forbidden {
+			if strings.Contains(content, token) {
+				t.Fatalf("%s still contains %s", path, token)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk service files: %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run architecture guard to verify RED**
+
+```bash
+cd backend && go test ./internal/service -run TestProtectedServicesDoNotUseGlobalRepositoryFacade -count=1 -v
+```
+
+Expected: FAIL because existing service files still use `repository.` or `context.Background()`.
+
+- [ ] **Step 3: Refactor service signatures before enforcing repository scope**
+
+Change service functions from package-level repository usage to explicit `ctx` and `store`:
+
+```go
+func GetNotes(ctx context.Context, store storage.Store, filter storage.NoteFilter) ([]model.Note, int, error) {
+	return store.Notes().List(ctx, filter)
+}
+```
+
+Change these service entry points to accept `ctx context.Context` and `store storage.Store`: `GetTasks`, `CreateTask`, `UpdateTask`, `DeleteTask`, `GetEvents`, `CreateEvent`, `UpdateEvent`, `DeleteEvent`, `GetToday`, `GetSummary`, `GetInboxItems`, `ConvertInboxItem`, `Search`, `GetLearningRoadmap`, `UpdateRoadmapNode`, `ListSyncTargets`, `SyncNote`, and target sync dispatch functions.
+
+- [ ] **Step 4: Update handlers to pass request context before repository scope is mandatory**
+
+Example for notes:
+
+```go
+notes, total, err := service.GetNotes(c.Request.Context(), store, filter)
+```
+
+No protected handler should call a service without passing `c.Request.Context()`.
+
+- [ ] **Step 5: Write workspace isolation contract tests**
 
 Create `backend/internal/storage/contracttest/workspace_isolation_contract_tests.go`:
 
@@ -1678,7 +2019,7 @@ func RunWorkspaceIsolationContractTests(t *testing.T, openStore func(t *testing.
 
 Add `seedWorkspaceDefaults` in the same file.
 
-- [ ] **Step 2: Run workspace isolation tests to verify RED**
+- [ ] **Step 6: Run workspace isolation tests to verify RED**
 
 ```bash
 cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run WorkspaceIsolation -count=1 -v
@@ -1686,7 +2027,7 @@ cd backend && go test ./internal/storage ./internal/storage/contracttest ./inter
 
 Expected: FAIL because repositories still read and write without `WorkspaceScope`.
 
-- [ ] **Step 3: Update repository SQL**
+- [ ] **Step 7: Update repository SQL**
 
 For every business repository method, start by resolving scope:
 
@@ -1714,7 +2055,7 @@ INSERT INTO notes (id, workspace_id, title, body, folder_id, tags, created_at, u
 VALUES ($1, $2, $3, $4, $5, $6, now(), now())
 ```
 
-- [ ] **Step 4: Make inbox conversion transactional**
+- [ ] **Step 8: Make inbox conversion transactional**
 
 Modify `backend/internal/service/inbox.go` so `ConvertInboxItem` receives `context.Context` and `storage.Store`:
 
@@ -1745,18 +2086,20 @@ func ConvertInboxItem(ctx context.Context, store storage.Store, id string, req *
 }
 ```
 
-- [ ] **Step 5: Run isolation contract tests**
+- [ ] **Step 9: Run isolation contract tests and architecture guard**
 
 ```bash
-cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run WorkspaceIsolation -count=1 -v
+(cd backend && go test ./internal/service -run TestProtectedServicesDoNotUseGlobalRepositoryFacade -count=1 -v)
+(cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run WorkspaceIsolation -count=1 -v)
+rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler -g "*.go" -g "!*_test.go" -g "!health.go"
 ```
 
-Expected: PASS for PostgreSQL and SQLite.
+Expected: service guard passes, workspace isolation tests pass for PostgreSQL and SQLite, and `rg` has no output for protected production flows.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add backend/internal/storage/contracttest/workspace_isolation_contract_tests.go backend/internal/storage/postgres/folders.go backend/internal/storage/postgres/notes.go backend/internal/storage/postgres/tasks.go backend/internal/storage/postgres/events.go backend/internal/storage/postgres/inbox.go backend/internal/storage/sqlite/folders.go backend/internal/storage/sqlite/notes.go backend/internal/storage/sqlite/tasks.go backend/internal/storage/sqlite/events.go backend/internal/storage/sqlite/inbox.go backend/internal/service/inbox.go
+git add backend/internal/service backend/internal/handler backend/internal/storage/contracttest/workspace_isolation_contract_tests.go backend/internal/storage/postgres/folders.go backend/internal/storage/postgres/notes.go backend/internal/storage/postgres/tasks.go backend/internal/storage/postgres/events.go backend/internal/storage/postgres/inbox.go backend/internal/storage/sqlite/folders.go backend/internal/storage/sqlite/notes.go backend/internal/storage/sqlite/tasks.go backend/internal/storage/sqlite/events.go backend/internal/storage/sqlite/inbox.go
 git commit -m "feat: scope core repositories by workspace"
 ```
 
@@ -1883,6 +2226,7 @@ git commit -m "feat: scope search sync roadmap and recurrence"
 - Create: `frontend/src/routes/ChangePassword.tsx`
 - Modify: `frontend/src/router.tsx`
 - Modify: `frontend/src/api/client.ts`
+- Test: `frontend/src/api/client.test.ts`
 - Test: `frontend/src/hooks/useAuth.test.tsx`
 
 - [ ] **Step 1: Write failing auth hook and route guard tests**
@@ -2012,6 +2356,45 @@ describe('route guards', () => {
     expect(await screen.findByText('login page')).toBeInTheDocument()
   })
 
+  it('redirects anonymous users from change-password to login', async () => {
+    vi.mocked(authApi.me).mockRejectedValue(new Error('unauthenticated'))
+
+    renderWithAuth(
+      <Routes>
+        <Route path="/change-password" element={<ProtectedRoute><span>change password</span></ProtectedRoute>} />
+        <Route path="/login" element={<span>login page</span>} />
+      </Routes>,
+      ['/change-password'],
+    )
+
+    expect(await screen.findByText('login page')).toBeInTheDocument()
+  })
+
+  it('allows must-change-password users to open change-password', async () => {
+    vi.mocked(authApi.me).mockResolvedValue({
+      user: {
+        id: 'user_forced',
+        email: 'forced@example.com',
+        display_name: 'Forced',
+        role: 'user',
+        status: 'active',
+        must_change_password: true,
+      },
+      workspace: { id: 'workspace_forced', name: 'Forced Workspace' },
+      must_change_password: true,
+    })
+
+    renderWithAuth(
+      <Routes>
+        <Route path="/change-password" element={<ProtectedRoute><span>change password</span></ProtectedRoute>} />
+        <Route path="/login" element={<span>login page</span>} />
+      </Routes>,
+      ['/change-password'],
+    )
+
+    expect(await screen.findByText('change password')).toBeInTheDocument()
+  })
+
   it('blocks non-admin users from admin routes', async () => {
     vi.mocked(authApi.me).mockResolvedValue({
       user: {
@@ -2039,13 +2422,42 @@ describe('route guards', () => {
 })
 ```
 
+Create `frontend/src/api/client.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api, setUnauthorizedHandler } from './client'
+
+describe('api client auth handling', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    setUnauthorizedHandler(null)
+  })
+
+  it('sends credentials and calls unauthorized handler on 401', async () => {
+    const onUnauthorized = vi.fn()
+    setUnauthorizedHandler(onUnauthorized)
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'login required' } }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.get('/api/notes')).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' })
+
+    expect(fetchMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ credentials: 'include' }))
+    expect(onUnauthorized).toHaveBeenCalledTimes(1)
+  })
+})
+```
+
 - [ ] **Step 2: Run frontend auth tests to verify RED**
 
 ```bash
-cd frontend && npm run test -- useAuth
+cd frontend && npm run test -- useAuth client
 ```
 
-Expected: FAIL because `frontend/src/api/auth.ts`, `AuthProvider`, `ProtectedRoute`, and `AdminRoute` do not exist yet.
+Expected: FAIL because `frontend/src/api/auth.ts`, `AuthProvider`, `ProtectedRoute`, `AdminRoute`, and `setUnauthorizedHandler` do not exist yet.
 
 - [ ] **Step 3: Add auth API client**
 
@@ -2093,15 +2505,93 @@ export async function changePassword(payload: { current_password: string; new_pa
 }
 ```
 
-Ensure `frontend/src/api/client.ts` uses:
+Update `frontend/src/api/client.ts` so every request uses credentials and every 401 calls a central handler:
 
 ```ts
-credentials: 'include'
+let unauthorizedHandler: (() => void) | null = null
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
+class APIClient {
+  private basePath = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '')
+
+  private urlFor(path: string, params?: Record<string, string>) {
+    const url = new URL(`${this.basePath}${path}`, window.location.origin)
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value) url.searchParams.set(key, value)
+      })
+    }
+    return url.toString()
+  }
+
+  private async request<T>(path: string, init: RequestInit, params?: Record<string, string>): Promise<APIResponse<T>> {
+    const res = await fetch(this.urlFor(path, params), { credentials: 'include', ...init })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      const err = new APIError(res.status, body?.error?.code ?? 'UNKNOWN', body?.error?.message ?? 'Request failed')
+      if (res.status === 401) unauthorizedHandler?.()
+      throw err
+    }
+    if (res.status === 204) return { data: undefined as T }
+    return res.json()
+  }
+
+  get<T>(path: string, params?: Record<string, string>) {
+    return this.request<T>(path, { method: 'GET' }, params)
+  }
+
+  post<T>(path: string, body?: unknown) {
+    return this.request<T>(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  }
+
+  put<T>(path: string, body?: unknown) {
+    return this.request<T>(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  }
+
+  patch<T>(path: string, body?: unknown) {
+    return this.request<T>(path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  }
+
+  async del(path: string, body?: unknown) {
+    await this.request<void>(path, {
+      method: 'DELETE',
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  }
+}
 ```
 
 - [ ] **Step 4: Add auth provider**
 
 Create `frontend/src/hooks/useAuth.tsx` with a React context wrapping `useQuery({ queryKey: ['auth', 'me'], queryFn: me })`, `loginMutation`, and `logoutMutation`.
+
+Register the API client 401 handler inside the provider:
+
+```tsx
+useEffect(() => {
+  setUnauthorizedHandler(() => {
+    queryClient.removeQueries({ queryKey: ['auth'] })
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`)
+  })
+  return () => setUnauthorizedHandler(null)
+}, [queryClient])
+```
 
 The provider value must include:
 
@@ -2122,10 +2612,11 @@ The provider value must include:
 Create `frontend/src/components/auth/ProtectedRoute.tsx`:
 
 ```tsx
+import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 
-export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+export function ProtectedRoute({ children }: { children: ReactNode }) {
   const auth = useAuth()
   const location = useLocation()
 
@@ -2141,23 +2632,83 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
 Create `frontend/src/components/auth/AdminRoute.tsx`:
 
 ```tsx
+import type { ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 
-export function AdminRoute({ children }: { children: React.ReactNode }) {
+export function AdminRoute({ children }: { children: ReactNode }) {
   const auth = useAuth()
   if (!auth.isAdmin) return <Navigate to="/" replace />
   return <>{children}</>
 }
 ```
 
-- [ ] **Step 6: Wire router**
+- [ ] **Step 6: Create guarded change-password page**
 
-Modify `frontend/src/router.tsx` so the app shell is inside `ProtectedRoute`, add `/change-password`, and add admin route:
+Create `frontend/src/routes/ChangePassword.tsx`:
+
+```tsx
+import { type FormEvent, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { changePassword } from '../api/auth'
+import { useAuth } from '../hooks/useAuth'
+
+export default function ChangePassword() {
+  const auth = useAuth()
+  const navigate = useNavigate()
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!auth.isLoading && auth.user && !auth.mustChangePassword) {
+      navigate('/', { replace: true })
+    }
+  }, [auth.isLoading, auth.mustChangePassword, auth.user, navigate])
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setSubmitting(true)
+    try {
+      await changePassword({ current_password: currentPassword, new_password: newPassword })
+      await auth.logout()
+      navigate('/login', { replace: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '修改密码失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <form className="auth-form" onSubmit={onSubmit}>
+        <h1>修改临时密码</h1>
+        <label>
+          当前密码
+          <input value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} type="password" autoComplete="current-password" />
+        </label>
+        <label>
+          新密码
+          <input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" />
+        </label>
+        {error && <p role="alert">{error}</p>}
+        <button type="submit" disabled={submitting}>保存新密码</button>
+      </form>
+    </main>
+  )
+}
+```
+
+- [ ] **Step 7: Wire router**
+
+Modify `frontend/src/router.tsx` so the app shell is inside `ProtectedRoute`, add guarded `/change-password`, and add admin route:
 
 ```tsx
 { path: '/login', element: <Login /> },
-{ path: '/change-password', element: <ChangePassword /> },
+{ path: '/change-password', element: <ProtectedRoute><ChangePassword /></ProtectedRoute> },
 {
   path: '/',
   element: (
@@ -2172,18 +2723,18 @@ Modify `frontend/src/router.tsx` so the app shell is inside `ProtectedRoute`, ad
 }
 ```
 
-- [ ] **Step 7: Run frontend tests**
+- [ ] **Step 8: Run frontend tests**
 
 ```bash
-cd frontend && npm run test -- useAuth
+cd frontend && npm run test -- useAuth client
 ```
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add frontend/src/api/auth.ts frontend/src/hooks/useAuth.tsx frontend/src/components/auth/ProtectedRoute.tsx frontend/src/components/auth/AdminRoute.tsx frontend/src/routes/ChangePassword.tsx frontend/src/router.tsx frontend/src/api/client.ts frontend/src/hooks/useAuth.test.tsx
+git add frontend/src/api/auth.ts frontend/src/hooks/useAuth.tsx frontend/src/components/auth/ProtectedRoute.tsx frontend/src/components/auth/AdminRoute.tsx frontend/src/routes/ChangePassword.tsx frontend/src/router.tsx frontend/src/api/client.ts frontend/src/api/client.test.ts frontend/src/hooks/useAuth.test.tsx
 git commit -m "feat: add frontend auth session guard"
 ```
 
@@ -2494,117 +3045,495 @@ git commit -m "feat: add account management UI"
 
 ## Phase 6: End-To-End Hardening
 
-### Task 12: Remove Old Global Repository Facade Paths
+### Task 12: Add CSRF, Login Throttle, And Session Cleanup
 
 **Files:**
-- Modify: `backend/internal/service/notes.go`
-- Modify: `backend/internal/service/tasks.go`
-- Modify: `backend/internal/service/events.go`
-- Modify: `backend/internal/service/today.go`
-- Modify: `backend/internal/service/summary.go`
-- Modify: `backend/internal/handler/notes.go`
-- Modify: `backend/internal/handler/tasks.go`
-- Modify: `backend/internal/handler/events.go`
-- Modify: `backend/internal/handler/today.go`
-- Modify: `backend/internal/handler/summary.go`
-- Modify: `backend/internal/handler/sync.go`
-- Modify: `backend/internal/handler/sync_binding.go`
-- Modify: `backend/internal/handler/sync_compat.go`
-- Create: `backend/internal/service/no_global_repository_test.go`
+- Create: `backend/internal/middleware/csrf.go`
+- Create: `backend/internal/middleware/csrf_test.go`
+- Modify: `backend/internal/middleware/cors.go`
+- Create: `backend/internal/auth/throttle.go`
+- Create: `backend/internal/auth/throttle_test.go`
+- Modify: `backend/internal/handler/auth.go`
+- Modify: `backend/internal/handler/auth_test.go`
+- Modify: `backend/internal/router/router.go`
+- Modify: `backend/internal/storage/store.go`
+- Modify: `backend/internal/storage/postgres/auth.go`
+- Modify: `backend/internal/storage/sqlite/auth.go`
+- Modify: `backend/internal/storage/contracttest/auth_contract_tests.go`
+- Create: `backend/internal/service/session_cleanup.go`
+- Create: `backend/internal/service/session_cleanup_test.go`
+- Modify: `backend/cmd/server/main.go`
 
-- [ ] **Step 1: Write failing architecture guard test**
+- [ ] **Step 1: Write failing CSRF origin tests**
 
-Create `backend/internal/service/no_global_repository_test.go`:
+Create `backend/internal/middleware/csrf_test.go`:
+
+```go
+package middleware
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestCSRFMiddlewareRejectsUntrustedOriginOnMutation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(CSRFOriginCheck([]string{"https://flowspace.example.com"}))
+	r.POST("/api/notes", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/notes", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+}
+
+func TestCSRFMiddlewareAllowsSafeMethodsAndAllowedOrigins(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(CSRFOriginCheck([]string{"https://flowspace.example.com"}))
+	r.GET("/api/notes", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	r.POST("/api/notes", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/notes", nil)
+	getW := httptest.NewRecorder()
+	r.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusNoContent {
+		t.Fatalf("GET status = %d, want 204", getW.Code)
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/notes", nil)
+	postReq.Header.Set("Origin", "https://flowspace.example.com")
+	postW := httptest.NewRecorder()
+	r.ServeHTTP(postW, postReq)
+	if postW.Code != http.StatusNoContent {
+		t.Fatalf("POST status = %d, want 204", postW.Code)
+	}
+}
+
+func TestCORSEchoesOnlyAllowedOrigin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(CORS([]string{"https://flowspace.example.com"}))
+	r.GET("/api/notes", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	allowedReq := httptest.NewRequest(http.MethodGet, "/api/notes", nil)
+	allowedReq.Header.Set("Origin", "https://flowspace.example.com")
+	allowedW := httptest.NewRecorder()
+	r.ServeHTTP(allowedW, allowedReq)
+	if allowedW.Header().Get("Access-Control-Allow-Origin") != "https://flowspace.example.com" {
+		t.Fatalf("allowed origin header = %q", allowedW.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodGet, "/api/notes", nil)
+	blockedReq.Header.Set("Origin", "https://evil.example.com")
+	blockedW := httptest.NewRecorder()
+	r.ServeHTTP(blockedW, blockedReq)
+	if blockedW.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("blocked origin header = %q", blockedW.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+```
+
+- [ ] **Step 2: Write failing login throttle tests**
+
+Create `backend/internal/auth/throttle_test.go`:
+
+```go
+package auth
+
+import (
+	"testing"
+	"time"
+)
+
+func TestLoginThrottleBlocksAfterMaxFailuresAndExpiresWindow(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	throttle := NewLoginThrottle(3, 10*time.Minute)
+	key := "ip=127.0.0.1 email=admin@example.com"
+
+	for i := 0; i < 3; i++ {
+		if !throttle.Allow(key, now) {
+			t.Fatalf("attempt %d should be allowed before recording failure", i+1)
+		}
+		throttle.RecordFailure(key, now)
+	}
+	if throttle.Allow(key, now.Add(time.Minute)) {
+		t.Fatal("expected fourth attempt inside window to be blocked")
+	}
+	if !throttle.Allow(key, now.Add(11*time.Minute)) {
+		t.Fatal("expected attempt after window to be allowed")
+	}
+}
+
+func TestLoginThrottleResetClearsFailures(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	throttle := NewLoginThrottle(1, 10*time.Minute)
+	key := "ip=127.0.0.1 email=admin@example.com"
+
+	throttle.RecordFailure(key, now)
+	if throttle.Allow(key, now) {
+		t.Fatal("expected key to be blocked")
+	}
+	throttle.Reset(key)
+	if !throttle.Allow(key, now) {
+		t.Fatal("expected reset key to be allowed")
+	}
+}
+```
+
+- [ ] **Step 3: Extend auth contract tests for expired session cleanup**
+
+Add to `backend/internal/storage/contracttest/auth_contract_tests.go`:
+
+```go
+t.Run("DeleteExpiredSessions", func(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	seedUserWorkspace(t, ctx, store, "user_cleanup", "workspace_cleanup")
+	expired := model.Session{ID: "session_expired", UserID: "user_cleanup", WorkspaceID: "workspace_cleanup", TokenHash: "expired_hash", ExpiresAt: now.Add(-time.Minute)}
+	active := model.Session{ID: "session_active", UserID: "user_cleanup", WorkspaceID: "workspace_cleanup", TokenHash: "active_hash", ExpiresAt: now.Add(time.Hour)}
+	if err := store.Auth().CreateSession(ctx, expired); err != nil {
+		t.Fatalf("create expired session: %v", err)
+	}
+	if err := store.Auth().CreateSession(ctx, active); err != nil {
+		t.Fatalf("create active session: %v", err)
+	}
+
+	deleted, err := store.Auth().DeleteExpiredSessions(ctx, now)
+	if err != nil {
+		t.Fatalf("delete expired sessions: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if _, err := store.Auth().GetSessionByTokenHash(ctx, "expired_hash"); err == nil {
+		t.Fatal("expired session still exists")
+	}
+	if _, err := store.Auth().GetSessionByTokenHash(ctx, "active_hash"); err != nil {
+		t.Fatalf("active session missing: %v", err)
+	}
+})
+```
+
+Also extend `backend/internal/storage/store.go`:
+
+```go
+DeleteExpiredSessions(ctx context.Context, before time.Time) (int64, error)
+```
+
+- [ ] **Step 4: Write failing session cleanup worker test**
+
+Create `backend/internal/service/session_cleanup_test.go`:
 
 ```go
 package service
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
+	"context"
 	"testing"
+	"time"
 )
 
-func TestProtectedServicesDoNotUseGlobalRepositoryFacade(t *testing.T) {
-	root := filepath.Join("..", "service")
-	forbidden := []string{"repository.", "context.Background()"}
-	allowedFiles := map[string]bool{
-		"no_global_repository_test.go": true,
-	}
+type fakeExpiredSessionRepository struct {
+	called bool
+	before time.Time
+}
 
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		if allowedFiles[filepath.Base(path)] {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		content := string(data)
-		for _, token := range forbidden {
-			if strings.Contains(content, token) {
-				t.Fatalf("%s still contains %s", path, token)
-			}
-		}
-		return nil
-	})
+func (f *fakeExpiredSessionRepository) DeleteExpiredSessions(ctx context.Context, before time.Time) (int64, error) {
+	f.called = true
+	f.before = before
+	return 3, nil
+}
+
+func TestDeleteExpiredSessionsOnceUsesRepository(t *testing.T) {
+	repo := &fakeExpiredSessionRepository{}
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+
+	deleted, err := DeleteExpiredSessionsOnce(context.Background(), repo, now)
 	if err != nil {
-		t.Fatalf("walk service files: %v", err)
+		t.Fatalf("delete expired sessions once: %v", err)
+	}
+	if deleted != 3 {
+		t.Fatalf("deleted = %d, want 3", deleted)
+	}
+	if !repo.called || !repo.before.Equal(now) {
+		t.Fatalf("repo call = called:%v before:%v", repo.called, repo.before)
 	}
 }
 ```
 
-- [ ] **Step 2: Run architecture guard to verify RED**
+- [ ] **Step 5: Run hardening tests to verify RED**
 
 ```bash
-cd backend && go test ./internal/service -run TestProtectedServicesDoNotUseGlobalRepositoryFacade -count=1 -v
+(cd backend && go test ./internal/middleware -run CSRF -count=1 -v)
+(cd backend && go test ./internal/auth -run LoginThrottle -count=1 -v)
+(cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run DeleteExpiredSessions -count=1 -v)
+(cd backend && go test ./internal/service -run DeleteExpiredSessionsOnce -count=1 -v)
 ```
 
-Expected: FAIL because existing service files still use `repository.` or `context.Background()`.
+Expected: FAIL because CSRF middleware, login throttle, expired-session repository cleanup, and cleanup worker helpers are not implemented yet.
 
-- [ ] **Step 3: Refactor service signatures**
+- [ ] **Step 6: Implement CSRF origin check and configurable CORS**
 
-Change service functions from package-level repository usage to explicit `ctx` and `store`:
+Create `backend/internal/middleware/csrf.go`:
 
 ```go
-func GetNotes(ctx context.Context, store storage.Store, filter storage.NoteFilter) ([]model.Note, int, error) {
-	return store.Notes().List(ctx, filter)
+package middleware
+
+import (
+	"net/http"
+	"net/url"
+
+	"github.com/gin-gonic/gin"
+)
+
+func CSRFOriginCheck(allowedOrigins []string) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowed[origin] = struct{}{}
+	}
+	return func(c *gin.Context) {
+		switch c.Request.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			c.Next()
+			return
+		}
+		origin := c.GetHeader("Origin")
+		if origin == "" {
+			origin = refererOrigin(c.GetHeader("Referer"))
+		}
+		if _, ok := allowed[origin]; ok {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "CSRF_ORIGIN_REJECTED"}})
+	}
+}
+
+func refererOrigin(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 ```
 
-Change these service entry points to accept `ctx context.Context` and `store storage.Store`: `GetTasks`, `CreateTask`, `UpdateTask`, `DeleteTask`, `GetEvents`, `CreateEvent`, `UpdateEvent`, `DeleteEvent`, `GetToday`, `GetSummary`, `GetInboxItems`, `ConvertInboxItem`, `Search`, `GetLearningRoadmap`, `UpdateRoadmapNode`, `ListSyncTargets`, `SyncNote`, and target sync dispatch functions.
-
-- [ ] **Step 4: Update handlers to pass request context**
-
-Example for notes:
+Change `backend/internal/middleware/cors.go` from hardcoded localhost to:
 
 ```go
-notes, total, err := service.GetNotes(c.Request.Context(), store, filter)
+import "net/http"
+
+func CORS(allowedOrigins []string) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowed[origin] = struct{}{}
+	}
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if _, ok := allowed[origin]; ok {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
 ```
 
-No protected handler should call a service without passing `c.Request.Context()`.
+- [ ] **Step 7: Implement login throttle and wire auth handler**
 
-- [ ] **Step 5: Verify guard and scan are clean**
+Create `backend/internal/auth/throttle.go`:
 
-```bash
-cd backend && go test ./internal/service -run TestProtectedServicesDoNotUseGlobalRepositoryFacade -count=1 -v
-rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler -g "*.go" -g "!*_test.go" -g "!health.go"
+```go
+package auth
+
+import (
+	"sync"
+	"time"
+)
+
+type LoginThrottle struct {
+	mu          sync.Mutex
+	maxFailures int
+	window      time.Duration
+	failures    map[string][]time.Time
+}
+
+func NewLoginThrottle(maxFailures int, window time.Duration) *LoginThrottle {
+	return &LoginThrottle{maxFailures: maxFailures, window: window, failures: map[string][]time.Time{}}
+}
+
+func (t *LoginThrottle) Allow(key string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneLocked(key, now)
+	return len(t.failures[key]) < t.maxFailures
+}
+
+func (t *LoginThrottle) RecordFailure(key string, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pruneLocked(key, now)
+	t.failures[key] = append(t.failures[key], now)
+}
+
+func (t *LoginThrottle) Reset(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.failures, key)
+}
+
+func (t *LoginThrottle) pruneLocked(key string, now time.Time) {
+	cutoff := now.Add(-t.window)
+	kept := t.failures[key][:0]
+	for _, at := range t.failures[key] {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	t.failures[key] = kept
+}
 ```
 
-Expected: service guard passes and `rg` has no output for protected production flows. Test helper files and the public health check may still reference repository package when isolated.
+Change `handler.Login` to accept and use throttle:
 
-- [ ] **Step 6: Commit**
+```go
+func Login(store storage.Store, authCfg config.AuthConfig, throttle *auth.LoginThrottle) gin.HandlerFunc
+```
+
+Before password verification:
+
+```go
+key := c.ClientIP() + "|" + strings.ToLower(strings.TrimSpace(req.Email))
+now := time.Now()
+if !throttle.Allow(key, now) {
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "LOGIN_THROTTLED"}})
+	return
+}
+```
+
+On invalid password or missing active user:
+
+```go
+throttle.RecordFailure(key, now)
+```
+
+On successful login:
+
+```go
+throttle.Reset(key)
+```
+
+- [ ] **Step 8: Implement expired session cleanup**
+
+Implement `DeleteExpiredSessions` in PostgreSQL:
+
+```sql
+DELETE FROM sessions
+WHERE expires_at < $1
+```
+
+Implement `DeleteExpiredSessions` in SQLite:
+
+```sql
+DELETE FROM sessions
+WHERE expires_at < ?
+```
+
+Create `backend/internal/service/session_cleanup.go`:
+
+```go
+package service
+
+import (
+	"context"
+	"time"
+
+	"github.com/hujinrun/flowspace/internal/storage"
+)
+
+type ExpiredSessionRepository interface {
+	DeleteExpiredSessions(ctx context.Context, before time.Time) (int64, error)
+}
+
+func DeleteExpiredSessionsOnce(ctx context.Context, repo ExpiredSessionRepository, now time.Time) (int64, error) {
+	return repo.DeleteExpiredSessions(ctx, now)
+}
+
+func StartExpiredSessionCleanup(ctx context.Context, store storage.Store, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			_, _ = DeleteExpiredSessionsOnce(ctx, store.Auth(), now)
+		}
+	}
+}
+```
+
+In `backend/cmd/server/main.go`, start the worker after successful bootstrap:
+
+```go
+cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+defer stopCleanup()
+go service.StartExpiredSessionCleanup(cleanupCtx, store, authCfg.SessionCleanup.Interval)
+```
+
+- [ ] **Step 9: Wire router middleware**
+
+Update `backend/internal/router/router.go`:
+
+```go
+r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(cfg.Auth.AllowedOrigins), middleware.CSRFOriginCheck(cfg.Auth.AllowedOrigins))
+loginThrottle := auth.NewLoginThrottle(cfg.Auth.LoginThrottle.MaxFailures, cfg.Auth.LoginThrottle.Window)
+authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Auth, loginThrottle))
+```
+
+Update existing mutating auth/router tests to send an allowed origin:
+
+```go
+req.Header.Set("Origin", "https://flowspace.example.com")
+```
+
+- [ ] **Step 10: Run hardening tests**
 
 ```bash
-git add backend/internal/service backend/internal/handler
-git commit -m "refactor: pass scoped store through services"
+(cd backend && go test ./internal/middleware -run 'CSRF|CORS' -count=1 -v)
+(cd backend && go test ./internal/auth -run LoginThrottle -count=1 -v)
+(cd backend && go test ./internal/handler ./internal/router -run 'Login|CSRF|CORS' -count=1 -v)
+(cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run DeleteExpiredSessions -count=1 -v)
+(cd backend && go test ./internal/service -run DeleteExpiredSessionsOnce -count=1 -v)
+```
+
+Expected: PASS.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add backend/internal/middleware/csrf.go backend/internal/middleware/csrf_test.go backend/internal/middleware/cors.go backend/internal/auth/throttle.go backend/internal/auth/throttle_test.go backend/internal/handler/auth.go backend/internal/handler/auth_test.go backend/internal/router/router.go backend/internal/storage/store.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go backend/internal/storage/contracttest/auth_contract_tests.go backend/internal/service/session_cleanup.go backend/internal/service/session_cleanup_test.go backend/cmd/server/main.go
+git commit -m "feat: harden auth session security"
 ```
 
 ---
@@ -2719,7 +3648,7 @@ git commit -m "test: add auth isolation integration coverage"
 - [ ] **Step 1: Run full backend tests**
 
 ```bash
-cd backend && go test ./cmd/server ./cmd/seed ./internal/auth ./internal/bootstrap ./internal/config ./internal/handler ./internal/middleware ./internal/migration ./internal/model ./internal/repository ./internal/router ./internal/service ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite
+cd backend && go test ./...
 ```
 
 Expected: PASS.
@@ -2753,7 +3682,12 @@ Create `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`:
 - FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL
 - FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD
 - FLOWSPACE_BOOTSTRAP_ADMIN_NAME
+- FLOWSPACE_SESSION_SECRET
+- FLOWSPACE_ALLOWED_ORIGINS
 - FLOWSPACE_COOKIE_SECURE
+- FLOWSPACE_LOGIN_MAX_FAILURES
+- FLOWSPACE_LOGIN_WINDOW
+- FLOWSPACE_SESSION_CLEANUP_INTERVAL
 - FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER
 - FLOWSPACE_ALLOWED_LOCAL_ROOTS
 
@@ -2764,6 +3698,8 @@ Create `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`:
 3. Confirm bootstrap logs show one admin user and one default workspace.
 4. Confirm `/api/auth/login` works for the bootstrap admin.
 5. Confirm old notes, tasks, events, inbox items, sync targets, and roadmaps are visible only to the bootstrap admin.
+6. Confirm a mutating request from an unlisted `Origin` returns `CSRF_ORIGIN_REJECTED`.
+7. Confirm repeated bad login attempts return `LOGIN_THROTTLED`.
 
 ## Rollback
 
@@ -2793,6 +3729,7 @@ Expected: working tree is clean and recent commits match the task list.
 ## Final Acceptance Checklist
 
 - [ ] Login uses HttpOnly `fs_session` cookie.
+- [ ] Session token hashes use HMAC-SHA256 with `FLOWSPACE_SESSION_SECRET`.
 - [ ] `/api/auth/me` restores user, workspace, role, and `must_change_password`.
 - [ ] Forced password users can only access `me`, `change-password`, and `logout`.
 - [ ] Admin can list, create, update role/display/email, disable, enable, and reset temporary password.
@@ -2804,5 +3741,10 @@ Expected: working tree is clean and recent commits match the task list.
 - [ ] Inbox conversion is transactional and writes typed `converted_to`.
 - [ ] SQLite FTS is rebuilt after table rebuilds and search uses business-table workspace filters.
 - [ ] `/api/system/directories` is absent when disabled and admin-only when enabled.
+- [ ] CORS and CSRF checks use `FLOWSPACE_ALLOWED_ORIGINS`.
+- [ ] Repeated failed login attempts are throttled and successful login resets the throttle key.
+- [ ] Expired sessions are deleted by repository cleanup and the startup cleanup worker.
+- [ ] Frontend API client sends credentials and clears auth state on central 401 handling.
+- [ ] `/change-password` is protected from anonymous access and remains reachable for forced-password users.
 - [ ] Full backend tests pass.
 - [ ] Full frontend tests and build pass.
