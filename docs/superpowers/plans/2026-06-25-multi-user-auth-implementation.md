@@ -18,11 +18,29 @@
 
 - Create a feature branch before implementation: `git switch -c codex/multi-user-auth`.
 - Work in small commits. Every task below ends with a commit.
+- Follow strict TDD for every production change: RED test first, verify RED, write minimal GREEN implementation, verify GREEN, refactor only after GREEN.
+- If a test passes on the first run, it is not a RED test for that change. Rewrite the test so it fails for the intended missing behavior before touching production code.
+- If production code is written before its RED test, delete that production change and restart the task from the RED step.
 - Keep `FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD` out of SQL and out of audit metadata.
 - Never let a repository query fall back to global data when `WorkspaceScope` is absent.
 - Do not expose `/api/system/directories` unless `FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER=true`.
 - Do not allow Phase 1 auth endpoints to ship without Phase 2 workspace isolation in a multi-user deployment.
 - Run provider contract tests for both PostgreSQL and SQLite after every storage task.
+
+---
+
+## TDD Protocol
+
+Every task that changes production code must follow this exact loop:
+
+1. RED: add one focused failing test for the behavior in that step.
+2. Verify RED: run only that test and confirm the failure is because the behavior is missing, not because of a typo or broken test setup.
+3. GREEN: write the smallest production change that can make that test pass.
+4. Verify GREEN: rerun the focused test, then the narrow package or frontend suite listed in the task.
+5. Refactor: clean up only after GREEN, then rerun the same tests.
+6. Commit: commit only when the task-specific tests pass.
+
+Tasks that only run baseline checks or create rollout notes do not change production code; they still run verification before commit.
 
 ---
 
@@ -573,7 +591,15 @@ func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
 
 This test lives in `backend/internal/storage/postgres/migrations_test.go`, which already imports `fmt` and `time` and already defines `openPostgresTestDB(t, schema)`.
 
-- [ ] **Step 2: Create PostgreSQL schema migration**
+- [ ] **Step 2: Run migration test to verify RED**
+
+```bash
+cd backend && go test ./internal/storage/postgres -run TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace -count=1 -v
+```
+
+Expected: FAIL because `users` and `workspaces` auth schema or `users_default_owned_workspace_fk` does not exist yet.
+
+- [ ] **Step 3: Create PostgreSQL schema migration**
 
 Create `backend/db/migrations/postgres/0004_multi_user_auth_schema.sql` with these sections in this order:
 
@@ -671,7 +697,7 @@ ALTER TABLE search_index ADD COLUMN IF NOT EXISTS workspace_id TEXT;
 
 Do not add bootstrap admin data or bcrypt hashes in SQL.
 
-- [ ] **Step 3: Implement finalizer helpers**
+- [ ] **Step 4: Implement finalizer helpers**
 
 Create `backend/internal/storage/postgres/auth_migrations.go` with functions named:
 
@@ -699,7 +725,7 @@ func runMultiUserAuthFinalizer(ctx context.Context, db *sql.DB) error {
 
 Each helper must be idempotent and must return a descriptive error before applying final constraints if any `workspace_id` or `default_workspace_id` is missing.
 
-- [ ] **Step 4: Add SQLite auth migration file**
+- [ ] **Step 5: Add SQLite auth migration file**
 
 Create `backend/internal/storage/sqlite/auth_migrations.go` with functions named:
 
@@ -730,7 +756,7 @@ INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild');
 INSERT INTO events_fts(events_fts) VALUES('rebuild');
 ```
 
-- [ ] **Step 5: Wire provider startup**
+- [ ] **Step 6: Wire provider startup**
 
 Modify `backend/internal/storage/postgres/provider.go` after `RunPostgresMigrationsContext`:
 
@@ -750,7 +776,7 @@ if err := ensureSQLiteAuthSchema(ctx, db); err != nil {
 }
 ```
 
-- [ ] **Step 6: Run migration tests**
+- [ ] **Step 7: Run migration tests**
 
 ```bash
 cd backend && go test ./internal/storage/postgres ./internal/storage/sqlite -run 'Test.*Migration|Test.*Provider' -count=1 -v
@@ -758,7 +784,7 @@ cd backend && go test ./internal/storage/postgres ./internal/storage/sqlite -run
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/db/migrations/postgres/0004_multi_user_auth_schema.sql backend/internal/storage/postgres/auth_migrations.go backend/internal/storage/sqlite/auth_migrations.go backend/internal/storage/postgres/provider.go backend/internal/storage/sqlite/provider.go backend/internal/storage/postgres/migrations_test.go backend/internal/storage/sqlite/provider_test.go
@@ -824,7 +850,15 @@ func openSQLiteStoreWithLegacyNote(t *testing.T) storage.Store {
 
 Use existing SQLite provider test helpers for `openTestStore`. Add local assert helpers in the same test file so the test is self-contained.
 
-- [ ] **Step 2: Implement bootstrap config**
+- [ ] **Step 2: Run bootstrap tests to verify RED**
+
+```bash
+cd backend && go test ./internal/bootstrap -run 'TestBootstrapRequiresAdminConfigForLegacyData|TestBootstrapAssignsLegacyDataBeforeDefaultRows' -count=1 -v
+```
+
+Expected: FAIL because `EnsureAuthReady`, `Config`, and bootstrap helpers do not exist yet.
+
+- [ ] **Step 3: Implement bootstrap config**
 
 Create `backend/internal/bootstrap/auth_bootstrap.go`:
 
@@ -936,7 +970,7 @@ func EnsureDefaultWorkspaceData(ctx context.Context, store storage.Store) error
 
 `AssignLegacyBusinessData` updates existing rows that have empty `workspace_id`. `EnsureDefaultWorkspaceData` inserts missing default folders and `personal` task project only after legacy rows are assigned.
 
-- [ ] **Step 3: Wire server startup**
+- [ ] **Step 4: Wire server startup**
 
 Modify `backend/cmd/server/main.go` after opening store and before `repository.SetStore(store)`:
 
@@ -958,7 +992,7 @@ Add imports:
 "github.com/hujinrun/flowspace/internal/bootstrap"
 ```
 
-- [ ] **Step 4: Run bootstrap tests**
+- [ ] **Step 5: Run bootstrap tests**
 
 ```bash
 cd backend && go test ./internal/bootstrap -count=1 -v
@@ -966,7 +1000,7 @@ cd backend && go test ./internal/bootstrap -count=1 -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/internal/bootstrap/auth_bootstrap.go backend/internal/bootstrap/auth_bootstrap_test.go backend/cmd/server/main.go backend/cmd/seed/main.go
@@ -1075,7 +1109,15 @@ func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Sto
 
 Add helper functions in the same file for `seedUserWorkspace`.
 
-- [ ] **Step 2: Extend storage interfaces**
+- [ ] **Step 2: Run auth contract tests to verify RED**
+
+```bash
+cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run AuthContract -count=1 -v
+```
+
+Expected: FAIL because `Store.Auth()` and `AuthRepository` do not exist yet.
+
+- [ ] **Step 3: Extend storage interfaces**
 
 Modify `backend/internal/storage/store.go`:
 
@@ -1109,7 +1151,7 @@ type AuthRepository interface {
 
 Add `Auth() AuthRepository` to `Store`.
 
-- [ ] **Step 3: Implement PostgreSQL auth repository**
+- [ ] **Step 4: Implement PostgreSQL auth repository**
 
 Create `backend/internal/storage/postgres/auth.go` with methods matching `AuthRepository`. Use `lower(email)` for lookups and `ILIKE` for `UserListFilter.Query`.
 
@@ -1129,11 +1171,11 @@ WHERE role = 'admin' AND status = 'active'
 FOR UPDATE
 ```
 
-- [ ] **Step 4: Implement SQLite auth repository**
+- [ ] **Step 5: Implement SQLite auth repository**
 
 Create `backend/internal/storage/sqlite/auth.go`. Use `lower(email) = lower(?)` and `LIKE '%' || lower(?) || '%'` against `lower(email)` and `lower(display_name)` for search.
 
-- [ ] **Step 5: Wire provider stores**
+- [ ] **Step 6: Wire provider stores**
 
 Add to both `store` and `storeTx` in PostgreSQL and SQLite providers:
 
@@ -1147,7 +1189,7 @@ func (s *storeTx) Auth() storage.AuthRepository {
 }
 ```
 
-- [ ] **Step 6: Run auth contract tests**
+- [ ] **Step 7: Run auth contract tests**
 
 ```bash
 cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run AuthContract -count=1 -v
@@ -1155,7 +1197,7 @@ cd backend && go test ./internal/storage ./internal/storage/contracttest ./inter
 
 Expected: PASS for PostgreSQL and SQLite providers.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add backend/internal/storage/store.go backend/internal/storage/contracttest/auth_contract_tests.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go backend/internal/storage/postgres/provider.go backend/internal/storage/sqlite/provider.go backend/internal/storage/postgres/contract_test.go backend/internal/storage/sqlite/contract_test.go
@@ -1226,7 +1268,15 @@ func TestPasswordChangeRequiredBlocksBusinessRoute(t *testing.T) {
 
 Add test helpers in the same file using an in-memory SQLite store and seeded user/session.
 
-- [ ] **Step 2: Implement auth middleware**
+- [ ] **Step 2: Run auth handler tests to verify RED**
+
+```bash
+cd backend && go test ./internal/handler -run 'TestLoginSetsHttpOnlyCookie|TestPasswordChangeRequiredBlocksBusinessRoute' -count=1 -v
+```
+
+Expected: FAIL because auth handlers, middleware, and router wiring do not exist yet.
+
+- [ ] **Step 3: Implement auth middleware**
 
 Create `backend/internal/middleware/auth.go`:
 
@@ -1303,7 +1353,7 @@ func (m AuthMiddleware) RequirePasswordSettled() gin.HandlerFunc {
 }
 ```
 
-- [ ] **Step 3: Implement auth handlers**
+- [ ] **Step 4: Implement auth handlers**
 
 Create `backend/internal/handler/auth.go` with:
 
@@ -1334,7 +1384,7 @@ store.Auth().UpdateUserPassword(ctx, identity.UserID, newHash, false)
 store.Auth().RevokeUserSessionsExcept(ctx, identity.UserID, currentSessionID)
 ```
 
-- [ ] **Step 4: Update router shape**
+- [ ] **Step 5: Update router shape**
 
 Change `backend/internal/router/router.go` from `func Setup() *gin.Engine` to:
 
@@ -1376,7 +1426,7 @@ if cfg.EnableLocalDirectoryBrowser {
 }
 ```
 
-- [ ] **Step 5: Run auth handler tests**
+- [ ] **Step 6: Run auth handler tests**
 
 ```bash
 cd backend && go test ./internal/handler ./internal/router -run 'Auth|Password|Route' -count=1 -v
@@ -1384,7 +1434,7 @@ cd backend && go test ./internal/handler ./internal/router -run 'Auth|Password|R
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/internal/middleware/auth.go backend/internal/handler/auth.go backend/internal/handler/auth_test.go backend/internal/router/router.go backend/cmd/server/main.go
@@ -1464,7 +1514,15 @@ func TestDowngradeLastAdminReturnsConflict(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement admin handlers**
+- [ ] **Step 2: Run admin API tests to verify RED**
+
+```bash
+cd backend && go test ./internal/handler -run 'TestAdminListUsersReturnsPagination|TestAdminPatchRejectsStatusAndPassword|TestDowngradeLastAdminReturnsConflict' -count=1 -v
+```
+
+Expected: FAIL because admin user handlers and route wiring do not exist yet.
+
+- [ ] **Step 3: Implement admin handlers**
 
 Create `backend/internal/handler/admin_users.go` with handlers:
 
@@ -1503,7 +1561,7 @@ err := store.Transact(ctx, func(tx storage.Store) error {
 
 `UpdateUser` must reject forbidden fields by decoding into `map[string]json.RawMessage` first and checking keys.
 
-- [ ] **Step 3: Implement last-admin guard**
+- [ ] **Step 4: Implement last-admin guard**
 
 Inside role downgrade and disable flows:
 
@@ -1526,7 +1584,7 @@ For role changes and disable, call:
 _ = tx.Auth().RevokeUserSessions(ctx, targetUserID)
 ```
 
-- [ ] **Step 4: Register admin routes**
+- [ ] **Step 5: Register admin routes**
 
 In `backend/internal/router/router.go`:
 
@@ -1541,7 +1599,7 @@ admin.POST("/users/:id/disable", handler.DisableUser(cfg.Store))
 admin.POST("/users/:id/enable", handler.EnableUser(cfg.Store))
 ```
 
-- [ ] **Step 5: Run admin tests**
+- [ ] **Step 6: Run admin tests**
 
 ```bash
 cd backend && go test ./internal/handler -run 'Admin|Downgrade|Reset|Disable' -count=1 -v
@@ -1549,7 +1607,7 @@ cd backend && go test ./internal/handler -run 'Admin|Downgrade|Reset|Disable' -c
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/internal/handler/admin_users.go backend/internal/handler/admin_users_test.go backend/internal/router/router.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go
@@ -1620,7 +1678,15 @@ func RunWorkspaceIsolationContractTests(t *testing.T, openStore func(t *testing.
 
 Add `seedWorkspaceDefaults` in the same file.
 
-- [ ] **Step 2: Update repository SQL**
+- [ ] **Step 2: Run workspace isolation tests to verify RED**
+
+```bash
+cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run WorkspaceIsolation -count=1 -v
+```
+
+Expected: FAIL because repositories still read and write without `WorkspaceScope`.
+
+- [ ] **Step 3: Update repository SQL**
 
 For every business repository method, start by resolving scope:
 
@@ -1648,7 +1714,7 @@ INSERT INTO notes (id, workspace_id, title, body, folder_id, tags, created_at, u
 VALUES ($1, $2, $3, $4, $5, $6, now(), now())
 ```
 
-- [ ] **Step 3: Make inbox conversion transactional**
+- [ ] **Step 4: Make inbox conversion transactional**
 
 Modify `backend/internal/service/inbox.go` so `ConvertInboxItem` receives `context.Context` and `storage.Store`:
 
@@ -1679,7 +1745,7 @@ func ConvertInboxItem(ctx context.Context, store storage.Store, id string, req *
 }
 ```
 
-- [ ] **Step 4: Run isolation contract tests**
+- [ ] **Step 5: Run isolation contract tests**
 
 ```bash
 cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run WorkspaceIsolation -count=1 -v
@@ -1687,7 +1753,7 @@ cd backend && go test ./internal/storage ./internal/storage/contracttest ./inter
 
 Expected: PASS for PostgreSQL and SQLite.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/internal/storage/contracttest/workspace_isolation_contract_tests.go backend/internal/storage/postgres/folders.go backend/internal/storage/postgres/notes.go backend/internal/storage/postgres/tasks.go backend/internal/storage/postgres/events.go backend/internal/storage/postgres/inbox.go backend/internal/storage/sqlite/folders.go backend/internal/storage/sqlite/notes.go backend/internal/storage/sqlite/tasks.go backend/internal/storage/sqlite/events.go backend/internal/storage/sqlite/inbox.go backend/internal/service/inbox.go
@@ -1738,7 +1804,15 @@ t.Run("SearchDoesNotReturnOtherWorkspaceResults", func(t *testing.T) {
 })
 ```
 
-- [ ] **Step 2: Update PostgreSQL search and sync SQL**
+- [ ] **Step 2: Run cross-workspace search test to verify RED**
+
+```bash
+cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run SearchDoesNotReturnOtherWorkspaceResults -count=1 -v
+```
+
+Expected: FAIL because search still lacks first-stage workspace filtering.
+
+- [ ] **Step 3: Update PostgreSQL search and sync SQL**
 
 Search must filter `search_index` first:
 
@@ -1754,7 +1828,7 @@ Sync must include workspace in all target, state, binding, claim, suppression, a
 lockKey := "note_sync_binding:" + workspaceID + ":" + noteID
 ```
 
-- [ ] **Step 3: Update SQLite FTS search**
+- [ ] **Step 4: Update SQLite FTS search**
 
 SQLite FTS queries must join business tables and filter workspace:
 
@@ -1768,7 +1842,7 @@ WHERE n.workspace_id = ?
 
 COUNT queries must use the same workspace filter.
 
-- [ ] **Step 4: Update roadmap and recurrence repositories**
+- [ ] **Step 5: Update roadmap and recurrence repositories**
 
 Roadmap update example:
 
@@ -1780,7 +1854,7 @@ WHERE workspace_id = $3 AND id = $4
 
 Recurrence rule queries must use `(workspace_id, task_id)` and occurrences must use `(workspace_id, task_id, occurrence_date)`.
 
-- [ ] **Step 5: Run focused storage tests**
+- [ ] **Step 6: Run focused storage tests**
 
 ```bash
 cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run 'Search|Sync|Roadmap|Recurrence|Workspace' -count=1 -v
@@ -1788,7 +1862,7 @@ cd backend && go test ./internal/storage ./internal/storage/contracttest ./inter
 
 Expected: PASS for PostgreSQL and SQLite.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add backend/internal/storage/postgres/search.go backend/internal/storage/postgres/sync.go backend/internal/storage/postgres/roadmaps.go backend/internal/storage/postgres/recurrence.go backend/internal/storage/sqlite/search.go backend/internal/storage/sqlite/sync.go backend/internal/storage/sqlite/roadmaps.go backend/internal/storage/sqlite/recurrence.go backend/internal/service/sync_dispatch.go backend/internal/storage/contracttest
@@ -1811,7 +1885,169 @@ git commit -m "feat: scope search sync roadmap and recurrence"
 - Modify: `frontend/src/api/client.ts`
 - Test: `frontend/src/hooks/useAuth.test.tsx`
 
-- [ ] **Step 1: Add auth API client**
+- [ ] **Step 1: Write failing auth hook and route guard tests**
+
+Create `frontend/src/hooks/useAuth.test.tsx`:
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthProvider, useAuth } from './useAuth'
+import { ProtectedRoute } from '../components/auth/ProtectedRoute'
+import { AdminRoute } from '../components/auth/AdminRoute'
+import * as authApi from '../api/auth'
+
+vi.mock('../api/auth')
+
+function renderWithAuth(ui: ReactNode, initialEntries = ['/']) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>
+      </AuthProvider>
+    </QueryClientProvider>,
+  )
+}
+
+function AuthProbe() {
+  const auth = useAuth()
+  if (auth.isLoading) return <span>loading</span>
+  return (
+    <div>
+      <span>{auth.user?.email ?? 'anonymous'}</span>
+      <span>{auth.isAdmin ? 'admin' : 'not-admin'}</span>
+      <button onClick={() => auth.login({ email: 'admin@example.com', password: 'abc12345', remember_me: true })}>
+        login
+      </button>
+    </div>
+  )
+}
+
+describe('useAuth', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('restores the current user from /api/auth/me', async () => {
+    vi.mocked(authApi.me).mockResolvedValue({
+      user: {
+        id: 'user_admin',
+        email: 'admin@example.com',
+        display_name: 'Admin',
+        role: 'admin',
+        status: 'active',
+        must_change_password: false,
+      },
+      workspace: { id: 'workspace_admin', name: 'Admin Workspace' },
+      must_change_password: false,
+    })
+
+    renderWithAuth(<AuthProbe />)
+
+    expect(await screen.findByText('admin@example.com')).toBeInTheDocument()
+    expect(screen.getByText('admin')).toBeInTheDocument()
+  })
+
+  it('calls login mutation and refreshes current user', async () => {
+    vi.mocked(authApi.me).mockResolvedValue({
+      user: {
+        id: 'user_admin',
+        email: 'admin@example.com',
+        display_name: 'Admin',
+        role: 'admin',
+        status: 'active',
+        must_change_password: false,
+      },
+      workspace: { id: 'workspace_admin', name: 'Admin Workspace' },
+      must_change_password: false,
+    })
+    vi.mocked(authApi.login).mockResolvedValue({
+      user: {
+        id: 'user_admin',
+        email: 'admin@example.com',
+        display_name: 'Admin',
+        role: 'admin',
+        status: 'active',
+        must_change_password: false,
+      },
+      workspace: { id: 'workspace_admin', name: 'Admin Workspace' },
+    })
+
+    renderWithAuth(<AuthProbe />)
+    await userEvent.click(await screen.findByRole('button', { name: 'login' }))
+
+    await waitFor(() => {
+      expect(authApi.login).toHaveBeenCalledWith({
+        email: 'admin@example.com',
+        password: 'abc12345',
+        remember_me: true,
+      })
+    })
+  })
+})
+
+describe('route guards', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('redirects anonymous users to login with next path', async () => {
+    vi.mocked(authApi.me).mockRejectedValue(new Error('unauthenticated'))
+
+    renderWithAuth(
+      <Routes>
+        <Route path="/tasks" element={<ProtectedRoute><span>tasks</span></ProtectedRoute>} />
+        <Route path="/login" element={<span>login page</span>} />
+      </Routes>,
+      ['/tasks'],
+    )
+
+    expect(await screen.findByText('login page')).toBeInTheDocument()
+  })
+
+  it('blocks non-admin users from admin routes', async () => {
+    vi.mocked(authApi.me).mockResolvedValue({
+      user: {
+        id: 'user_regular',
+        email: 'user@example.com',
+        display_name: 'User',
+        role: 'user',
+        status: 'active',
+        must_change_password: false,
+      },
+      workspace: { id: 'workspace_user', name: 'User Workspace' },
+      must_change_password: false,
+    })
+
+    renderWithAuth(
+      <Routes>
+        <Route path="/" element={<span>home</span>} />
+        <Route path="/admin/users" element={<AdminRoute><span>admin users</span></AdminRoute>} />
+      </Routes>,
+      ['/admin/users'],
+    )
+
+    expect(await screen.findByText('home')).toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run frontend auth tests to verify RED**
+
+```bash
+cd frontend && npm run test -- useAuth
+```
+
+Expected: FAIL because `frontend/src/api/auth.ts`, `AuthProvider`, `ProtectedRoute`, and `AdminRoute` do not exist yet.
+
+- [ ] **Step 3: Add auth API client**
 
 Create `frontend/src/api/auth.ts`:
 
@@ -1863,7 +2099,7 @@ Ensure `frontend/src/api/client.ts` uses:
 credentials: 'include'
 ```
 
-- [ ] **Step 2: Add auth provider**
+- [ ] **Step 4: Add auth provider**
 
 Create `frontend/src/hooks/useAuth.tsx` with a React context wrapping `useQuery({ queryKey: ['auth', 'me'], queryFn: me })`, `loginMutation`, and `logoutMutation`.
 
@@ -1881,7 +2117,7 @@ The provider value must include:
 }
 ```
 
-- [ ] **Step 3: Add route guards**
+- [ ] **Step 5: Add route guards**
 
 Create `frontend/src/components/auth/ProtectedRoute.tsx`:
 
@@ -1915,7 +2151,7 @@ export function AdminRoute({ children }: { children: React.ReactNode }) {
 }
 ```
 
-- [ ] **Step 4: Wire router**
+- [ ] **Step 6: Wire router**
 
 Modify `frontend/src/router.tsx` so the app shell is inside `ProtectedRoute`, add `/change-password`, and add admin route:
 
@@ -1936,7 +2172,7 @@ Modify `frontend/src/router.tsx` so the app shell is inside `ProtectedRoute`, ad
 }
 ```
 
-- [ ] **Step 5: Run frontend tests**
+- [ ] **Step 7: Run frontend tests**
 
 ```bash
 cd frontend && npm run test -- useAuth
@@ -1944,7 +2180,7 @@ cd frontend && npm run test -- useAuth
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add frontend/src/api/auth.ts frontend/src/hooks/useAuth.tsx frontend/src/components/auth/ProtectedRoute.tsx frontend/src/components/auth/AdminRoute.tsx frontend/src/routes/ChangePassword.tsx frontend/src/router.tsx frontend/src/api/client.ts frontend/src/hooks/useAuth.test.tsx
@@ -1957,12 +2193,186 @@ git commit -m "feat: add frontend auth session guard"
 
 **Files:**
 - Modify: `frontend/src/routes/Login.tsx`
+- Create: `frontend/src/routes/Login.test.tsx`
 - Modify: `frontend/src/components/layout/TopBar.tsx`
+- Create: `frontend/src/components/layout/TopBar.test.tsx`
 - Modify: `frontend/src/components/layout/Sidebar.tsx`
+- Modify: `frontend/src/components/layout/Sidebar.test.tsx`
 - Create: `frontend/src/routes/AccountAdmin.tsx`
 - Create: `frontend/src/routes/AccountAdmin.test.tsx`
 
-- [ ] **Step 1: Make login submit real request**
+- [ ] **Step 1: Write failing UI integration tests**
+
+Create `frontend/src/routes/Login.test.tsx`:
+
+```tsx
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import Login from './Login'
+import { useAuth } from '../hooks/useAuth'
+
+vi.mock('../hooks/useAuth')
+
+const navigate = vi.fn()
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>()
+  return Object.assign({}, actual, {
+    useNavigate: () => navigate,
+    useSearchParams: () => [new URLSearchParams('next=/tasks')],
+  })
+})
+
+describe('Login', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    vi.mocked(useAuth).mockReturnValue({
+      user: null,
+      workspace: null,
+      mustChangePassword: false,
+      isLoading: false,
+      isAdmin: false,
+      login: vi.fn().mockResolvedValue(undefined),
+      logout: vi.fn(),
+    })
+  })
+
+  it('submits credentials through auth hook and navigates to next', async () => {
+    const auth = useAuth()
+    render(<MemoryRouter><Login /></MemoryRouter>)
+
+    await userEvent.type(screen.getByLabelText('邮箱'), 'admin@example.com')
+    await userEvent.type(screen.getByLabelText('密码'), 'abc12345')
+    await userEvent.click(screen.getByRole('button', { name: '登录' }))
+
+    await waitFor(() => {
+      expect(auth.login).toHaveBeenCalledWith({
+        email: 'admin@example.com',
+        password: 'abc12345',
+        remember_me: true,
+      })
+      expect(navigate).toHaveBeenCalledWith('/tasks', { replace: true })
+    })
+  })
+})
+```
+
+Create `frontend/src/components/layout/TopBar.test.tsx`:
+
+```tsx
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TopBar } from './TopBar'
+import { useAuth } from '../../hooks/useAuth'
+
+vi.mock('../../hooks/useAuth')
+
+describe('TopBar account menu', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('shows current user and logs out', async () => {
+    const logout = vi.fn()
+    vi.mocked(useAuth).mockReturnValue({
+      user: { id: 'user_admin', email: 'admin@example.com', display_name: 'Admin', role: 'admin', status: 'active', must_change_password: false },
+      workspace: { id: 'workspace_admin', name: 'Admin Workspace' },
+      mustChangePassword: false,
+      isLoading: false,
+      isAdmin: true,
+      login: vi.fn(),
+      logout,
+    })
+
+    render(<MemoryRouter><TopBar /></MemoryRouter>)
+    await userEvent.click(screen.getByRole('button', { name: /Admin/ }))
+    await userEvent.click(screen.getByRole('button', { name: '退出登录' }))
+
+    expect(logout).toHaveBeenCalled()
+  })
+})
+```
+
+Modify `frontend/src/components/layout/Sidebar.test.tsx` with this test:
+
+```tsx
+it('shows admin account link only for admins', () => {
+  vi.mocked(useAuth).mockReturnValue({
+    user: { id: 'user_admin', email: 'admin@example.com', display_name: 'Admin', role: 'admin', status: 'active', must_change_password: false },
+    workspace: { id: 'workspace_admin', name: 'Admin Workspace' },
+    mustChangePassword: false,
+    isLoading: false,
+    isAdmin: true,
+    login: vi.fn(),
+    logout: vi.fn(),
+  })
+
+  renderSidebar()
+
+  expect(screen.getByRole('link', { name: /账号/ })).toBeInTheDocument()
+})
+```
+
+Create `frontend/src/routes/AccountAdmin.test.tsx`:
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import AccountAdmin from './AccountAdmin'
+import * as authApi from '../api/auth'
+
+vi.mock('../api/auth')
+
+function renderAccountAdmin() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AccountAdmin />
+    </QueryClientProvider>,
+  )
+}
+
+describe('AccountAdmin', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('lists users with pagination-backed data and opens create dialog', async () => {
+    vi.mocked(authApi.listUsers).mockResolvedValue({
+      users: [{
+        id: 'user_alice',
+        email: 'alice@example.com',
+        display_name: 'Alice',
+        role: 'user',
+        status: 'active',
+        must_change_password: true,
+      }],
+      pagination: { page: 1, page_size: 20, total: 1 },
+    })
+
+    renderAccountAdmin()
+
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '创建用户' }))
+    expect(screen.getByLabelText('临时密码')).toBeInTheDocument()
+  })
+})
+```
+
+- [ ] **Step 2: Run UI tests to verify RED**
+
+```bash
+cd frontend && npm run test -- Login AccountAdmin TopBar Sidebar
+```
+
+Expected: FAIL because Login still uses mock timeout, TopBar has no account menu, Sidebar has no admin account link, and AccountAdmin does not exist yet.
+
+- [ ] **Step 3: Make login submit real request**
 
 Modify `frontend/src/routes/Login.tsx` submit path:
 
@@ -1993,7 +2403,7 @@ Remove or disable GitHub login in v1:
 </button>
 ```
 
-- [ ] **Step 2: Add account menu**
+- [ ] **Step 4: Add account menu**
 
 Modify `frontend/src/components/layout/TopBar.tsx` to show current user email and logout button:
 
@@ -2011,7 +2421,7 @@ const auth = useAuth()
 )}
 ```
 
-- [ ] **Step 3: Add admin sidebar entry**
+- [ ] **Step 5: Add admin sidebar entry**
 
 Modify `frontend/src/components/layout/Sidebar.tsx`:
 
@@ -2022,7 +2432,7 @@ const visibleNavItems = auth.isAdmin
   : navItems
 ```
 
-- [ ] **Step 4: Create account admin route**
+- [ ] **Step 6: Create account admin route**
 
 Create `frontend/src/routes/AccountAdmin.tsx` with:
 
@@ -2065,7 +2475,7 @@ export default function AccountAdmin() {
 
 Add modals for create user, reset temporary password, enable, and disable. Create/reset modal labels must say the password is temporary and the user must change it on first login.
 
-- [ ] **Step 5: Run frontend tests and build**
+- [ ] **Step 7: Run frontend tests and build**
 
 ```bash
 cd frontend && npm run test && npm run build
@@ -2073,10 +2483,10 @@ cd frontend && npm run test && npm run build
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add frontend/src/routes/Login.tsx frontend/src/components/layout/TopBar.tsx frontend/src/components/layout/Sidebar.tsx frontend/src/routes/AccountAdmin.tsx frontend/src/routes/AccountAdmin.test.tsx
+git add frontend/src/routes/Login.tsx frontend/src/routes/Login.test.tsx frontend/src/components/layout/TopBar.tsx frontend/src/components/layout/TopBar.test.tsx frontend/src/components/layout/Sidebar.tsx frontend/src/components/layout/Sidebar.test.tsx frontend/src/routes/AccountAdmin.tsx frontend/src/routes/AccountAdmin.test.tsx
 git commit -m "feat: add account management UI"
 ```
 
@@ -2097,16 +2507,69 @@ git commit -m "feat: add account management UI"
 - Modify: `backend/internal/handler/events.go`
 - Modify: `backend/internal/handler/today.go`
 - Modify: `backend/internal/handler/summary.go`
+- Modify: `backend/internal/handler/sync.go`
+- Modify: `backend/internal/handler/sync_binding.go`
+- Modify: `backend/internal/handler/sync_compat.go`
+- Create: `backend/internal/service/no_global_repository_test.go`
 
-- [ ] **Step 1: Scan for forbidden global context usage**
+- [ ] **Step 1: Write failing architecture guard test**
 
-```bash
-rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler
+Create `backend/internal/service/no_global_repository_test.go`:
+
+```go
+package service
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestProtectedServicesDoNotUseGlobalRepositoryFacade(t *testing.T) {
+	root := filepath.Join("..", "service")
+	forbidden := []string{"repository.", "context.Background()"}
+	allowedFiles := map[string]bool{
+		"no_global_repository_test.go": true,
+	}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if allowedFiles[filepath.Base(path)] {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		content := string(data)
+		for _, token := range forbidden {
+			if strings.Contains(content, token) {
+				t.Fatalf("%s still contains %s", path, token)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk service files: %v", err)
+	}
+}
 ```
 
-Expected: output lists old paths that must be migrated or explicitly justified in tests.
+- [ ] **Step 2: Run architecture guard to verify RED**
 
-- [ ] **Step 2: Refactor service signatures**
+```bash
+cd backend && go test ./internal/service -run TestProtectedServicesDoNotUseGlobalRepositoryFacade -count=1 -v
+```
+
+Expected: FAIL because existing service files still use `repository.` or `context.Background()`.
+
+- [ ] **Step 3: Refactor service signatures**
 
 Change service functions from package-level repository usage to explicit `ctx` and `store`:
 
@@ -2118,7 +2581,7 @@ func GetNotes(ctx context.Context, store storage.Store, filter storage.NoteFilte
 
 Change these service entry points to accept `ctx context.Context` and `store storage.Store`: `GetTasks`, `CreateTask`, `UpdateTask`, `DeleteTask`, `GetEvents`, `CreateEvent`, `UpdateEvent`, `DeleteEvent`, `GetToday`, `GetSummary`, `GetInboxItems`, `ConvertInboxItem`, `Search`, `GetLearningRoadmap`, `UpdateRoadmapNode`, `ListSyncTargets`, `SyncNote`, and target sync dispatch functions.
 
-- [ ] **Step 3: Update handlers to pass request context**
+- [ ] **Step 4: Update handlers to pass request context**
 
 Example for notes:
 
@@ -2128,15 +2591,16 @@ notes, total, err := service.GetNotes(c.Request.Context(), store, filter)
 
 No protected handler should call a service without passing `c.Request.Context()`.
 
-- [ ] **Step 4: Verify scan is clean**
+- [ ] **Step 5: Verify guard and scan are clean**
 
 ```bash
-rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler
+cd backend && go test ./internal/service -run TestProtectedServicesDoNotUseGlobalRepositoryFacade -count=1 -v
+rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler -g "*.go" -g "!*_test.go" -g "!health.go"
 ```
 
-Expected: no output for protected business flows. Test helper files may still reference repository package when isolated.
+Expected: service guard passes and `rg` has no output for protected production flows. Test helper files and the public health check may still reference repository package when isolated.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add backend/internal/service backend/internal/handler
