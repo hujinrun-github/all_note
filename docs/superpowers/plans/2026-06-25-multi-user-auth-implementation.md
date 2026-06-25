@@ -22,6 +22,7 @@
 - If a test passes on the first run, it is not a RED test for that change. Rewrite the test so it fails for the intended missing behavior before touching production code.
 - If production code is written before its RED test, delete that production change and restart the task from the RED step.
 - Keep `FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD` out of SQL and out of audit metadata.
+- Every audit metadata write must pass through `auth.SanitizeAuditMetadata`; never store temporary passwords, password hashes, cookies, bearer tokens, session tokens, or authorization headers.
 - Hash session tokens with HMAC-SHA256 using `FLOWSPACE_SESSION_SECRET`; production startup must fail without this secret.
 - Use `FLOWSPACE_ALLOWED_ORIGINS` for CORS and CSRF origin checks; do not keep hardcoded localhost in middleware.
 - Never let a repository query fall back to global data when `WorkspaceScope` is absent.
@@ -55,6 +56,7 @@ Tasks that only run baseline checks or create rollout notes do not change produc
 | `backend/internal/auth/password.go` | bcrypt hash/verify and password policy | Create |
 | `backend/internal/auth/session.go` | session token generation and HMAC token hashing | Create |
 | `backend/internal/auth/throttle.go` | login failure throttling | Create |
+| `backend/internal/auth/audit.go` | audit metadata sanitizer | Create |
 | `backend/internal/auth/errors.go` | shared auth errors and error codes | Create |
 | `backend/internal/storage/store.go` | Store interface and repository interfaces | Add `Auth()`, `UserListFilter`, workspace-aware contracts |
 | `backend/internal/storage/contracttest/auth_contract_tests.go` | Auth storage contract tests | Create |
@@ -417,7 +419,11 @@ Create `backend/internal/auth/password_test.go`:
 ```go
 package auth
 
-import "testing"
+import (
+	"testing"
+
+	"golang.org/x/crypto/bcrypt"
+)
 
 func TestHashAndVerifyPassword(t *testing.T) {
 	hash, err := HashPassword("secret123")
@@ -432,6 +438,20 @@ func TestHashAndVerifyPassword(t *testing.T) {
 	}
 	if err := VerifyPassword(hash, "wrong123"); err == nil {
 		t.Fatal("expected invalid password error")
+	}
+}
+
+func TestHashPasswordUsesCost12(t *testing.T) {
+	hash, err := HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	cost, err := bcrypt.Cost([]byte(hash))
+	if err != nil {
+		t.Fatalf("read bcrypt cost: %v", err)
+	}
+	if cost != PasswordBcryptCost {
+		t.Fatalf("bcrypt cost = %d, want %d", cost, PasswordBcryptCost)
 	}
 }
 
@@ -458,7 +478,10 @@ Create `backend/internal/auth/session_test.go`:
 ```go
 package auth
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSessionTokenHashUsesSecretPepper(t *testing.T) {
 	secret := "test-session-secret-with-at-least-32-bytes"
@@ -544,13 +567,19 @@ func TestLoadAuthConfigParsesRequiredSecuritySettings(t *testing.T) {
 	if !cfg.Cookie.Secure {
 		t.Fatal("cookie secure should be true")
 	}
+	if cfg.Session.ShortTTL != 12*time.Hour {
+		t.Fatalf("short session ttl = %s, want 12h", cfg.Session.ShortTTL)
+	}
+	if cfg.Session.RememberTTL != 30*24*time.Hour {
+		t.Fatalf("remember session ttl = %s, want 720h", cfg.Session.RememberTTL)
+	}
 }
 ```
 
 - [ ] **Step 4: Run password, session, and config tests to verify RED**
 
 ```bash
-cd backend && go test ./internal/auth ./internal/config -run 'TestHashAndVerifyPassword|TestValidatePasswordPolicy|TestSessionTokenHash|TestGenerateSessionToken|TestLoadAuthConfig' -count=1 -v
+cd backend && go test ./internal/auth ./internal/config -run 'TestHashAndVerifyPassword|TestHashPasswordUsesCost12|TestValidatePasswordPolicy|TestSessionTokenHash|TestGenerateSessionToken|TestLoadAuthConfig' -count=1 -v
 ```
 
 Expected: FAIL because `backend/internal/auth` does not exist yet and `LoadAuthConfig` is not implemented.
@@ -571,11 +600,13 @@ import (
 
 var ErrWeakPassword = errors.New("weak password")
 
+const PasswordBcryptCost = 12
+
 func HashPassword(password string) (string, error) {
 	if err := ValidatePasswordPolicy(password); err != nil {
 		return "", err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), PasswordBcryptCost)
 	return string(hash), err
 }
 
@@ -662,7 +693,11 @@ type CookieConfig struct {
 	Name     string
 	Secure   bool
 	SameSite string
-	MaxAge   time.Duration
+}
+
+type SessionTTLConfig struct {
+	ShortTTL    time.Duration
+	RememberTTL time.Duration
 }
 
 type LoginThrottleConfig struct {
@@ -677,6 +712,7 @@ type SessionCleanupConfig struct {
 type AuthConfig struct {
 	Bootstrap                   BootstrapAdminConfig
 	Cookie                      CookieConfig
+	Session                     SessionTTLConfig
 	SessionSecret               string
 	AllowedOrigins              []string
 	LoginThrottle               LoginThrottleConfig
@@ -696,7 +732,10 @@ func LoadAuthConfig(environment string) (AuthConfig, error) {
 			Name:     "fs_session",
 			Secure:   envBool("FLOWSPACE_COOKIE_SECURE", environment == EnvironmentProduction),
 			SameSite: "Lax",
-			MaxAge:   30 * 24 * time.Hour,
+		},
+		Session: SessionTTLConfig{
+			ShortTTL:    envDuration("FLOWSPACE_SESSION_TTL", 12*time.Hour),
+			RememberTTL: envDuration("FLOWSPACE_REMEMBER_SESSION_TTL", 30*24*time.Hour),
 		},
 		SessionSecret:               strings.TrimSpace(os.Getenv("FLOWSPACE_SESSION_SECRET")),
 		AllowedOrigins:              splitCSV(os.Getenv("FLOWSPACE_ALLOWED_ORIGINS")),
@@ -1074,6 +1113,8 @@ FOREIGN KEY (id, default_workspace_id)
   REFERENCES workspaces(owner_user_id, id)
   DEFERRABLE INITIALLY DEFERRED
 ```
+
+SQLite auth tables must store timestamp columns as Unix seconds in `INTEGER` fields. This includes `sessions.expires_at`, `sessions.revoked_at`, `sessions.created_at`, `sessions.last_seen_at`, `users.last_login_at`, `users.password_changed_at`, and `audit_events.created_at`. Repository code converts between these integer values and the Go `time.Time` fields exposed by model structs.
 
 `rebuildSQLiteFTSAfterWorkspaceMigration` must execute these statements after table rebuilds:
 
@@ -1537,7 +1578,7 @@ WHERE token_hash = $1
   AND expires_at > now()
 ```
 
-SQLite must use the same predicate with `expires_at > CURRENT_TIMESTAMP`.
+SQLite must use the same predicate against Unix seconds, for example `expires_at > unixepoch()`.
 
 `UpdateUserLastLogin` must be a narrow update:
 
@@ -1558,6 +1599,8 @@ FOR UPDATE
 - [ ] **Step 5: Implement SQLite auth repository**
 
 Create `backend/internal/storage/sqlite/auth.go`. Use `lower(email) = lower(?)` and `LIKE '%' || lower(?) || '%'` against `lower(email)` and `lower(display_name)` for search.
+
+All SQLite auth timestamp reads and writes must stay at the repository boundary: write with `value.Unix()` and read with `time.Unix(value, 0).UTC()`. Do not leak raw integer timestamps into service, handler, or contract test model structs.
 
 - [ ] **Step 6: Wire provider stores**
 
@@ -1609,10 +1652,12 @@ Create `backend/internal/handler/auth_test.go`:
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoginSetsHttpOnlyCookie(t *testing.T) {
@@ -1636,6 +1681,43 @@ func TestLoginSetsHttpOnlyCookie(t *testing.T) {
 	}
 	if !auditEventRecorded(t, "auth.login", "user_admin") {
 		t.Fatal("auth.login audit event was not recorded")
+	}
+}
+
+func TestLoginSessionTTLMatchesRememberMe(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		remember          bool
+		wantCookieMaxAge  int
+		wantSessionWindow time.Duration
+	}{
+		{name: "short", remember: false, wantCookieMaxAge: int((12 * time.Hour).Seconds()), wantSessionWindow: 12 * time.Hour},
+		{name: "remember", remember: true, wantCookieMaxAge: int((30 * 24 * time.Hour).Seconds()), wantSessionWindow: 30 * 24 * time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := setupAuthTestRouter(t)
+			body := fmt.Sprintf(`{"email":"admin@example.com","password":"abc12345","remember_me":%v}`, tc.remember)
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			start := time.Now()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			cookie := w.Result().Cookies()[0]
+			if cookie.MaxAge != tc.wantCookieMaxAge {
+				t.Fatalf("cookie max age = %d, want %d", cookie.MaxAge, tc.wantCookieMaxAge)
+			}
+			session := createdSessionForCookie(t, cookie)
+			minExpires := start.Add(tc.wantSessionWindow - time.Minute)
+			maxExpires := start.Add(tc.wantSessionWindow + time.Minute)
+			if session.ExpiresAt.Before(minExpires) || session.ExpiresAt.After(maxExpires) {
+				t.Fatalf("session expires at %s, want between %s and %s", session.ExpiresAt, minExpires, maxExpires)
+			}
+		})
 	}
 }
 
@@ -1728,7 +1810,7 @@ Add test helpers in the same file using an in-memory SQLite store and seeded use
 - [ ] **Step 2: Run auth handler tests to verify RED**
 
 ```bash
-cd backend && go test ./internal/handler -run 'TestLoginSetsHttpOnlyCookie|TestPasswordChangeRequiredBlocksBusinessRoute|TestExpiredOrRevokedSessionReturns401|TestLogoutRevokesCurrentSessionAndClearsCookie|TestChangePasswordRevokesOtherSessionsUsingCurrentSessionID' -count=1 -v
+cd backend && go test ./internal/handler -run 'TestLoginSetsHttpOnlyCookie|TestLoginSessionTTLMatchesRememberMe|TestPasswordChangeRequiredBlocksBusinessRoute|TestExpiredOrRevokedSessionReturns401|TestLogoutRevokesCurrentSessionAndClearsCookie|TestChangePasswordRevokesOtherSessionsUsingCurrentSessionID' -count=1 -v
 ```
 
 Expected: FAIL because auth handlers, middleware, and router wiring do not exist yet.
@@ -1876,6 +1958,11 @@ tokenHash, err := auth.HashSessionToken(authCfg.SessionSecret, token)
 if err != nil {
 	return err
 }
+ttl := authCfg.Session.ShortTTL
+if req.RememberMe {
+	ttl = authCfg.Session.RememberTTL
+}
+session.ExpiresAt = time.Now().Add(ttl)
 session.TokenHash = tokenHash
 ```
 
@@ -1894,11 +1981,13 @@ err = store.Transact(ctx, func(tx storage.Store) error {
 		TargetUserID: &user.ID,
 		WorkspaceID:  &workspaceID,
 		Action:       "auth.login",
-		Metadata:     map[string]any{"ip": c.ClientIP(), "user_agent": c.Request.UserAgent()},
+		Metadata:     auth.SanitizeAuditMetadata(map[string]any{"ip": c.ClientIP(), "user_agent": c.Request.UserAgent()}),
 	})
 })
-http.SetCookie(c.Writer, cookieFromConfig(authCfg.Cookie, token, req.RememberMe))
+http.SetCookie(c.Writer, cookieFromConfig(authCfg.Cookie, token, ttl))
 ```
+
+`GET /api/auth/me` and middleware session restore must not extend `session.expires_at`; there is no sliding expiration in v1.
 
 Logout must clear the cookie even when no valid session exists, and revoke only when optional auth restored a current session:
 
@@ -1929,7 +2018,7 @@ err := store.Transact(ctx, func(tx storage.Store) error {
 		TargetUserID: &identity.UserID,
 		WorkspaceID:  &identity.WorkspaceID,
 		Action:       "auth.change_password",
-		Metadata:     map[string]any{"ip": c.ClientIP(), "user_agent": c.Request.UserAgent()},
+		Metadata:     auth.SanitizeAuditMetadata(map[string]any{"ip": c.ClientIP(), "user_agent": c.Request.UserAgent()}),
 	})
 })
 ```
@@ -1972,7 +2061,7 @@ Register system directories only inside:
 if cfg.Auth.EnableLocalDirectoryBrowser {
 	systemAdmin := protected.Group("/system")
 	systemAdmin.Use(authMiddleware.RequireAdmin())
-	systemAdmin.GET("/directories", handler.ListLocalDirectories)
+	systemAdmin.GET("/directories", handler.ListLocalDirectories(cfg.Store))
 }
 ```
 
@@ -2139,11 +2228,14 @@ err := store.Transact(ctx, func(tx storage.Store) error {
 	if err := createDefaultWorkspaceData(targetCtx, tx); err != nil {
 		return err
 	}
+	auditEvent.Metadata = auth.SanitizeAuditMetadata(auditEvent.Metadata)
 	return tx.Auth().RecordAuditEvent(ctx, auditEvent)
 })
 ```
 
 `UpdateUser` must reject forbidden fields by decoding into `map[string]json.RawMessage` first and checking keys.
+
+`ResetUserPassword` must hash the temporary password, set `must_change_password=true`, revoke the target user's sessions, and write an `auth.reset_password` audit event in the same transaction. Its audit metadata must be sanitized and must never include the temporary password, password hash, cookie, authorization header, raw session token, or hashed session token.
 
 - [ ] **Step 4: Implement last-admin guard**
 
@@ -2358,6 +2450,37 @@ func RunWorkspaceIsolationContractTests(t *testing.T, openStore func(t *testing.
 		_, err := store.Notes().List(context.Background(), storage.NoteFilter{Page: 1, PageSize: 20})
 		if err == nil {
 			t.Fatal("expected missing workspace error")
+		}
+	})
+
+	t.Run("InboxConversionWritesTypedConvertedTo", func(t *testing.T) {
+		store := openStore(t)
+		ctx := auth.ContextWithWorkspaceScope(context.Background(), "workspace_inbox_typed")
+		seedWorkspaceDefaults(t, context.Background(), store, "workspace_inbox_typed", "user_inbox_typed")
+
+		item, err := store.Inbox().Create(ctx, &model.CreateInboxItemRequest{Content: "Capture me"})
+		if err != nil {
+			t.Fatalf("create inbox item: %v", err)
+		}
+		note, err := store.Notes().Create(ctx, &model.CreateNoteRequest{Title: "Converted note"})
+		if err != nil {
+			t.Fatalf("create converted note: %v", err)
+		}
+		if err := store.Inbox().MarkConverted(ctx, item.ID, "note:"+note.ID); err != nil {
+			t.Fatalf("mark converted: %v", err)
+		}
+		loaded, err := store.Inbox().GetByID(ctx, item.ID)
+		if err != nil {
+			t.Fatalf("load converted inbox item: %v", err)
+		}
+		if loaded.ConvertedTo == nil {
+			t.Fatal("converted_to is nil")
+		}
+		if *loaded.ConvertedTo != "note:"+note.ID {
+			t.Fatalf("converted_to = %q, want note:%s", *loaded.ConvertedTo, note.ID)
+		}
+		if *loaded.ConvertedTo == note.ID {
+			t.Fatal("new conversion wrote legacy id-only converted_to")
 		}
 	})
 }
@@ -3430,6 +3553,8 @@ git commit -m "feat: add account management UI"
 - Create: `backend/internal/middleware/csrf.go`
 - Create: `backend/internal/middleware/csrf_test.go`
 - Modify: `backend/internal/middleware/cors.go`
+- Create: `backend/internal/auth/audit.go`
+- Create: `backend/internal/auth/audit_test.go`
 - Create: `backend/internal/auth/throttle.go`
 - Create: `backend/internal/auth/throttle_test.go`
 - Modify: `backend/internal/handler/auth.go`
@@ -3521,7 +3646,52 @@ func TestCORSEchoesOnlyAllowedOrigin(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Write failing login throttle tests**
+- [ ] **Step 2: Write failing audit metadata sanitizer tests**
+
+Create `backend/internal/auth/audit_test.go`:
+
+```go
+package auth
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestSanitizeAuditMetadataRemovesSecrets(t *testing.T) {
+	input := map[string]any{
+		"ip":                 "127.0.0.1",
+		"user_agent":         "test-agent",
+		"temporary_password": "abc12345",
+		"password_hash":      "$2a$12$secret",
+		"session_token":      "raw-session-token",
+		"cookie":             "fs_session=secret",
+		"authorization":      "Bearer secret",
+		"nested": map[string]any{
+			"new_password": "newpass123",
+			"safe":         "kept",
+		},
+	}
+
+	got := SanitizeAuditMetadata(input)
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal sanitized metadata: %v", err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, forbidden := range []string{"abc12345", "$2a$12", "raw-session-token", "fs_session", "bearer secret", "newpass123", "temporary_password", "password_hash", "session_token", "authorization"} {
+		if strings.Contains(text, strings.ToLower(forbidden)) {
+			t.Fatalf("sanitized metadata still contains %q: %s", forbidden, text)
+		}
+	}
+	if got["ip"] != "127.0.0.1" || got["user_agent"] != "test-agent" {
+		t.Fatalf("safe metadata was not preserved: %#v", got)
+	}
+}
+```
+
+- [ ] **Step 3: Write failing login throttle tests**
 
 Create `backend/internal/auth/throttle_test.go`:
 
@@ -3568,7 +3738,7 @@ func TestLoginThrottleResetClearsFailures(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Extend auth contract tests for expired session cleanup**
+- [ ] **Step 4: Extend auth contract tests for expired session cleanup**
 
 Add to `backend/internal/storage/contracttest/auth_contract_tests.go`:
 
@@ -3606,7 +3776,7 @@ Also extend `backend/internal/storage/store.go`:
 DeleteExpiredSessions(ctx context.Context, before time.Time) (int64, error)
 ```
 
-- [ ] **Step 4: Write failing session cleanup worker test**
+- [ ] **Step 5: Write failing session cleanup worker test**
 
 Create `backend/internal/service/session_cleanup_test.go`:
 
@@ -3647,18 +3817,19 @@ func TestDeleteExpiredSessionsOnceUsesRepository(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Run hardening tests to verify RED**
+- [ ] **Step 6: Run hardening tests to verify RED**
 
 ```bash
 (cd backend && go test ./internal/middleware -run CSRF -count=1 -v)
+(cd backend && go test ./internal/auth -run SanitizeAuditMetadata -count=1 -v)
 (cd backend && go test ./internal/auth -run LoginThrottle -count=1 -v)
 (cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run DeleteExpiredSessions -count=1 -v)
 (cd backend && go test ./internal/service -run DeleteExpiredSessionsOnce -count=1 -v)
 ```
 
-Expected: FAIL because CSRF middleware, login throttle, expired-session repository cleanup, and cleanup worker helpers are not implemented yet.
+Expected: FAIL because CSRF middleware, audit metadata sanitizer, login throttle, expired-session repository cleanup, and cleanup worker helpers are not implemented yet.
 
-- [ ] **Step 6: Implement CSRF origin check and configurable CORS**
+- [ ] **Step 7: Implement CSRF origin check and configurable CORS**
 
 Create `backend/internal/middleware/csrf.go`:
 
@@ -3735,7 +3906,64 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 }
 ```
 
-- [ ] **Step 7: Implement login throttle and wire auth handler**
+Create `backend/internal/auth/audit.go`:
+
+```go
+package auth
+
+import "strings"
+
+var auditSecretKeys = map[string]struct{}{
+	"password":           {},
+	"current_password":   {},
+	"new_password":       {},
+	"temporary_password": {},
+	"password_hash":      {},
+	"token":              {},
+	"session_token":      {},
+	"cookie":             {},
+	"authorization":      {},
+}
+
+func SanitizeAuditMetadata(metadata map[string]any) map[string]any {
+	out := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if _, secret := auditSecretKeys[normalized]; secret {
+			continue
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			out[key] = SanitizeAuditMetadata(typed)
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+```
+
+Every `RecordAuditEvent` call in auth, admin, and system handlers must wrap metadata:
+
+```go
+event.Metadata = auth.SanitizeAuditMetadata(event.Metadata)
+```
+
+`handler.ListLocalDirectories` must record a sanitized admin audit event when the route is enabled and called:
+
+```go
+_ = store.Auth().RecordAuditEvent(c.Request.Context(), &model.AuditEvent{
+	ActorUserID: &identity.UserID,
+	Action:      "system.directories.list",
+	Metadata: auth.SanitizeAuditMetadata(map[string]any{
+		"path":       c.Query("path"),
+		"ip":         c.ClientIP(),
+		"user_agent": c.Request.UserAgent(),
+	}),
+})
+```
+
+- [ ] **Step 8: Implement login throttle and wire auth handler**
 
 Create `backend/internal/auth/throttle.go`:
 
@@ -3819,7 +4047,7 @@ On successful login:
 throttle.Reset(key)
 ```
 
-- [ ] **Step 8: Implement expired session cleanup**
+- [ ] **Step 9: Implement expired session cleanup**
 
 Implement `DeleteExpiredSessions` in PostgreSQL:
 
@@ -3877,7 +4105,7 @@ defer stopCleanup()
 go service.StartExpiredSessionCleanup(cleanupCtx, store, authCfg.SessionCleanup.Interval)
 ```
 
-- [ ] **Step 9: Wire router middleware**
+- [ ] **Step 10: Wire router middleware**
 
 Update `backend/internal/router/router.go`:
 
@@ -3893,11 +4121,11 @@ Update existing mutating auth/router tests to send an allowed origin:
 req.Header.Set("Origin", "https://flowspace.example.com")
 ```
 
-- [ ] **Step 10: Run hardening tests**
+- [ ] **Step 11: Run hardening tests**
 
 ```bash
 (cd backend && go test ./internal/middleware -run 'CSRF|CORS' -count=1 -v)
-(cd backend && go test ./internal/auth -run LoginThrottle -count=1 -v)
+(cd backend && go test ./internal/auth -run 'SanitizeAuditMetadata|LoginThrottle' -count=1 -v)
 (cd backend && go test ./internal/handler ./internal/router -run 'Login|CSRF|CORS' -count=1 -v)
 (cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run DeleteExpiredSessions -count=1 -v)
 (cd backend && go test ./internal/service -run DeleteExpiredSessionsOnce -count=1 -v)
@@ -3905,10 +4133,10 @@ req.Header.Set("Origin", "https://flowspace.example.com")
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add backend/internal/middleware/csrf.go backend/internal/middleware/csrf_test.go backend/internal/middleware/cors.go backend/internal/auth/throttle.go backend/internal/auth/throttle_test.go backend/internal/handler/auth.go backend/internal/handler/auth_test.go backend/internal/router/router.go backend/internal/storage/store.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go backend/internal/storage/contracttest/auth_contract_tests.go backend/internal/service/session_cleanup.go backend/internal/service/session_cleanup_test.go backend/cmd/server/main.go
+git add backend/internal/middleware/csrf.go backend/internal/middleware/csrf_test.go backend/internal/middleware/cors.go backend/internal/auth/audit.go backend/internal/auth/audit_test.go backend/internal/auth/throttle.go backend/internal/auth/throttle_test.go backend/internal/handler/auth.go backend/internal/handler/auth_test.go backend/internal/router/router.go backend/internal/storage/store.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go backend/internal/storage/contracttest/auth_contract_tests.go backend/internal/service/session_cleanup.go backend/internal/service/session_cleanup_test.go backend/cmd/server/main.go
 git commit -m "feat: harden auth session security"
 ```
 
@@ -3921,6 +4149,7 @@ git commit -m "feat: harden auth session security"
 - Create: `backend/internal/router/workspace_isolation_test.go`
 - Create: `backend/internal/router/system_directories_auth_test.go`
 - Create: `backend/internal/router/inbox_conversion_test.go`
+- Create: `backend/internal/router/audit_metadata_test.go`
 
 - [ ] **Step 1: Add unauthenticated and cross-user tests**
 
@@ -3932,6 +4161,7 @@ package router
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -3965,6 +4195,51 @@ func TestUserCannotReadOtherWorkspaceNote(t *testing.T) {
 		t.Fatalf("owner status = %d, want 200", w.Code)
 	}
 }
+
+func TestNewUserFirstLoginSeesDefaultWorkspaceData(t *testing.T) {
+	r, adminCookie := setupAdminIntegrationRouter(t)
+	createBody := `{"email":"new-user@example.com","display_name":"New User","temporary_password":"abc12345","role":"user"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	loginBody := `{"email":"new-user@example.com","password":"abc12345","remember_me":false}`
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", w.Code, w.Body.String())
+	}
+	userCookie := w.Result().Cookies()[0]
+
+	req = httptest.NewRequest(http.MethodGet, "/api/folders", nil)
+	req.AddCookie(userCookie)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("folders status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "__uncategorized") {
+		t.Fatalf("default folders missing: %s", w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/task-projects", nil)
+	req.AddCookie(userCookie)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task projects status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "personal") {
+		t.Fatalf("default personal project missing: %s", w.Body.String())
+	}
+}
 ```
 
 - [ ] **Step 2: Add system directories route registration test**
@@ -3984,7 +4259,70 @@ func TestSystemDirectoriesRouteAbsentWhenDisabled(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Add inbox conversion rollback test**
+- [ ] **Step 3: Add audit metadata secret-redaction integration tests**
+
+Create `backend/internal/router/audit_metadata_test.go`:
+
+```go
+package router
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestResetPasswordAuditMetadataDoesNotStoreSecrets(t *testing.T) {
+	r, adminCookie, targetUserID := setupAdminUserScenario(t)
+	body := `{"temporary_password":"TempPass123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetUserID+"/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	metadata := latestAuditMetadata(t, "auth.reset_password", targetUserID)
+	assertAuditMetadataDoesNotContain(t, metadata, []string{"TempPass123", "temporary_password", "password_hash", "session_token", "fs_session", "authorization"})
+}
+
+func TestSystemDirectoriesAuditMetadataDoesNotStoreRequestSecrets(t *testing.T) {
+	r, adminCookie := setupIntegrationRouterWithLocalDirectories(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/api/system/directories?path=C:/Users", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	metadata := latestAuditMetadata(t, "system.directories.list", "")
+	assertAuditMetadataDoesNotContain(t, metadata, []string{"secret-token", "authorization", "fs_session", "session_token", "cookie"})
+}
+
+func assertAuditMetadataDoesNotContain(t *testing.T, metadata map[string]any, forbidden []string) {
+	t.Helper()
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal audit metadata: %v", err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, value := range forbidden {
+		if strings.Contains(text, strings.ToLower(value)) {
+			t.Fatalf("audit metadata contains %q: %s", value, text)
+		}
+	}
+}
+```
+
+- [ ] **Step 4: Add inbox conversion rollback test**
 
 ```go
 func TestInboxConvertRollsBackCreatedEntityWhenMarkFails(t *testing.T) {
@@ -3999,18 +4337,18 @@ func TestInboxConvertRollsBackCreatedEntityWhenMarkFails(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run integration tests**
+- [ ] **Step 5: Run integration tests**
 
 ```bash
-cd backend && go test ./internal/router -run 'Auth|Workspace|System|Inbox' -count=1 -v
+cd backend && go test ./internal/router -run 'Auth|Workspace|System|Inbox|AuditMetadata' -count=1 -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add backend/internal/router/auth_integration_test.go backend/internal/router/workspace_isolation_test.go backend/internal/router/system_directories_auth_test.go backend/internal/router/inbox_conversion_test.go
+git add backend/internal/router/auth_integration_test.go backend/internal/router/workspace_isolation_test.go backend/internal/router/system_directories_auth_test.go backend/internal/router/inbox_conversion_test.go backend/internal/router/audit_metadata_test.go
 git commit -m "test: add auth isolation integration coverage"
 ```
 
@@ -4019,6 +4357,8 @@ git commit -m "test: add auth isolation integration coverage"
 ### Task 14: Full Verification And Release Notes
 
 **Files:**
+- Modify: `docker-compose.yml`
+- Modify: `docker-compose.postgres.yml`
 - Create: `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`
 
 - [ ] **Step 1: Run full backend tests**
@@ -4046,7 +4386,38 @@ rg -n "password|temporary_password|session|cookie|authorization|token" backend/i
 
 Expected: first command has no protected business-flow hits. Second command is reviewed to confirm audit metadata never writes secrets.
 
-- [ ] **Step 4: Write rollout notes**
+- [ ] **Step 4: Add docker compose auth environment passthrough**
+
+Update the backend service environment in `docker-compose.yml` and the local PostgreSQL stack in `docker-compose.postgres.yml` when it includes a backend service. Keep existing database, MinIO, AI, Notion, and timezone variables unchanged, and add auth variables as pass-through values:
+
+```yaml
+environment:
+  FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL: ${FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL:-}
+  FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD: ${FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD:-}
+  FLOWSPACE_BOOTSTRAP_ADMIN_NAME: ${FLOWSPACE_BOOTSTRAP_ADMIN_NAME:-}
+  FLOWSPACE_SESSION_SECRET: ${FLOWSPACE_SESSION_SECRET:?FLOWSPACE_SESSION_SECRET is required}
+  FLOWSPACE_ALLOWED_ORIGINS: ${FLOWSPACE_ALLOWED_ORIGINS:-http://localhost:4200}
+  FLOWSPACE_COOKIE_SECURE: ${FLOWSPACE_COOKIE_SECURE:-false}
+  FLOWSPACE_SESSION_TTL: ${FLOWSPACE_SESSION_TTL:-12h}
+  FLOWSPACE_REMEMBER_SESSION_TTL: ${FLOWSPACE_REMEMBER_SESSION_TTL:-720h}
+  FLOWSPACE_LOGIN_MAX_FAILURES: ${FLOWSPACE_LOGIN_MAX_FAILURES:-5}
+  FLOWSPACE_LOGIN_WINDOW: ${FLOWSPACE_LOGIN_WINDOW:-15m}
+  FLOWSPACE_SESSION_CLEANUP_INTERVAL: ${FLOWSPACE_SESSION_CLEANUP_INTERVAL:-1h}
+  FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER: ${FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER:-false}
+  FLOWSPACE_ALLOWED_LOCAL_ROOTS: ${FLOWSPACE_ALLOWED_LOCAL_ROOTS:-}
+```
+
+Run compose config validation after setting a local dummy `FLOWSPACE_SESSION_SECRET`:
+
+```bash
+FLOWSPACE_SESSION_SECRET=local-compose-check docker compose -f docker-compose.yml config >/dev/null
+FLOWSPACE_SESSION_SECRET=local-compose-check docker compose -f docker-compose.postgres.yml config >/dev/null
+rg -n "FLOWSPACE_SESSION_SECRET|FLOWSPACE_ALLOWED_ORIGINS|FLOWSPACE_SESSION_TTL|FLOWSPACE_REMEMBER_SESSION_TTL|FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER" docker-compose.yml docker-compose.postgres.yml
+```
+
+Expected: compose config succeeds and both compose files either pass auth environment to the backend service or clearly have no backend service to configure.
+
+- [ ] **Step 5: Write rollout notes**
 
 Create `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`:
 
@@ -4061,6 +4432,8 @@ Create `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`:
 - FLOWSPACE_SESSION_SECRET
 - FLOWSPACE_ALLOWED_ORIGINS
 - FLOWSPACE_COOKIE_SECURE
+- FLOWSPACE_SESSION_TTL
+- FLOWSPACE_REMEMBER_SESSION_TTL
 - FLOWSPACE_LOGIN_MAX_FAILURES
 - FLOWSPACE_LOGIN_WINDOW
 - FLOWSPACE_SESSION_CLEANUP_INTERVAL
@@ -4084,14 +4457,14 @@ Create `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`:
 3. Deploy the previous backend and frontend build.
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md
+git add docker-compose.yml docker-compose.postgres.yml docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md
 git commit -m "docs: add multi-user auth rollout notes"
 ```
 
-- [ ] **Step 6: Final status**
+- [ ] **Step 7: Final status**
 
 ```bash
 git status --short
