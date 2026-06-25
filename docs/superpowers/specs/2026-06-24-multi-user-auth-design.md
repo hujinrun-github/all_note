@@ -355,14 +355,63 @@ UNIQUE (workspace_id, id)
 -- tasks.id 可以仍是 PRIMARY KEY，但 recurrence / roadmap / sync 关联需要这个唯一约束
 UNIQUE (workspace_id, id)
 
+-- events.id 可以仍是 PRIMARY KEY；保持和 note/task/event 搜索实体一致
+UNIQUE (workspace_id, id)
+
 -- sync_targets.id 可以仍是 PRIMARY KEY，但 binding/state/claim 需要这个唯一约束
 UNIQUE (workspace_id, id)
 
 -- learning_roadmaps.id 可以仍是 PRIMARY KEY，但 roadmap_nodes/edges 需要这个唯一约束
 UNIQUE (workspace_id, id)
+
+-- roadmap_nodes.id 可以仍是 PRIMARY KEY，但 tasks/resources 按 node id 关联需要这个唯一约束
+UNIQUE (workspace_id, id)
+
+-- roadmap_nodes parent/edge 需要同时约束同一 roadmap 内的 node
+UNIQUE (workspace_id, roadmap_id, id)
+
+-- note_sync_bindings 供 sync_external_claims 使用复合 FK
+UNIQUE (workspace_id, note_id, target_id)
 ```
 
 迁移时必须先删除旧的单列外键，再按 `workspace_id` 重建复合外键。不能只给子表加 `workspace_id`，否则数据库不会阻止跨 workspace 的 note-project、note-target 或 roadmap-node 关联。
+
+### 旧外键到复合外键迁移清单
+
+finalizer 必须覆盖现有 schema 里的所有跨业务表引用，不能只处理 folder/project 示例。下表中的“新 FK”省略索引名，但实现时需要显式命名，便于幂等迁移和回滚诊断。
+
+| 表 | 旧 FK / 约束 | 新 FK / 约束 |
+| --- | --- | --- |
+| `notes` | `folder_id REFERENCES folders(id)` | `(workspace_id, folder_id) REFERENCES folders(workspace_id, id)` |
+| `tasks` | `project_id REFERENCES task_projects(id)` | `(workspace_id, project_id) REFERENCES task_projects(workspace_id, id)`；删除 project 时先在同 workspace 内迁移到 `personal`，再删除 |
+| `tasks` | `note_id REFERENCES notes(id)` | `(workspace_id, note_id) REFERENCES notes(workspace_id, id) ON DELETE SET NULL` |
+| `tasks` | `roadmap_node_id REFERENCES roadmap_nodes(id)` | `(workspace_id, roadmap_node_id) REFERENCES roadmap_nodes(workspace_id, id) ON DELETE SET NULL` |
+| `learning_roadmaps` | `project_id UNIQUE REFERENCES task_projects(id)` | `UNIQUE(workspace_id, project_id)`，并用 `(workspace_id, project_id) REFERENCES task_projects(workspace_id, id)` |
+| `roadmap_nodes` | `roadmap_id REFERENCES learning_roadmaps(id)` | `(workspace_id, roadmap_id) REFERENCES learning_roadmaps(workspace_id, id)` |
+| `roadmap_nodes` | Postgres: `(roadmap_id, parent_id) REFERENCES roadmap_nodes(roadmap_id, id)`；SQLite: `parent_id REFERENCES roadmap_nodes(id)` | `(workspace_id, roadmap_id, parent_id) REFERENCES roadmap_nodes(workspace_id, roadmap_id, id)` |
+| `roadmap_edges` | `roadmap_id REFERENCES learning_roadmaps(id)` | `(workspace_id, roadmap_id) REFERENCES learning_roadmaps(workspace_id, id)` |
+| `roadmap_edges` | Postgres: `(roadmap_id, source_node_id) REFERENCES roadmap_nodes(roadmap_id, id)`；SQLite: `source_node_id REFERENCES roadmap_nodes(id)` | `(workspace_id, roadmap_id, source_node_id) REFERENCES roadmap_nodes(workspace_id, roadmap_id, id)` |
+| `roadmap_edges` | Postgres: `(roadmap_id, target_node_id) REFERENCES roadmap_nodes(roadmap_id, id)`；SQLite: `target_node_id REFERENCES roadmap_nodes(id)` | `(workspace_id, roadmap_id, target_node_id) REFERENCES roadmap_nodes(workspace_id, roadmap_id, id)` |
+| `roadmap_resources` | `node_id REFERENCES roadmap_nodes(id)` | `(workspace_id, node_id) REFERENCES roadmap_nodes(workspace_id, id)` |
+| `events` | `note_id REFERENCES notes(id)` | `(workspace_id, note_id) REFERENCES notes(workspace_id, id) ON DELETE SET NULL` |
+| `note_project_links` | `note_id REFERENCES notes(id)` | `(workspace_id, note_id) REFERENCES notes(workspace_id, id)` |
+| `note_project_links` | `project_id REFERENCES task_projects(id)` | `(workspace_id, project_id) REFERENCES task_projects(workspace_id, id)` |
+| `task_recurrence_rules` | `task_id PRIMARY KEY REFERENCES tasks(id)` | `PRIMARY KEY(workspace_id, task_id)`，并用 `(workspace_id, task_id) REFERENCES tasks(workspace_id, id)` |
+| `task_occurrences` | `task_id REFERENCES tasks(id)` | `PRIMARY KEY(workspace_id, task_id, occurrence_date)`，并用 `(workspace_id, task_id) REFERENCES tasks(workspace_id, id)` |
+| `note_sync_state` | `note_id REFERENCES notes(id)` | `(workspace_id, note_id) REFERENCES notes(workspace_id, id)` |
+| `note_sync_state` | `target_id REFERENCES sync_targets(id)` | `(workspace_id, target_id) REFERENCES sync_targets(workspace_id, id)` |
+| `note_sync_bindings` | `note_id PRIMARY KEY REFERENCES notes(id)` | `PRIMARY KEY(workspace_id, note_id)`，并用 `(workspace_id, note_id) REFERENCES notes(workspace_id, id)` |
+| `note_sync_bindings` | `target_id REFERENCES sync_targets(id)` | `(workspace_id, target_id) REFERENCES sync_targets(workspace_id, id)` |
+| `sync_external_claims` | `external_key PRIMARY KEY` | `PRIMARY KEY(workspace_id, external_key)` |
+| `sync_external_claims` | `note_id UNIQUE` | `UNIQUE(workspace_id, note_id)` |
+| `sync_external_claims` | `(note_id, target_id) REFERENCES note_sync_bindings(note_id, target_id)` | `(workspace_id, note_id, target_id) REFERENCES note_sync_bindings(workspace_id, note_id, target_id)` |
+| `note_sync_suppressions` | `note_id REFERENCES notes(id)` | `(workspace_id, note_id) REFERENCES notes(workspace_id, id)` |
+| `note_sync_suppressions` | `target_id REFERENCES sync_targets(id)` | `(workspace_id, target_id) REFERENCES sync_targets(workspace_id, id)` |
+| `sync_import_tombstones` | `external_key PRIMARY KEY` | `PRIMARY KEY(workspace_id, external_key)` |
+| `sync_import_tombstones` | `target_id REFERENCES sync_targets(id)` | `(workspace_id, target_id) REFERENCES sync_targets(workspace_id, id)` |
+| `sync_import_tombstones` | `UNIQUE(target_id, former_note_id, external_type)` | `UNIQUE(workspace_id, target_id, former_note_id, external_type)` |
+
+Postgres 对 `ON DELETE SET NULL` 或 `SET DEFAULT` 的复合 FK 需要避免把 `workspace_id` 一起置空或置默认值。实现时优先使用列列表形式只作用于 nullable 子列；如果 provider 不支持列列表动作，则在 service transaction 中先清理或迁移子引用，再执行父表删除。
 
 ### 唯一约束调整
 
@@ -437,6 +486,8 @@ Go bootstrap/backfill 职责：
    - legacy 升级：先把现有 `folders`、`task_projects` 和业务数据回填到 bootstrap workspace；只在缺少 `__uncategorized`、`__work`、`__personal` 或 `personal` 时补默认项。
 5. legacy 回填完成后再校验所有业务表 `workspace_id IS NOT NULL`，并校验跨表 workspace 一致性。
 6. 调用 provider-specific finalizer 应用 NOT NULL、复合主键、复合唯一索引和复合外键。
+
+bootstrap/backfill 写默认数据时没有 HTTP 请求身份，必须显式构造 bootstrap workspace 的 `WorkspaceScope`。不能调用依赖 session identity 的 handler 逻辑，也不能让 repository 在缺少 scope 时回退到全局写入。
 
 约束 finalizer 可以实现为 Go 代码中的幂等 DDL 步骤，也可以实现为单独 SQL 文件，但它必须在 bootstrap/backfill 成功后运行。不能让普通 migration runner 在 bootstrap 之前直接执行最终 NOT NULL 和复合外键，否则空库以外的升级路径会失败。
 
@@ -533,11 +584,18 @@ type Store interface {
     Auth() AuthRepository
 }
 
+// backend/internal/model/auth.go
+type UserListFilter struct {
+    Page     int
+    PageSize int
+    Query    string
+}
+
 type AuthRepository interface {
     CreateUser(ctx context.Context, user *model.User) error
     GetUserByEmail(ctx context.Context, email string) (*model.User, error)
     GetUserByID(ctx context.Context, id string) (*model.User, error)
-    ListUsers(ctx context.Context, page, pageSize int) ([]model.User, int, error)
+    ListUsers(ctx context.Context, filter model.UserListFilter) ([]model.User, int, error)
     UpdateUser(ctx context.Context, id string, req *model.UpdateUserRequest) (*model.User, error)
     UpdateUserPassword(ctx context.Context, userID, passwordHash string, mustChangePassword bool) error
     CreateWorkspace(ctx context.Context, workspace *model.Workspace) error
@@ -563,6 +621,10 @@ type RequestIdentity struct {
     Role               string
     MustChangePassword bool
 }
+
+type WorkspaceScope struct {
+    WorkspaceID string
+}
 ```
 
 handler 获取方式：
@@ -571,14 +633,23 @@ handler 获取方式：
 identity, ok := auth.IdentityFromContext(c.Request.Context())
 ```
 
-repository 不直接依赖 Gin。workspace 通过 `context.Context` 或显式 filter 字段传入。推荐使用 context helper，减少接口签名大面积膨胀：
+`RequestIdentity` 表示操作者，`WorkspaceScope` 表示本次业务数据读写的目标 workspace。普通登录请求中两者来自同一个 session；账号开通、默认数据 provisioning、legacy bootstrap 这类流程中，actor 和 target workspace 必须分开。
+
+repository 不直接依赖 Gin。业务 workspace 通过 `WorkspaceScope` 或显式 filter 字段传入。推荐使用 context helper，减少接口签名大面积膨胀：
 
 ```go
 ctx = auth.ContextWithIdentity(ctx, identity)
+ctx = auth.ContextWithWorkspaceScope(ctx, identity.WorkspaceID)
 workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 ```
 
-所有 repository 写 SQL 前必须从 ctx 取 workspaceID。缺少 workspaceID 时返回 `auth.ErrMissingWorkspace`，handler 映射为 500，因为受保护路由缺少 workspace 是服务端接线错误。
+所有业务 repository 写 SQL 前必须从 `WorkspaceScope` 取 workspaceID，而不是从 actor identity 推导。缺少 workspace scope 时返回 `auth.ErrMissingWorkspace`，handler 映射为 500，因为受保护路由缺少 workspace 是服务端接线错误。
+
+provisioning 规则：
+
+- 管理员创建用户时，audit actor 使用管理员 `RequestIdentity`，默认 folders/project 写入使用新用户 workspace 的 `WorkspaceScope`。
+- legacy bootstrap 没有请求身份，使用 system actor 或空 actor 写 audit，但仍必须先构造 bootstrap workspace 的 `WorkspaceScope` 再写默认数据。
+- 禁止直接复用 admin 请求 ctx 写目标用户默认数据；否则默认 folder/project 会落入 admin workspace。
 
 ### Membership 校验
 
@@ -740,9 +811,18 @@ systemAdmin.Use(authMiddleware.RequireAdmin())
 active admin count must remain >= 1
 ```
 
+并发保护：
+
+- 禁用、启用、降级、升为管理员都在 `Store.Transact(ctx, fn)` 内完成。
+- 禁用或降级 admin 前，Postgres 使用 `SELECT id FROM users WHERE role = 'admin' AND status = 'active' FOR UPDATE` 锁定 active admin 集合，再按本次变更后的结果判断是否仍有至少一个 active admin。
+- SQLite 使用 `BEGIN IMMEDIATE` 或 provider 等价写锁包住检查与更新，避免两个写事务同时通过计数检查。
+- 如果并发变更导致操作后 active admin 数量会变成 0，返回 `LAST_ADMIN_REQUIRED`，不写入状态变更或 audit event。
+
 ### 用户列表
 
 `GET /api/admin/users?page=1&page_size=20&q=alice`
+
+`q` 通过 `model.UserListFilter.Query` 传入 repository，匹配 `email` 和 `display_name`，按 provider 使用 `ILIKE` 或大小写归一化 LIKE。
 
 返回字段：
 
@@ -791,6 +871,7 @@ active admin count must remain >= 1
 事务要求：
 
 - 创建用户必须在一个 `Store.Transact(ctx, fn)` 中完成 user、workspace、membership、默认 folders、personal project 和 audit event 写入。
+- 默认 folders 和 personal project 必须使用 `auth.ContextWithWorkspaceScope(txCtx, newWorkspaceID)` 写入；audit event 的 actor 仍使用管理员 identity。
 - 任一步失败都回滚整个事务，不能留下没有 workspace 的 user、没有 owner 的 workspace 或半写入默认数据。
 - 集成测试需要模拟默认 project 写入失败，验证 user/workspace/membership 均未落库。
 
@@ -917,6 +998,8 @@ SQLite 搜索迁移规则：
 - FTS trigger 仍只负责同步 title/body/tags 等搜索内容，不把 workspace_id 写进 FTS 虚表；workspace 过滤由 JOIN 的业务表提供。
 - LIKE fallback 直接在业务表 WHERE 中加 `workspace_id = ?`。
 - 删除业务数据时，FTS 删除 trigger 继续按 rowid 删除；rowid 来源必须来自当前 workspace 的业务表查询。
+- 如果 SQLite finalizer 通过重建表迁移 `notes`、`tasks` 或 `events`，表 swap 后必须重建对应 FTS 虚表和 triggers。优先执行 `INSERT INTO notes_fts(notes_fts) VALUES('rebuild')`、`tasks_fts` rebuild、`events_fts` rebuild；如果外部内容 FTS rebuild 不可用，则清空虚表并从业务表全量回灌。
+- FTS rebuild 后校验 `notes_fts`、`tasks_fts`、`events_fts` 可按业务表 rowid JOIN，并跑搜索 contract tests；不能只验证业务表行数。
 
 示例：
 
@@ -956,6 +1039,13 @@ note_sync_binding:{workspace_id}:{note_id}
 
 ```sql
 UNIQUE (workspace_id, project_id)
+```
+
+`roadmap_nodes` 保留 `id` 全局随机主键，同时补两个 workspace 维度唯一约束，供不同关联路径建立复合外键：
+
+```sql
+UNIQUE (workspace_id, id)
+UNIQUE (workspace_id, roadmap_id, id)
 ```
 
 `roadmap_nodes`、`roadmap_edges`、`roadmap_resources` 查询全部通过 workspace 限定。`tasks.roadmap_node_id` 更新 roadmap node 状态时，必须更新同 workspace 的 node：
@@ -1151,6 +1241,9 @@ FLOWSPACE_BOOTSTRAP_ADMIN_NAME
 15. `RequirePasswordSettled()` 允许 `/api/auth/me`、`/api/auth/change-password`、`/api/auth/logout`，阻止 protected/admin/system 路由。
 16. 创建用户任一步写入失败会回滚 user、workspace、membership、默认数据和 audit event。
 17. audit metadata 不包含临时密码、Cookie、session token 或任何 secret。
+18. 管理员创建用户时默认 folders/project 写入新用户 workspace，而不是管理员 workspace。
+19. 两个 admin 并发禁用或降级时，不能把最后一个 active admin 消除。
+20. `/api/admin/users?q=alice` 会把 query 传入 repository filter，并只匹配 email/display_name。
 
 ### Storage contract tests
 
@@ -1170,6 +1263,9 @@ Postgres 和 SQLite 都要覆盖：
 12. `task_occurrences` 完成记录按 workspace 隔离。
 13. `users.default_workspace_id` 指向当前唯一 owned workspace。
 14. v1 `workspaces.owner_user_id` 唯一约束阻止同一用户创建第二个 owned workspace。
+15. roadmap node 相关复合外键能阻止 task/resource/edge 指向其他 workspace 的 node。
+16. sync binding、claim、suppression、tombstone 相关复合外键能阻止跨 workspace note-target 关联。
+17. SQLite 表重建后 FTS rebuild 可用，搜索通过 rowid JOIN 仍返回正确结果。
 
 ### API 集成测试
 
@@ -1183,6 +1279,8 @@ Postgres 和 SQLite 都要覆盖：
 8. `/api/system/directories` 只能在 admin、开关开启、路径命中白名单时返回目录。
 9. legacy 数据库升级时先回填已有 folders/projects，再补缺失默认项，不因 `__uncategorized` 或 `personal` 已存在而失败。
 10. 创建用户提交的是临时密码，用户首次登录必须先改密。
+11. legacy bootstrap 在没有请求身份时仍用 bootstrap workspace scope 写默认数据。
+12. 禁用或降级最后一个 active admin 的并发竞争只允许一个事务成功，另一个返回 `LAST_ADMIN_REQUIRED`。
 
 ### 前端测试
 
@@ -1289,6 +1387,12 @@ Postgres 和 SQLite 都要覆盖：
 25. 如果已有数据但没有 bootstrap admin 配置，后端启动失败，避免产生不可登录系统。
 26. 禁用用户会撤销所有 session。
 27. 不能禁用或降级最后一个 active admin。
+28. `RequestIdentity` 只表示 actor，业务 repository 使用单独的 `WorkspaceScope` 选择目标 workspace。
+29. 创建用户和 bootstrap 默认数据写入必须显式使用 target workspace scope，不能复用 admin 请求 workspace。
+30. 旧单列外键必须按完整清单迁移为复合外键，roadmap node 父表必须补 workspace 维度唯一约束。
+31. 禁用或降级 admin 的最后管理员保护必须有事务级并发保护。
+32. 管理员用户列表保留 `q` 搜索参数，并在 repository filter 中实现。
+33. SQLite 表重建迁移后必须 rebuild FTS 虚表和 triggers，并通过搜索 contract tests 验证。
 
 ## 风险与缓解
 
@@ -1319,10 +1423,10 @@ Obsidian/Notion 同步代码有批量读取 `ListAllNotes`、`ListSyncStatesByTa
 缓解：
 
 - 先添加 workspace_id 并回填。
-- 先删除引用 `folders(id)`、`task_projects(id)` 的旧外键。
+- 先按“旧外键到复合外键迁移清单”删除所有旧单列外键，包括 `tasks.note_id`、`events.note_id`、roadmap 节点/资源、recurrence 和 sync 相关引用。
 - 将 `folders`、`task_projects` 重建或迁移为 `PRIMARY KEY (workspace_id, id)`。
-- 为 `notes(workspace_id, folder_id)`、`tasks(workspace_id, project_id)`、`note_project_links(workspace_id, note_id, project_id)` 等路径重建复合外键。
-- 为仍保留全局 id 主键的父表补 `UNIQUE(workspace_id, id)`，供复合外键引用。
+- 为清单中的每条路径重建复合外键。
+- 为仍保留全局 id 主键的父表补 `UNIQUE(workspace_id, id)`，roadmap 节点额外补 `UNIQUE(workspace_id, roadmap_id, id)`，供复合外键引用。
 - 再删除旧的全局唯一约束。
 - 对 SQLite 使用重建表策略时，迁移前后跑 contract tests。
 
