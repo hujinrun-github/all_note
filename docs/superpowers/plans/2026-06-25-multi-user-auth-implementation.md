@@ -1,0 +1,2344 @@
+# Multi-User Auth Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Implement login, session auth, account management, and workspace-based data isolation for FlowSpace, with safe legacy migration for PostgreSQL and SQLite.
+
+**Architecture:** Add auth/session/account modules beside existing handlers and storage providers, then make all business repositories resolve data through a `WorkspaceScope` rather than global queries. Migrations run in two parts: SQL adds auth tables and nullable workspace columns, Go bootstrap/backfill creates the first admin workspace and assigns legacy data, and provider finalizers apply NOT NULL, composite keys, composite FKs, and SQLite FTS rebuilds.
+
+**Tech Stack:** Go 1.26, Gin, database/sql, PostgreSQL via pgx, SQLite via modernc.org/sqlite, bcrypt, React 19, React Router, TanStack Query, Vitest
+
+---
+
+## Source Spec
+
+- `docs/superpowers/specs/2026-06-24-multi-user-auth-design.md`
+
+## Execution Rules
+
+- Create a feature branch before implementation: `git switch -c codex/multi-user-auth`.
+- Work in small commits. Every task below ends with a commit.
+- Keep `FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD` out of SQL and out of audit metadata.
+- Never let a repository query fall back to global data when `WorkspaceScope` is absent.
+- Do not expose `/api/system/directories` unless `FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER=true`.
+- Do not allow Phase 1 auth endpoints to ship without Phase 2 workspace isolation in a multi-user deployment.
+- Run provider contract tests for both PostgreSQL and SQLite after every storage task.
+
+---
+
+## File Map
+
+| File | Responsibility | Change |
+| --- | --- | --- |
+| `backend/internal/model/auth.go` | User, workspace, session, audit, auth/admin request models | Create |
+| `backend/internal/auth/context.go` | `RequestIdentity`, `WorkspaceScope`, context helpers | Create |
+| `backend/internal/auth/password.go` | bcrypt hash/verify and password policy | Create |
+| `backend/internal/auth/session.go` | session token generation and token hashing | Create |
+| `backend/internal/auth/errors.go` | shared auth errors and error codes | Create |
+| `backend/internal/storage/store.go` | Store interface and repository interfaces | Add `Auth()`, `UserListFilter`, workspace-aware contracts |
+| `backend/internal/storage/contracttest/auth_contract_tests.go` | Auth storage contract tests | Create |
+| `backend/internal/storage/contracttest/workspace_isolation_contract_tests.go` | Cross-workspace isolation tests | Create |
+| `backend/internal/storage/postgres/auth.go` | PostgreSQL AuthRepository | Create |
+| `backend/internal/storage/sqlite/auth.go` | SQLite AuthRepository | Create |
+| `backend/db/migrations/postgres/0004_multi_user_auth_schema.sql` | PostgreSQL auth schema and nullable workspace columns | Create |
+| `backend/internal/storage/postgres/auth_migrations.go` | Postgres backfill/finalizer helpers | Create |
+| `backend/internal/storage/sqlite/auth_migrations.go` | SQLite table rebuild, backfill, FTS rebuild | Create |
+| `backend/internal/bootstrap/auth_bootstrap.go` | bootstrap admin and legacy data assignment | Create |
+| `backend/internal/middleware/auth.go` | session restore, admin gate, password-settled gate | Create |
+| `backend/internal/handler/auth.go` | login, logout, me, change password | Create |
+| `backend/internal/handler/admin_users.go` | admin list/create/update/reset/enable/disable | Create |
+| `backend/internal/router/router.go` | public/auth/protected/admin route groups | Modify |
+| `backend/internal/config/auth.go` | cookie, bootstrap, local directory browser config | Create |
+| `backend/internal/service/inbox.go` | workspace-scoped transactional inbox conversion | Modify |
+| `backend/internal/service/sync_dispatch.go` | require workspace scope for sync entry points | Modify |
+| `backend/internal/service/notes.go` | pass ctx/store through note service paths | Modify |
+| `backend/internal/service/tasks.go` | pass ctx/store through task service paths | Modify |
+| `backend/internal/service/events.go` | pass ctx/store through event service paths | Modify |
+| `frontend/src/api/auth.ts` | auth and account API client | Create |
+| `frontend/src/hooks/useAuth.tsx` | auth provider, session restore, logout | Create |
+| `frontend/src/components/auth/ProtectedRoute.tsx` | protected route gate | Create |
+| `frontend/src/components/auth/AdminRoute.tsx` | admin route gate | Create |
+| `frontend/src/routes/Login.tsx` | real login form integration | Modify |
+| `frontend/src/routes/ChangePassword.tsx` | forced password change screen | Create |
+| `frontend/src/routes/AccountAdmin.tsx` | user management UI | Create |
+| `frontend/src/router.tsx` | protected shell and admin route | Modify |
+| `frontend/src/components/layout/TopBar.tsx` | account menu and logout | Modify |
+| `frontend/src/components/layout/Sidebar.tsx` | admin users nav only for admins | Modify |
+
+---
+
+## Phase 0: Baseline
+
+### Task 0: Create Branch And Capture Baseline
+
+**Files:**
+- No file changes expected
+
+- [ ] **Step 1: Create implementation branch**
+
+```bash
+git switch -c codex/multi-user-auth
+```
+
+Expected: current branch becomes `codex/multi-user-auth`.
+
+- [ ] **Step 2: Run backend baseline tests**
+
+```bash
+cd backend && go test ./cmd/server ./cmd/seed ./internal/auth ./internal/bootstrap ./internal/config ./internal/handler ./internal/middleware ./internal/migration ./internal/model ./internal/repository ./internal/router ./internal/service ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite
+```
+
+Expected: existing backend tests pass before auth work begins.
+
+- [ ] **Step 3: Run frontend baseline tests**
+
+```bash
+cd frontend && npm run test
+```
+
+Expected: existing frontend unit tests pass before auth work begins.
+
+- [ ] **Step 4: Confirm baseline did not change files**
+
+Run:
+
+```bash
+git status --short
+```
+
+Expected: no output. If there is output, stop and inspect before starting Task 1.
+
+---
+
+## Phase 1: Auth Core Types
+
+### Task 1: Add Auth Models And Context Helpers
+
+**Files:**
+- Create: `backend/internal/model/auth.go`
+- Create: `backend/internal/auth/context.go`
+- Create: `backend/internal/auth/errors.go`
+- Test: `backend/internal/auth/context_test.go`
+
+- [ ] **Step 1: Write failing context tests**
+
+Create `backend/internal/auth/context_test.go`:
+
+```go
+package auth
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestIdentityAndWorkspaceScopeAreSeparate(t *testing.T) {
+	base := context.Background()
+	identity := RequestIdentity{
+		UserID:             "user_admin",
+		WorkspaceID:        "workspace_admin",
+		Role:               "admin",
+		MustChangePassword: false,
+	}
+
+	ctx := ContextWithIdentity(base, identity)
+	ctx = ContextWithWorkspaceScope(ctx, "workspace_target")
+
+	gotIdentity, ok := IdentityFromContext(ctx)
+	if !ok {
+		t.Fatal("expected identity in context")
+	}
+	if gotIdentity.WorkspaceID != "workspace_admin" {
+		t.Fatalf("identity workspace = %q, want workspace_admin", gotIdentity.WorkspaceID)
+	}
+
+	scope, err := WorkspaceIDFromContext(ctx)
+	if err != nil {
+		t.Fatalf("workspace scope: %v", err)
+	}
+	if scope != "workspace_target" {
+		t.Fatalf("scope = %q, want workspace_target", scope)
+	}
+}
+
+func TestWorkspaceIDFromContextMissing(t *testing.T) {
+	_, err := WorkspaceIDFromContext(context.Background())
+	if !errors.Is(err, ErrMissingWorkspace) {
+		t.Fatalf("expected ErrMissingWorkspace, got %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run failing test**
+
+```bash
+cd backend && go test ./internal/auth -run TestIdentityAndWorkspaceScopeAreSeparate -count=1 -v
+```
+
+Expected: FAIL because `backend/internal/auth` does not exist.
+
+- [ ] **Step 3: Implement auth model and context helpers**
+
+Create `backend/internal/model/auth.go`:
+
+```go
+package model
+
+type User struct {
+	ID                 string `json:"id"`
+	Email              string `json:"email"`
+	DisplayName        string `json:"display_name"`
+	PasswordHash       string `json:"-"`
+	MustChangePassword bool   `json:"must_change_password"`
+	DefaultWorkspaceID string `json:"default_workspace_id"`
+	Role               string `json:"role"`
+	Status             string `json:"status"`
+	CreatedAt          int64  `json:"created_at"`
+	UpdatedAt          int64  `json:"updated_at"`
+	LastLoginAt         *int64 `json:"last_login_at,omitempty"`
+	PasswordChangedAt  *int64 `json:"password_changed_at,omitempty"`
+}
+
+type Workspace struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	OwnerUserID string `json:"owner_user_id"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+type WorkspaceMember struct {
+	WorkspaceID string `json:"workspace_id"`
+	UserID      string `json:"user_id"`
+	Role        string `json:"role"`
+	CreatedAt   int64  `json:"created_at"`
+}
+
+type Session struct {
+	ID          string
+	UserID      string
+	WorkspaceID string
+	TokenHash   string
+	UserAgent   string
+	IPAddress   string
+	ExpiresAt   int64
+	RevokedAt   *int64
+	CreatedAt   int64
+	LastSeenAt   int64
+}
+
+type AuditEvent struct {
+	ID           string         `json:"id"`
+	ActorUserID  *string        `json:"actor_user_id,omitempty"`
+	TargetUserID *string        `json:"target_user_id,omitempty"`
+	WorkspaceID  *string        `json:"workspace_id,omitempty"`
+	Action       string         `json:"action"`
+	Metadata     map[string]any `json:"metadata"`
+	CreatedAt    int64          `json:"created_at"`
+}
+
+type CurrentUser struct {
+	User                User      `json:"user"`
+	Workspace           Workspace `json:"workspace"`
+	MustChangePassword  bool      `json:"must_change_password"`
+}
+
+type LoginRequest struct {
+	Email      string `json:"email" binding:"required"`
+	Password   string `json:"password" binding:"required"`
+	RememberMe bool   `json:"remember_me"`
+}
+
+type LoginResponse struct {
+	User      User      `json:"user"`
+	Workspace Workspace `json:"workspace"`
+}
+
+type CreateUserRequest struct {
+	Email             string `json:"email" binding:"required"`
+	DisplayName       string `json:"display_name"`
+	TemporaryPassword string `json:"temporary_password" binding:"required"`
+	Role              string `json:"role" binding:"required"`
+}
+
+type UpdateUserRequest struct {
+	Email       *string `json:"email"`
+	DisplayName *string `json:"display_name"`
+	Role        *string `json:"role"`
+}
+
+type ResetPasswordRequest struct {
+	TemporaryPassword string `json:"temporary_password" binding:"required"`
+}
+
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password" binding:"required"`
+	NewPassword     string `json:"new_password" binding:"required"`
+}
+```
+
+Create `backend/internal/auth/errors.go`:
+
+```go
+package auth
+
+import "errors"
+
+var (
+	ErrMissingWorkspace      = errors.New("missing workspace scope")
+	ErrMissingIdentity       = errors.New("missing request identity")
+	ErrInvalidCredentials    = errors.New("invalid credentials")
+	ErrAccountDisabled       = errors.New("account disabled")
+	ErrPasswordChangeRequired = errors.New("password change required")
+	ErrWorkspaceAccessRevoked = errors.New("workspace access revoked")
+	ErrLastAdminRequired     = errors.New("last active admin required")
+)
+```
+
+Create `backend/internal/auth/context.go`:
+
+```go
+package auth
+
+import "context"
+
+type contextKey string
+
+const (
+	identityKey       contextKey = "flowspace.identity"
+	workspaceScopeKey contextKey = "flowspace.workspace_scope"
+)
+
+type RequestIdentity struct {
+	UserID             string
+	WorkspaceID        string
+	Role               string
+	MustChangePassword bool
+}
+
+type WorkspaceScope struct {
+	WorkspaceID string
+}
+
+func ContextWithIdentity(ctx context.Context, identity RequestIdentity) context.Context {
+	return context.WithValue(ctx, identityKey, identity)
+}
+
+func IdentityFromContext(ctx context.Context) (RequestIdentity, bool) {
+	identity, ok := ctx.Value(identityKey).(RequestIdentity)
+	return identity, ok
+}
+
+func ContextWithWorkspaceScope(ctx context.Context, workspaceID string) context.Context {
+	return context.WithValue(ctx, workspaceScopeKey, WorkspaceScope{WorkspaceID: workspaceID})
+}
+
+func WorkspaceIDFromContext(ctx context.Context) (string, error) {
+	scope, ok := ctx.Value(workspaceScopeKey).(WorkspaceScope)
+	if !ok || scope.WorkspaceID == "" {
+		return "", ErrMissingWorkspace
+	}
+	return scope.WorkspaceID, nil
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+```bash
+cd backend && go test ./internal/auth -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/internal/model/auth.go backend/internal/auth/context.go backend/internal/auth/errors.go backend/internal/auth/context_test.go
+git commit -m "feat: add auth identity and workspace scope"
+```
+
+---
+
+### Task 2: Add Password And Session Utilities
+
+**Files:**
+- Create: `backend/internal/auth/password.go`
+- Create: `backend/internal/auth/session.go`
+- Test: `backend/internal/auth/password_test.go`
+- Test: `backend/internal/auth/session_test.go`
+
+- [ ] **Step 1: Write failing password tests**
+
+Create `backend/internal/auth/password_test.go`:
+
+```go
+package auth
+
+import "testing"
+
+func TestHashAndVerifyPassword(t *testing.T) {
+	hash, err := HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if hash == "secret123" {
+		t.Fatal("hash must not equal plaintext")
+	}
+	if err := VerifyPassword(hash, "secret123"); err != nil {
+		t.Fatalf("verify valid password: %v", err)
+	}
+	if err := VerifyPassword(hash, "wrong123"); err == nil {
+		t.Fatal("expected invalid password error")
+	}
+}
+
+func TestValidatePasswordPolicy(t *testing.T) {
+	if err := ValidatePasswordPolicy("abc12345"); err != nil {
+		t.Fatalf("valid password rejected: %v", err)
+	}
+	if err := ValidatePasswordPolicy("abcdefghi"); err == nil {
+		t.Fatal("expected password without digit to fail")
+	}
+	if err := ValidatePasswordPolicy("123456789"); err == nil {
+		t.Fatal("expected password without letter to fail")
+	}
+	if err := ValidatePasswordPolicy("a1"); err == nil {
+		t.Fatal("expected short password to fail")
+	}
+}
+```
+
+- [ ] **Step 2: Write failing session tests**
+
+Create `backend/internal/auth/session_test.go`:
+
+```go
+package auth
+
+import "testing"
+
+func TestSessionTokenHashIsStableAndNotPlaintext(t *testing.T) {
+	token := "session-token-value"
+	hash1 := HashSessionToken(token)
+	hash2 := HashSessionToken(token)
+	if hash1 != hash2 {
+		t.Fatal("hash must be deterministic")
+	}
+	if hash1 == token {
+		t.Fatal("hash must not equal token")
+	}
+}
+
+func TestGenerateSessionToken(t *testing.T) {
+	token, err := GenerateSessionToken()
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if len(token) < 40 {
+		t.Fatalf("token length = %d, want at least 40", len(token))
+	}
+}
+```
+
+- [ ] **Step 3: Implement password and session utilities**
+
+Create `backend/internal/auth/password.go`:
+
+```go
+package auth
+
+import (
+	"errors"
+	"unicode"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+var ErrWeakPassword = errors.New("weak password")
+
+func HashPassword(password string) (string, error) {
+	if err := ValidatePasswordPolicy(password); err != nil {
+		return "", err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(hash), err
+}
+
+func VerifyPassword(hash string, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+}
+
+func ValidatePasswordPolicy(password string) error {
+	if len([]rune(password)) < 8 {
+		return ErrWeakPassword
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, r := range password {
+		if unicode.IsLetter(r) {
+			hasLetter = true
+		}
+		if unicode.IsDigit(r) {
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return ErrWeakPassword
+	}
+	return nil
+}
+```
+
+Create `backend/internal/auth/session.go`:
+
+```go
+package auth
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+)
+
+func GenerateSessionToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func HashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+```bash
+cd backend && go test ./internal/auth -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/internal/auth/password.go backend/internal/auth/session.go backend/internal/auth/password_test.go backend/internal/auth/session_test.go
+git commit -m "feat: add password and session utilities"
+```
+
+---
+
+## Phase 2: Storage Schema, Bootstrap, And Auth Repository
+
+### Task 3: Add Auth Schema And Provider Finalizers
+
+**Files:**
+- Create: `backend/db/migrations/postgres/0004_multi_user_auth_schema.sql`
+- Create: `backend/internal/storage/postgres/auth_migrations.go`
+- Create: `backend/internal/storage/sqlite/auth_migrations.go`
+- Modify: `backend/internal/storage/postgres/provider.go`
+- Modify: `backend/internal/storage/sqlite/provider.go`
+- Test: `backend/internal/storage/postgres/migrations_test.go`
+- Test: `backend/internal/storage/sqlite/provider_test.go`
+
+- [ ] **Step 1: Write migration tests for default workspace constraints**
+
+Add a test case to `backend/internal/storage/postgres/migrations_test.go`:
+
+```go
+func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_default_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_a', 'a@example.com', 'A', 'hash', false, 'workspace_b', 'user', 'active')
+	`)
+	if err == nil {
+		t.Fatal("expected default workspace ownership constraint to reject invalid row")
+	}
+}
+```
+
+This test lives in `backend/internal/storage/postgres/migrations_test.go`, which already imports `fmt` and `time` and already defines `openPostgresTestDB(t, schema)`.
+
+- [ ] **Step 2: Create PostgreSQL schema migration**
+
+Create `backend/db/migrations/postgres/0004_multi_user_auth_schema.sql` with these sections in this order:
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
+  must_change_password BOOLEAN NOT NULL DEFAULT false,
+  default_workspace_id TEXT,
+  role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ,
+  password_changed_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email));
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS workspaces_single_owner_v1_idx
+  ON workspaces (owner_user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_workspace_idx
+  ON workspaces (owner_user_id, id);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner', 'member')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  user_agent TEXT NOT NULL DEFAULT '',
+  ip_address TEXT NOT NULL DEFAULT '',
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS sessions_user_active_idx
+  ON sessions (user_id, expires_at)
+  WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id TEXT PRIMARY KEY,
+  actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  target_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS audit_events_created_idx ON audit_events (created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_events_actor_idx ON audit_events (actor_user_id, created_at DESC);
+
+ALTER TABLE folders ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE notes ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE task_projects ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE learning_roadmaps ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE roadmap_nodes ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE roadmap_edges ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE roadmap_resources ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE inbox ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE sync_targets ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE note_sync_state ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE note_project_links ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE task_recurrence_rules ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE task_occurrences ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE note_sync_bindings ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE sync_external_claims ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE note_sync_suppressions ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE sync_import_tombstones ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE search_index ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+```
+
+Do not add bootstrap admin data or bcrypt hashes in SQL.
+
+- [ ] **Step 3: Implement finalizer helpers**
+
+Create `backend/internal/storage/postgres/auth_migrations.go` with functions named:
+
+```go
+package postgres
+
+import (
+	"context"
+	"database/sql"
+)
+
+func runMultiUserAuthFinalizer(ctx context.Context, db *sql.DB) error {
+	if err := validateWorkspaceBackfill(ctx, db); err != nil {
+		return err
+	}
+	if err := applyWorkspaceNotNullConstraints(ctx, db); err != nil {
+		return err
+	}
+	if err := applyWorkspaceCompositeKeys(ctx, db); err != nil {
+		return err
+	}
+	return applyWorkspaceCompositeForeignKeys(ctx, db)
+}
+```
+
+Each helper must be idempotent and must return a descriptive error before applying final constraints if any `workspace_id` or `default_workspace_id` is missing.
+
+- [ ] **Step 4: Add SQLite auth migration file**
+
+Create `backend/internal/storage/sqlite/auth_migrations.go` with functions named:
+
+```go
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+)
+
+func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
+	if err := createSQLiteAuthTables(ctx, db); err != nil {
+		return err
+	}
+	if err := ensureSQLiteWorkspaceColumns(ctx, db); err != nil {
+		return err
+	}
+	return rebuildSQLiteFTSAfterWorkspaceMigration(ctx, db)
+}
+```
+
+`rebuildSQLiteFTSAfterWorkspaceMigration` must execute these statements after table rebuilds:
+
+```sql
+INSERT INTO notes_fts(notes_fts) VALUES('rebuild');
+INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild');
+INSERT INTO events_fts(events_fts) VALUES('rebuild');
+```
+
+- [ ] **Step 5: Wire provider startup**
+
+Modify `backend/internal/storage/postgres/provider.go` after `RunPostgresMigrationsContext`:
+
+```go
+if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+	_ = db.Close()
+	return nil, err
+}
+```
+
+Modify `backend/internal/storage/sqlite/provider.go` after recurrence schema:
+
+```go
+if err := ensureSQLiteAuthSchema(ctx, db); err != nil {
+	_ = db.Close()
+	return nil, err
+}
+```
+
+- [ ] **Step 6: Run migration tests**
+
+```bash
+cd backend && go test ./internal/storage/postgres ./internal/storage/sqlite -run 'Test.*Migration|Test.*Provider' -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add backend/db/migrations/postgres/0004_multi_user_auth_schema.sql backend/internal/storage/postgres/auth_migrations.go backend/internal/storage/sqlite/auth_migrations.go backend/internal/storage/postgres/provider.go backend/internal/storage/sqlite/provider.go backend/internal/storage/postgres/migrations_test.go backend/internal/storage/sqlite/provider_test.go
+git commit -m "feat: add multi-user auth schema migrations"
+```
+
+---
+
+### Task 4: Add Bootstrap And Legacy Backfill
+
+**Files:**
+- Create: `backend/internal/bootstrap/auth_bootstrap.go`
+- Create: `backend/internal/bootstrap/auth_bootstrap_test.go`
+- Modify: `backend/cmd/server/main.go`
+- Modify: `backend/cmd/seed/main.go`
+
+- [ ] **Step 1: Write bootstrap tests**
+
+Create `backend/internal/bootstrap/auth_bootstrap_test.go`:
+
+```go
+package bootstrap
+
+import (
+	"context"
+	"testing"
+
+	"github.com/hujinrun/flowspace/internal/storage"
+)
+
+func TestBootstrapRequiresAdminConfigForLegacyData(t *testing.T) {
+	store := openSQLiteStoreWithLegacyNote(t)
+	cfg := Config{}
+
+	err := EnsureAuthReady(context.Background(), store, cfg)
+	if err == nil {
+		t.Fatal("expected missing bootstrap admin config error")
+	}
+}
+
+func TestBootstrapAssignsLegacyDataBeforeDefaultRows(t *testing.T) {
+	store := openSQLiteStoreWithLegacyDefaults(t)
+	cfg := Config{
+		AdminEmail:    "admin@example.com",
+		AdminPassword: "abc12345",
+		AdminName:     "Admin",
+	}
+
+	if err := EnsureAuthReady(context.Background(), store, cfg); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	assertNoDuplicateDefaultFolderIDs(t, store)
+	assertAllBusinessRowsHaveWorkspace(t, store)
+	assertDefaultWorkspaceOwnedByAdmin(t, store)
+}
+
+func openSQLiteStoreWithLegacyNote(t *testing.T) storage.Store {
+	t.Helper()
+	return openTestStore(t)
+}
+```
+
+Use existing SQLite provider test helpers for `openTestStore`. Add local assert helpers in the same test file so the test is self-contained.
+
+- [ ] **Step 2: Implement bootstrap config**
+
+Create `backend/internal/bootstrap/auth_bootstrap.go`:
+
+```go
+package bootstrap
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
+)
+
+type Config struct {
+	AdminEmail    string
+	AdminPassword string
+	AdminName     string
+}
+
+var ErrBootstrapAdminRequired = errors.New("bootstrap admin configuration required")
+
+func EnsureAuthReady(ctx context.Context, store storage.Store, cfg Config) error {
+	state, err := InspectState(ctx, store)
+	if err != nil {
+		return err
+	}
+	if state.HasUsers {
+		return nil
+	}
+	if state.HasBusinessData && !cfg.Valid() {
+		return ErrBootstrapAdminRequired
+	}
+	if !state.HasBusinessData && !cfg.Valid() {
+		return nil
+	}
+	return store.Transact(ctx, func(tx storage.Store) error {
+		return createBootstrapAdminAndWorkspace(ctx, tx, cfg, state.HasBusinessData)
+	})
+}
+
+func (c Config) Valid() bool {
+	return strings.TrimSpace(c.AdminEmail) != "" &&
+		strings.TrimSpace(c.AdminPassword) != "" &&
+		strings.TrimSpace(c.AdminName) != ""
+}
+
+func createBootstrapAdminAndWorkspace(ctx context.Context, store storage.Store, cfg Config, hasLegacyData bool) error {
+	passwordHash, err := auth.HashPassword(cfg.AdminPassword)
+	if err != nil {
+		return err
+	}
+	userID := "user_bootstrap_admin"
+	workspaceID := "workspace_bootstrap_admin"
+	user := &model.User{
+		ID:                 userID,
+		Email:              strings.TrimSpace(cfg.AdminEmail),
+		DisplayName:        strings.TrimSpace(cfg.AdminName),
+		PasswordHash:       passwordHash,
+		MustChangePassword: false,
+		DefaultWorkspaceID: workspaceID,
+		Role:               "admin",
+		Status:             "active",
+	}
+	workspace := &model.Workspace{
+		ID:          workspaceID,
+		Name:        cfg.AdminName + " Workspace",
+		OwnerUserID: userID,
+	}
+	if err := store.Auth().CreateUser(ctx, user); err != nil {
+		return err
+	}
+	if err := store.Auth().CreateWorkspace(ctx, workspace); err != nil {
+		return err
+	}
+	if err := store.Auth().SetDefaultWorkspace(ctx, userID, workspaceID); err != nil {
+		return err
+	}
+	if err := store.Auth().AddWorkspaceMember(ctx, workspaceID, userID, "owner"); err != nil {
+		return err
+	}
+	scopeCtx := auth.ContextWithWorkspaceScope(ctx, workspaceID)
+	if hasLegacyData {
+		if err := AssignLegacyBusinessData(scopeCtx, store, workspaceID); err != nil {
+			return err
+		}
+	}
+	if err := EnsureDefaultWorkspaceData(scopeCtx, store); err != nil {
+		return err
+	}
+	return nil
+}
+```
+
+Add these functions in the same file and cover them with tests in `auth_bootstrap_test.go`:
+
+```go
+type State struct {
+	HasUsers        bool
+	HasBusinessData bool
+}
+
+func InspectState(ctx context.Context, store storage.Store) (State, error)
+func AssignLegacyBusinessData(ctx context.Context, store storage.Store, workspaceID string) error
+func EnsureDefaultWorkspaceData(ctx context.Context, store storage.Store) error
+```
+
+`AssignLegacyBusinessData` updates existing rows that have empty `workspace_id`. `EnsureDefaultWorkspaceData` inserts missing default folders and `personal` task project only after legacy rows are assigned.
+
+- [ ] **Step 3: Wire server startup**
+
+Modify `backend/cmd/server/main.go` after opening store and before `repository.SetStore(store)`:
+
+```go
+bootstrapCfg := bootstrap.Config{
+	AdminEmail:    os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL"),
+	AdminPassword: os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD"),
+	AdminName:     os.Getenv("FLOWSPACE_BOOTSTRAP_ADMIN_NAME"),
+}
+if err := bootstrap.EnsureAuthReady(startupCtx, store, bootstrapCfg); err != nil {
+	log.Fatalf("auth bootstrap: %v", err)
+}
+```
+
+Add imports:
+
+```go
+"os"
+"github.com/hujinrun/flowspace/internal/bootstrap"
+```
+
+- [ ] **Step 4: Run bootstrap tests**
+
+```bash
+cd backend && go test ./internal/bootstrap -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/internal/bootstrap/auth_bootstrap.go backend/internal/bootstrap/auth_bootstrap_test.go backend/cmd/server/main.go backend/cmd/seed/main.go
+git commit -m "feat: add auth bootstrap and legacy backfill"
+```
+
+---
+
+### Task 5: Add AuthRepository For PostgreSQL And SQLite
+
+**Files:**
+- Modify: `backend/internal/storage/store.go`
+- Create: `backend/internal/storage/contracttest/auth_contract_tests.go`
+- Create: `backend/internal/storage/postgres/auth.go`
+- Create: `backend/internal/storage/sqlite/auth.go`
+- Modify: `backend/internal/storage/postgres/provider.go`
+- Modify: `backend/internal/storage/sqlite/provider.go`
+- Modify: `backend/internal/storage/postgres/contract_test.go`
+- Modify: `backend/internal/storage/sqlite/contract_test.go`
+
+- [ ] **Step 1: Write shared auth contract tests**
+
+Create `backend/internal/storage/contracttest/auth_contract_tests.go`:
+
+```go
+package contracttest
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
+)
+
+func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Store) {
+	t.Run("CreateUserWorkspaceSessionAndMembership", func(t *testing.T) {
+		store := openStore(t)
+		ctx := context.Background()
+
+		user := &model.User{
+			ID:                 "user_contract",
+			Email:              "contract@example.com",
+			DisplayName:        "Contract",
+			PasswordHash:       "hash",
+			MustChangePassword: true,
+			Role:               "user",
+			Status:             "active",
+		}
+		workspace := &model.Workspace{
+			ID:          "workspace_contract",
+			Name:        "Contract Workspace",
+			OwnerUserID: user.ID,
+		}
+
+		err := store.Transact(ctx, func(tx storage.Store) error {
+			if err := tx.Auth().CreateUser(ctx, user); err != nil {
+				return err
+			}
+			if err := tx.Auth().CreateWorkspace(ctx, workspace); err != nil {
+				return err
+			}
+			if err := tx.Auth().SetDefaultWorkspace(ctx, user.ID, workspace.ID); err != nil {
+				return err
+			}
+			return tx.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner")
+		})
+		if err != nil {
+			t.Fatalf("provision user: %v", err)
+		}
+
+		loaded, err := store.Auth().GetUserByEmail(ctx, "contract@example.com")
+		if err != nil {
+			t.Fatalf("get user by email: %v", err)
+		}
+		if loaded.DefaultWorkspaceID != workspace.ID {
+			t.Fatalf("default workspace = %q, want %q", loaded.DefaultWorkspaceID, workspace.ID)
+		}
+	})
+
+	t.Run("RevokeUserSessionsExcept", func(t *testing.T) {
+		store := openStore(t)
+		ctx := context.Background()
+		seedUserWorkspace(t, ctx, store, "user_sessions", "workspace_sessions")
+
+		now := time.Now().Unix()
+		for _, id := range []string{"session_keep", "session_revoke"} {
+			err := store.Auth().CreateSession(ctx, &model.Session{
+				ID:          id,
+				UserID:      "user_sessions",
+				WorkspaceID: "workspace_sessions",
+				TokenHash:   id + "_hash",
+				ExpiresAt:   now + 3600,
+			})
+			if err != nil {
+				t.Fatalf("create session %s: %v", id, err)
+			}
+		}
+		if err := store.Auth().RevokeUserSessionsExcept(ctx, "user_sessions", "session_keep"); err != nil {
+			t.Fatalf("revoke except: %v", err)
+		}
+	})
+}
+```
+
+Add helper functions in the same file for `seedUserWorkspace`.
+
+- [ ] **Step 2: Extend storage interfaces**
+
+Modify `backend/internal/storage/store.go`:
+
+```go
+type UserListFilter struct {
+	Page     int
+	PageSize int
+	Query    string
+}
+
+type AuthRepository interface {
+	CreateUser(ctx context.Context, user *model.User) error
+	SetDefaultWorkspace(ctx context.Context, userID, workspaceID string) error
+	GetUserByEmail(ctx context.Context, email string) (*model.User, error)
+	GetUserByID(ctx context.Context, id string) (*model.User, error)
+	ListUsers(ctx context.Context, filter UserListFilter) ([]model.User, int, error)
+	UpdateUser(ctx context.Context, id string, req *model.UpdateUserRequest) (*model.User, error)
+	UpdateUserPassword(ctx context.Context, userID, passwordHash string, mustChangePassword bool) error
+	CreateWorkspace(ctx context.Context, workspace *model.Workspace) error
+	AddWorkspaceMember(ctx context.Context, workspaceID, userID, role string) error
+	CreateSession(ctx context.Context, session *model.Session) error
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*model.Session, error)
+	GetWorkspaceMembership(ctx context.Context, workspaceID, userID string) (*model.WorkspaceMember, error)
+	RevokeSession(ctx context.Context, sessionID string) error
+	RevokeUserSessions(ctx context.Context, userID string) error
+	RevokeUserSessionsExcept(ctx context.Context, userID, keepSessionID string) error
+	RecordAuditEvent(ctx context.Context, event *model.AuditEvent) error
+	LockActiveAdmins(ctx context.Context) ([]model.User, error)
+}
+```
+
+Add `Auth() AuthRepository` to `Store`.
+
+- [ ] **Step 3: Implement PostgreSQL auth repository**
+
+Create `backend/internal/storage/postgres/auth.go` with methods matching `AuthRepository`. Use `lower(email)` for lookups and `ILIKE` for `UserListFilter.Query`.
+
+Important SQL fragments:
+
+```sql
+SELECT id, email, display_name, password_hash, must_change_password, default_workspace_id,
+       role, status, created_at, updated_at, last_login_at, password_changed_at
+FROM users
+WHERE lower(email) = lower($1)
+```
+
+```sql
+SELECT id
+FROM users
+WHERE role = 'admin' AND status = 'active'
+FOR UPDATE
+```
+
+- [ ] **Step 4: Implement SQLite auth repository**
+
+Create `backend/internal/storage/sqlite/auth.go`. Use `lower(email) = lower(?)` and `LIKE '%' || lower(?) || '%'` against `lower(email)` and `lower(display_name)` for search.
+
+- [ ] **Step 5: Wire provider stores**
+
+Add to both `store` and `storeTx` in PostgreSQL and SQLite providers:
+
+```go
+func (s *store) Auth() storage.AuthRepository {
+	return authRepository{db: s.db}
+}
+
+func (s *storeTx) Auth() storage.AuthRepository {
+	return authRepository{db: s.tx}
+}
+```
+
+- [ ] **Step 6: Run auth contract tests**
+
+```bash
+cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run AuthContract -count=1 -v
+```
+
+Expected: PASS for PostgreSQL and SQLite providers.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add backend/internal/storage/store.go backend/internal/storage/contracttest/auth_contract_tests.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go backend/internal/storage/postgres/provider.go backend/internal/storage/sqlite/provider.go backend/internal/storage/postgres/contract_test.go backend/internal/storage/sqlite/contract_test.go
+git commit -m "feat: add auth storage repository"
+```
+
+---
+
+## Phase 3: Backend Auth API
+
+### Task 6: Add Middleware And Auth Handlers
+
+**Files:**
+- Create: `backend/internal/middleware/auth.go`
+- Create: `backend/internal/handler/auth.go`
+- Create: `backend/internal/handler/auth_test.go`
+- Modify: `backend/internal/router/router.go`
+- Modify: `backend/cmd/server/main.go`
+
+- [ ] **Step 1: Write auth handler tests**
+
+Create `backend/internal/handler/auth_test.go`:
+
+```go
+package handler
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestLoginSetsHttpOnlyCookie(t *testing.T) {
+	router := setupAuthTestRouter(t)
+	body := `{"email":"admin@example.com","password":"abc12345","remember_me":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	cookie := w.Result().Cookies()[0]
+	if cookie.Name != "fs_session" || !cookie.HttpOnly {
+		t.Fatalf("unexpected cookie: %#v", cookie)
+	}
+}
+
+func TestPasswordChangeRequiredBlocksBusinessRoute(t *testing.T) {
+	router := setupAuthTestRouterWithMustChangePasswordUser(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/notes", nil)
+	req.AddCookie(validSessionCookie(t))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "PASSWORD_CHANGE_REQUIRED") {
+		t.Fatalf("body missing code: %s", w.Body.String())
+	}
+}
+```
+
+Add test helpers in the same file using an in-memory SQLite store and seeded user/session.
+
+- [ ] **Step 2: Implement auth middleware**
+
+Create `backend/internal/middleware/auth.go`:
+
+```go
+package middleware
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/storage"
+)
+
+type AuthMiddleware struct {
+	Store storage.Store
+}
+
+func (m AuthMiddleware) Required() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cookie, err := c.Cookie("fs_session")
+		if err != nil || cookie == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHENTICATED"}})
+			return
+		}
+		session, err := m.Store.Auth().GetSessionByTokenHash(c.Request.Context(), auth.HashSessionToken(cookie))
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "UNAUTHENTICATED"}})
+			return
+		}
+		user, err := m.Store.Auth().GetUserByID(c.Request.Context(), session.UserID)
+		if err != nil || user.Status != "active" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "ACCOUNT_DISABLED"}})
+			return
+		}
+		if _, err := m.Store.Auth().GetWorkspaceMembership(c.Request.Context(), session.WorkspaceID, session.UserID); err != nil {
+			_ = m.Store.Auth().RevokeSession(c.Request.Context(), session.ID)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "WORKSPACE_ACCESS_REVOKED"}})
+			return
+		}
+		identity := auth.RequestIdentity{
+			UserID:             user.ID,
+			WorkspaceID:        session.WorkspaceID,
+			Role:               user.Role,
+			MustChangePassword: user.MustChangePassword,
+		}
+		ctx := auth.ContextWithIdentity(c.Request.Context(), identity)
+		ctx = auth.ContextWithWorkspaceScope(ctx, session.WorkspaceID)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+}
+
+func (m AuthMiddleware) RequireAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		identity, ok := auth.IdentityFromContext(c.Request.Context())
+		if !ok || identity.Role != "admin" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "FORBIDDEN"}})
+			return
+		}
+		c.Next()
+	}
+}
+
+func (m AuthMiddleware) RequirePasswordSettled() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		identity, ok := auth.IdentityFromContext(c.Request.Context())
+		if ok && identity.MustChangePassword {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "PASSWORD_CHANGE_REQUIRED"}})
+			return
+		}
+		c.Next()
+	}
+}
+```
+
+- [ ] **Step 3: Implement auth handlers**
+
+Create `backend/internal/handler/auth.go` with:
+
+```go
+func Login(store storage.Store, cookieCfg config.CookieConfig) gin.HandlerFunc
+func Logout(store storage.Store) gin.HandlerFunc
+func Me(store storage.Store) gin.HandlerFunc
+func ChangePassword(store storage.Store) gin.HandlerFunc
+```
+
+Login flow must:
+
+```go
+user, err := store.Auth().GetUserByEmail(ctx, req.Email)
+err = auth.VerifyPassword(user.PasswordHash, req.Password)
+workspaceID := user.DefaultWorkspaceID
+_, err = store.Auth().GetWorkspaceMembership(ctx, workspaceID, user.ID)
+token, err := auth.GenerateSessionToken()
+session.TokenHash = auth.HashSessionToken(token)
+err = store.Auth().CreateSession(ctx, session)
+http.SetCookie(c.Writer, cookieFromConfig(token, req.RememberMe))
+```
+
+Change password must call:
+
+```go
+store.Auth().UpdateUserPassword(ctx, identity.UserID, newHash, false)
+store.Auth().RevokeUserSessionsExcept(ctx, identity.UserID, currentSessionID)
+```
+
+- [ ] **Step 4: Update router shape**
+
+Change `backend/internal/router/router.go` from `func Setup() *gin.Engine` to:
+
+```go
+type Config struct {
+	Store                       storage.Store
+	Cookie                      config.CookieConfig
+	EnableLocalDirectoryBrowser bool
+}
+
+func Setup(cfg Config) *gin.Engine
+```
+
+Register:
+
+```go
+api.GET("/health", handler.Health)
+authRoutes := api.Group("/auth")
+authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Cookie))
+authRoutes.POST("/logout", handler.Logout(cfg.Store))
+authRoutes.GET("/me", authMiddleware.Required(), handler.Me(cfg.Store))
+authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(cfg.Store))
+```
+
+Move current business routes under:
+
+```go
+protected := api.Group("")
+protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
+```
+
+Register system directories only inside:
+
+```go
+if cfg.EnableLocalDirectoryBrowser {
+	systemAdmin := protected.Group("/system")
+	systemAdmin.Use(authMiddleware.RequireAdmin())
+	systemAdmin.GET("/directories", handler.ListLocalDirectories)
+}
+```
+
+- [ ] **Step 5: Run auth handler tests**
+
+```bash
+cd backend && go test ./internal/handler ./internal/router -run 'Auth|Password|Route' -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/internal/middleware/auth.go backend/internal/handler/auth.go backend/internal/handler/auth_test.go backend/internal/router/router.go backend/cmd/server/main.go
+git commit -m "feat: add auth middleware and routes"
+```
+
+---
+
+### Task 7: Add Admin User Management Backend
+
+**Files:**
+- Create: `backend/internal/handler/admin_users.go`
+- Create: `backend/internal/handler/admin_users_test.go`
+- Modify: `backend/internal/router/router.go`
+- Modify: `backend/internal/storage/postgres/auth.go`
+- Modify: `backend/internal/storage/sqlite/auth.go`
+
+- [ ] **Step 1: Write admin API tests**
+
+Create `backend/internal/handler/admin_users_test.go`:
+
+```go
+package handler
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestAdminListUsersReturnsPagination(t *testing.T) {
+	router := setupAdminTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users?page=1&page_size=20&q=admin", nil)
+	req.AddCookie(adminSessionCookie(t))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"pagination"`) || !strings.Contains(body, `"users"`) {
+		t.Fatalf("missing users or pagination: %s", body)
+	}
+}
+
+func TestAdminPatchRejectsStatusAndPassword(t *testing.T) {
+	router := setupAdminTestRouter(t)
+	body := `{"status":"disabled","temporary_password":"abc12345"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/user_1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestDowngradeLastAdminReturnsConflict(t *testing.T) {
+	router := setupSingleAdminTestRouter(t)
+	body := `{"role":"user"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/user_admin", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+}
+```
+
+- [ ] **Step 2: Implement admin handlers**
+
+Create `backend/internal/handler/admin_users.go` with handlers:
+
+```go
+func ListUsers(store storage.Store) gin.HandlerFunc
+func CreateUser(store storage.Store) gin.HandlerFunc
+func UpdateUser(store storage.Store) gin.HandlerFunc
+func ResetUserPassword(store storage.Store) gin.HandlerFunc
+func DisableUser(store storage.Store) gin.HandlerFunc
+func EnableUser(store storage.Store) gin.HandlerFunc
+```
+
+`CreateUser` must provision user, workspace, membership, default folders/project, and audit in one transaction:
+
+```go
+err := store.Transact(ctx, func(tx storage.Store) error {
+	if err := tx.Auth().CreateUser(ctx, user); err != nil {
+		return err
+	}
+	if err := tx.Auth().CreateWorkspace(ctx, workspace); err != nil {
+		return err
+	}
+	if err := tx.Auth().SetDefaultWorkspace(ctx, user.ID, workspace.ID); err != nil {
+		return err
+	}
+	if err := tx.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner"); err != nil {
+		return err
+	}
+	targetCtx := auth.ContextWithWorkspaceScope(ctx, workspace.ID)
+	if err := createDefaultWorkspaceData(targetCtx, tx); err != nil {
+		return err
+	}
+	return tx.Auth().RecordAuditEvent(ctx, auditEvent)
+})
+```
+
+`UpdateUser` must reject forbidden fields by decoding into `map[string]json.RawMessage` first and checking keys.
+
+- [ ] **Step 3: Implement last-admin guard**
+
+Inside role downgrade and disable flows:
+
+```go
+err := store.Transact(ctx, func(tx storage.Store) error {
+	admins, err := tx.Auth().LockActiveAdmins(ctx)
+	if err != nil {
+		return err
+	}
+	if wouldRemoveLastActiveAdmin(admins, targetUserID) {
+		return auth.ErrLastAdminRequired
+	}
+	return applyUserChange(ctx, tx)
+})
+```
+
+For role changes and disable, call:
+
+```go
+_ = tx.Auth().RevokeUserSessions(ctx, targetUserID)
+```
+
+- [ ] **Step 4: Register admin routes**
+
+In `backend/internal/router/router.go`:
+
+```go
+admin := protected.Group("/admin")
+admin.Use(authMiddleware.RequireAdmin())
+admin.GET("/users", handler.ListUsers(cfg.Store))
+admin.POST("/users", handler.CreateUser(cfg.Store))
+admin.PATCH("/users/:id", handler.UpdateUser(cfg.Store))
+admin.POST("/users/:id/reset-password", handler.ResetUserPassword(cfg.Store))
+admin.POST("/users/:id/disable", handler.DisableUser(cfg.Store))
+admin.POST("/users/:id/enable", handler.EnableUser(cfg.Store))
+```
+
+- [ ] **Step 5: Run admin tests**
+
+```bash
+cd backend && go test ./internal/handler -run 'Admin|Downgrade|Reset|Disable' -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/internal/handler/admin_users.go backend/internal/handler/admin_users_test.go backend/internal/router/router.go backend/internal/storage/postgres/auth.go backend/internal/storage/sqlite/auth.go
+git commit -m "feat: add admin user management API"
+```
+
+---
+
+## Phase 4: Workspace Isolation
+
+### Task 8: Add WorkspaceScope To Business Repositories
+
+**Files:**
+- Modify: `backend/internal/storage/postgres/folders.go`
+- Modify: `backend/internal/storage/postgres/notes.go`
+- Modify: `backend/internal/storage/postgres/tasks.go`
+- Modify: `backend/internal/storage/postgres/events.go`
+- Modify: `backend/internal/storage/postgres/inbox.go`
+- Modify: `backend/internal/storage/sqlite/folders.go`
+- Modify: `backend/internal/storage/sqlite/notes.go`
+- Modify: `backend/internal/storage/sqlite/tasks.go`
+- Modify: `backend/internal/storage/sqlite/events.go`
+- Modify: `backend/internal/storage/sqlite/inbox.go`
+- Test: `backend/internal/storage/contracttest/workspace_isolation_contract_tests.go`
+
+- [ ] **Step 1: Write workspace isolation contract tests**
+
+Create `backend/internal/storage/contracttest/workspace_isolation_contract_tests.go`:
+
+```go
+package contracttest
+
+import (
+	"context"
+	"testing"
+
+	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
+)
+
+func RunWorkspaceIsolationContractTests(t *testing.T, openStore func(t *testing.T) storage.Store) {
+	t.Run("NotesAndTasksAreScoped", func(t *testing.T) {
+		store := openStore(t)
+		ctxA := auth.ContextWithWorkspaceScope(context.Background(), "workspace_a")
+		ctxB := auth.ContextWithWorkspaceScope(context.Background(), "workspace_b")
+		seedWorkspaceDefaults(t, context.Background(), store, "workspace_a", "user_a")
+		seedWorkspaceDefaults(t, context.Background(), store, "workspace_b", "user_b")
+
+		note, err := store.Notes().Create(ctxA, &model.CreateNoteRequest{Title: "A note"})
+		if err != nil {
+			t.Fatalf("create note: %v", err)
+		}
+		if _, err := store.Notes().GetByID(ctxB, note.ID); err == nil {
+			t.Fatal("workspace B read workspace A note")
+		}
+	})
+
+	t.Run("MissingWorkspaceScopeFails", func(t *testing.T) {
+		store := openStore(t)
+		_, err := store.Notes().List(context.Background(), storage.NoteFilter{Page: 1, PageSize: 20})
+		if err == nil {
+			t.Fatal("expected missing workspace error")
+		}
+	})
+}
+```
+
+Add `seedWorkspaceDefaults` in the same file.
+
+- [ ] **Step 2: Update repository SQL**
+
+For every business repository method, start by resolving scope:
+
+```go
+workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+if err != nil {
+	return nil, 0, err
+}
+```
+
+For methods returning `(*model.Note, error)`, return `nil, err`. For methods returning `error`, return `err`. For methods returning `([]model.Note, int, error)`, return `nil, 0, err`. Every query must include `workspace_id`.
+
+Example for note GetByID:
+
+```sql
+SELECT id, title, body, folder_id, tags, created_at, updated_at
+FROM notes
+WHERE workspace_id = $1 AND id = $2
+```
+
+Example for create:
+
+```sql
+INSERT INTO notes (id, workspace_id, title, body, folder_id, tags, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+```
+
+- [ ] **Step 3: Make inbox conversion transactional**
+
+Modify `backend/internal/service/inbox.go` so `ConvertInboxItem` receives `context.Context` and `storage.Store`:
+
+```go
+func ConvertInboxItem(ctx context.Context, store storage.Store, id string, req *model.ConvertInboxRequest) (interface{}, error) {
+	var convertedID string
+	var targetKind string
+	err := store.Transact(ctx, func(tx storage.Store) error {
+		item, err := tx.Inbox().GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if item.ConvertedTo != nil {
+			return errors.New("already converted")
+		}
+		target, err := createInboxTarget(ctx, tx, item, req.Kind)
+		if err != nil {
+			return err
+		}
+		targetKind = req.Kind
+		convertedID = target.ID
+		return tx.Inbox().MarkConverted(ctx, id, targetKind+":"+convertedID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return loadConvertedTarget(ctx, store, targetKind, convertedID)
+}
+```
+
+- [ ] **Step 4: Run isolation contract tests**
+
+```bash
+cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run WorkspaceIsolation -count=1 -v
+```
+
+Expected: PASS for PostgreSQL and SQLite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/internal/storage/contracttest/workspace_isolation_contract_tests.go backend/internal/storage/postgres/folders.go backend/internal/storage/postgres/notes.go backend/internal/storage/postgres/tasks.go backend/internal/storage/postgres/events.go backend/internal/storage/postgres/inbox.go backend/internal/storage/sqlite/folders.go backend/internal/storage/sqlite/notes.go backend/internal/storage/sqlite/tasks.go backend/internal/storage/sqlite/events.go backend/internal/storage/sqlite/inbox.go backend/internal/service/inbox.go
+git commit -m "feat: scope core repositories by workspace"
+```
+
+---
+
+### Task 9: Scope Search, Sync, Roadmap, And Recurrence
+
+**Files:**
+- Modify: `backend/internal/storage/postgres/search.go`
+- Modify: `backend/internal/storage/postgres/sync.go`
+- Modify: `backend/internal/storage/postgres/roadmaps.go`
+- Modify: `backend/internal/storage/postgres/recurrence.go`
+- Modify: `backend/internal/storage/sqlite/search.go`
+- Modify: `backend/internal/storage/sqlite/sync.go`
+- Modify: `backend/internal/storage/sqlite/roadmaps.go`
+- Modify: `backend/internal/storage/sqlite/recurrence.go`
+- Modify: `backend/internal/service/sync_dispatch.go`
+- Test: `backend/internal/storage/contracttest/sync_contract_tests.go`
+- Test: `backend/internal/storage/contracttest/roadmaps_contract_tests.go`
+- Test: `backend/internal/storage/contracttest/recurrence_contract_tests.go`
+- Test: `backend/internal/storage/contracttest/notes_contract_tests.go`
+
+- [ ] **Step 1: Add cross-workspace search test**
+
+Extend `backend/internal/storage/contracttest/notes_contract_tests.go`:
+
+```go
+t.Run("SearchDoesNotReturnOtherWorkspaceResults", func(t *testing.T) {
+	store := openStore(t)
+	ctxA := auth.ContextWithWorkspaceScope(context.Background(), "workspace_search_a")
+	ctxB := auth.ContextWithWorkspaceScope(context.Background(), "workspace_search_b")
+	seedWorkspaceDefaults(t, context.Background(), store, "workspace_search_a", "user_search_a")
+	seedWorkspaceDefaults(t, context.Background(), store, "workspace_search_b", "user_search_b")
+
+	if _, err := store.Notes().Create(ctxA, &model.CreateNoteRequest{Title: "private phrase alpha"}); err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	results, total, err := store.Search().Search(ctxB, "private phrase alpha", 1, 20)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if total != 0 || len(results) != 0 {
+		t.Fatalf("workspace B saw workspace A search results: total=%d results=%+v", total, results)
+	}
+})
+```
+
+- [ ] **Step 2: Update PostgreSQL search and sync SQL**
+
+Search must filter `search_index` first:
+
+```sql
+FROM search_index s
+WHERE s.workspace_id = $1
+  AND (s.title ILIKE $2 OR s.content ILIKE $2)
+```
+
+Sync must include workspace in all target, state, binding, claim, suppression, and tombstone lookups. Advisory lock key must include workspace:
+
+```go
+lockKey := "note_sync_binding:" + workspaceID + ":" + noteID
+```
+
+- [ ] **Step 3: Update SQLite FTS search**
+
+SQLite FTS queries must join business tables and filter workspace:
+
+```sql
+SELECT n.id, n.title, n.body
+FROM notes_fts f
+JOIN notes n ON n.rowid = f.rowid
+WHERE n.workspace_id = ?
+  AND notes_fts MATCH ?
+```
+
+COUNT queries must use the same workspace filter.
+
+- [ ] **Step 4: Update roadmap and recurrence repositories**
+
+Roadmap update example:
+
+```sql
+UPDATE roadmap_nodes
+SET status = $1, updated_at = $2
+WHERE workspace_id = $3 AND id = $4
+```
+
+Recurrence rule queries must use `(workspace_id, task_id)` and occurrences must use `(workspace_id, task_id, occurrence_date)`.
+
+- [ ] **Step 5: Run focused storage tests**
+
+```bash
+cd backend && go test ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite -run 'Search|Sync|Roadmap|Recurrence|Workspace' -count=1 -v
+```
+
+Expected: PASS for PostgreSQL and SQLite.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/internal/storage/postgres/search.go backend/internal/storage/postgres/sync.go backend/internal/storage/postgres/roadmaps.go backend/internal/storage/postgres/recurrence.go backend/internal/storage/sqlite/search.go backend/internal/storage/sqlite/sync.go backend/internal/storage/sqlite/roadmaps.go backend/internal/storage/sqlite/recurrence.go backend/internal/service/sync_dispatch.go backend/internal/storage/contracttest
+git commit -m "feat: scope search sync roadmap and recurrence"
+```
+
+---
+
+## Phase 5: Frontend Auth And Account Management
+
+### Task 10: Add Frontend Auth Client And Route Guards
+
+**Files:**
+- Create: `frontend/src/api/auth.ts`
+- Create: `frontend/src/hooks/useAuth.tsx`
+- Create: `frontend/src/components/auth/ProtectedRoute.tsx`
+- Create: `frontend/src/components/auth/AdminRoute.tsx`
+- Create: `frontend/src/routes/ChangePassword.tsx`
+- Modify: `frontend/src/router.tsx`
+- Modify: `frontend/src/api/client.ts`
+- Test: `frontend/src/hooks/useAuth.test.tsx`
+
+- [ ] **Step 1: Add auth API client**
+
+Create `frontend/src/api/auth.ts`:
+
+```ts
+import { api } from './client'
+
+export interface AuthUser {
+  id: string
+  email: string
+  display_name: string
+  role: 'admin' | 'user'
+  status: 'active' | 'disabled'
+  must_change_password: boolean
+}
+
+export interface AuthWorkspace {
+  id: string
+  name: string
+}
+
+export interface CurrentUserResponse {
+  user: AuthUser
+  workspace: AuthWorkspace
+  must_change_password: boolean
+}
+
+export async function login(payload: { email: string; password: string; remember_me: boolean }) {
+  const res = await api.post<{ user: AuthUser; workspace: AuthWorkspace }>('/api/auth/login', payload)
+  return res.data
+}
+
+export async function me() {
+  const res = await api.get<CurrentUserResponse>('/api/auth/me')
+  return res.data
+}
+
+export async function logout() {
+  await api.post('/api/auth/logout', {})
+}
+
+export async function changePassword(payload: { current_password: string; new_password: string }) {
+  await api.post('/api/auth/change-password', payload)
+}
+```
+
+Ensure `frontend/src/api/client.ts` uses:
+
+```ts
+credentials: 'include'
+```
+
+- [ ] **Step 2: Add auth provider**
+
+Create `frontend/src/hooks/useAuth.tsx` with a React context wrapping `useQuery({ queryKey: ['auth', 'me'], queryFn: me })`, `loginMutation`, and `logoutMutation`.
+
+The provider value must include:
+
+```ts
+{
+  user,
+  workspace,
+  mustChangePassword,
+  isLoading,
+  isAdmin,
+  login,
+  logout
+}
+```
+
+- [ ] **Step 3: Add route guards**
+
+Create `frontend/src/components/auth/ProtectedRoute.tsx`:
+
+```tsx
+import { Navigate, useLocation } from 'react-router-dom'
+import { useAuth } from '../../hooks/useAuth'
+
+export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const auth = useAuth()
+  const location = useLocation()
+
+  if (auth.isLoading) return <div className="route-loading">Loading</div>
+  if (!auth.user) return <Navigate to={`/login?next=${encodeURIComponent(location.pathname)}`} replace />
+  if (auth.mustChangePassword && location.pathname !== '/change-password') {
+    return <Navigate to="/change-password" replace />
+  }
+  return <>{children}</>
+}
+```
+
+Create `frontend/src/components/auth/AdminRoute.tsx`:
+
+```tsx
+import { Navigate } from 'react-router-dom'
+import { useAuth } from '../../hooks/useAuth'
+
+export function AdminRoute({ children }: { children: React.ReactNode }) {
+  const auth = useAuth()
+  if (!auth.isAdmin) return <Navigate to="/" replace />
+  return <>{children}</>
+}
+```
+
+- [ ] **Step 4: Wire router**
+
+Modify `frontend/src/router.tsx` so the app shell is inside `ProtectedRoute`, add `/change-password`, and add admin route:
+
+```tsx
+{ path: '/login', element: <Login /> },
+{ path: '/change-password', element: <ChangePassword /> },
+{
+  path: '/',
+  element: (
+    <ProtectedRoute>
+      <App />
+    </ProtectedRoute>
+  ),
+  children: [
+    { index: true, element: <Dashboard /> },
+    { path: 'admin/users', element: <AdminRoute><AccountAdmin /></AdminRoute> },
+  ],
+}
+```
+
+- [ ] **Step 5: Run frontend tests**
+
+```bash
+cd frontend && npm run test -- useAuth
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add frontend/src/api/auth.ts frontend/src/hooks/useAuth.tsx frontend/src/components/auth/ProtectedRoute.tsx frontend/src/components/auth/AdminRoute.tsx frontend/src/routes/ChangePassword.tsx frontend/src/router.tsx frontend/src/api/client.ts frontend/src/hooks/useAuth.test.tsx
+git commit -m "feat: add frontend auth session guard"
+```
+
+---
+
+### Task 11: Wire Login, Account Menu, And Admin UI
+
+**Files:**
+- Modify: `frontend/src/routes/Login.tsx`
+- Modify: `frontend/src/components/layout/TopBar.tsx`
+- Modify: `frontend/src/components/layout/Sidebar.tsx`
+- Create: `frontend/src/routes/AccountAdmin.tsx`
+- Create: `frontend/src/routes/AccountAdmin.test.tsx`
+
+- [ ] **Step 1: Make login submit real request**
+
+Modify `frontend/src/routes/Login.tsx` submit path:
+
+```tsx
+const auth = useAuth()
+const navigate = useNavigate()
+const [searchParams] = useSearchParams()
+
+async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  event.preventDefault()
+  setError('')
+  try {
+    await auth.login({ email, password, remember_me: remember })
+    const next = searchParams.get('next') || '/'
+    navigate(next, { replace: true })
+  } catch {
+    setError('邮箱或密码不正确')
+  }
+}
+```
+
+Remove or disable GitHub login in v1:
+
+```tsx
+<button className="auth-oauth-btn" type="button" disabled aria-disabled="true">
+  <GithubIcon />
+  GitHub 登录暂未启用
+</button>
+```
+
+- [ ] **Step 2: Add account menu**
+
+Modify `frontend/src/components/layout/TopBar.tsx` to show current user email and logout button:
+
+```tsx
+const auth = useAuth()
+
+<button type="button" className="account-menu-button" onClick={() => setOpen((v) => !v)}>
+  {auth.user?.display_name || auth.user?.email}
+</button>
+{open && (
+  <div className="account-menu">
+    <span>{auth.user?.email}</span>
+    <button type="button" onClick={() => auth.logout()}>退出登录</button>
+  </div>
+)}
+```
+
+- [ ] **Step 3: Add admin sidebar entry**
+
+Modify `frontend/src/components/layout/Sidebar.tsx`:
+
+```tsx
+const auth = useAuth()
+const visibleNavItems = auth.isAdmin
+  ? navItems.concat([{ to: '/admin/users', label: '账号', icon: UsersIcon }])
+  : navItems
+```
+
+- [ ] **Step 4: Create account admin route**
+
+Create `frontend/src/routes/AccountAdmin.tsx` with:
+
+```tsx
+export default function AccountAdmin() {
+  const [query, setQuery] = useState('')
+  const usersQuery = useQuery({
+    queryKey: ['admin-users', query],
+    queryFn: () => listUsers({ page: 1, page_size: 20, q: query }),
+  })
+
+  return (
+    <section className="account-admin-page">
+      <header className="account-admin-header">
+        <h2>账号管理</h2>
+        <button type="button" onClick={() => setCreateOpen(true)}>创建用户</button>
+      </header>
+      <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索邮箱或姓名" />
+      <table>
+        <thead>
+          <tr><th>邮箱</th><th>名称</th><th>角色</th><th>状态</th><th>最后登录</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          {(usersQuery.data?.users ?? []).map((user) => (
+            <tr key={user.id}>
+              <td>{user.email}</td>
+              <td>{user.display_name}</td>
+              <td>{user.role}</td>
+              <td>{user.status}</td>
+              <td>{user.last_login_at ?? '-'}</td>
+              <td><UserActions user={user} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  )
+}
+```
+
+Add modals for create user, reset temporary password, enable, and disable. Create/reset modal labels must say the password is temporary and the user must change it on first login.
+
+- [ ] **Step 5: Run frontend tests and build**
+
+```bash
+cd frontend && npm run test && npm run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add frontend/src/routes/Login.tsx frontend/src/components/layout/TopBar.tsx frontend/src/components/layout/Sidebar.tsx frontend/src/routes/AccountAdmin.tsx frontend/src/routes/AccountAdmin.test.tsx
+git commit -m "feat: add account management UI"
+```
+
+---
+
+## Phase 6: End-To-End Hardening
+
+### Task 12: Remove Old Global Repository Facade Paths
+
+**Files:**
+- Modify: `backend/internal/service/notes.go`
+- Modify: `backend/internal/service/tasks.go`
+- Modify: `backend/internal/service/events.go`
+- Modify: `backend/internal/service/today.go`
+- Modify: `backend/internal/service/summary.go`
+- Modify: `backend/internal/handler/notes.go`
+- Modify: `backend/internal/handler/tasks.go`
+- Modify: `backend/internal/handler/events.go`
+- Modify: `backend/internal/handler/today.go`
+- Modify: `backend/internal/handler/summary.go`
+
+- [ ] **Step 1: Scan for forbidden global context usage**
+
+```bash
+rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler
+```
+
+Expected: output lists old paths that must be migrated or explicitly justified in tests.
+
+- [ ] **Step 2: Refactor service signatures**
+
+Change service functions from package-level repository usage to explicit `ctx` and `store`:
+
+```go
+func GetNotes(ctx context.Context, store storage.Store, filter storage.NoteFilter) ([]model.Note, int, error) {
+	return store.Notes().List(ctx, filter)
+}
+```
+
+Change these service entry points to accept `ctx context.Context` and `store storage.Store`: `GetTasks`, `CreateTask`, `UpdateTask`, `DeleteTask`, `GetEvents`, `CreateEvent`, `UpdateEvent`, `DeleteEvent`, `GetToday`, `GetSummary`, `GetInboxItems`, `ConvertInboxItem`, `Search`, `GetLearningRoadmap`, `UpdateRoadmapNode`, `ListSyncTargets`, `SyncNote`, and target sync dispatch functions.
+
+- [ ] **Step 3: Update handlers to pass request context**
+
+Example for notes:
+
+```go
+notes, total, err := service.GetNotes(c.Request.Context(), store, filter)
+```
+
+No protected handler should call a service without passing `c.Request.Context()`.
+
+- [ ] **Step 4: Verify scan is clean**
+
+```bash
+rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler
+```
+
+Expected: no output for protected business flows. Test helper files may still reference repository package when isolated.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/internal/service backend/internal/handler
+git commit -m "refactor: pass scoped store through services"
+```
+
+---
+
+### Task 13: Add API Integration And Security Tests
+
+**Files:**
+- Create: `backend/internal/router/auth_integration_test.go`
+- Create: `backend/internal/router/workspace_isolation_test.go`
+- Create: `backend/internal/router/system_directories_auth_test.go`
+- Create: `backend/internal/router/inbox_conversion_test.go`
+
+- [ ] **Step 1: Add unauthenticated and cross-user tests**
+
+Create `backend/internal/router/workspace_isolation_test.go`:
+
+```go
+package router
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestUnauthenticatedNotesReturns401(t *testing.T) {
+	r := setupIntegrationRouter(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/notes", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestUserCannotReadOtherWorkspaceNote(t *testing.T) {
+	r, userACookie, userBCookie, noteID := setupTwoUserNoteScenario(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/notes/"+noteID, nil)
+	req.AddCookie(userBCookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/notes/"+noteID, nil)
+	req.AddCookie(userACookie)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner status = %d, want 200", w.Code)
+	}
+}
+```
+
+- [ ] **Step 2: Add system directories route registration test**
+
+```go
+func TestSystemDirectoriesRouteAbsentWhenDisabled(t *testing.T) {
+	r := setupIntegrationRouterWithLocalDirectories(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/api/system/directories", nil)
+	req.AddCookie(adminCookie(t))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+```
+
+- [ ] **Step 3: Add inbox conversion rollback test**
+
+```go
+func TestInboxConvertRollsBackCreatedEntityWhenMarkFails(t *testing.T) {
+	store := openFailingInboxMarkStore(t)
+	ctx := authenticatedContextForWorkspace(t, "workspace_rollback")
+
+	_, err := service.ConvertInboxItem(ctx, store, "inbox_1", &model.ConvertInboxRequest{Kind: "note"})
+	if err == nil {
+		t.Fatal("expected conversion error")
+	}
+	assertNoNoteWithTitle(t, store, ctx, "Inbox Title")
+}
+```
+
+- [ ] **Step 4: Run integration tests**
+
+```bash
+cd backend && go test ./internal/router -run 'Auth|Workspace|System|Inbox' -count=1 -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/internal/router/auth_integration_test.go backend/internal/router/workspace_isolation_test.go backend/internal/router/system_directories_auth_test.go backend/internal/router/inbox_conversion_test.go
+git commit -m "test: add auth isolation integration coverage"
+```
+
+---
+
+### Task 14: Full Verification And Release Notes
+
+**Files:**
+- Create: `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`
+
+- [ ] **Step 1: Run full backend tests**
+
+```bash
+cd backend && go test ./cmd/server ./cmd/seed ./internal/auth ./internal/bootstrap ./internal/config ./internal/handler ./internal/middleware ./internal/migration ./internal/model ./internal/repository ./internal/router ./internal/service ./internal/storage ./internal/storage/contracttest ./internal/storage/postgres ./internal/storage/sqlite
+```
+
+Expected: PASS.
+
+- [ ] **Step 2: Run full frontend checks**
+
+```bash
+cd frontend && npm run test && npm run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 3: Run targeted scans**
+
+```bash
+rg -n "context\\.Background\\(\\)|repository\\." backend/internal/service backend/internal/handler
+rg -n "password|temporary_password|session|cookie|authorization|token" backend/internal/storage backend/internal/handler backend/internal/service
+```
+
+Expected: first command has no protected business-flow hits. Second command is reviewed to confirm audit metadata never writes secrets.
+
+- [ ] **Step 4: Write rollout notes**
+
+Create `docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md`:
+
+```markdown
+# Multi-User Auth Rollout Notes
+
+## Required Environment
+
+- FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL
+- FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD
+- FLOWSPACE_BOOTSTRAP_ADMIN_NAME
+- FLOWSPACE_COOKIE_SECURE
+- FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER
+- FLOWSPACE_ALLOWED_LOCAL_ROOTS
+
+## First Startup
+
+1. Back up the database.
+2. Start the backend with bootstrap admin variables.
+3. Confirm bootstrap logs show one admin user and one default workspace.
+4. Confirm `/api/auth/login` works for the bootstrap admin.
+5. Confirm old notes, tasks, events, inbox items, sync targets, and roadmaps are visible only to the bootstrap admin.
+
+## Rollback
+
+1. Stop the backend.
+2. Restore the database backup.
+3. Deploy the previous backend and frontend build.
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/superpowers/notes/2026-06-25-multi-user-auth-rollout.md
+git commit -m "docs: add multi-user auth rollout notes"
+```
+
+- [ ] **Step 6: Final status**
+
+```bash
+git status --short
+git log --oneline -n 10
+```
+
+Expected: working tree is clean and recent commits match the task list.
+
+---
+
+## Final Acceptance Checklist
+
+- [ ] Login uses HttpOnly `fs_session` cookie.
+- [ ] `/api/auth/me` restores user, workspace, role, and `must_change_password`.
+- [ ] Forced password users can only access `me`, `change-password`, and `logout`.
+- [ ] Admin can list, create, update role/display/email, disable, enable, and reset temporary password.
+- [ ] Admin create user writes default folders/project to the new user workspace.
+- [ ] `users.default_workspace_id` is NOT NULL after finalizer and cannot point to another user's owned workspace.
+- [ ] Every protected business route requires auth and `RequirePasswordSettled`.
+- [ ] Every business repository fails without `WorkspaceScope`.
+- [ ] Notes, tasks, events, inbox, search, sync, roadmap, and recurrence data are isolated by workspace.
+- [ ] Inbox conversion is transactional and writes typed `converted_to`.
+- [ ] SQLite FTS is rebuilt after table rebuilds and search uses business-table workspace filters.
+- [ ] `/api/system/directories` is absent when disabled and admin-only when enabled.
+- [ ] Full backend tests pass.
+- [ ] Full frontend tests and build pass.
