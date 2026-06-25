@@ -162,6 +162,7 @@ func TestIdentityAndWorkspaceScopeAreSeparate(t *testing.T) {
 	base := context.Background()
 	identity := RequestIdentity{
 		UserID:             "user_admin",
+		SessionID:          "session_admin",
 		WorkspaceID:        "workspace_admin",
 		Role:               "admin",
 		MustChangePassword: false,
@@ -176,6 +177,9 @@ func TestIdentityAndWorkspaceScopeAreSeparate(t *testing.T) {
 	}
 	if gotIdentity.WorkspaceID != "workspace_admin" {
 		t.Fatalf("identity workspace = %q, want workspace_admin", gotIdentity.WorkspaceID)
+	}
+	if gotIdentity.SessionID != "session_admin" {
+		t.Fatalf("identity session = %q, want session_admin", gotIdentity.SessionID)
 	}
 
 	scope, err := WorkspaceIDFromContext(ctx)
@@ -209,6 +213,8 @@ Create `backend/internal/model/auth.go`:
 
 ```go
 package model
+
+import "time"
 
 type User struct {
 	ID                 string `json:"id"`
@@ -247,10 +253,10 @@ type Session struct {
 	TokenHash   string
 	UserAgent   string
 	IPAddress   string
-	ExpiresAt   int64
-	RevokedAt   *int64
-	CreatedAt   int64
-	LastSeenAt   int64
+	ExpiresAt   time.Time
+	RevokedAt   *time.Time
+	CreatedAt   time.Time
+	LastSeenAt   time.Time
 }
 
 type AuditEvent struct {
@@ -337,6 +343,7 @@ const (
 
 type RequestIdentity struct {
 	UserID             string
+	SessionID          string
 	WorkspaceID        string
 	Role               string
 	MustChangePassword bool
@@ -353,6 +360,14 @@ func ContextWithIdentity(ctx context.Context, identity RequestIdentity) context.
 func IdentityFromContext(ctx context.Context) (RequestIdentity, bool) {
 	identity, ok := ctx.Value(identityKey).(RequestIdentity)
 	return identity, ok
+}
+
+func SessionIDFromContext(ctx context.Context) (string, bool) {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok || identity.SessionID == "" {
+		return "", false
+	}
+	return identity.SessionID, true
 }
 
 func ContextWithWorkspaceScope(ctx context.Context, workspaceID string) context.Context {
@@ -798,6 +813,18 @@ func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
 	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_owner', 'owner@example.com', 'Owner', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_owner', 'Owner Workspace', 'user_owner');
+		UPDATE users SET default_workspace_id = 'workspace_owner' WHERE id = 'user_owner';
+	`); err != nil {
+		t.Fatalf("seed valid owner workspace: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
 
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
@@ -809,15 +836,75 @@ func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
 }
 ```
 
+Add a second PostgreSQL test in the same file:
+
+```go
+func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_deferrable_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_existing', 'existing@example.com', 'Existing', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_existing', 'Existing Workspace', 'user_existing');
+		UPDATE users SET default_workspace_id = 'workspace_existing' WHERE id = 'user_existing';
+	`); err != nil {
+		t.Fatalf("seed finalizer data: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	var deferrable, deferred bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT condeferrable, condeferred
+		FROM pg_constraint
+		WHERE conname = 'users_default_owned_workspace_fk'
+	`).Scan(&deferrable, &deferred); err != nil {
+		t.Fatalf("read default workspace constraint: %v", err)
+	}
+	if !deferrable || !deferred {
+		t.Fatalf("constraint deferrable=%v deferred=%v, want true/true", deferrable, deferred)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_later_workspace', 'later@example.com', 'Later', 'hash', true, 'workspace_later', 'user', 'active')
+	`); err != nil {
+		t.Fatalf("insert user before workspace should be deferred: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_later', 'Later Workspace', 'user_later_workspace')
+	`); err != nil {
+		t.Fatalf("insert later workspace: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit deferred default workspace FK: %v", err)
+	}
+}
+```
+
 This test lives in `backend/internal/storage/postgres/migrations_test.go`, which already imports `fmt` and `time` and already defines `openPostgresTestDB(t, schema)`.
 
 - [ ] **Step 2: Run migration test to verify RED**
 
 ```bash
-cd backend && go test ./internal/storage/postgres -run TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace -count=1 -v
+cd backend && go test ./internal/storage/postgres -run 'TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace|TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK' -count=1 -v
 ```
 
-Expected: FAIL because `users` and `workspaces` auth schema or `users_default_owned_workspace_fk` does not exist yet.
+Expected: FAIL because `users` and `workspaces` auth schema or deferrable `users_default_owned_workspace_fk` does not exist yet.
 
 - [ ] **Step 3: Create PostgreSQL schema migration**
 
@@ -945,6 +1032,18 @@ func runMultiUserAuthFinalizer(ctx context.Context, db *sql.DB) error {
 
 Each helper must be idempotent and must return a descriptive error before applying final constraints if any `workspace_id` or `default_workspace_id` is missing.
 
+`applyWorkspaceCompositeForeignKeys` must create `users_default_owned_workspace_fk` exactly as a deferrable composite FK after adding `UNIQUE(workspaces.owner_user_id, workspaces.id)`:
+
+```sql
+ALTER TABLE users
+  ADD CONSTRAINT users_default_owned_workspace_fk
+  FOREIGN KEY (id, default_workspace_id)
+  REFERENCES workspaces(owner_user_id, id)
+  DEFERRABLE INITIALLY DEFERRED;
+```
+
+This constraint is required because admin user provisioning inserts a user row with a precomputed `default_workspace_id` before inserting the workspace row in the same transaction.
+
 - [ ] **Step 5: Add SQLite auth migration file**
 
 Create `backend/internal/storage/sqlite/auth_migrations.go` with functions named:
@@ -966,6 +1065,14 @@ func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
 	}
 	return rebuildSQLiteFTSAfterWorkspaceMigration(ctx, db)
 }
+```
+
+The rebuilt SQLite `users` table must include the same deferred ownership FK:
+
+```sql
+FOREIGN KEY (id, default_workspace_id)
+  REFERENCES workspaces(owner_user_id, id)
+  DEFERRABLE INITIALLY DEFERRED
 ```
 
 `rebuildSQLiteFTSAfterWorkspaceMigration` must execute these statements after table rebuilds:
@@ -1261,7 +1368,7 @@ import (
 )
 
 func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Store) {
-	t.Run("CreateUserWorkspaceSessionAndMembership", func(t *testing.T) {
+	t.Run("CreateUserWorkspaceMembershipAfterFinalizer", func(t *testing.T) {
 		store := openStore(t)
 		ctx := context.Background()
 
@@ -1279,15 +1386,13 @@ func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Sto
 			Name:        "Contract Workspace",
 			OwnerUserID: user.ID,
 		}
+		user.DefaultWorkspaceID = workspace.ID
 
 		err := store.Transact(ctx, func(tx storage.Store) error {
 			if err := tx.Auth().CreateUser(ctx, user); err != nil {
 				return err
 			}
 			if err := tx.Auth().CreateWorkspace(ctx, workspace); err != nil {
-				return err
-			}
-			if err := tx.Auth().SetDefaultWorkspace(ctx, user.ID, workspace.ID); err != nil {
 				return err
 			}
 			return tx.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner")
@@ -1310,14 +1415,14 @@ func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Sto
 		ctx := context.Background()
 		seedUserWorkspace(t, ctx, store, "user_sessions", "workspace_sessions")
 
-		now := time.Now().Unix()
+		now := time.Now()
 		for _, id := range []string{"session_keep", "session_revoke"} {
 			err := store.Auth().CreateSession(ctx, &model.Session{
 				ID:          id,
 				UserID:      "user_sessions",
 				WorkspaceID: "workspace_sessions",
 				TokenHash:   id + "_hash",
-				ExpiresAt:   now + 3600,
+				ExpiresAt:   now.Add(time.Hour),
 			})
 			if err != nil {
 				t.Fatalf("create session %s: %v", id, err)
@@ -1327,10 +1432,42 @@ func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Sto
 			t.Fatalf("revoke except: %v", err)
 		}
 	})
+
+	t.Run("GetSessionByTokenHashOnlyReturnsActiveSessions", func(t *testing.T) {
+		store := openStore(t)
+		ctx := context.Background()
+		seedUserWorkspace(t, ctx, store, "user_session_active", "workspace_session_active")
+		now := time.Now()
+		sessions := []model.Session{
+			{ID: "session_active", UserID: "user_session_active", WorkspaceID: "workspace_session_active", TokenHash: "active_hash", ExpiresAt: now.Add(time.Hour)},
+			{ID: "session_expired", UserID: "user_session_active", WorkspaceID: "workspace_session_active", TokenHash: "expired_hash", ExpiresAt: now.Add(-time.Minute)},
+			{ID: "session_revoked", UserID: "user_session_active", WorkspaceID: "workspace_session_active", TokenHash: "revoked_hash", ExpiresAt: now.Add(time.Hour)},
+		}
+		for i := range sessions {
+			if err := store.Auth().CreateSession(ctx, &sessions[i]); err != nil {
+				t.Fatalf("create session %s: %v", sessions[i].ID, err)
+			}
+		}
+		if err := store.Auth().RevokeSession(ctx, "session_revoked"); err != nil {
+			t.Fatalf("revoke session: %v", err)
+		}
+
+		if _, err := store.Auth().GetSessionByTokenHash(ctx, "active_hash"); err != nil {
+			t.Fatalf("active session lookup: %v", err)
+		}
+		if _, err := store.Auth().GetSessionByTokenHash(ctx, "expired_hash"); err == nil {
+			t.Fatal("expired session was restored")
+		}
+		if _, err := store.Auth().GetSessionByTokenHash(ctx, "revoked_hash"); err == nil {
+			t.Fatal("revoked session was restored")
+		}
+	})
 }
 ```
 
 Add helper functions in the same file for `seedUserWorkspace`.
+
+The `CreateUserWorkspaceMembershipAfterFinalizer` case must run through the normal PostgreSQL and SQLite providers after their startup finalizers. It verifies that the final `default_workspace_id NOT NULL` plus deferrable ownership FK still allows user provisioning in one transaction.
 
 - [ ] **Step 2: Run auth contract tests to verify RED**
 
@@ -1345,6 +1482,8 @@ Expected: FAIL because `Store.Auth()` and `AuthRepository` do not exist yet.
 Modify `backend/internal/storage/store.go`:
 
 ```go
+import "time"
+
 type UserListFilter struct {
 	Page     int
 	PageSize int
@@ -1358,6 +1497,7 @@ type AuthRepository interface {
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
 	ListUsers(ctx context.Context, filter UserListFilter) ([]model.User, int, error)
 	UpdateUser(ctx context.Context, id string, req *model.UpdateUserRequest) (*model.User, error)
+	UpdateUserLastLogin(ctx context.Context, userID string, at time.Time) error
 	UpdateUserPassword(ctx context.Context, userID, passwordHash string, mustChangePassword bool) error
 	CreateWorkspace(ctx context.Context, workspace *model.Workspace) error
 	AddWorkspaceMember(ctx context.Context, workspaceID, userID, role string) error
@@ -1385,6 +1525,27 @@ SELECT id, email, display_name, password_hash, must_change_password, default_wor
        role, status, created_at, updated_at, last_login_at, password_changed_at
 FROM users
 WHERE lower(email) = lower($1)
+```
+
+`GetSessionByTokenHash` must never return expired or revoked sessions:
+
+```sql
+SELECT id, user_id, workspace_id, token_hash, user_agent, ip_address, expires_at, revoked_at, created_at, last_seen_at
+FROM sessions
+WHERE token_hash = $1
+  AND revoked_at IS NULL
+  AND expires_at > now()
+```
+
+SQLite must use the same predicate with `expires_at > CURRENT_TIMESTAMP`.
+
+`UpdateUserLastLogin` must be a narrow update:
+
+```sql
+UPDATE users
+SET last_login_at = $2,
+    updated_at = now()
+WHERE id = $1
 ```
 
 ```sql
@@ -1470,6 +1631,12 @@ func TestLoginSetsHttpOnlyCookie(t *testing.T) {
 	if cookie.Name != "fs_session" || !cookie.HttpOnly {
 		t.Fatalf("unexpected cookie: %#v", cookie)
 	}
+	if !lastLoginUpdated(t, "user_admin") {
+		t.Fatal("last_login_at was not updated")
+	}
+	if !auditEventRecorded(t, "auth.login", "user_admin") {
+		t.Fatal("auth.login audit event was not recorded")
+	}
 }
 
 func TestPasswordChangeRequiredBlocksBusinessRoute(t *testing.T) {
@@ -1487,6 +1654,73 @@ func TestPasswordChangeRequiredBlocksBusinessRoute(t *testing.T) {
 		t.Fatalf("body missing code: %s", w.Body.String())
 	}
 }
+
+func TestExpiredOrRevokedSessionReturns401(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cookie *http.Cookie
+	}{
+		{name: "expired", cookie: expiredSessionCookie(t)},
+		{name: "revoked", cookie: revokedSessionCookie(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := setupAuthTestRouter(t)
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+			req.AddCookie(tc.cookie)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", w.Code)
+			}
+		})
+	}
+}
+
+func TestLogoutRevokesCurrentSessionAndClearsCookie(t *testing.T) {
+	router, sessionID := setupAuthTestRouterWithSession(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.AddCookie(validSessionCookie(t))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+	if !sessionRevoked(t, sessionID) {
+		t.Fatalf("session %s was not revoked", sessionID)
+	}
+	cookie := w.Result().Cookies()[0]
+	if cookie.Name != "fs_session" || cookie.MaxAge != -1 {
+		t.Fatalf("logout did not clear session cookie: %#v", cookie)
+	}
+}
+
+func TestChangePasswordRevokesOtherSessionsUsingCurrentSessionID(t *testing.T) {
+	router, keptSessionID, otherSessionID, userID := setupAuthTestRouterWithTwoSessions(t)
+	body := `{"current_password":"abc12345","new_password":"newpass123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(validSessionCookieForSession(t, keptSessionID))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+	if sessionRevoked(t, keptSessionID) {
+		t.Fatal("current session should be kept until client logs in again")
+	}
+	if !sessionRevoked(t, otherSessionID) {
+		t.Fatal("other sessions should be revoked")
+	}
+	if !auditEventRecorded(t, "auth.change_password", userID) {
+		t.Fatal("auth.change_password audit event was not recorded")
+	}
+}
 ```
 
 Add test helpers in the same file using an in-memory SQLite store and seeded user/session.
@@ -1494,7 +1728,7 @@ Add test helpers in the same file using an in-memory SQLite store and seeded use
 - [ ] **Step 2: Run auth handler tests to verify RED**
 
 ```bash
-cd backend && go test ./internal/handler -run 'TestLoginSetsHttpOnlyCookie|TestPasswordChangeRequiredBlocksBusinessRoute' -count=1 -v
+cd backend && go test ./internal/handler -run 'TestLoginSetsHttpOnlyCookie|TestPasswordChangeRequiredBlocksBusinessRoute|TestExpiredOrRevokedSessionReturns401|TestLogoutRevokesCurrentSessionAndClearsCookie|TestChangePasswordRevokesOtherSessionsUsingCurrentSessionID' -count=1 -v
 ```
 
 Expected: FAIL because auth handlers, middleware, and router wiring do not exist yet.
@@ -1548,6 +1782,43 @@ func (m AuthMiddleware) Required() gin.HandlerFunc {
 		}
 		identity := auth.RequestIdentity{
 			UserID:             user.ID,
+			SessionID:          session.ID,
+			WorkspaceID:        session.WorkspaceID,
+			Role:               user.Role,
+			MustChangePassword: user.MustChangePassword,
+		}
+		ctx := auth.ContextWithIdentity(c.Request.Context(), identity)
+		ctx = auth.ContextWithWorkspaceScope(ctx, session.WorkspaceID)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+}
+
+func (m AuthMiddleware) Optional() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cookie, err := c.Cookie("fs_session")
+		if err != nil || cookie == "" {
+			c.Next()
+			return
+		}
+		tokenHash, err := auth.HashSessionToken(m.SessionSecret, cookie)
+		if err != nil {
+			c.Next()
+			return
+		}
+		session, err := m.Store.Auth().GetSessionByTokenHash(c.Request.Context(), tokenHash)
+		if err != nil {
+			c.Next()
+			return
+		}
+		user, err := m.Store.Auth().GetUserByID(c.Request.Context(), session.UserID)
+		if err != nil || user.Status != "active" {
+			c.Next()
+			return
+		}
+		identity := auth.RequestIdentity{
+			UserID:             user.ID,
+			SessionID:          session.ID,
 			WorkspaceID:        session.WorkspaceID,
 			Role:               user.Role,
 			MustChangePassword: user.MustChangePassword,
@@ -1588,7 +1859,7 @@ Create `backend/internal/handler/auth.go` with:
 
 ```go
 func Login(store storage.Store, authCfg config.AuthConfig) gin.HandlerFunc
-func Logout(store storage.Store) gin.HandlerFunc
+func Logout(store storage.Store, cookieCfg config.CookieConfig) gin.HandlerFunc
 func Me(store storage.Store) gin.HandlerFunc
 func ChangePassword(store storage.Store) gin.HandlerFunc
 ```
@@ -1606,15 +1877,61 @@ if err != nil {
 	return err
 }
 session.TokenHash = tokenHash
-err = store.Auth().CreateSession(ctx, session)
+```
+
+Login must create the session, update the user, and audit within the same transaction:
+
+```go
+err = store.Transact(ctx, func(tx storage.Store) error {
+	if err := tx.Auth().CreateSession(ctx, session); err != nil {
+		return err
+	}
+	if err := tx.Auth().UpdateUserLastLogin(ctx, user.ID, time.Now()); err != nil {
+		return err
+	}
+	return tx.Auth().RecordAuditEvent(ctx, &model.AuditEvent{
+		ActorUserID:  &user.ID,
+		TargetUserID: &user.ID,
+		WorkspaceID:  &workspaceID,
+		Action:       "auth.login",
+		Metadata:     map[string]any{"ip": c.ClientIP(), "user_agent": c.Request.UserAgent()},
+	})
+})
 http.SetCookie(c.Writer, cookieFromConfig(authCfg.Cookie, token, req.RememberMe))
+```
+
+Logout must clear the cookie even when no valid session exists, and revoke only when optional auth restored a current session:
+
+```go
+identity, ok := auth.IdentityFromContext(c.Request.Context())
+if ok && identity.SessionID != "" {
+	if err := store.Auth().RevokeSession(c.Request.Context(), identity.SessionID); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "LOGOUT_FAILED"}})
+		return
+	}
+}
+http.SetCookie(c.Writer, expiredCookie(cookieCfg))
+c.Status(http.StatusNoContent)
 ```
 
 Change password must call:
 
 ```go
-store.Auth().UpdateUserPassword(ctx, identity.UserID, newHash, false)
-store.Auth().RevokeUserSessionsExcept(ctx, identity.UserID, currentSessionID)
+err := store.Transact(ctx, func(tx storage.Store) error {
+	if err := tx.Auth().UpdateUserPassword(ctx, identity.UserID, newHash, false); err != nil {
+		return err
+	}
+	if err := tx.Auth().RevokeUserSessionsExcept(ctx, identity.UserID, identity.SessionID); err != nil {
+		return err
+	}
+	return tx.Auth().RecordAuditEvent(ctx, &model.AuditEvent{
+		ActorUserID:  &identity.UserID,
+		TargetUserID: &identity.UserID,
+		WorkspaceID:  &identity.WorkspaceID,
+		Action:       "auth.change_password",
+		Metadata:     map[string]any{"ip": c.ClientIP(), "user_agent": c.Request.UserAgent()},
+	})
+})
 ```
 
 - [ ] **Step 5: Update router shape**
@@ -1637,7 +1954,7 @@ api.GET("/health", handler.Health)
 authMiddleware := middleware.AuthMiddleware{Store: cfg.Store, SessionSecret: cfg.Auth.SessionSecret}
 authRoutes := api.Group("/auth")
 authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Auth))
-authRoutes.POST("/logout", handler.Logout(cfg.Store))
+authRoutes.POST("/logout", authMiddleware.Optional(), handler.Logout(cfg.Store, cfg.Auth.Cookie))
 authRoutes.GET("/me", authMiddleware.Required(), handler.Me(cfg.Store))
 authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(cfg.Store))
 ```
@@ -1671,7 +1988,7 @@ r := router.Setup(router.Config{
 - [ ] **Step 6: Run auth handler tests**
 
 ```bash
-cd backend && go test ./internal/handler ./internal/router -run 'Auth|Password|Route' -count=1 -v
+cd backend && go test ./internal/handler ./internal/router -run 'Auth|Password|Session|Route' -count=1 -v
 ```
 
 Expected: PASS.
@@ -1754,12 +2071,30 @@ func TestDowngradeLastAdminReturnsConflict(t *testing.T) {
 		t.Fatalf("status = %d, want 409", w.Code)
 	}
 }
+
+func TestRoleChangeRollsBackWhenSessionRevokeFails(t *testing.T) {
+	router := setupAdminTestRouterWithRevokeFailure(t)
+	body := `{"role":"user"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/user_target", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t))
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if roleChanged(t, "user_target") {
+		t.Fatal("role changed even though session revoke failed")
+	}
+}
 ```
 
 - [ ] **Step 2: Run admin API tests to verify RED**
 
 ```bash
-cd backend && go test ./internal/handler -run 'TestAdminListUsersReturnsPagination|TestAdminPatchRejectsStatusAndPassword|TestDowngradeLastAdminReturnsConflict' -count=1 -v
+cd backend && go test ./internal/handler -run 'TestAdminListUsersReturnsPagination|TestAdminPatchRejectsStatusAndPassword|TestDowngradeLastAdminReturnsConflict|TestRoleChangeRollsBackWhenSessionRevokeFails' -count=1 -v
 ```
 
 Expected: FAIL because admin user handlers and route wiring do not exist yet.
@@ -1780,6 +2115,13 @@ func EnableUser(store storage.Store) gin.HandlerFunc
 `CreateUser` must provision user, workspace, membership, default folders/project, and audit in one transaction:
 
 ```go
+workspace := &model.Workspace{
+	ID:          newID("workspace"),
+	Name:        user.DisplayName + " Workspace",
+	OwnerUserID: user.ID,
+}
+user.DefaultWorkspaceID = workspace.ID
+
 err := store.Transact(ctx, func(tx storage.Store) error {
 	if err := tx.Auth().CreateUser(ctx, user); err != nil {
 		return err
@@ -1823,8 +2165,12 @@ err := store.Transact(ctx, func(tx storage.Store) error {
 For role changes and disable, call:
 
 ```go
-_ = tx.Auth().RevokeUserSessions(ctx, targetUserID)
+if err := tx.Auth().RevokeUserSessions(ctx, targetUserID); err != nil {
+	return err
+}
 ```
+
+Do not ignore revoke errors. If session revocation fails, the role/status transaction must roll back so old sessions cannot survive a permission change.
 
 - [ ] **Step 5: Register admin routes**
 
@@ -2432,6 +2778,7 @@ describe('api client auth handling', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     setUnauthorizedHandler(null)
+    window.history.pushState({}, '', '/')
   })
 
   it('sends credentials and calls unauthorized handler on 401', async () => {
@@ -2447,6 +2794,34 @@ describe('api client auth handling', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ credentials: 'include' }))
     expect(onUnauthorized).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call unauthorized handler for invalid login credentials', async () => {
+    const onUnauthorized = vi.fn()
+    setUnauthorizedHandler(onUnauthorized)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: 'INVALID_CREDENTIALS', message: '邮箱或密码错误' } }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    await expect(api.post('/api/auth/login', { email: 'admin@example.com', password: 'wrong' }))
+      .rejects.toMatchObject({ status: 401, code: 'INVALID_CREDENTIALS' })
+
+    expect(onUnauthorized).not.toHaveBeenCalled()
+  })
+
+  it('does not call unauthorized handler while already on login page', async () => {
+    window.history.pushState({}, '', '/login')
+    const onUnauthorized = vi.fn()
+    setUnauthorizedHandler(onUnauthorized)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'login required' } }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    await expect(api.get('/api/auth/me')).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' })
+
+    expect(onUnauthorized).not.toHaveBeenCalled()
   })
 })
 ```
@@ -2532,7 +2907,11 @@ class APIClient {
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       const err = new APIError(res.status, body?.error?.code ?? 'UNKNOWN', body?.error?.message ?? 'Request failed')
-      if (res.status === 401) unauthorizedHandler?.()
+      const isLoginRequest = path === '/api/auth/login'
+      const isAlreadyOnLogin = window.location.pathname === '/login'
+      if (res.status === 401 && err.code !== 'INVALID_CREDENTIALS' && !isLoginRequest && !isAlreadyOnLogin) {
+        unauthorizedHandler?.()
+      }
       throw err
     }
     if (res.status === 204) return { data: undefined as T }
@@ -3215,9 +3594,6 @@ t.Run("DeleteExpiredSessions", func(t *testing.T) {
 	if deleted != 1 {
 		t.Fatalf("deleted = %d, want 1", deleted)
 	}
-	if _, err := store.Auth().GetSessionByTokenHash(ctx, "expired_hash"); err == nil {
-		t.Fatal("expired session still exists")
-	}
 	if _, err := store.Auth().GetSessionByTokenHash(ctx, "active_hash"); err != nil {
 		t.Fatalf("active session missing: %v", err)
 	}
@@ -3730,11 +4106,16 @@ Expected: working tree is clean and recent commits match the task list.
 
 - [ ] Login uses HttpOnly `fs_session` cookie.
 - [ ] Session token hashes use HMAC-SHA256 with `FLOWSPACE_SESSION_SECRET`.
+- [ ] Session restore rejects expired and revoked sessions on every request.
+- [ ] Request identity includes the current `SessionID`; logout revokes the current session when present.
+- [ ] Login updates `last_login_at` and writes `auth.login` audit; password change writes `auth.change_password` audit.
 - [ ] `/api/auth/me` restores user, workspace, role, and `must_change_password`.
 - [ ] Forced password users can only access `me`, `change-password`, and `logout`.
 - [ ] Admin can list, create, update role/display/email, disable, enable, and reset temporary password.
 - [ ] Admin create user writes default folders/project to the new user workspace.
+- [ ] Admin role/status changes roll back if target session revocation fails.
 - [ ] `users.default_workspace_id` is NOT NULL after finalizer and cannot point to another user's owned workspace.
+- [ ] `users_default_owned_workspace_fk` is `DEFERRABLE INITIALLY DEFERRED` in PostgreSQL and SQLite rebuilt schema.
 - [ ] Every protected business route requires auth and `RequirePasswordSettled`.
 - [ ] Every business repository fails without `WorkspaceScope`.
 - [ ] Notes, tasks, events, inbox, search, sync, roadmap, and recurrence data are isolated by workspace.
@@ -3745,6 +4126,7 @@ Expected: working tree is clean and recent commits match the task list.
 - [ ] Repeated failed login attempts are throttled and successful login resets the throttle key.
 - [ ] Expired sessions are deleted by repository cleanup and the startup cleanup worker.
 - [ ] Frontend API client sends credentials and clears auth state on central 401 handling.
+- [ ] Frontend central 401 handling does not redirect for `/api/auth/login` `INVALID_CREDENTIALS` or while already on `/login`.
 - [ ] `/change-password` is protected from anonymous access and remains reachable for forced-password users.
 - [ ] Full backend tests pass.
 - [ ] Full frontend tests and build pass.
