@@ -84,7 +84,7 @@ type TaskFilter struct {
 }
 
 // ExecutionTypeFilter returns the WHERE clause and args for execution_type filtering.
-// emptyStr means "single" (default for backward compat).
+// Empty and NULL execution_type values mean "single" for backward compatibility.
 func ExecutionTypeFilter(execType string) (string, []any) {
 	switch execType {
 	case "recurring":
@@ -92,7 +92,7 @@ func ExecutionTypeFilter(execType string) (string, []any) {
 	case "all":
 		return "", nil // no filter
 	default: // "" or "single"
-		return "(t.execution_type IS NULL OR t.execution_type = 'single')", nil
+		return "(t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single')", nil
 	}
 }
 

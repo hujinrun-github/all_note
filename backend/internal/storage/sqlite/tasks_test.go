@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
@@ -53,6 +54,64 @@ func TestTaskUpdateSyncsRoadmapNodeStatus(t *testing.T) {
 	assertSQLiteRoadmapNodeStatus(t, store, nodeID, "active")
 }
 
+func TestTaskFiltersTreatLegacyBlankExecutionTypeAsSingle(t *testing.T) {
+	opened, err := (Provider{}).Open(context.Background(), storage.Config{
+		Env:        "test",
+		Driver:     storage.DriverSQLite,
+		SQLitePath: filepath.Join(t.TempDir(), "flowspace.test.db"),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer opened.Close()
+
+	store := opened.(*store)
+	ctx := context.Background()
+	localDay := time.Date(2026, 6, 16, 0, 0, 0, 0, time.Local)
+	todayStart := localDay.Unix()
+	todayEnd := localDay.Add(24 * time.Hour).Unix()
+	dueAt := localDay.Add(9 * time.Hour).Unix()
+	plannedDate := "2026-06-16"
+	task := &model.Task{
+		Title:       "legacy blank execution type",
+		Due:         &dueAt,
+		PlannedDate: &plannedDate,
+		Status:      "open",
+		Horizon:     "week",
+		Scope:       "daily",
+	}
+	if err := opened.Tasks().Create(ctx, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE tasks SET execution_type = '' WHERE id = ?`, task.ID); err != nil {
+		t.Fatalf("write legacy blank execution type: %v", err)
+	}
+
+	tasks, total, err := opened.Tasks().List(ctx, storage.TaskFilter{
+		Status:      "active",
+		PlannedDate: plannedDate,
+		Page:        1,
+		PageSize:    20,
+	})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if total != 1 || len(tasks) != 1 || tasks[0].ID != task.ID {
+		t.Fatalf("expected legacy blank execution type task in default list, total=%d tasks=%+v", total, tasks)
+	}
+
+	todayTasks, overdueTasks, err := opened.Tasks().Today(ctx, todayStart, todayEnd, todayStart)
+	if err != nil {
+		t.Fatalf("today tasks: %v", err)
+	}
+	if len(overdueTasks) != 0 {
+		t.Fatalf("expected no overdue tasks, got %+v", overdueTasks)
+	}
+	if !sqliteTaskListContains(todayTasks, task.ID) {
+		t.Fatalf("expected legacy blank execution type task in today tasks, got %+v", todayTasks)
+	}
+}
+
 func assertSQLiteRoadmapNodeStatus(t *testing.T, store *store, nodeID, want string) {
 	t.Helper()
 
@@ -63,4 +122,13 @@ func assertSQLiteRoadmapNodeStatus(t *testing.T, store *store, nodeID, want stri
 	if got != want {
 		t.Fatalf("roadmap node status = %q, want %q", got, want)
 	}
+}
+
+func sqliteTaskListContains(tasks []model.Task, id string) bool {
+	for _, task := range tasks {
+		if task.ID == id {
+			return true
+		}
+	}
+	return false
 }

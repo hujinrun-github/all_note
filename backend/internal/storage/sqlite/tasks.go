@@ -126,7 +126,7 @@ func sqliteTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
 			where = append(where, "t.execution_type = ?")
 			args = append(args, "recurring")
 		} else {
-			where = append(where, "(t.execution_type IS NULL OR t.execution_type = ?)")
+			where = append(where, "(t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = ?)")
 			args = append(args, "single")
 		}
 	}
@@ -404,7 +404,7 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	todayDate := time.Unix(todayStart, 0).In(time.Local).Format("2006-01-02")
 	overdueCutoffDate := time.Unix(overdueCutoff, 0).In(time.Local).Format("2006-01-02")
 	rows, err := r.db.QueryContext(ctx, sqliteTaskSelectSQL()+`
-		WHERE t.done = 0 AND (t.execution_type IS NULL OR t.execution_type = 'single') AND (
+		WHERE t.done = 0 AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single') AND (
 			(t.due >= ? AND t.due < ?)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long' AND t.planned_date = ?)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) = 'long'
@@ -423,7 +423,7 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 
 	rows, err = r.db.QueryContext(ctx, sqliteTaskSelectSQL()+`
 		WHERE t.done = 0
-			AND (t.execution_type IS NULL OR t.execution_type = 'single')
+			AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single')
 			AND COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long'
 			AND ((t.due < ? AND t.due >= ?) OR (t.due IS NULL AND t.planned_date < ? AND t.planned_date >= ?))
 			AND (t.planned_date IS NULL OR t.planned_date <> ?)
@@ -516,6 +516,9 @@ func (r taskRepository) normalizeTaskDefaults(ctx context.Context, task *model.T
 	if task.Status == "done" || task.Done == 1 {
 		task.Done = 1
 		task.Status = "done"
+	}
+	if strings.TrimSpace(task.ExecutionType) == "" {
+		task.ExecutionType = "single"
 	}
 	// Recurring templates never get planned_date
 	if task.ExecutionType == "recurring" {
@@ -681,7 +684,7 @@ func scanSQLiteTaskRow(row sqliteRowScanner) (*model.Task, error) {
 		&task.ID, &task.Title, &task.Content, &task.Project, &task.ProjectID, &task.ProjectType,
 		&task.Due, &task.PlannedDate, &task.Priority, &task.Done, &task.Status, &task.Horizon,
 		&task.Scope, &task.SortOrder, &task.NoteID, &task.RoadmapNodeID, &task.CreatedAt, &task.UpdatedAt,
-			&task.CompletedAt, &task.ExecutionType,
+		&task.CompletedAt, &task.ExecutionType,
 	); err != nil {
 		return nil, err
 	}
