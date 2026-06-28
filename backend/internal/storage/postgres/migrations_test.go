@@ -286,6 +286,8 @@ func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
 		INSERT INTO workspaces (id, name, owner_user_id)
 		VALUES ('workspace_owner', 'Owner Workspace', 'user_owner');
 		UPDATE users SET default_workspace_id = 'workspace_owner' WHERE id = 'user_owner';
+		UPDATE folders SET workspace_id = 'workspace_owner';
+		UPDATE task_projects SET workspace_id = 'workspace_owner';
 	`); err != nil {
 		t.Fatalf("seed valid owner workspace: %v", err)
 	}
@@ -300,6 +302,42 @@ func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected default workspace ownership constraint to reject invalid row")
 	}
+}
+
+func TestMultiUserAuthMigrationCreatesPlannedAuthSchema(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_schema_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	if err := RunPostgresMigrationsContext(context.Background(), db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"users", "last_login_at"},
+		{"users", "password_changed_at"},
+		{"sessions", "workspace_id"},
+		{"sessions", "user_agent"},
+		{"sessions", "ip_address"},
+		{"sessions", "last_seen_at"},
+		{"audit_events", "target_user_id"},
+	} {
+		assertPostgresColumnExists(t, db, schema, column.table, column.name)
+	}
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"sessions", "updated_at"},
+		{"audit_events", "entity_type"},
+		{"audit_events", "entity_id"},
+	} {
+		assertPostgresColumnMissing(t, db, schema, column.table, column.name)
+	}
+	assertPostgresColumnDefault(t, db, schema, "workspace_members", "role", "'owner'::text")
 }
 
 func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T) {
@@ -317,6 +355,8 @@ func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T)
 		INSERT INTO workspaces (id, name, owner_user_id)
 		VALUES ('workspace_existing', 'Existing Workspace', 'user_existing');
 		UPDATE users SET default_workspace_id = 'workspace_existing' WHERE id = 'user_existing';
+		UPDATE folders SET workspace_id = 'workspace_existing';
+		UPDATE task_projects SET workspace_id = 'workspace_existing';
 	`); err != nil {
 		t.Fatalf("seed finalizer data: %v", err)
 	}
@@ -358,6 +398,58 @@ func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T)
 	}
 }
 
+func TestMultiUserAuthFinalizerRejectsBusinessRowsWithoutWorkspace(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_business_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_owner', 'strict-owner@example.com', 'Owner', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_owner', 'Owner Workspace', 'user_owner');
+		UPDATE users SET default_workspace_id = 'workspace_owner' WHERE id = 'user_owner';
+		UPDATE folders SET workspace_id = 'workspace_owner';
+		UPDATE task_projects SET workspace_id = 'workspace_owner';
+	`); err != nil {
+		t.Fatalf("seed workspace backfill: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "notes",
+			sql: `INSERT INTO notes (id, title, body, folder_id, tags)
+				VALUES ('note_without_workspace', 'No Workspace', '', '__uncategorized', '{}'::text[])`,
+		},
+		{
+			name: "tasks",
+			sql: `INSERT INTO tasks (id, title, content, project_id)
+				VALUES ('task_without_workspace', 'No Workspace', '', 'personal')`,
+		},
+		{
+			name: "events",
+			sql: `INSERT INTO events (id, title, start_at, end_at, time_range)
+				VALUES ('event_without_workspace', 'No Workspace', now(), now() + interval '1 hour', tstzrange(now(), now() + interval '1 hour'))`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, tc.sql); err == nil {
+				t.Fatalf("expected %s insert without workspace_id to fail", tc.name)
+			}
+		})
+	}
+}
+
 func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	err := wrapPostgresMigrationError("0001_init_postgres.sql", []byte(`CREATE EXTENSION IF NOT EXISTS pg_trgm`), fmt.Errorf(`permission denied to create extension "pg_trgm"`))
 	if err == nil {
@@ -365,6 +457,58 @@ func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pg_trgm extension privilege/bootstrap failed") {
 		t.Fatalf("expected pg_trgm bootstrap guidance, got %v", err)
+	}
+}
+
+func assertPostgresColumnExists(t *testing.T, db *sql.DB, schema, table, column string) {
+	t.Helper()
+
+	var exists bool
+	if err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+		)
+	`, schema, table, column).Scan(&exists); err != nil {
+		t.Fatalf("check column %s.%s: %v", table, column, err)
+	}
+	if !exists {
+		t.Fatalf("expected column %s.%s to exist", table, column)
+	}
+}
+
+func assertPostgresColumnMissing(t *testing.T, db *sql.DB, schema, table, column string) {
+	t.Helper()
+
+	var exists bool
+	if err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+		)
+	`, schema, table, column).Scan(&exists); err != nil {
+		t.Fatalf("check column %s.%s: %v", table, column, err)
+	}
+	if exists {
+		t.Fatalf("expected column %s.%s to be absent", table, column)
+	}
+}
+
+func assertPostgresColumnDefault(t *testing.T, db *sql.DB, schema, table, column, want string) {
+	t.Helper()
+
+	var got sql.NullString
+	if err := db.QueryRow(`
+		SELECT column_default
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+	`, schema, table, column).Scan(&got); err != nil {
+		t.Fatalf("check default %s.%s: %v", table, column, err)
+	}
+	if !got.Valid || got.String != want {
+		t.Fatalf("default %s.%s = %q, want %q", table, column, got.String, want)
 	}
 }
 

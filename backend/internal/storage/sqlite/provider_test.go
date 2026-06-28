@@ -105,6 +105,36 @@ func TestProviderOpenEnsuresAuthSchemaAndDeferredDefaultWorkspace(t *testing.T) 
 	}
 }
 
+func TestProviderOpenCreatesPlannedAuthSchema(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"users", "last_login_at"},
+		{"users", "password_changed_at"},
+		{"sessions", "workspace_id"},
+		{"sessions", "user_agent"},
+		{"sessions", "ip_address"},
+		{"sessions", "last_seen_at"},
+		{"audit_events", "target_user_id"},
+	} {
+		assertColumnExists(t, store, column.table, column.name)
+	}
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"sessions", "updated_at"},
+		{"audit_events", "entity_type"},
+		{"audit_events", "entity_id"},
+	} {
+		assertColumnMissing(t, store, column.table, column.name)
+	}
+	assertSQLiteColumnDefault(t, store, "workspace_members", "role", "'owner'")
+}
+
 func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "flowspace.legacy-sync.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -352,6 +382,66 @@ func assertColumnExists(t *testing.T, store *store, table, column string) {
 			t.Fatalf("scan column for %s: %v", table, err)
 		}
 		if name == column {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns for %s: %v", table, err)
+	}
+	t.Fatalf("expected column %s.%s to exist", table, column)
+}
+
+func assertColumnMissing(t *testing.T, store *store, table, column string) {
+	t.Helper()
+
+	rows, err := store.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("inspect columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		if name == column {
+			t.Fatalf("expected column %s.%s to be absent", table, column)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns for %s: %v", table, err)
+	}
+}
+
+func assertSQLiteColumnDefault(t *testing.T, store *store, table, column, want string) {
+	t.Helper()
+
+	rows, err := store.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("inspect columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		if name == column {
+			if defaultValue != want {
+				t.Fatalf("default %s.%s = %#v, want %q", table, column, defaultValue, want)
+			}
 			return
 		}
 	}

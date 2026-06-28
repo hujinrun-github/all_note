@@ -48,6 +48,8 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 			password_hash TEXT NOT NULL,
 			must_change_password INTEGER NOT NULL DEFAULT 1,
 			default_workspace_id TEXT,
+			last_login_at INTEGER,
+			password_changed_at INTEGER,
 			role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
 			status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
 			created_at INTEGER NOT NULL,
@@ -72,7 +74,7 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS workspace_members (
 			workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'member')),
+			role TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner', 'member')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, user_id)
@@ -82,11 +84,14 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 			token_hash TEXT NOT NULL UNIQUE,
+			user_agent TEXT NOT NULL DEFAULT '',
+			ip_address TEXT NOT NULL DEFAULT '',
 			expires_at INTEGER NOT NULL,
+			last_seen_at INTEGER,
 			revoked_at INTEGER,
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS sessions_active_idx
 			ON sessions (user_id, expires_at DESC)
@@ -94,10 +99,9 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS audit_events (
 			id TEXT PRIMARY KEY,
 			actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+			target_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
 			workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
 			action TEXT NOT NULL,
-			entity_type TEXT NOT NULL,
-			entity_id TEXT NOT NULL DEFAULT '',
 			metadata TEXT NOT NULL DEFAULT '{}',
 			created_at INTEGER NOT NULL
 		)`,

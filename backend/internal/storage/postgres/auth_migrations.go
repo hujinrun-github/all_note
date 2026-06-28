@@ -91,9 +91,6 @@ func validateWorkspaceIDBackfill(ctx context.Context, db *sql.DB, table string) 
 	}
 
 	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE workspace_id IS NULL`, postgresIdent(table))
-	if predicate := postgresAllowedNullWorkspacePredicate(table); predicate != "" {
-		query += " AND NOT (" + predicate + ")"
-	}
 	var count int
 	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return fmt.Errorf("validate %s.workspace_id backfill: %w", table, err)
@@ -105,7 +102,15 @@ func validateWorkspaceIDBackfill(ctx context.Context, db *sql.DB, table string) 
 }
 
 func applyWorkspaceNotNullConstraints(ctx context.Context, db *sql.DB) error {
-	return addPostgresCheckConstraintIfMissing(ctx, db, "users", "users_default_workspace_id_not_null", "default_workspace_id IS NOT NULL")
+	if err := addPostgresCheckConstraintIfMissing(ctx, db, "users", "users_default_workspace_id_not_null", "default_workspace_id IS NOT NULL"); err != nil {
+		return err
+	}
+	for _, table := range workspaceScopedTables {
+		if err := addPostgresCheckConstraintIfMissing(ctx, db, table, table+"_workspace_id_not_null", "workspace_id IS NOT NULL"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
@@ -223,17 +228,6 @@ func postgresConstraintExists(ctx context.Context, db *sql.DB, constraint string
 		return false, fmt.Errorf("inspect postgres constraint %s: %w", constraint, err)
 	}
 	return exists, nil
-}
-
-func postgresAllowedNullWorkspacePredicate(table string) string {
-	switch table {
-	case "folders":
-		return "id IN ('__uncategorized', '__work', '__personal')"
-	case "task_projects":
-		return "id = 'personal'"
-	default:
-		return ""
-	}
 }
 
 func postgresIdent(name string) string {

@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   must_change_password BOOLEAN NOT NULL DEFAULT true,
   default_workspace_id TEXT,
+  last_login_at TIMESTAMPTZ,
+  password_changed_at TIMESTAMPTZ,
   role TEXT NOT NULL DEFAULT 'user'
     CHECK (role IN ('admin', 'user')),
   status TEXT NOT NULL DEFAULT 'active'
@@ -32,7 +34,7 @@ CREATE INDEX IF NOT EXISTS workspaces_owner_idx
 CREATE TABLE IF NOT EXISTS workspace_members (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL DEFAULT 'member'
+  role TEXT NOT NULL DEFAULT 'owner'
     CHECK (role IN ('owner', 'member')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -45,11 +47,14 @@ CREATE INDEX IF NOT EXISTS workspace_members_user_idx
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
+  user_agent TEXT NOT NULL DEFAULT '',
+  ip_address TEXT NOT NULL DEFAULT '',
   expires_at TIMESTAMPTZ NOT NULL,
+  last_seen_at TIMESTAMPTZ,
   revoked_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS sessions_active_idx
@@ -59,10 +64,9 @@ CREATE INDEX IF NOT EXISTS sessions_active_idx
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  target_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
   action TEXT NOT NULL,
-  entity_type TEXT NOT NULL,
-  entity_id TEXT NOT NULL DEFAULT '',
   metadata JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
