@@ -472,6 +472,42 @@ func TestMultiUserAuthFinalizerRejectsBusinessRowsWithoutWorkspace(t *testing.T)
 	}
 }
 
+func TestMultiUserAuthFinalizerScopesConstraintLookupToCurrentSchema(t *testing.T) {
+	ctx := context.Background()
+	schemaA := fmt.Sprintf("fs_test_auth_constraint_a_%d", time.Now().UnixNano())
+	dbA := openPostgresTestDB(t, schemaA)
+	defer dbA.Close()
+	seedFinalizedWorkspace(t, ctx, dbA, "user_owner_a", "workspace_owner_a")
+	if err := runMultiUserAuthFinalizer(ctx, dbA); err != nil {
+		t.Fatalf("finalize schema A: %v", err)
+	}
+
+	schemaB := fmt.Sprintf("fs_test_auth_constraint_b_%d", time.Now().UnixNano())
+	dbB := openPostgresTestDB(t, schemaB)
+	defer dbB.Close()
+	seedFinalizedWorkspace(t, ctx, dbB, "user_owner_b", "workspace_owner_b")
+	if err := runMultiUserAuthFinalizer(ctx, dbB); err != nil {
+		t.Fatalf("finalize schema B: %v", err)
+	}
+
+	assertRowCount(t, dbB, `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = 'users'
+			AND c.conname = 'users_default_owned_workspace_fk'
+	`, 1)
+
+	if _, err := dbB.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_invalid_b', 'invalid-b@example.com', 'Invalid', 'hash', false, 'workspace_owner_b', 'user', 'active')
+	`); err == nil {
+		t.Fatal("expected schema B ownership FK to reject another user's workspace")
+	}
+}
+
 func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	err := wrapPostgresMigrationError("0001_init_postgres.sql", []byte(`CREATE EXTENSION IF NOT EXISTS pg_trgm`), fmt.Errorf(`permission denied to create extension "pg_trgm"`))
 	if err == nil {
@@ -479,6 +515,37 @@ func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pg_trgm extension privilege/bootstrap failed") {
 		t.Fatalf("expected pg_trgm bootstrap guidance, got %v", err)
+	}
+}
+
+func seedFinalizedWorkspace(t *testing.T, ctx context.Context, db *sql.DB, userID, workspaceID string) {
+	t.Helper()
+
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ($1, $2, 'Owner', 'hash', 'admin', 'active')
+	`, userID, userID+"@example.com"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ($1, 'Owner Workspace', $2)
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE users SET default_workspace_id = $1 WHERE id = $2
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("backfill user default workspace: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE folders SET workspace_id = $1`, workspaceID); err != nil {
+		t.Fatalf("backfill folders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE task_projects SET workspace_id = $1`, workspaceID); err != nil {
+		t.Fatalf("backfill task projects: %v", err)
 	}
 }
 

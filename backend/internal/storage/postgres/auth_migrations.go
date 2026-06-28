@@ -126,7 +126,7 @@ func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
 }
 
 func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
-	exists, err := postgresConstraintExists(ctx, db, "users_default_owned_workspace_fk")
+	exists, err := postgresConstraintExists(ctx, db, "users", "users_default_owned_workspace_fk")
 	if err != nil {
 		return err
 	}
@@ -204,16 +204,20 @@ func postgresColumnExists(ctx context.Context, db *sql.DB, table, column string)
 	return exists, nil
 }
 
-func postgresConstraintExists(ctx context.Context, db *sql.DB, constraint string) (bool, error) {
+func postgresConstraintExists(ctx context.Context, db *sql.DB, table, constraint string) (bool, error) {
 	var exists bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
-			FROM pg_constraint
-			WHERE conname = $1
+			FROM pg_constraint c
+			JOIN pg_class rel ON rel.oid = c.conrelid
+			JOIN pg_namespace n ON n.oid = rel.relnamespace
+			WHERE n.nspname = current_schema()
+				AND rel.relname = $1
+				AND c.conname = $2
 		)
-	`, constraint).Scan(&exists); err != nil {
-		return false, fmt.Errorf("inspect postgres constraint %s: %w", constraint, err)
+	`, table, constraint).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect postgres constraint %s.%s: %w", table, constraint, err)
 	}
 	return exists, nil
 }
