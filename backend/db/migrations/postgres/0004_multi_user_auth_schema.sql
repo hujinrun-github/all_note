@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL,
   display_name TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
-  must_change_password BOOLEAN NOT NULL DEFAULT true,
+  must_change_password BOOLEAN NOT NULL DEFAULT false,
   default_workspace_id TEXT,
   last_login_at TIMESTAMPTZ,
   password_changed_at TIMESTAMPTZ,
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_agent TEXT NOT NULL DEFAULT '',
   ip_address TEXT NOT NULL DEFAULT '',
   expires_at TIMESTAMPTZ NOT NULL,
-  last_seen_at TIMESTAMPTZ,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

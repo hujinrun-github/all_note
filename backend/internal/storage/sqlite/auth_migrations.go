@@ -46,7 +46,7 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 			email TEXT NOT NULL,
 			display_name TEXT NOT NULL DEFAULT '',
 			password_hash TEXT NOT NULL,
-			must_change_password INTEGER NOT NULL DEFAULT 1,
+			must_change_password INTEGER NOT NULL DEFAULT 0,
 			default_workspace_id TEXT,
 			last_login_at INTEGER,
 			password_changed_at INTEGER,
@@ -89,7 +89,7 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 			user_agent TEXT NOT NULL DEFAULT '',
 			ip_address TEXT NOT NULL DEFAULT '',
 			expires_at INTEGER NOT NULL,
-			last_seen_at INTEGER,
+			last_seen_at INTEGER NOT NULL DEFAULT (unixepoch()),
 			revoked_at INTEGER,
 			created_at INTEGER NOT NULL
 		)`,

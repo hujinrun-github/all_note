@@ -133,6 +133,9 @@ func TestProviderOpenCreatesPlannedAuthSchema(t *testing.T) {
 		assertColumnMissing(t, store, column.table, column.name)
 	}
 	assertSQLiteColumnDefault(t, store, "workspace_members", "role", "'owner'")
+	assertSQLiteColumnDefault(t, store, "users", "must_change_password", "0")
+	assertSQLiteColumnNotNull(t, store, "sessions", "last_seen_at")
+	assertSQLiteColumnDefault(t, store, "sessions", "last_seen_at", "unixepoch()")
 }
 
 func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *testing.T) {
@@ -441,6 +444,38 @@ func assertSQLiteColumnDefault(t *testing.T, store *store, table, column, want s
 		if name == column {
 			if defaultValue != want {
 				t.Fatalf("default %s.%s = %#v, want %q", table, column, defaultValue, want)
+			}
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate columns for %s: %v", table, err)
+	}
+	t.Fatalf("expected column %s.%s to exist", table, column)
+}
+
+func assertSQLiteColumnNotNull(t *testing.T, store *store, table, column string) {
+	t.Helper()
+
+	rows, err := store.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("inspect columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		if name == column {
+			if notNull != 1 {
+				t.Fatalf("expected column %s.%s to be NOT NULL", table, column)
 			}
 			return
 		}

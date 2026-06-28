@@ -338,6 +338,9 @@ func TestMultiUserAuthMigrationCreatesPlannedAuthSchema(t *testing.T) {
 		assertPostgresColumnMissing(t, db, schema, column.table, column.name)
 	}
 	assertPostgresColumnDefault(t, db, schema, "workspace_members", "role", "'owner'::text")
+	assertPostgresColumnDefault(t, db, schema, "users", "must_change_password", "false")
+	assertPostgresColumnDefault(t, db, schema, "sessions", "last_seen_at", "now()")
+	assertPostgresColumnNullable(t, db, schema, "sessions", "last_seen_at", "NO")
 }
 
 func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T) {
@@ -362,6 +365,9 @@ func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T)
 	}
 	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
 		t.Fatalf("finalizer: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("second finalizer should be idempotent: %v", err)
 	}
 
 	var deferrable, deferred bool
@@ -421,6 +427,21 @@ func TestMultiUserAuthFinalizerRejectsBusinessRowsWithoutWorkspace(t *testing.T)
 	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
 		t.Fatalf("finalizer: %v", err)
 	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("second finalizer should be idempotent: %v", err)
+	}
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"users", "default_workspace_id"},
+		{"notes", "workspace_id"},
+		{"tasks", "workspace_id"},
+		{"events", "workspace_id"},
+	} {
+		assertPostgresColumnNullable(t, db, schema, column.table, column.name, "NO")
+	}
+	assertPostgresNoUnvalidatedWorkspaceConstraints(t, db)
 
 	for _, tc := range []struct {
 		name string
@@ -509,6 +530,42 @@ func assertPostgresColumnDefault(t *testing.T, db *sql.DB, schema, table, column
 	}
 	if !got.Valid || got.String != want {
 		t.Fatalf("default %s.%s = %q, want %q", table, column, got.String, want)
+	}
+}
+
+func assertPostgresColumnNullable(t *testing.T, db *sql.DB, schema, table, column, want string) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRow(`
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+	`, schema, table, column).Scan(&got); err != nil {
+		t.Fatalf("check nullability %s.%s: %v", table, column, err)
+	}
+	if got != want {
+		t.Fatalf("nullability %s.%s = %q, want %q", table, column, got, want)
+	}
+}
+
+func assertPostgresNoUnvalidatedWorkspaceConstraints(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE convalidated = false
+			AND (
+				conname = 'users_default_workspace_id_not_null'
+				OR conname LIKE '%_workspace_id_not_null'
+			)
+	`).Scan(&count); err != nil {
+		t.Fatalf("check unvalidated workspace constraints: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("found %d unvalidated workspace constraints, want 0", count)
 	}
 }
 

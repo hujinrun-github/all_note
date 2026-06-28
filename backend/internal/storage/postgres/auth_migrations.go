@@ -102,11 +102,11 @@ func validateWorkspaceIDBackfill(ctx context.Context, db *sql.DB, table string) 
 }
 
 func applyWorkspaceNotNullConstraints(ctx context.Context, db *sql.DB) error {
-	if err := addPostgresCheckConstraintIfMissing(ctx, db, "users", "users_default_workspace_id_not_null", "default_workspace_id IS NOT NULL"); err != nil {
+	if err := setPostgresColumnNotNull(ctx, db, "users", "default_workspace_id"); err != nil {
 		return err
 	}
 	for _, table := range workspaceScopedTables {
-		if err := addPostgresCheckConstraintIfMissing(ctx, db, table, table+"_workspace_id_not_null", "workspace_id IS NOT NULL"); err != nil {
+		if err := setPostgresColumnNotNull(ctx, db, table, "workspace_id"); err != nil {
 			return err
 		}
 	}
@@ -145,22 +145,10 @@ func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func addPostgresCheckConstraintIfMissing(ctx context.Context, db *sql.DB, table, constraint, predicate string) error {
-	exists, err := postgresConstraintExists(ctx, db, constraint)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-	stmt := fmt.Sprintf(
-		"ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID",
-		postgresIdent(table),
-		postgresIdent(constraint),
-		predicate,
-	)
+func setPostgresColumnNotNull(ctx context.Context, db *sql.DB, table, column string) error {
+	stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL", postgresIdent(table), postgresIdent(column))
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
-		return fmt.Errorf("add %s constraint: %w", constraint, err)
+		return fmt.Errorf("set %s.%s not null: %w", table, column, err)
 	}
 	return nil
 }
