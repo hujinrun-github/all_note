@@ -14,6 +14,15 @@ type recurrenceRepository struct {
 }
 
 func (r recurrenceRepository) UpsertRule(ctx context.Context, rule *model.RecurrenceRule) error {
+	weekdays := rule.Weekdays
+	if weekdays == nil {
+		weekdays = []int{}
+	}
+	monthDays := rule.MonthDays
+	if monthDays == nil {
+		monthDays = []int{}
+	}
+
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO task_recurrence_rules (task_id, start_date, end_date, frequency, interval, weekdays, month_days, timezone, enabled)
 		VALUES ($1, $2::date, $3::date, $4, $5, $6, $7, $8, $9)
@@ -28,7 +37,7 @@ func (r recurrenceRepository) UpsertRule(ctx context.Context, rule *model.Recurr
 			enabled = EXCLUDED.enabled,
 			updated_at = now()
 	`, rule.TaskID, rule.StartDate, rule.EndDate, rule.Frequency, rule.Interval,
-		pq.Array(rule.Weekdays), pq.Array(rule.MonthDays), rule.Timezone, rule.Enabled)
+		pq.Array(weekdays), pq.Array(monthDays), rule.Timezone, rule.Enabled)
 	return err
 }
 
@@ -37,7 +46,7 @@ func (r recurrenceRepository) GetRule(ctx context.Context, taskID string) (*mode
 	var endDate sql.NullString
 	var weekdays, monthDays []int64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT task_id, start_date, end_date, frequency, interval, weekdays, month_days, timezone, enabled,
+		SELECT task_id, start_date::text, end_date::text, frequency, interval, weekdays, month_days, timezone, enabled,
 			EXTRACT(EPOCH FROM created_at)::bigint, EXTRACT(EPOCH FROM updated_at)::bigint
 		FROM task_recurrence_rules WHERE task_id = $1
 	`, taskID).Scan(&rule.TaskID, &rule.StartDate, &endDate, &rule.Frequency, &rule.Interval,
@@ -67,7 +76,7 @@ func (r recurrenceRepository) DeleteRule(ctx context.Context, taskID string) err
 
 func (r recurrenceRepository) ListActiveRules(ctx context.Context, from, to string) ([]model.RecurrenceRule, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT task_id, start_date, end_date, frequency, interval, weekdays, month_days, timezone, enabled,
+		SELECT task_id, start_date::text, end_date::text, frequency, interval, weekdays, month_days, timezone, enabled,
 			EXTRACT(EPOCH FROM created_at)::bigint, EXTRACT(EPOCH FROM updated_at)::bigint
 		FROM task_recurrence_rules
 		WHERE enabled = true
@@ -83,7 +92,7 @@ func (r recurrenceRepository) ListActiveRules(ctx context.Context, from, to stri
 
 func (r recurrenceRepository) ListOccurrences(ctx context.Context, from, to string) ([]model.TaskOccurrence, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT o.task_id, o.occurrence_date, o.status, EXTRACT(EPOCH FROM o.completed_at)::bigint AS completed_at, o.note,
+		SELECT o.task_id, o.occurrence_date::text, o.status, EXTRACT(EPOCH FROM o.completed_at)::bigint AS completed_at, o.note,
 			t.title, COALESCE(t.content, ''), t.project_id, COALESCE(p.name, t.project),
 			t.roadmap_node_id, t.sort_order,
 			EXTRACT(EPOCH FROM o.created_at)::bigint
@@ -104,7 +113,7 @@ func (r recurrenceRepository) GetCompletedOccurrencesByRange(ctx context.Context
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT o.task_id AS id, t.title, EXTRACT(EPOCH FROM o.completed_at)::bigint AS completed_at,
 			t.project_id, p.name AS project_name, p.type AS project_type,
-			t.due, o.occurrence_date
+			EXTRACT(EPOCH FROM t.due_at)::bigint, o.occurrence_date::text
 		FROM task_occurrences o
 		JOIN tasks t ON t.id = o.task_id
 		LEFT JOIN task_projects p ON p.id = t.project_id
@@ -192,7 +201,7 @@ func (r recurrenceRepository) getOccurrence(ctx context.Context, taskID, date st
 	o := &model.TaskOccurrence{}
 	var completedAt sql.NullInt64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT task_id, occurrence_date, status,
+		SELECT task_id, occurrence_date::text, status,
 			EXTRACT(EPOCH FROM completed_at)::bigint, note,
 			EXTRACT(EPOCH FROM created_at)::bigint
 		FROM task_occurrences WHERE task_id = $1 AND occurrence_date = $2::date
@@ -264,4 +273,3 @@ func scanOccurrences(rows *sql.Rows) ([]model.TaskOccurrence, error) {
 
 // Ensure interface compliance
 var _ storage.RecurrenceRepository = (*recurrenceRepository)(nil)
-
