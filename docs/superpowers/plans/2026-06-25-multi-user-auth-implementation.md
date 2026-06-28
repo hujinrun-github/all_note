@@ -4,7 +4,7 @@
 
 **Goal:** Implement login, session auth, account management, and workspace-based data isolation for FlowSpace, with safe legacy migration for PostgreSQL and SQLite.
 
-**Architecture:** Add auth/session/account modules beside existing handlers and storage providers, then make all business repositories resolve data through a `WorkspaceScope` rather than global queries. Migrations run in two parts: SQL adds auth tables and nullable workspace columns, Go bootstrap/backfill creates the first admin workspace and assigns legacy data, and provider finalizers apply NOT NULL, composite keys, composite FKs, and SQLite FTS rebuilds.
+**Architecture:** Add auth/session/account modules beside existing handlers and storage providers, then make all business repositories resolve data through a `WorkspaceScope` rather than global queries. Migrations run in two parts: SQL adds auth tables and nullable workspace columns, Go bootstrap/backfill creates the first admin workspace and assigns legacy data, and explicit post-backfill finalizers apply NOT NULL, composite keys, composite FKs, and SQLite FTS rebuilds.
 
 **Tech Stack:** Go 1.26, Gin, database/sql, PostgreSQL via pgx, SQLite via modernc.org/sqlite, bcrypt, React 19, React Router, TanStack Query, Vitest
 
@@ -1126,14 +1126,7 @@ INSERT INTO events_fts(events_fts) VALUES('rebuild');
 
 - [ ] **Step 6: Wire provider startup**
 
-Modify `backend/internal/storage/postgres/provider.go` after `RunPostgresMigrationsContext`:
-
-```go
-if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
-	_ = db.Close()
-	return nil, err
-}
-```
+Do not run the PostgreSQL strict finalizer during Task 3 provider startup. `runMultiUserAuthFinalizer` validates fully backfilled `workspace_id` and `default_workspace_id` values before adding final constraints, so it must run only after Task 4 bootstrap/backfill succeeds.
 
 Modify `backend/internal/storage/sqlite/provider.go` after recurrence schema:
 
@@ -1168,6 +1161,7 @@ git commit -m "feat: add multi-user auth schema migrations"
 - Create: `backend/internal/bootstrap/auth_bootstrap_test.go`
 - Modify: `backend/cmd/server/main.go`
 - Modify: `backend/cmd/seed/main.go`
+- Modify: `backend/internal/storage/postgres/provider.go`
 
 - [ ] **Step 1: Write bootstrap tests**
 
@@ -1355,6 +1349,13 @@ bootstrapCfg := bootstrap.Config{
 if err := bootstrap.EnsureAuthReady(startupCtx, store, bootstrapCfg); err != nil {
 	log.Fatalf("auth bootstrap: %v", err)
 }
+if finalizer, ok := store.(interface {
+	FinalizeAuthSchema(context.Context) error
+}); ok {
+	if err := finalizer.FinalizeAuthSchema(startupCtx); err != nil {
+		log.Fatalf("auth schema finalizer: %v", err)
+	}
+}
 ```
 
 Add imports:
@@ -1508,7 +1509,7 @@ func RunAuthContractTests(t *testing.T, openStore func(t *testing.T) storage.Sto
 
 Add helper functions in the same file for `seedUserWorkspace`.
 
-The `CreateUserWorkspaceMembershipAfterFinalizer` case must run through the normal PostgreSQL and SQLite providers after their startup finalizers. It verifies that the final `default_workspace_id NOT NULL` plus deferrable ownership FK still allows user provisioning in one transaction.
+The `CreateUserWorkspaceMembershipAfterFinalizer` case must run after Task 4 bootstrap/backfill has invoked the provider-specific finalizer hook, not immediately after raw provider startup. It verifies that the final `default_workspace_id NOT NULL` plus deferrable ownership FK still allows user provisioning in one transaction.
 
 - [ ] **Step 2: Run auth contract tests to verify RED**
 

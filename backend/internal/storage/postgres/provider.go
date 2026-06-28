@@ -46,10 +46,6 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
-	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	return newStore(db), nil
 }
 
