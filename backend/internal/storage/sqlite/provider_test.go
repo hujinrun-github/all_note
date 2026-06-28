@@ -64,6 +64,47 @@ func TestProviderOpenUsesLegacySchemaAndReportsCapabilities(t *testing.T) {
 	}
 }
 
+func TestProviderOpenEnsuresAuthSchemaAndDeferredDefaultWorkspace(t *testing.T) {
+	store := openTestStore(t)
+
+	for _, table := range []string{"users", "workspaces", "workspace_members", "sessions", "audit_events"} {
+		assertTableExists(t, store, table)
+	}
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"users", "default_workspace_id"},
+		{"folders", "workspace_id"},
+		{"notes", "workspace_id"},
+		{"tasks", "workspace_id"},
+		{"task_projects", "workspace_id"},
+	} {
+		assertColumnExists(t, store, column.table, column.name)
+	}
+
+	tx, err := store.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status, created_at, updated_at)
+		VALUES ('sqlite_user_later', 'sqlite-later@example.com', 'SQLite Later', 'hash', 1, 'sqlite_workspace_later', 'user', 'active', unixepoch(), unixepoch())
+	`); err != nil {
+		t.Fatalf("insert user before workspace should be deferred: %v", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO workspaces (id, name, owner_user_id, created_at, updated_at)
+		VALUES ('sqlite_workspace_later', 'SQLite Later Workspace', 'sqlite_user_later', unixepoch(), unixepoch())
+	`); err != nil {
+		t.Fatalf("insert later workspace: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit deferred default workspace FK: %v", err)
+	}
+}
+
 func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "flowspace.legacy-sync.db")
 	db, err := sql.Open("sqlite", dbPath)

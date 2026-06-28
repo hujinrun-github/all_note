@@ -271,6 +271,93 @@ func TestRunPostgresMigrationsReplacesCustomLastDirectionCheck(t *testing.T) {
 	}
 }
 
+func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_default_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_owner', 'owner@example.com', 'Owner', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_owner', 'Owner Workspace', 'user_owner');
+		UPDATE users SET default_workspace_id = 'workspace_owner' WHERE id = 'user_owner';
+	`); err != nil {
+		t.Fatalf("seed valid owner workspace: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_a', 'a@example.com', 'A', 'hash', false, 'workspace_b', 'user', 'active')
+	`)
+	if err == nil {
+		t.Fatal("expected default workspace ownership constraint to reject invalid row")
+	}
+}
+
+func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_deferrable_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_existing', 'existing@example.com', 'Existing', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_existing', 'Existing Workspace', 'user_existing');
+		UPDATE users SET default_workspace_id = 'workspace_existing' WHERE id = 'user_existing';
+	`); err != nil {
+		t.Fatalf("seed finalizer data: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	var deferrable, deferred bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT condeferrable, condeferred
+		FROM pg_constraint
+		WHERE conname = 'users_default_owned_workspace_fk'
+	`).Scan(&deferrable, &deferred); err != nil {
+		t.Fatalf("read default workspace constraint: %v", err)
+	}
+	if !deferrable || !deferred {
+		t.Fatalf("constraint deferrable=%v deferred=%v, want true/true", deferrable, deferred)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_later_workspace', 'later@example.com', 'Later', 'hash', true, 'workspace_later', 'user', 'active')
+	`); err != nil {
+		t.Fatalf("insert user before workspace should be deferred: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_later', 'Later Workspace', 'user_later_workspace')
+	`); err != nil {
+		t.Fatalf("insert later workspace: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit deferred default workspace FK: %v", err)
+	}
+}
+
 func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	err := wrapPostgresMigrationError("0001_init_postgres.sql", []byte(`CREATE EXTENSION IF NOT EXISTS pg_trgm`), fmt.Errorf(`permission denied to create extension "pg_trgm"`))
 	if err == nil {

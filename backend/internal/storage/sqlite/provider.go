@@ -61,6 +61,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteAuthSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return newStore(db), nil
 }
 
@@ -225,4 +229,3 @@ func (s *storeTx) Roadmaps() storage.RoadmapRepository {
 func (s *storeTx) Sync() storage.SyncRepository {
 	return syncRepository{db: s.tx}
 }
-
