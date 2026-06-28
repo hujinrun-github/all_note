@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS workspace_members (
   role TEXT NOT NULL DEFAULT 'owner'
     CHECK (role IN ('owner', 'member')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (workspace_id, user_id)
 );
 

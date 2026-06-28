@@ -73,6 +73,10 @@ func (s *store) Health(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
+func (s *store) FinalizeAuthSchema(ctx context.Context) error {
+	return runMultiUserAuthFinalizer(ctx, s.db)
+}
+
 func (s *store) Capabilities() storage.Capabilities {
 	return storage.Capabilities{
 		FullTextSearch: true,

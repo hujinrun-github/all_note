@@ -332,6 +332,7 @@ func TestMultiUserAuthMigrationCreatesPlannedAuthSchema(t *testing.T) {
 		name  string
 	}{
 		{"sessions", "updated_at"},
+		{"workspace_members", "updated_at"},
 		{"audit_events", "entity_type"},
 		{"audit_events", "entity_id"},
 	} {

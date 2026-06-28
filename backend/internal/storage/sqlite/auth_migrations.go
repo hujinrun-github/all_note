@@ -76,7 +76,6 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			role TEXT NOT NULL DEFAULT 'owner' CHECK (role IN ('owner', 'member')),
 			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, user_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS workspace_members_user_idx
