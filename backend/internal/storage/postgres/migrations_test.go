@@ -508,6 +508,55 @@ func TestMultiUserAuthFinalizerScopesConstraintLookupToCurrentSchema(t *testing.
 	}
 }
 
+func TestSetPostgresColumnNotNullChecksCurrentNullability(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_not_null_fast_path_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE not_null_probe (
+			id TEXT PRIMARY KEY,
+			already_required TEXT NOT NULL,
+			later_required TEXT
+		)
+	`); err != nil {
+		t.Fatalf("create not null probe: %v", err)
+	}
+
+	nullable, err := postgresColumnIsNullable(ctx, db, "not_null_probe", "already_required")
+	if err != nil {
+		t.Fatalf("check already_required nullability: %v", err)
+	}
+	if nullable {
+		t.Fatal("already_required should start NOT NULL")
+	}
+	if err := setPostgresColumnNotNull(ctx, db, "not_null_probe", "already_required"); err != nil {
+		t.Fatalf("set already_required not null should be a no-op: %v", err)
+	}
+
+	nullable, err = postgresColumnIsNullable(ctx, db, "not_null_probe", "later_required")
+	if err != nil {
+		t.Fatalf("check later_required nullability: %v", err)
+	}
+	if !nullable {
+		t.Fatal("later_required should start nullable")
+	}
+	if err := setPostgresColumnNotNull(ctx, db, "not_null_probe", "later_required"); err != nil {
+		t.Fatalf("set later_required not null: %v", err)
+	}
+	nullable, err = postgresColumnIsNullable(ctx, db, "not_null_probe", "later_required")
+	if err != nil {
+		t.Fatalf("recheck later_required nullability: %v", err)
+	}
+	if nullable {
+		t.Fatal("later_required should be NOT NULL after helper")
+	}
+	if err := setPostgresColumnNotNull(ctx, db, "not_null_probe", "later_required"); err != nil {
+		t.Fatalf("second set later_required not null should be a no-op: %v", err)
+	}
+}
+
 func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	err := wrapPostgresMigrationError("0001_init_postgres.sql", []byte(`CREATE EXTENSION IF NOT EXISTS pg_trgm`), fmt.Errorf(`permission denied to create extension "pg_trgm"`))
 	if err == nil {

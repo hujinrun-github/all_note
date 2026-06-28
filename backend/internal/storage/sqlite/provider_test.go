@@ -139,6 +139,40 @@ func TestProviderOpenCreatesPlannedAuthSchema(t *testing.T) {
 	assertSQLiteColumnDefault(t, store, "sessions", "last_seen_at", "unixepoch()")
 }
 
+func TestProviderSecondOpenDoesNotRebuildFTSWhenWorkspaceColumnsExist(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.fts-rebuild.db")
+	opened, err := (Provider{}).Open(context.Background(), storage.Config{
+		Env:        "test",
+		Driver:     storage.DriverSQLite,
+		SQLitePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("first open sqlite provider: %v", err)
+	}
+	sqliteStore := opened.(*store)
+	if _, err := sqliteStore.db.Exec(`
+		INSERT INTO notes_fts(rowid, title, body, tags)
+		VALUES (999999, 'fts_second_open_sentinel', '', '')
+	`); err != nil {
+		t.Fatalf("insert FTS sentinel: %v", err)
+	}
+	assertFTSMatchCount(t, sqliteStore, "notes_fts", "fts_second_open_sentinel", 1)
+	if err := opened.Close(); err != nil {
+		t.Fatalf("close first provider: %v", err)
+	}
+
+	reopened, err := (Provider{}).Open(context.Background(), storage.Config{
+		Env:        "test",
+		Driver:     storage.DriverSQLite,
+		SQLitePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("second open sqlite provider: %v", err)
+	}
+	defer reopened.Close()
+	assertFTSMatchCount(t, reopened.(*store), "notes_fts", "fts_second_open_sentinel", 1)
+}
+
 func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "flowspace.legacy-sync.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -485,6 +519,19 @@ func assertSQLiteColumnNotNull(t *testing.T, store *store, table, column string)
 		t.Fatalf("iterate columns for %s: %v", table, err)
 	}
 	t.Fatalf("expected column %s.%s to exist", table, column)
+}
+
+func assertFTSMatchCount(t *testing.T, store *store, table, query string, want int) {
+	t.Helper()
+
+	var got int
+	sql := `SELECT COUNT(*) FROM ` + table + ` WHERE ` + table + ` MATCH ?`
+	if err := store.db.QueryRow(sql, query).Scan(&got); err != nil {
+		t.Fatalf("count FTS matches in %s: %v", table, err)
+	}
+	if got != want {
+		t.Fatalf("FTS match count in %s = %d, want %d", table, got, want)
+	}
 }
 
 func assertProbeRowCount(t *testing.T, store *store, want int) {

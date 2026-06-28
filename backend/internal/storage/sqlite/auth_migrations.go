@@ -33,8 +33,12 @@ func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
 	if err := createSQLiteAuthTables(ctx, db); err != nil {
 		return err
 	}
-	if err := ensureSQLiteWorkspaceColumns(ctx, db); err != nil {
+	workspaceColumnsChanged, err := ensureSQLiteWorkspaceColumns(ctx, db)
+	if err != nil {
 		return err
+	}
+	if !workspaceColumnsChanged {
+		return nil
 	}
 	return rebuildSQLiteFTSAfterWorkspaceMigration(ctx, db)
 }
@@ -117,20 +121,29 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func ensureSQLiteWorkspaceColumns(ctx context.Context, db *sql.DB) error {
+func ensureSQLiteWorkspaceColumns(ctx context.Context, db *sql.DB) (bool, error) {
+	changed := false
 	for _, table := range sqliteWorkspaceScopedTables {
 		exists, err := sqliteTableExists(db, table)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !exists {
 			continue
 		}
-		if err := sqliteAddColumnIfMissing(db, table, "workspace_id", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN workspace_id TEXT`, table)); err != nil {
-			return fmt.Errorf("ensure SQLite %s.workspace_id: %w", table, err)
+		hasColumn, err := sqliteColumnExists(db, table, "workspace_id")
+		if err != nil {
+			return false, err
 		}
+		if hasColumn {
+			continue
+		}
+		if err := sqliteAddColumnIfMissing(db, table, "workspace_id", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN workspace_id TEXT`, table)); err != nil {
+			return false, fmt.Errorf("ensure SQLite %s.workspace_id: %w", table, err)
+		}
+		changed = true
 	}
-	return nil
+	return changed, nil
 }
 
 func rebuildSQLiteFTSAfterWorkspaceMigration(ctx context.Context, db *sql.DB) error {

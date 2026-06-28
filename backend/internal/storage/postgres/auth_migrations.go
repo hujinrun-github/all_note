@@ -146,6 +146,13 @@ func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
 }
 
 func setPostgresColumnNotNull(ctx context.Context, db *sql.DB, table, column string) error {
+	nullable, err := postgresColumnIsNullable(ctx, db, table, column)
+	if err != nil {
+		return err
+	}
+	if !nullable {
+		return nil
+	}
 	stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL", postgresIdent(table), postgresIdent(column))
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("set %s.%s not null: %w", table, column, err)
@@ -202,6 +209,20 @@ func postgresColumnExists(ctx context.Context, db *sql.DB, table, column string)
 		return false, fmt.Errorf("inspect postgres column %s.%s: %w", table, column, err)
 	}
 	return exists, nil
+}
+
+func postgresColumnIsNullable(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var isNullable string
+	if err := db.QueryRowContext(ctx, `
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+			AND table_name = $1
+			AND column_name = $2
+	`, table, column).Scan(&isNullable); err != nil {
+		return false, fmt.Errorf("inspect postgres column nullability %s.%s: %w", table, column, err)
+	}
+	return isNullable == "YES", nil
 }
 
 func postgresConstraintExists(ctx context.Context, db *sql.DB, table, constraint string) (bool, error) {
