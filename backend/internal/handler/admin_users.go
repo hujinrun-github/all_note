@@ -139,7 +139,7 @@ func CreateUser(store storage.Store) gin.HandlerFunc {
 				ActorUserID:  stringPtr(identity.UserID),
 				TargetUserID: stringPtr(user.ID),
 				WorkspaceID:  stringPtr(workspace.ID),
-				Action:       "admin.create_user",
+				Action:       "admin.user.create",
 				Metadata: adminAuditMetadata(c, map[string]any{
 					"email": email,
 					"role":  role,
@@ -239,7 +239,7 @@ func UpdateUser(store storage.Store) gin.HandlerFunc {
 				ActorUserID:  stringPtr(identity.UserID),
 				TargetUserID: stringPtr(targetUserID),
 				WorkspaceID:  stringPtr(workspaceID),
-				Action:       "admin.update_user",
+				Action:       "admin.user.update",
 				Metadata: adminAuditMetadata(c, map[string]any{
 					"role_changed": roleChanged,
 				}),
@@ -291,7 +291,7 @@ func ResetUserPassword(store storage.Store) gin.HandlerFunc {
 				ActorUserID:  stringPtr(identity.UserID),
 				TargetUserID: stringPtr(targetUserID),
 				WorkspaceID:  stringPtr(target.DefaultWorkspaceID),
-				Action:       "auth.reset_password",
+				Action:       "admin.user.reset_password",
 				Metadata:     adminAuditMetadata(c, nil),
 			})
 		})
@@ -331,7 +331,7 @@ func DisableUser(store storage.Store) gin.HandlerFunc {
 				ActorUserID:  stringPtr(identity.UserID),
 				TargetUserID: stringPtr(targetUserID),
 				WorkspaceID:  stringPtr(target.DefaultWorkspaceID),
-				Action:       "admin.disable_user",
+				Action:       "admin.user.disable",
 				Metadata:     adminAuditMetadata(c, nil),
 			})
 		})
@@ -363,7 +363,7 @@ func EnableUser(store storage.Store) gin.HandlerFunc {
 				ActorUserID:  stringPtr(identity.UserID),
 				TargetUserID: stringPtr(targetUserID),
 				WorkspaceID:  stringPtr(target.DefaultWorkspaceID),
-				Action:       "admin.enable_user",
+				Action:       "admin.user.enable",
 				Metadata:     adminAuditMetadata(c, nil),
 			})
 		})

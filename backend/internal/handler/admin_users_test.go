@@ -110,7 +110,7 @@ func TestAdminCreateUserAuditDoesNotIncludeTemporaryPasswordOrHash(t *testing.T)
 		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
 	}
 	user := getAdminTestUserByEmail(t, env.store, "audited@example.com")
-	metadata := lastAdminAuditMetadata(t, env.dbPath, "admin.create_user", user.ID)
+	metadata := lastAdminAuditMetadata(t, env.dbPath, "admin.user.create", user.ID)
 	assertAdminAuditMetadataExcludes(t, metadata, "auditPass123", "temporary_password", "password_hash")
 }
 
@@ -133,6 +133,31 @@ func TestAdminPatchRejectsStatusAndPassword(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminUpdateAuditsDesignActionName(t *testing.T) {
+	env := setupAdminTestEnv(t)
+	seedAdminTestUser(t, env.store, adminSeedUser{
+		ID:          "user_update",
+		Email:       "update@example.com",
+		DisplayName: "Update Target",
+		Role:        "user",
+		Status:      "active",
+	})
+	body := `{"display_name":"Updated Target"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/user_update", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t, env))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if !adminAuditEventRecorded(t, env.dbPath, "admin.user.update", "user_update") {
+		t.Fatal("admin.user.update audit event was not recorded")
 	}
 }
 
@@ -248,7 +273,7 @@ func TestAdminResetPasswordAuditMetadataExcludesSecretsAndRevokesSessions(t *tes
 	if !adminTestSessionRevoked(t, env, "reset-user-token") {
 		t.Fatal("target sessions were not revoked")
 	}
-	metadata := lastAdminAuditMetadata(t, env.dbPath, "auth.reset_password", "user_reset")
+	metadata := lastAdminAuditMetadata(t, env.dbPath, "admin.user.reset_password", "user_reset")
 	assertAdminAuditMetadataExcludes(t, metadata,
 		"resetPass123",
 		"temporary_password",
@@ -287,8 +312,8 @@ func TestAdminDisableRevokesSessionsAndAudits(t *testing.T) {
 	if !adminTestSessionRevoked(t, env, "disable-ok-token") {
 		t.Fatal("target sessions were not revoked")
 	}
-	if !adminAuditEventRecorded(t, env.dbPath, "admin.disable_user", "user_disable") {
-		t.Fatal("admin.disable_user audit event was not recorded")
+	if !adminAuditEventRecorded(t, env.dbPath, "admin.user.disable", "user_disable") {
+		t.Fatal("admin.user.disable audit event was not recorded")
 	}
 }
 
@@ -313,8 +338,8 @@ func TestAdminEnableAudits(t *testing.T) {
 	if got := adminTestUser(t, env.store, "user_enable").Status; got != "active" {
 		t.Fatalf("status = %q, want active", got)
 	}
-	if !adminAuditEventRecorded(t, env.dbPath, "admin.enable_user", "user_enable") {
-		t.Fatal("admin.enable_user audit event was not recorded")
+	if !adminAuditEventRecorded(t, env.dbPath, "admin.user.enable", "user_enable") {
+		t.Fatal("admin.user.enable audit event was not recorded")
 	}
 }
 
