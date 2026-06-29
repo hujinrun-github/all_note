@@ -153,6 +153,18 @@ func (s *store) Transact(ctx context.Context, fn func(storage.Store) error) erro
 	return nil
 }
 
+func (s *store) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+func (s *store) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, query, args...)
+}
+
+func (s *store) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
+}
+
 func (s *store) Folders() storage.FolderRepository {
 	return folderRepository{db: s.db}
 }
@@ -236,4 +248,16 @@ func (s *storeTx) Sync() storage.SyncRepository {
 
 func (s *storeTx) Auth() storage.AuthRepository {
 	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.tx.ExecContext(ctx, query, args...)
+}
+
+func (s *storeTx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.tx.QueryContext(ctx, query, args...)
+}
+
+func (s *storeTx) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.tx.QueryRowContext(ctx, query, args...)
 }
