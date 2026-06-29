@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
 )
@@ -41,6 +42,7 @@ type Store interface {
 	Roadmaps() RoadmapRepository
 	Sync() SyncRepository
 	Search() SearchRepository
+	Auth() AuthRepository
 }
 
 type FolderRepository interface {
@@ -56,6 +58,33 @@ type NoteFilter struct {
 	Sort       string // "recent" | "az"
 	Page       int
 	PageSize   int
+}
+
+type UserListFilter struct {
+	Page     int
+	PageSize int
+	Query    string
+}
+
+type AuthRepository interface {
+	CreateUser(context.Context, *model.User) error
+	SetDefaultWorkspace(context.Context, string, string) error
+	GetUserByEmail(context.Context, string) (*model.User, error)
+	GetUserByID(context.Context, string) (*model.User, error)
+	ListUsers(context.Context, UserListFilter) ([]model.User, int, error)
+	UpdateUser(context.Context, string, *model.UpdateUserRequest) (*model.User, error)
+	UpdateUserLastLogin(context.Context, string, time.Time) error
+	UpdateUserPassword(context.Context, string, string, bool) error
+	CreateWorkspace(context.Context, *model.Workspace) error
+	AddWorkspaceMember(context.Context, string, string, string) error
+	CreateSession(context.Context, *model.Session) error
+	GetSessionByTokenHash(context.Context, string) (*model.Session, error)
+	GetWorkspaceMembership(context.Context, string, string) (*model.WorkspaceMember, error)
+	RevokeSession(context.Context, string) error
+	RevokeUserSessions(context.Context, string) error
+	RevokeUserSessionsExcept(context.Context, string, string) error
+	RecordAuditEvent(context.Context, *model.AuditEvent) error
+	LockActiveAdmins(context.Context) ([]model.User, error)
 }
 
 type NoteRepository interface {

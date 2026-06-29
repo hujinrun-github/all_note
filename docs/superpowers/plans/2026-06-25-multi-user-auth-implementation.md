@@ -1383,6 +1383,8 @@ git commit -m "feat: add auth bootstrap and legacy backfill"
 
 ### Task 5: Add AuthRepository For PostgreSQL And SQLite
 
+Task 5a moved the AuthRepository primitives before Task 4 because bootstrap depends on `Store.Auth()` for user, workspace, session, and audit provisioning.
+
 **Files:**
 - Modify: `backend/internal/storage/store.go`
 - Create: `backend/internal/storage/contracttest/auth_contract_tests.go`

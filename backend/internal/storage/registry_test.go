@@ -59,6 +59,7 @@ func (s *fakeStore) Inbox() InboxRepository      { return nil }
 func (s *fakeStore) Roadmaps() RoadmapRepository { return nil }
 func (s *fakeStore) Sync() SyncRepository        { return nil }
 func (s *fakeStore) Search() SearchRepository    { return nil }
+func (s *fakeStore) Auth() AuthRepository        { return nil }
 
 func TestRegistryRejectsDuplicateProvider(t *testing.T) {
 	registry := NewRegistry()

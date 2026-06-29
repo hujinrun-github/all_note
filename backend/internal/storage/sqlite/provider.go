@@ -189,6 +189,10 @@ func (s *store) Recurrence() storage.RecurrenceRepository {
 	return recurrenceRepository{db: s.db}
 }
 
+func (s *store) Auth() storage.AuthRepository {
+	return authRepository{db: s.db}
+}
+
 type storeTx struct {
 	*store
 	tx *sql.Tx
@@ -228,4 +232,8 @@ func (s *storeTx) Roadmaps() storage.RoadmapRepository {
 
 func (s *storeTx) Sync() storage.SyncRepository {
 	return syncRepository{db: s.tx}
+}
+
+func (s *storeTx) Auth() storage.AuthRepository {
+	return authRepository{db: s.tx}
 }
