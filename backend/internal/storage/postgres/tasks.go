@@ -196,17 +196,35 @@ func (r taskRepository) DeleteProject(ctx context.Context, id string) error {
 	if id == "personal" {
 		return fmt.Errorf("personal project cannot be deleted")
 	}
-	if _, err := r.GetProjectByID(ctx, id); err != nil {
-		return err
-	}
-	result, err := r.db.ExecContext(ctx, `DELETE FROM task_projects WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return r.withTx(ctx, func(tx *sql.Tx) error {
+		var existingID string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM task_projects WHERE id = $1`, id).Scan(&existingID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE tasks AS t
+			SET project_id = 'personal',
+				project = COALESCE(personal.name, 'Personal'),
+				updated_at = now()
+			FROM task_projects AS deleting
+			LEFT JOIN task_projects AS personal
+				ON personal.id = 'personal'
+				AND personal.workspace_id IS NOT DISTINCT FROM deleting.workspace_id
+			WHERE deleting.id = $1
+				AND t.project_id = deleting.id
+				AND t.workspace_id IS NOT DISTINCT FROM deleting.workspace_id
+		`, id); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM task_projects WHERE id = $1`, id)
+		if err != nil {
+			return err
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
 }
 
 func (r taskRepository) GetProjectByID(ctx context.Context, id string) (*model.TaskProject, error) {

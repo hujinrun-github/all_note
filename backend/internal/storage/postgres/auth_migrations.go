@@ -35,13 +35,32 @@ func runMultiUserAuthFinalizer(ctx context.Context, db *sql.DB) error {
 	if err := validateWorkspaceBackfill(ctx, db); err != nil {
 		return err
 	}
-	if err := applyWorkspaceNotNullConstraints(ctx, db); err != nil {
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin multi-user auth finalizer transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := applyWorkspaceNotNullConstraints(ctx, tx); err != nil {
 		return err
 	}
-	if err := applyWorkspaceCompositeKeys(ctx, db); err != nil {
+	if err := applyWorkspaceCompositeKeys(ctx, tx); err != nil {
 		return err
 	}
-	return applyWorkspaceCompositeForeignKeys(ctx, db)
+	if err := applyWorkspaceCompositeForeignKeys(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit multi-user auth finalizer transaction: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func validateWorkspaceBackfill(ctx context.Context, db *sql.DB) error {
@@ -101,7 +120,7 @@ func validateWorkspaceIDBackfill(ctx context.Context, db *sql.DB, table string) 
 	return nil
 }
 
-func applyWorkspaceNotNullConstraints(ctx context.Context, db *sql.DB) error {
+func applyWorkspaceNotNullConstraints(ctx context.Context, db postgresRunner) error {
 	if err := setPostgresColumnNotNull(ctx, db, "users", "default_workspace_id"); err != nil {
 		return err
 	}
@@ -113,7 +132,7 @@ func applyWorkspaceNotNullConstraints(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
+func applyWorkspaceCompositeKeys(ctx context.Context, db postgresRunner) error {
 	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_idx ON workspaces (owner_user_id, id)`); err != nil {
 		return fmt.Errorf("ensure workspaces(owner_user_id,id) key: %w", err)
 	}
@@ -134,7 +153,7 @@ func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
+func applyWorkspaceCompositeForeignKeys(ctx context.Context, db postgresRunner) error {
 	if err := addWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
 		return err
 	}
@@ -158,15 +177,25 @@ func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func applyWorkspaceScopedDefaultParentKeys(ctx context.Context, db *sql.DB) error {
-	if err := dropWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
+func applyWorkspaceScopedDefaultParentKeys(ctx context.Context, db postgresRunner) error {
+	foldersReady, err := postgresPrimaryKeyMatches(ctx, db, "folders", []string{"workspace_id", "id"})
+	if err != nil {
 		return err
 	}
-	if err := replacePostgresPrimaryKey(ctx, db, "folders", []string{"workspace_id", "id"}); err != nil {
+	projectsReady, err := postgresPrimaryKeyMatches(ctx, db, "task_projects", []string{"workspace_id", "id"})
+	if err != nil {
 		return err
 	}
-	if err := replacePostgresPrimaryKey(ctx, db, "task_projects", []string{"workspace_id", "id"}); err != nil {
-		return err
+	if !foldersReady || !projectsReady {
+		if err := dropWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
+			return err
+		}
+		if err := replacePostgresPrimaryKey(ctx, db, "folders", []string{"workspace_id", "id"}); err != nil {
+			return err
+		}
+		if err := replacePostgresPrimaryKey(ctx, db, "task_projects", []string{"workspace_id", "id"}); err != nil {
+			return err
+		}
 	}
 	if err := dropPostgresConstraintIfExists(ctx, db, "folders", "folders_name_key"); err != nil {
 		return err
@@ -183,7 +212,7 @@ func applyWorkspaceScopedDefaultParentKeys(ctx context.Context, db *sql.DB) erro
 	return nil
 }
 
-func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db *sql.DB) error {
+func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db postgresRunner) error {
 	if err := dropPostgresConstraintIfExists(ctx, db, "learning_roadmaps", "learning_roadmaps_project_id_key"); err != nil {
 		return err
 	}
@@ -196,7 +225,7 @@ func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db *sql.
 	return nil
 }
 
-func dropWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db *sql.DB) error {
+func dropWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db postgresRunner) error {
 	for _, fk := range []struct {
 		child  string
 		parent string
@@ -213,7 +242,7 @@ func dropWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db *sql.DB)
 	return nil
 }
 
-func addWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db *sql.DB) error {
+func addWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db postgresRunner) error {
 	for _, fk := range []struct {
 		table      string
 		name       string
@@ -277,7 +306,7 @@ func addWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db *sql.DB) 
 	return nil
 }
 
-func replacePostgresPrimaryKey(ctx context.Context, db *sql.DB, table string, columns []string) error {
+func replacePostgresPrimaryKey(ctx context.Context, db postgresRunner, table string, columns []string) error {
 	constraintName, existingColumns, err := postgresPrimaryKeyColumns(ctx, db, table)
 	if err != nil {
 		return err
@@ -306,7 +335,7 @@ func replacePostgresPrimaryKey(ctx context.Context, db *sql.DB, table string, co
 	return nil
 }
 
-func dropPostgresForeignKeysToTable(ctx context.Context, db *sql.DB, childTable, parentTable string) error {
+func dropPostgresForeignKeysToTable(ctx context.Context, db postgresRunner, childTable, parentTable string) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT c.conname
 		FROM pg_constraint c
@@ -344,7 +373,7 @@ func dropPostgresForeignKeysToTable(ctx context.Context, db *sql.DB, childTable,
 	return nil
 }
 
-func dropPostgresConstraintIfExists(ctx context.Context, db *sql.DB, table, constraint string) error {
+func dropPostgresConstraintIfExists(ctx context.Context, db postgresRunner, table, constraint string) error {
 	stmt := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", postgresIdent(table), postgresIdent(constraint))
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("drop %s.%s constraint: %w", table, constraint, err)
@@ -352,7 +381,7 @@ func dropPostgresConstraintIfExists(ctx context.Context, db *sql.DB, table, cons
 	return nil
 }
 
-func postgresPrimaryKeyColumns(ctx context.Context, db *sql.DB, table string) (string, []string, error) {
+func postgresPrimaryKeyColumns(ctx context.Context, db postgresRunner, table string) (string, []string, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT c.conname, a.attname
 		FROM pg_constraint c
@@ -385,7 +414,15 @@ func postgresPrimaryKeyColumns(ctx context.Context, db *sql.DB, table string) (s
 	return constraintName, columns, nil
 }
 
-func setPostgresColumnNotNull(ctx context.Context, db *sql.DB, table, column string) error {
+func postgresPrimaryKeyMatches(ctx context.Context, db postgresRunner, table string, want []string) (bool, error) {
+	_, columns, err := postgresPrimaryKeyColumns(ctx, db, table)
+	if err != nil {
+		return false, err
+	}
+	return sameStringSlice(columns, want), nil
+}
+
+func setPostgresColumnNotNull(ctx context.Context, db postgresRunner, table, column string) error {
 	nullable, err := postgresColumnIsNullable(ctx, db, table, column)
 	if err != nil {
 		return err
@@ -400,7 +437,7 @@ func setPostgresColumnNotNull(ctx context.Context, db *sql.DB, table, column str
 	return nil
 }
 
-func addWorkspaceCompositeKey(ctx context.Context, db *sql.DB, table string) error {
+func addWorkspaceCompositeKey(ctx context.Context, db postgresRunner, table string) error {
 	hasID, err := postgresColumnExists(ctx, db, table, "id")
 	if err != nil {
 		return err
@@ -435,7 +472,7 @@ func postgresTableExists(ctx context.Context, db *sql.DB, table string) (bool, e
 	return exists, nil
 }
 
-func postgresColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+func postgresColumnExists(ctx context.Context, db postgresRunner, table, column string) (bool, error) {
 	var exists bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -451,7 +488,7 @@ func postgresColumnExists(ctx context.Context, db *sql.DB, table, column string)
 	return exists, nil
 }
 
-func postgresColumnIsNullable(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+func postgresColumnIsNullable(ctx context.Context, db postgresRunner, table, column string) (bool, error) {
 	var isNullable string
 	if err := db.QueryRowContext(ctx, `
 		SELECT is_nullable
@@ -465,7 +502,7 @@ func postgresColumnIsNullable(ctx context.Context, db *sql.DB, table, column str
 	return isNullable == "YES", nil
 }
 
-func postgresConstraintExists(ctx context.Context, db *sql.DB, table, constraint string) (bool, error) {
+func postgresConstraintExists(ctx context.Context, db postgresRunner, table, constraint string) (bool, error) {
 	var exists bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (

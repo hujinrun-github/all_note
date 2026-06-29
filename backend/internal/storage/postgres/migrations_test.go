@@ -367,8 +367,27 @@ func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T)
 	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
 		t.Fatalf("finalizer: %v", err)
 	}
+	childFKs := []struct {
+		table string
+		name  string
+	}{
+		{table: "notes", name: "notes_workspace_folder_fk"},
+		{table: "tasks", name: "tasks_workspace_project_fk"},
+		{table: "note_project_links", name: "note_project_links_workspace_project_fk"},
+		{table: "learning_roadmaps", name: "learning_roadmaps_workspace_project_fk"},
+	}
+	firstChildFKOIDs := make(map[string]string, len(childFKs))
+	for _, fk := range childFKs {
+		firstChildFKOIDs[fk.name] = postgresConstraintOID(t, db, fk.table, fk.name)
+	}
 	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
 		t.Fatalf("second finalizer should be idempotent: %v", err)
+	}
+	for _, fk := range childFKs {
+		secondOID := postgresConstraintOID(t, db, fk.table, fk.name)
+		if secondOID != firstChildFKOIDs[fk.name] {
+			t.Fatalf("%s OID changed after second finalizer run: first=%s second=%s", fk.name, firstChildFKOIDs[fk.name], secondOID)
+		}
 	}
 
 	var deferrable, deferred bool
@@ -403,6 +422,40 @@ func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T)
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit deferred default workspace FK: %v", err)
 	}
+}
+
+func TestMultiUserAuthFinalizerRollsBackDDLWhenCompositeFKFails(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_rollback_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	seedFinalizedWorkspace(t, ctx, db, "user_workspace_a", "workspace_a")
+	insertPostgresWorkspace(t, ctx, db, "user_workspace_b", "workspace_b")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', 'workspace_a');
+		INSERT INTO tasks (id, title, content, project_id, workspace_id)
+		VALUES ('task_cross_workspace_project', 'Cross Workspace Project', '', 'workspace_a_only_project', 'workspace_b');
+	`); err != nil {
+		t.Fatalf("seed cross-workspace task: %v", err)
+	}
+	assertRowCount(t, db, postgresOriginalTasksProjectFKCountSQL(), 1)
+
+	if err := runMultiUserAuthFinalizer(ctx, db); err == nil {
+		t.Fatal("expected finalizer to fail while adding composite task project FK")
+	}
+
+	assertRowCount(t, db, postgresOriginalTasksProjectFKCountSQL(), 1)
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = 'tasks'
+			AND c.conname = 'tasks_workspace_project_fk'
+	`, 0)
 }
 
 func TestMultiUserAuthFinalizerAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.T) {
@@ -793,6 +846,42 @@ func assertPostgresNoUnvalidatedWorkspaceConstraints(t *testing.T, db *sql.DB) {
 	if count != 0 {
 		t.Fatalf("found %d unvalidated workspace constraints, want 0", count)
 	}
+}
+
+func postgresConstraintOID(t *testing.T, db *sql.DB, table, constraint string) string {
+	t.Helper()
+
+	var oid string
+	if err := db.QueryRow(`
+		SELECT c.oid::text
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = $1
+			AND c.conname = $2
+	`, table, constraint).Scan(&oid); err != nil {
+		t.Fatalf("read constraint OID %s.%s: %v", table, constraint, err)
+	}
+	return oid
+}
+
+func postgresOriginalTasksProjectFKCountSQL() string {
+	return `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class child ON child.oid = c.conrelid
+		JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+		JOIN pg_class parent ON parent.oid = c.confrelid
+		JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+		WHERE child_ns.nspname = current_schema()
+			AND parent_ns.nspname = current_schema()
+			AND child.relname = 'tasks'
+			AND parent.relname = 'task_projects'
+			AND c.contype = 'f'
+			AND array_length(c.conkey, 1) = 1
+			AND pg_get_constraintdef(c.oid) LIKE '%ON DELETE SET DEFAULT%'
+	`
 }
 
 func assertColumnType(t *testing.T, db *sql.DB, schema, table, column, want string) {

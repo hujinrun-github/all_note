@@ -117,6 +117,44 @@ func TestTaskFiltersTreatLegacyBlankExecutionTypeAsSingle(t *testing.T) {
 	}
 }
 
+func TestDeleteProjectAfterAuthFinalizerReassignsTasksToPersonal(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_task_delete_project_finalized_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	seedFinalizedWorkspace(t, ctx, db, "user_task_delete_project", "workspace_task_delete_project")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+		VALUES ('project_to_delete', 'Project To Delete', 'regular', '', 'workspace_task_delete_project');
+		INSERT INTO tasks (id, title, content, project_id, workspace_id)
+		VALUES ('task_on_deleted_project', 'Task On Deleted Project', '', 'project_to_delete', 'workspace_task_delete_project');
+	`); err != nil {
+		t.Fatalf("seed project task: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	store := newStore(db)
+	if err := store.Tasks().DeleteProject(ctx, "project_to_delete"); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+
+	var projectID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT project_id
+		FROM tasks
+		WHERE id = 'task_on_deleted_project'
+	`).Scan(&projectID); err != nil {
+		t.Fatalf("read reassigned task: %v", err)
+	}
+	if projectID != "personal" {
+		t.Fatalf("task project_id = %q, want personal", projectID)
+	}
+	assertRowCount(t, db, `SELECT COUNT(*) FROM task_projects WHERE id = 'project_to_delete'`, 0)
+}
+
 func assertPostgresRoadmapNodeStatus(t *testing.T, store *store, nodeID, want string) {
 	t.Helper()
 
