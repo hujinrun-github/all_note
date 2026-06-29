@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/auth"
@@ -91,6 +92,7 @@ func (m AuthMiddleware) restore(c *gin.Context, required bool) bool {
 	}
 	if _, err := m.Store.Auth().GetWorkspaceMembership(c.Request.Context(), session.WorkspaceID, session.UserID); err != nil {
 		_ = m.Store.Auth().RevokeSession(c.Request.Context(), session.ID)
+		clearSessionCookie(c)
 		if required {
 			abortAuth(c, http.StatusUnauthorized, "WORKSPACE_ACCESS_REVOKED", "workspace access revoked")
 		}
@@ -116,5 +118,17 @@ func abortAuth(c *gin.Context, status int, code, message string) {
 			Code:    code,
 			Message: message,
 		},
+	})
+}
+
+func clearSessionCookie(c *gin.Context) {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0).UTC(),
 	})
 }

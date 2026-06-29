@@ -178,6 +178,13 @@ func TestWorkspaceMembershipRemovalRevokesSessionAndReturnsUnauthorized(t *testi
 	if !middlewareSessionRevoked(t, env, token) {
 		t.Fatal("session should be revoked when workspace membership is removed")
 	}
+	clearedCookie := requireMiddlewareResponseCookie(t, w.Result(), middlewareTestCookieName)
+	if clearedCookie.MaxAge != -1 {
+		t.Fatalf("cleared cookie MaxAge = %d, want -1: %#v", clearedCookie.MaxAge, clearedCookie)
+	}
+	if clearedCookie.Path != "/" {
+		t.Fatalf("cleared cookie Path = %q, want /: %#v", clearedCookie.Path, clearedCookie)
+	}
 }
 
 func TestAuthRequireAdminAllowsOnlyAdminUsers(t *testing.T) {
@@ -339,6 +346,17 @@ func createMiddlewareSession(t *testing.T, env *middlewareAuthEnv, userID, sessi
 
 func middlewareCookie(token string) *http.Cookie {
 	return &http.Cookie{Name: middlewareTestCookieName, Value: token}
+}
+
+func requireMiddlewareResponseCookie(t *testing.T, response *http.Response, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("response cookie %q missing from cookies: %#v", name, response.Cookies())
+	return nil
 }
 
 func hashMiddlewareToken(t *testing.T, token string) string {
