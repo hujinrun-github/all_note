@@ -139,6 +139,83 @@ func TestProviderOpenCreatesPlannedAuthSchema(t *testing.T) {
 	assertSQLiteColumnDefault(t, store, "sessions", "last_seen_at", "unixepoch()")
 }
 
+func TestProviderOpenAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.T) {
+	store := openTestStore(t)
+
+	insertSQLiteWorkspace(t, store, "user_workspace_a", "workspace_a")
+	if _, err := store.db.Exec(`
+		UPDATE folders SET workspace_id = 'workspace_a' WHERE id IN ('__uncategorized', '__work', '__personal');
+		UPDATE task_projects SET workspace_id = 'workspace_a' WHERE id = 'personal';
+		INSERT INTO folders (id, name, sort_order, created_at, workspace_id)
+		VALUES ('workspace_a_only_folder', 'Workspace A Only Folder', 99, unixepoch(), 'workspace_a');
+		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
+		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', unixepoch(), unixepoch(), 'workspace_a');
+	`); err != nil {
+		t.Fatalf("seed workspace A scoped rows: %v", err)
+	}
+
+	insertSQLiteWorkspace(t, store, "user_workspace_b", "workspace_b")
+	if _, err := store.db.Exec(`
+		INSERT INTO folders (id, name, sort_order, created_at, workspace_id)
+		VALUES
+			('__uncategorized', 'Uncategorized', 0, unixepoch(), 'workspace_b'),
+			('__work', 'Work', 1, unixepoch(), 'workspace_b'),
+			('__personal', 'Personal', 2, unixepoch(), 'workspace_b');
+		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
+		VALUES ('personal', 'Personal', 'personal', 'Default personal task project', unixepoch(), unixepoch(), 'workspace_b');
+	`); err != nil {
+		t.Fatalf("insert workspace B default rows with reused IDs: %v", err)
+	}
+
+	assertSQLiteRowCount(t, store, `SELECT COUNT(*) FROM folders WHERE id IN ('__uncategorized', '__work', '__personal')`, 6)
+	assertSQLiteRowCount(t, store, `SELECT COUNT(*) FROM task_projects WHERE id = 'personal'`, 2)
+
+	if _, err := store.db.Exec(`
+		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at, workspace_id)
+		VALUES ('note_workspace_b_default', 'Workspace B Default Note', '', '__work', '[]', unixepoch(), unixepoch(), 'workspace_b');
+		INSERT INTO tasks (id, title, content, project_id, created_at, updated_at, workspace_id)
+		VALUES ('task_workspace_b_default', 'Workspace B Default Task', '', 'personal', unixepoch(), unixepoch(), 'workspace_b');
+		INSERT INTO note_project_links (note_id, project_id, created_at, workspace_id)
+		VALUES ('note_workspace_b_default', 'personal', unixepoch(), 'workspace_b');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, created_at, updated_at, workspace_id)
+		VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', unixepoch(), unixepoch(), 'workspace_b');
+	`); err != nil {
+		t.Fatalf("insert workspace B child rows for reused defaults: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "notes folder",
+			sql: `INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at, workspace_id)
+				VALUES ('note_cross_workspace_folder', 'Cross Workspace Folder', '', 'workspace_a_only_folder', '[]', unixepoch(), unixepoch(), 'workspace_b')`,
+		},
+		{
+			name: "tasks project",
+			sql: `INSERT INTO tasks (id, title, content, project_id, created_at, updated_at, workspace_id)
+				VALUES ('task_cross_workspace_project', 'Cross Workspace Project', '', 'workspace_a_only_project', unixepoch(), unixepoch(), 'workspace_b')`,
+		},
+		{
+			name: "note project links project",
+			sql: `INSERT INTO note_project_links (note_id, project_id, created_at, workspace_id)
+				VALUES ('note_workspace_b_default', 'workspace_a_only_project', unixepoch(), 'workspace_b')`,
+		},
+		{
+			name: "learning roadmaps project",
+			sql: `INSERT INTO learning_roadmaps (id, project_id, title, goal, created_at, updated_at, workspace_id)
+				VALUES ('roadmap_cross_workspace_project', 'workspace_a_only_project', 'Cross Workspace Roadmap', '', unixepoch(), unixepoch(), 'workspace_b')`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.db.Exec(tc.sql); err == nil {
+				t.Fatalf("expected %s to reject cross-workspace reference", tc.name)
+			}
+		})
+	}
+}
+
 func TestProviderSecondOpenDoesNotRebuildFTSWhenWorkspaceColumnsExist(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "flowspace.fts-rebuild.db")
 	opened, err := (Provider{}).Open(context.Background(), storage.Config{
@@ -543,6 +620,43 @@ func assertProbeRowCount(t *testing.T, store *store, want int) {
 	}
 	if got != want {
 		t.Fatalf("probe row count = %d, want %d", got, want)
+	}
+}
+
+func insertSQLiteWorkspace(t *testing.T, store *store, userID, workspaceID string) {
+	t.Helper()
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatalf("begin workspace insert: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status, created_at, updated_at)
+		VALUES (?, ?, 'Workspace User', 'hash', 0, ?, 'user', 'active', unixepoch(), unixepoch())
+	`, userID, userID+"@example.com", workspaceID); err != nil {
+		t.Fatalf("insert user %s: %v", userID, err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO workspaces (id, name, owner_user_id, created_at, updated_at)
+		VALUES (?, 'Workspace', ?, unixepoch(), unixepoch())
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("insert workspace %s: %v", workspaceID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit workspace insert: %v", err)
+	}
+}
+
+func assertSQLiteRowCount(t *testing.T, store *store, query string, want int) {
+	t.Helper()
+
+	var got int
+	if err := store.db.QueryRow(query).Scan(&got); err != nil {
+		t.Fatalf("count rows with %q: %v", query, err)
+	}
+	if got != want {
+		t.Fatalf("row count for %q = %d, want %d", query, got, want)
 	}
 }
 

@@ -405,6 +405,87 @@ func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T)
 	}
 }
 
+func TestMultiUserAuthFinalizerAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_scoped_defaults_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	seedFinalizedWorkspace(t, ctx, db, "user_workspace_a", "workspace_a")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO folders (id, name, sort_order, workspace_id)
+		VALUES ('workspace_a_only_folder', 'Workspace A Only Folder', 99, 'workspace_a');
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', 'workspace_a');
+	`); err != nil {
+		t.Fatalf("seed workspace A scoped rows: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	insertPostgresWorkspace(t, ctx, db, "user_workspace_b", "workspace_b")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO folders (id, name, sort_order, workspace_id)
+		VALUES
+			('__uncategorized', 'Uncategorized', 0, 'workspace_b'),
+			('__work', 'Work', 1, 'workspace_b'),
+			('__personal', 'Personal', 2, 'workspace_b');
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+		VALUES ('personal', 'Personal', 'personal', 'Default personal task project', 'workspace_b');
+	`); err != nil {
+		t.Fatalf("insert workspace B default rows with reused IDs: %v", err)
+	}
+
+	assertRowCount(t, db, `SELECT COUNT(*) FROM folders WHERE id IN ('__uncategorized', '__work', '__personal')`, 6)
+	assertRowCount(t, db, `SELECT COUNT(*) FROM task_projects WHERE id = 'personal'`, 2)
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO notes (id, title, body, folder_id, tags, workspace_id)
+		VALUES ('note_workspace_b_default', 'Workspace B Default Note', '', '__work', '{}'::text[], 'workspace_b');
+		INSERT INTO tasks (id, title, content, project_id, workspace_id)
+		VALUES ('task_workspace_b_default', 'Workspace B Default Task', '', 'personal', 'workspace_b');
+		INSERT INTO note_project_links (note_id, project_id, workspace_id)
+		VALUES ('note_workspace_b_default', 'personal', 'workspace_b');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+		VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', 'workspace_b');
+	`); err != nil {
+		t.Fatalf("insert workspace B child rows for reused defaults: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "notes folder",
+			sql: `INSERT INTO notes (id, title, body, folder_id, tags, workspace_id)
+				VALUES ('note_cross_workspace_folder', 'Cross Workspace Folder', '', 'workspace_a_only_folder', '{}'::text[], 'workspace_b')`,
+		},
+		{
+			name: "tasks project",
+			sql: `INSERT INTO tasks (id, title, content, project_id, workspace_id)
+				VALUES ('task_cross_workspace_project', 'Cross Workspace Project', '', 'workspace_a_only_project', 'workspace_b')`,
+		},
+		{
+			name: "note project links project",
+			sql: `INSERT INTO note_project_links (note_id, project_id, workspace_id)
+				VALUES ('note_workspace_b_default', 'workspace_a_only_project', 'workspace_b')`,
+		},
+		{
+			name: "learning roadmaps project",
+			sql: `INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+				VALUES ('roadmap_cross_workspace_project', 'workspace_a_only_project', 'Cross Workspace Roadmap', '', 'workspace_b')`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, tc.sql); err == nil {
+				t.Fatalf("expected %s to reject cross-workspace reference", tc.name)
+			}
+		})
+	}
+}
+
 func TestMultiUserAuthFinalizerRejectsBusinessRowsWithoutWorkspace(t *testing.T) {
 	schema := fmt.Sprintf("fs_test_auth_business_ws_%d", time.Now().UnixNano())
 	db := openPostgresTestDB(t, schema)
@@ -595,6 +676,31 @@ func seedFinalizedWorkspace(t *testing.T, ctx context.Context, db *sql.DB, userI
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE task_projects SET workspace_id = $1`, workspaceID); err != nil {
 		t.Fatalf("backfill task projects: %v", err)
+	}
+}
+
+func insertPostgresWorkspace(t *testing.T, ctx context.Context, db *sql.DB, userID, workspaceID string) {
+	t.Helper()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin workspace insert: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ($1, $2, 'Workspace User', 'hash', false, $3, 'user', 'active')
+	`, userID, userID+"@example.com", workspaceID); err != nil {
+		t.Fatalf("insert user %s: %v", userID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ($1, 'Workspace', $2)
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("insert workspace %s: %v", workspaceID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit workspace insert: %v", err)
 	}
 }
 

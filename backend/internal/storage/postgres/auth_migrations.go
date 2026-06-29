@@ -117,7 +117,13 @@ func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_idx ON workspaces (owner_user_id, id)`); err != nil {
 		return fmt.Errorf("ensure workspaces(owner_user_id,id) key: %w", err)
 	}
+	if err := applyWorkspaceScopedDefaultParentKeys(ctx, db); err != nil {
+		return err
+	}
 	for _, table := range workspaceScopedTables {
+		if table == "folders" || table == "task_projects" {
+			continue
+		}
 		if err := addWorkspaceCompositeKey(ctx, db, table); err != nil {
 			return err
 		}
@@ -126,6 +132,10 @@ func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
 }
 
 func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
+	if err := addWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
+		return err
+	}
+
 	exists, err := postgresConstraintExists(ctx, db, "users", "users_default_owned_workspace_fk")
 	if err != nil {
 		return err
@@ -143,6 +153,220 @@ func applyWorkspaceCompositeForeignKeys(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("add users default owned workspace foreign key: %w", err)
 	}
 	return nil
+}
+
+func applyWorkspaceScopedDefaultParentKeys(ctx context.Context, db *sql.DB) error {
+	if err := dropWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "folders", []string{"workspace_id", "id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "task_projects", []string{"workspace_id", "id"}); err != nil {
+		return err
+	}
+	if err := dropPostgresConstraintIfExists(ctx, db, "folders", "folders_name_key"); err != nil {
+		return err
+	}
+	if err := dropPostgresConstraintIfExists(ctx, db, "task_projects", "task_projects_name_key"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS folders_workspace_id_name_idx ON folders (workspace_id, name)`); err != nil {
+		return fmt.Errorf("ensure folders(workspace_id,name) key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS task_projects_workspace_id_name_idx ON task_projects (workspace_id, name)`); err != nil {
+		return fmt.Errorf("ensure task_projects(workspace_id,name) key: %w", err)
+	}
+	return nil
+}
+
+func dropWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db *sql.DB) error {
+	for _, fk := range []struct {
+		child  string
+		parent string
+	}{
+		{child: "notes", parent: "folders"},
+		{child: "tasks", parent: "task_projects"},
+		{child: "note_project_links", parent: "task_projects"},
+		{child: "learning_roadmaps", parent: "task_projects"},
+	} {
+		if err := dropPostgresForeignKeysToTable(ctx, db, fk.child, fk.parent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db *sql.DB) error {
+	for _, fk := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{
+			table: "notes",
+			name:  "notes_workspace_folder_fk",
+			definition: `
+				ALTER TABLE notes
+				  ADD CONSTRAINT notes_workspace_folder_fk
+				  FOREIGN KEY (workspace_id, folder_id)
+				  REFERENCES folders(workspace_id, id)
+			`,
+		},
+		{
+			table: "tasks",
+			name:  "tasks_workspace_project_fk",
+			definition: `
+				ALTER TABLE tasks
+				  ADD CONSTRAINT tasks_workspace_project_fk
+				  FOREIGN KEY (workspace_id, project_id)
+				  REFERENCES task_projects(workspace_id, id)
+				  ON DELETE RESTRICT
+			`,
+		},
+		{
+			table: "note_project_links",
+			name:  "note_project_links_workspace_project_fk",
+			definition: `
+				ALTER TABLE note_project_links
+				  ADD CONSTRAINT note_project_links_workspace_project_fk
+				  FOREIGN KEY (workspace_id, project_id)
+				  REFERENCES task_projects(workspace_id, id)
+				  ON DELETE CASCADE
+			`,
+		},
+		{
+			table: "learning_roadmaps",
+			name:  "learning_roadmaps_workspace_project_fk",
+			definition: `
+				ALTER TABLE learning_roadmaps
+				  ADD CONSTRAINT learning_roadmaps_workspace_project_fk
+				  FOREIGN KEY (workspace_id, project_id)
+				  REFERENCES task_projects(workspace_id, id)
+				  ON DELETE CASCADE
+			`,
+		},
+	} {
+		exists, err := postgresConstraintExists(ctx, db, fk.table, fk.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fk.definition); err != nil {
+			return fmt.Errorf("add %s: %w", fk.name, err)
+		}
+	}
+	return nil
+}
+
+func replacePostgresPrimaryKey(ctx context.Context, db *sql.DB, table string, columns []string) error {
+	constraintName, existingColumns, err := postgresPrimaryKeyColumns(ctx, db, table)
+	if err != nil {
+		return err
+	}
+	if sameStringSlice(existingColumns, columns) {
+		return nil
+	}
+	if constraintName != "" {
+		if err := dropPostgresConstraintIfExists(ctx, db, table, constraintName); err != nil {
+			return err
+		}
+	}
+	columnList := make([]string, 0, len(columns))
+	for _, column := range columns {
+		columnList = append(columnList, postgresIdent(column))
+	}
+	stmt := fmt.Sprintf(
+		"ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)",
+		postgresIdent(table),
+		postgresIdent(table+"_pkey"),
+		strings.Join(columnList, ", "),
+	)
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("replace %s primary key: %w", table, err)
+	}
+	return nil
+}
+
+func dropPostgresForeignKeysToTable(ctx context.Context, db *sql.DB, childTable, parentTable string) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.conname
+		FROM pg_constraint c
+		JOIN pg_class child ON child.oid = c.conrelid
+		JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+		JOIN pg_class parent ON parent.oid = c.confrelid
+		JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+		WHERE child_ns.nspname = current_schema()
+			AND parent_ns.nspname = current_schema()
+			AND child.relname = $1
+			AND parent.relname = $2
+			AND c.contype = 'f'
+	`, childTable, parentTable)
+	if err != nil {
+		return fmt.Errorf("inspect foreign keys from %s to %s: %w", childTable, parentTable, err)
+	}
+	defer rows.Close()
+
+	var constraints []string
+	for rows.Next() {
+		var constraint string
+		if err := rows.Scan(&constraint); err != nil {
+			return err
+		}
+		constraints = append(constraints, constraint)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, constraint := range constraints {
+		if err := dropPostgresConstraintIfExists(ctx, db, childTable, constraint); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dropPostgresConstraintIfExists(ctx context.Context, db *sql.DB, table, constraint string) error {
+	stmt := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", postgresIdent(table), postgresIdent(constraint))
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("drop %s.%s constraint: %w", table, constraint, err)
+	}
+	return nil
+}
+
+func postgresPrimaryKeyColumns(ctx context.Context, db *sql.DB, table string) (string, []string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.conname, a.attname
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		JOIN unnest(c.conkey) WITH ORDINALITY AS cols(attnum, ord) ON true
+		JOIN pg_attribute a ON a.attrelid = rel.oid AND a.attnum = cols.attnum
+		WHERE n.nspname = current_schema()
+			AND rel.relname = $1
+			AND c.contype = 'p'
+		ORDER BY cols.ord
+	`, table)
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect %s primary key: %w", table, err)
+	}
+	defer rows.Close()
+
+	var constraintName string
+	var columns []string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&constraintName, &column); err != nil {
+			return "", nil, err
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	return constraintName, columns, nil
 }
 
 func setPostgresColumnNotNull(ctx context.Context, db *sql.DB, table, column string) error {
@@ -248,4 +472,16 @@ func postgresIdent(name string) string {
 		panic(errors.New("invalid postgres identifier"))
 	}
 	return `"` + name + `"`
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

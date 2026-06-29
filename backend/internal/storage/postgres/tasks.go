@@ -143,13 +143,21 @@ func (r taskRepository) CreateProject(ctx context.Context, req *model.CreateTask
 		id = "personal"
 	}
 	now := time.Now().UTC()
+	if existing, err := r.GetProjectByName(ctx, name); err == nil {
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE task_projects
+			SET type = $1, description = $2, updated_at = $3
+			WHERE id = $4
+		`, projectType, strings.TrimSpace(req.Description), now, existing.ID); err != nil {
+			return nil, err
+		}
+		return r.GetProjectByID(ctx, existing.ID)
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
 	if _, err := r.db.ExecContext(ctx, `
 		INSERT INTO task_projects (id, name, type, description, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $5)
-		ON CONFLICT (name) DO UPDATE SET
-			type = excluded.type,
-			description = excluded.description,
-			updated_at = excluded.updated_at
 	`, id, name, projectType, strings.TrimSpace(req.Description), now); err != nil {
 		return nil, err
 	}

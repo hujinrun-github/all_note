@@ -2094,6 +2094,18 @@ git commit -m "feat: add auth middleware and routes"
 
 ---
 
+### Task 7a: Finalize Workspace-Scoped Default Keys Before Admin CreateUser
+
+**Files:**
+- Modify: `backend/internal/storage/postgres/auth_migrations.go`
+- Modify: `backend/internal/storage/sqlite/auth_migrations.go`
+- Test: `backend/internal/storage/postgres/migrations_test.go`
+- Test: `backend/internal/storage/sqlite/provider_test.go`
+
+This prerequisite must land before Task 7 because admin `CreateUser` provisions `__uncategorized`, `__work`, `__personal`, and `personal` inside each new workspace. The Task 3 finalizer only added `(workspace_id, id)` unique indexes; global `folders.id`, `folders.name`, `task_projects.id`, and `task_projects.name` constraints still make the second workspace collide. Finalizer/provider tests must prove PostgreSQL and SQLite allow reused default IDs/names across workspaces and reject child rows that point at another workspace's folder/project.
+
+---
+
 ### Task 7: Add Admin User Management Backend
 
 **Files:**

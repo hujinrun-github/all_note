@@ -408,17 +408,38 @@ func ensureDefaultFolder(ctx context.Context, runner sqlRunner, dialect sqlDiale
 			return fmt.Errorf("ensure default folder %s: %w", folder.ID, err)
 		}
 	default:
-		_, err := runner.ExecContext(ctx, `
+		if _, err := runner.ExecContext(ctx, `
+			UPDATE folders
+			SET workspace_id = ?
+			WHERE id = ?
+				AND (workspace_id IS NULL OR workspace_id = '')
+				AND NOT EXISTS (
+					SELECT 1 FROM folders scoped
+					WHERE scoped.workspace_id = ? AND scoped.id = ?
+				)
+		`, workspaceID, folder.ID, workspaceID, folder.ID); err != nil {
+			return fmt.Errorf("claim default folder %s: %w", folder.ID, err)
+		}
+		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO folders (id, name, sort_order, created_at, workspace_id)
-			VALUES (?, ?, ?, unixepoch(), ?)
-			ON CONFLICT(id) DO UPDATE SET
-				workspace_id = CASE
-					WHEN folders.workspace_id IS NULL OR folders.workspace_id = '' THEN excluded.workspace_id
-					ELSE folders.workspace_id
-				END
-		`, folder.ID, folder.Name, folder.SortOrder, workspaceID)
-		if err != nil {
+			SELECT ?, ?, ?, unixepoch(), ?
+			WHERE NOT EXISTS (
+				SELECT 1 FROM folders
+				WHERE workspace_id = ? AND id = ?
+			)
+		`, folder.ID, folder.Name, folder.SortOrder, workspaceID, workspaceID, folder.ID); err != nil {
 			return fmt.Errorf("ensure default folder %s: %w", folder.ID, err)
+		}
+		if _, err := runner.ExecContext(ctx, `
+			DELETE FROM folders
+			WHERE id = ?
+				AND (workspace_id IS NULL OR workspace_id = '')
+				AND EXISTS (
+					SELECT 1 FROM folders scoped
+					WHERE scoped.workspace_id = ? AND scoped.id = ?
+				)
+		`, folder.ID, workspaceID, folder.ID); err != nil {
+			return fmt.Errorf("remove unscoped default folder %s: %w", folder.ID, err)
 		}
 	}
 	return nil
@@ -437,17 +458,38 @@ func ensureDefaultTaskProject(ctx context.Context, runner sqlRunner, dialect sql
 			return fmt.Errorf("ensure default task project: %w", err)
 		}
 	default:
-		_, err := runner.ExecContext(ctx, `
+		if _, err := runner.ExecContext(ctx, `
+			UPDATE task_projects
+			SET workspace_id = ?
+			WHERE id = 'personal'
+				AND (workspace_id IS NULL OR workspace_id = '')
+				AND NOT EXISTS (
+					SELECT 1 FROM task_projects scoped
+					WHERE scoped.workspace_id = ? AND scoped.id = 'personal'
+				)
+		`, workspaceID, workspaceID); err != nil {
+			return fmt.Errorf("claim default task project: %w", err)
+		}
+		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
-			VALUES (?, ?, ?, ?, unixepoch(), unixepoch(), ?)
-			ON CONFLICT(id) DO UPDATE SET
-				workspace_id = CASE
-					WHEN task_projects.workspace_id IS NULL OR task_projects.workspace_id = '' THEN excluded.workspace_id
-					ELSE task_projects.workspace_id
-				END
-		`, "personal", "Personal", "personal", "Default personal task project", workspaceID)
-		if err != nil {
+			SELECT ?, ?, ?, ?, unixepoch(), unixepoch(), ?
+			WHERE NOT EXISTS (
+				SELECT 1 FROM task_projects
+				WHERE workspace_id = ? AND id = 'personal'
+			)
+		`, "personal", "Personal", "personal", "Default personal task project", workspaceID, workspaceID); err != nil {
 			return fmt.Errorf("ensure default task project: %w", err)
+		}
+		if _, err := runner.ExecContext(ctx, `
+			DELETE FROM task_projects
+			WHERE id = 'personal'
+				AND (workspace_id IS NULL OR workspace_id = '')
+				AND EXISTS (
+					SELECT 1 FROM task_projects scoped
+					WHERE scoped.workspace_id = ? AND scoped.id = 'personal'
+				)
+		`, workspaceID); err != nil {
+			return fmt.Errorf("remove unscoped default task project: %w", err)
 		}
 	}
 	return nil
