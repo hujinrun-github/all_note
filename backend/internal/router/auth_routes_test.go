@@ -1,6 +1,8 @@
 package router
 
 import (
+	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -79,10 +81,37 @@ func TestLocalDirectoryBrowserRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareUsesConfiguredCookieNameForWorkspaceRevocation(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	env.auth.Cookie.Name = "custom_session"
+	env.config.Auth = env.auth
+	token := "custom-cookie-token"
+	createRouterSession(t, env, token)
+	execRouterAuthSQL(t, env.dbPath, `DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, routerTestWorkspaceID, routerTestUserID)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: token})
+	w := httptest.NewRecorder()
+
+	Setup(env.config).ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body = %s", w.Code, w.Body.String())
+	}
+	assertRouterErrorCode(t, w.Body.String(), "WORKSPACE_ACCESS_REVOKED")
+	clearedCookie := requireRouterResponseCookie(t, w.Result(), env.auth.Cookie.Name)
+	if clearedCookie.MaxAge != -1 {
+		t.Fatalf("cleared cookie MaxAge = %d, want -1: %#v", clearedCookie.MaxAge, clearedCookie)
+	}
+	if clearedCookie.Path != "/" {
+		t.Fatalf("cleared cookie Path = %q, want /: %#v", clearedCookie.Path, clearedCookie)
+	}
+}
+
 type routerAuthEnv struct {
 	store  storage.Store
 	auth   config.AuthConfig
 	config Config
+	dbPath string
 }
 
 type routerUserOption func(*model.User)
@@ -120,6 +149,7 @@ func setupRouterAuthEnv(t *testing.T, enableDirectoryBrowser bool, opts ...route
 		store:  store,
 		auth:   authCfg,
 		config: testRouterConfig(store, authCfg),
+		dbPath: dbPath,
 	}
 }
 
@@ -208,4 +238,41 @@ func registeredRoutes(router *gin.Engine) map[string]bool {
 		registered[route.Method+" "+route.Path] = true
 	}
 	return registered
+}
+
+func execRouterAuthSQL(t *testing.T, dbPath, statement string, args ...any) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath+"?_foreign_keys=ON")
+	if err != nil {
+		t.Fatalf("open sqlite side connection: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(statement, args...); err != nil {
+		t.Fatalf("exec sql: %v", err)
+	}
+}
+
+func requireRouterResponseCookie(t *testing.T, response *http.Response, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("response cookie %q missing from cookies: %#v", name, response.Cookies())
+	return nil
+}
+
+func assertRouterErrorCode(t *testing.T, body string, want string) {
+	t.Helper()
+	var response model.APIResponse
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatalf("decode response: %v; body = %s", err, body)
+	}
+	if response.Error == nil {
+		t.Fatalf("missing error in body: %s", body)
+	}
+	if response.Error.Code != want {
+		t.Fatalf("error code = %q, want %q; body = %s", response.Error.Code, want, body)
+	}
 }

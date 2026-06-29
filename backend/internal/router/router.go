@@ -24,7 +24,7 @@ func Setup(cfg Config) *gin.Engine {
 	{
 		api.GET("/health", handler.Health)
 
-		authMiddleware := middleware.AuthMiddleware{Store: cfg.Store, SessionSecret: cfg.Auth.SessionSecret}
+		authMiddleware := middleware.AuthMiddleware{Store: cfg.Store, SessionSecret: cfg.Auth.SessionSecret, Cookie: cfg.Auth.Cookie}
 		authRoutes := api.Group("/auth")
 		authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Auth))
 		authRoutes.POST("/logout", authMiddleware.Optional(), handler.Logout(cfg.Store, cfg.Auth.Cookie))

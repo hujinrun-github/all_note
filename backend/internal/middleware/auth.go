@@ -2,10 +2,12 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -15,6 +17,7 @@ const sessionCookieName = "fs_session"
 type AuthMiddleware struct {
 	Store         storage.Store
 	SessionSecret string
+	Cookie        config.CookieConfig
 }
 
 func (m AuthMiddleware) Required() gin.HandlerFunc {
@@ -62,7 +65,7 @@ func (m AuthMiddleware) restore(c *gin.Context, required bool) bool {
 		}
 		return false
 	}
-	cookie, err := c.Cookie(sessionCookieName)
+	cookie, err := c.Cookie(m.cookieName())
 	if err != nil || cookie == "" {
 		if required {
 			abortAuth(c, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
@@ -92,7 +95,7 @@ func (m AuthMiddleware) restore(c *gin.Context, required bool) bool {
 	}
 	if _, err := m.Store.Auth().GetWorkspaceMembership(c.Request.Context(), session.WorkspaceID, session.UserID); err != nil {
 		_ = m.Store.Auth().RevokeSession(c.Request.Context(), session.ID)
-		clearSessionCookie(c)
+		m.clearSessionCookie(c)
 		if required {
 			abortAuth(c, http.StatusUnauthorized, "WORKSPACE_ACCESS_REVOKED", "workspace access revoked")
 		}
@@ -121,14 +124,33 @@ func abortAuth(c *gin.Context, status int, code, message string) {
 	})
 }
 
-func clearSessionCookie(c *gin.Context) {
+func (m AuthMiddleware) cookieName() string {
+	if strings.TrimSpace(m.Cookie.Name) == "" {
+		return sessionCookieName
+	}
+	return m.Cookie.Name
+}
+
+func (m AuthMiddleware) clearSessionCookie(c *gin.Context) {
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     m.cookieName(),
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   m.Cookie.Secure,
+		SameSite: sameSiteMode(m.Cookie.SameSite),
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0).UTC(),
 	})
+}
+
+func sameSiteMode(value string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }

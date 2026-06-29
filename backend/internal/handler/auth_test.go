@@ -65,6 +65,21 @@ func TestLoginSetsHttpOnlyCookieAndUsesHMACSessionSecret(t *testing.T) {
 	}
 }
 
+func TestLoginDisabledUserWithWrongPasswordReturnsInvalidCredentials(t *testing.T) {
+	env := setupAuthTestEnv(t, withUserStatus("disabled"))
+	body := `{"email":"admin@example.com","password":"wrongpass123","remember_me":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+	assertErrorCode(t, w.Body.String(), "INVALID_CREDENTIALS")
+}
+
 func TestLoginSessionTTLMatchesRememberMe(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
@@ -342,6 +357,12 @@ func withMustChangePassword(value bool) authTestOption {
 	}
 }
 
+func withUserStatus(status string) authTestOption {
+	return func(user *model.User) {
+		user.Status = status
+	}
+}
+
 func setupAuthTestEnv(t *testing.T, opts ...authTestOption) *authTestEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -377,7 +398,7 @@ func setupAuthTestEnv(t *testing.T, opts ...authTestOption) *authTestEnv {
 	}
 	seedAuthHandlerUser(t, store, opts...)
 
-	authMiddleware := middleware.AuthMiddleware{Store: store, SessionSecret: cfg.SessionSecret}
+	authMiddleware := middleware.AuthMiddleware{Store: store, SessionSecret: cfg.SessionSecret, Cookie: cfg.Cookie}
 	r := gin.New()
 	authRoutes := r.Group("/api/auth")
 	authRoutes.POST("/login", Login(store, cfg))

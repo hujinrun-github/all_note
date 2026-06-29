@@ -40,12 +40,12 @@ func Login(store storage.Store, authCfg config.AuthConfig) gin.HandlerFunc {
 			errorResponse(c, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid email or password")
 			return
 		}
-		if user.Status != "active" {
-			errorResponse(c, http.StatusForbidden, "ACCOUNT_DISABLED", "account disabled")
-			return
-		}
 		if err := auth.VerifyPassword(user.PasswordHash, req.Password); err != nil {
 			errorResponse(c, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid email or password")
+			return
+		}
+		if user.Status != "active" {
+			errorResponse(c, http.StatusForbidden, "ACCOUNT_DISABLED", "account disabled")
 			return
 		}
 
