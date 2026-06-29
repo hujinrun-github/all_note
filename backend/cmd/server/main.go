@@ -65,7 +65,10 @@ func main() {
 
 	server := config.LoadServerConfig(runtimeConfig.Environment)
 
-	r := router.Setup()
+	r := router.Setup(router.Config{
+		Store: store,
+		Auth:  authCfg,
+	})
 	addr := ":" + server.Port
 	log.Printf("server starting on %s", addr)
 	if err := r.Run(addr); err != nil {

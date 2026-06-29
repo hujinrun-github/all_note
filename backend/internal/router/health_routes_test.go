@@ -35,7 +35,7 @@ func TestHealthRouteReturnsOKWhenStorageIsHealthy(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 
-	Setup().ServeHTTP(recorder, request)
+	Setup(testRouterConfig(store, testRouterAuthConfig(false))).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /api/health status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -49,7 +49,7 @@ func TestHealthRouteReturnsUnavailableWhenStorageIsMissing(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 
-	Setup().ServeHTTP(recorder, request)
+	Setup(testRouterConfig(nil, testRouterAuthConfig(false))).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("GET /api/health status = %d, want %d; body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
