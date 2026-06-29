@@ -150,6 +150,8 @@ func TestProviderOpenAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.
 		VALUES ('workspace_a_only_folder', 'Workspace A Only Folder', 99, unixepoch(), 'workspace_a');
 		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
 		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', unixepoch(), unixepoch(), 'workspace_a');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, created_at, updated_at, workspace_id)
+		VALUES ('roadmap_workspace_a_default', 'personal', 'Workspace A Default Roadmap', '', unixepoch(), unixepoch(), 'workspace_a');
 	`); err != nil {
 		t.Fatalf("seed workspace A scoped rows: %v", err)
 	}
@@ -163,12 +165,15 @@ func TestProviderOpenAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.
 			('__personal', 'Personal', 2, unixepoch(), 'workspace_b');
 		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
 		VALUES ('personal', 'Personal', 'personal', 'Default personal task project', unixepoch(), unixepoch(), 'workspace_b');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, created_at, updated_at, workspace_id)
+		VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', unixepoch(), unixepoch(), 'workspace_b');
 	`); err != nil {
 		t.Fatalf("insert workspace B default rows with reused IDs: %v", err)
 	}
 
 	assertSQLiteRowCount(t, store, `SELECT COUNT(*) FROM folders WHERE id IN ('__uncategorized', '__work', '__personal')`, 6)
 	assertSQLiteRowCount(t, store, `SELECT COUNT(*) FROM task_projects WHERE id = 'personal'`, 2)
+	assertSQLiteRowCount(t, store, `SELECT COUNT(*) FROM learning_roadmaps WHERE project_id = 'personal'`, 2)
 
 	if _, err := store.db.Exec(`
 		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at, workspace_id)
@@ -177,8 +182,6 @@ func TestProviderOpenAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.
 		VALUES ('task_workspace_b_default', 'Workspace B Default Task', '', 'personal', unixepoch(), unixepoch(), 'workspace_b');
 		INSERT INTO note_project_links (note_id, project_id, created_at, workspace_id)
 		VALUES ('note_workspace_b_default', 'personal', unixepoch(), 'workspace_b');
-		INSERT INTO learning_roadmaps (id, project_id, title, goal, created_at, updated_at, workspace_id)
-		VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', unixepoch(), unixepoch(), 'workspace_b');
 	`); err != nil {
 		t.Fatalf("insert workspace B child rows for reused defaults: %v", err)
 	}

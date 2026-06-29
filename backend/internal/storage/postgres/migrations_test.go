@@ -417,6 +417,8 @@ func TestMultiUserAuthFinalizerAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t
 		VALUES ('workspace_a_only_folder', 'Workspace A Only Folder', 99, 'workspace_a');
 		INSERT INTO task_projects (id, name, type, description, workspace_id)
 		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', 'workspace_a');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+		VALUES ('roadmap_workspace_a_default', 'personal', 'Workspace A Default Roadmap', '', 'workspace_a');
 	`); err != nil {
 		t.Fatalf("seed workspace A scoped rows: %v", err)
 	}
@@ -432,13 +434,16 @@ func TestMultiUserAuthFinalizerAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t
 			('__work', 'Work', 1, 'workspace_b'),
 			('__personal', 'Personal', 2, 'workspace_b');
 		INSERT INTO task_projects (id, name, type, description, workspace_id)
-		VALUES ('personal', 'Personal', 'personal', 'Default personal task project', 'workspace_b');
+			VALUES ('personal', 'Personal', 'personal', 'Default personal task project', 'workspace_b');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+			VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', 'workspace_b');
 	`); err != nil {
 		t.Fatalf("insert workspace B default rows with reused IDs: %v", err)
 	}
 
 	assertRowCount(t, db, `SELECT COUNT(*) FROM folders WHERE id IN ('__uncategorized', '__work', '__personal')`, 6)
 	assertRowCount(t, db, `SELECT COUNT(*) FROM task_projects WHERE id = 'personal'`, 2)
+	assertRowCount(t, db, `SELECT COUNT(*) FROM learning_roadmaps WHERE project_id = 'personal'`, 2)
 
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO notes (id, title, body, folder_id, tags, workspace_id)
@@ -447,8 +452,6 @@ func TestMultiUserAuthFinalizerAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t
 		VALUES ('task_workspace_b_default', 'Workspace B Default Task', '', 'personal', 'workspace_b');
 		INSERT INTO note_project_links (note_id, project_id, workspace_id)
 		VALUES ('note_workspace_b_default', 'personal', 'workspace_b');
-		INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
-		VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', 'workspace_b');
 	`); err != nil {
 		t.Fatalf("insert workspace B child rows for reused defaults: %v", err)
 	}

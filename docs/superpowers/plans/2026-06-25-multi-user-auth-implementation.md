@@ -2104,6 +2104,8 @@ git commit -m "feat: add auth middleware and routes"
 
 This prerequisite must land before Task 7 because admin `CreateUser` provisions `__uncategorized`, `__work`, `__personal`, and `personal` inside each new workspace. The Task 3 finalizer only added `(workspace_id, id)` unique indexes; global `folders.id`, `folders.name`, `task_projects.id`, and `task_projects.name` constraints still make the second workspace collide. Finalizer/provider tests must prove PostgreSQL and SQLite allow reused default IDs/names across workspaces and reject child rows that point at another workspace's folder/project.
 
+Split note: `learning_roadmaps.project_id` must also be workspace-scoped as `UNIQUE(workspace_id, project_id)` before admin `CreateUser`. Removing SQLite `workspace_id DEFAULT ''` from scoped business tables is deferred until Task 8 makes all business write paths workspace-aware, because existing SQLite repository/service writes still rely on the bootstrap-era default path.
+
 ---
 
 ### Task 7: Add Admin User Management Backend

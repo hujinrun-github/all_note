@@ -120,6 +120,9 @@ func applyWorkspaceCompositeKeys(ctx context.Context, db *sql.DB) error {
 	if err := applyWorkspaceScopedDefaultParentKeys(ctx, db); err != nil {
 		return err
 	}
+	if err := applyWorkspaceScopedLearningRoadmapProjectKey(ctx, db); err != nil {
+		return err
+	}
 	for _, table := range workspaceScopedTables {
 		if table == "folders" || table == "task_projects" {
 			continue
@@ -176,6 +179,19 @@ func applyWorkspaceScopedDefaultParentKeys(ctx context.Context, db *sql.DB) erro
 	}
 	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS task_projects_workspace_id_name_idx ON task_projects (workspace_id, name)`); err != nil {
 		return fmt.Errorf("ensure task_projects(workspace_id,name) key: %w", err)
+	}
+	return nil
+}
+
+func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db *sql.DB) error {
+	if err := dropPostgresConstraintIfExists(ctx, db, "learning_roadmaps", "learning_roadmaps_project_id_key"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS learning_roadmaps_workspace_id_project_id_idx
+		ON learning_roadmaps (workspace_id, project_id)
+	`); err != nil {
+		return fmt.Errorf("ensure learning_roadmaps(workspace_id,project_id) key: %w", err)
 	}
 	return nil
 }

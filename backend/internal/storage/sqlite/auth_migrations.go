@@ -176,7 +176,11 @@ func ensureSQLiteWorkspaceScopedDefaultKeys(ctx context.Context, db *sql.DB) (bo
 	if err != nil {
 		return false, err
 	}
-	if foldersReady && projectsReady {
+	roadmapProjectReady, err := sqliteUniqueKeyMatches(db, "learning_roadmaps", []string{"workspace_id", "project_id"})
+	if err != nil {
+		return false, err
+	}
+	if foldersReady && projectsReady && roadmapProjectReady {
 		if err := ensureSQLiteWorkspaceScopedDefaultAuxiliary(ctx, db); err != nil {
 			return false, err
 		}
@@ -383,13 +387,14 @@ CREATE TABLE note_project_links (
 const sqliteLearningRoadmapsWorkspaceScopedDDL = `
 CREATE TABLE learning_roadmaps (
 	id TEXT PRIMARY KEY,
-	project_id TEXT NOT NULL UNIQUE,
+	project_id TEXT NOT NULL,
 	workspace_id TEXT NOT NULL DEFAULT '',
 	title TEXT NOT NULL,
 	goal TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'draft',
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
+	UNIQUE (workspace_id, project_id),
 	FOREIGN KEY (workspace_id, project_id)
 		REFERENCES task_projects(workspace_id, id)
 		ON DELETE CASCADE
@@ -513,6 +518,86 @@ func sqlitePrimaryKeyMatches(db *sql.DB, table string, want []string) (bool, err
 	}
 	for i, column := range want {
 		if columnsByOrdinal[i+1] != column {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func sqliteUniqueKeyMatches(db *sql.DB, table string, want []string) (bool, error) {
+	exists, err := sqliteTableExists(db, table)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return true, nil
+	}
+	rows, err := db.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect SQLite indexes for %s: %w", table, err)
+	}
+
+	var uniqueIndexes []string
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		if unique == 0 {
+			continue
+		}
+		uniqueIndexes = append(uniqueIndexes, name)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+
+	for _, name := range uniqueIndexes {
+		matches, err := sqliteIndexColumnsMatch(db, name, want)
+		if err != nil {
+			return false, err
+		}
+		if matches {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func sqliteIndexColumnsMatch(db *sql.DB, indexName string, want []string) (bool, error) {
+	rows, err := db.Query(`PRAGMA index_info(` + indexName + `)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect SQLite index columns for %s: %w", indexName, err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var seqno int
+		var cid int
+		var name string
+		if err := rows.Scan(&seqno, &cid, &name); err != nil {
+			return false, err
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(columns) != len(want) {
+		return false, nil
+	}
+	for i := range want {
+		if columns[i] != want[i] {
 			return false, nil
 		}
 	}
