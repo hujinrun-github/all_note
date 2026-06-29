@@ -301,6 +301,13 @@ func (r authRepository) RecordAuditEvent(ctx context.Context, event *model.Audit
 }
 
 func (r authRepository) LockActiveAdmins(ctx context.Context) ([]model.User, error) {
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE users
+		SET updated_at = updated_at
+		WHERE role = 'admin' AND status = 'active'
+	`); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, sqliteAuthUserSelectSQL()+`
 		WHERE role = 'admin' AND status = 'active'
 		ORDER BY id ASC
