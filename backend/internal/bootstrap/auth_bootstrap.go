@@ -19,8 +19,9 @@ const (
 )
 
 var (
-	ErrBootstrapAdminRequired   = errors.New("bootstrap admin configuration required")
-	ErrBootstrapAdminIncomplete = errors.New("bootstrap admin configuration incomplete")
+	ErrBootstrapAdminRequired         = errors.New("bootstrap admin configuration required")
+	ErrBootstrapAdminIncomplete       = errors.New("bootstrap admin configuration incomplete")
+	ErrBootstrapDefaultsAlreadyScoped = errors.New("bootstrap default workspace data already scoped to another workspace")
 )
 
 type Config struct {
@@ -211,7 +212,9 @@ func AssignLegacyBusinessData(ctx context.Context, store storage.Store, workspac
 	return nil
 }
 
-func EnsureDefaultWorkspaceData(ctx context.Context, store storage.Store) error {
+// EnsureBootstrapWorkspaceData assigns legacy global default rows to the bootstrap workspace.
+// It is not a general per-workspace default creator until workspace-scoped composite keys exist.
+func EnsureBootstrapWorkspaceData(ctx context.Context, store storage.Store) error {
 	runner, err := sqlRunnerFromStore(store)
 	if err != nil {
 		return err
@@ -222,6 +225,9 @@ func EnsureDefaultWorkspaceData(ctx context.Context, store storage.Store) error 
 	}
 	dialect := dialectForStore(store)
 
+	if err := ensureBootstrapDefaultsAvailable(ctx, runner, dialect, workspaceID); err != nil {
+		return err
+	}
 	for _, folder := range defaultFolders {
 		if err := ensureDefaultFolder(ctx, runner, dialect, workspaceID, folder); err != nil {
 			return err
@@ -273,7 +279,7 @@ func createBootstrapAdminAndWorkspace(ctx context.Context, store storage.Store, 
 			return err
 		}
 	}
-	if err := EnsureDefaultWorkspaceData(scopeCtx, store); err != nil {
+	if err := EnsureBootstrapWorkspaceData(scopeCtx, store); err != nil {
 		return err
 	}
 	return nil
@@ -308,6 +314,79 @@ func countRows(ctx context.Context, runner sqlRunner, dialect sqlDialect, table,
 	var count int
 	if err := runner.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, err
+	}
+	return count, nil
+}
+
+func ensureBootstrapDefaultsAvailable(ctx context.Context, runner sqlRunner, dialect sqlDialect, workspaceID string) error {
+	folderConflicts, err := countDefaultWorkspaceConflicts(ctx, runner, dialect, "folders", workspaceID)
+	if err != nil {
+		return err
+	}
+	if folderConflicts > 0 {
+		return fmt.Errorf("%w: folders", ErrBootstrapDefaultsAlreadyScoped)
+	}
+
+	projectConflicts, err := countDefaultWorkspaceConflicts(ctx, runner, dialect, "task_projects", workspaceID)
+	if err != nil {
+		return err
+	}
+	if projectConflicts > 0 {
+		return fmt.Errorf("%w: task_projects", ErrBootstrapDefaultsAlreadyScoped)
+	}
+	return nil
+}
+
+func countDefaultWorkspaceConflicts(ctx context.Context, runner sqlRunner, dialect sqlDialect, table, workspaceID string) (int, error) {
+	var query string
+	switch table {
+	case "folders":
+		if dialect == dialectPostgres {
+			query = `
+				SELECT COUNT(*)
+				FROM folders
+				WHERE id IN ('__uncategorized', '__work', '__personal')
+					AND workspace_id IS NOT NULL
+					AND workspace_id <> ''
+					AND workspace_id <> $1
+			`
+		} else {
+			query = `
+				SELECT COUNT(*)
+				FROM folders
+				WHERE id IN ('__uncategorized', '__work', '__personal')
+					AND workspace_id IS NOT NULL
+					AND workspace_id <> ''
+					AND workspace_id <> ?
+			`
+		}
+	case "task_projects":
+		if dialect == dialectPostgres {
+			query = `
+				SELECT COUNT(*)
+				FROM task_projects
+				WHERE id = 'personal'
+					AND workspace_id IS NOT NULL
+					AND workspace_id <> ''
+					AND workspace_id <> $1
+			`
+		} else {
+			query = `
+				SELECT COUNT(*)
+				FROM task_projects
+				WHERE id = 'personal'
+					AND workspace_id IS NOT NULL
+					AND workspace_id <> ''
+					AND workspace_id <> ?
+			`
+		}
+	default:
+		return 0, fmt.Errorf("unsupported bootstrap default table %q", table)
+	}
+
+	var count int
+	if err := runner.QueryRowContext(ctx, query, workspaceID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("inspect %s default workspace conflicts: %w", table, err)
 	}
 	return count, nil
 }

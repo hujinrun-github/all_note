@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -12,6 +14,8 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage/postgres"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
 )
+
+var ErrLegacySQLiteSeedAuthEnabled = errors.New("legacy sqlite seed cannot run after auth users exist")
 
 func main() {
 	runtimeConfig := config.LoadStorageConfig()
@@ -34,11 +38,8 @@ func main() {
 	defer store.Close()
 
 	if storageConfig.Driver == storagepkg.DriverSQLite {
-		if err := repository.InitDB(storageConfig.SQLitePath); err != nil {
-			log.Fatalf("failed to init legacy sqlite database for seed: %v", err)
-		}
-		if err := repository.SeedDB(); err != nil {
-			log.Fatalf("failed to seed legacy sqlite database: %v", err)
+		if err := runLegacySQLiteSeed(startupCtx, store, storageConfig.SQLitePath, repository.InitDB, repository.SeedDB); err != nil {
+			log.Fatalf("legacy sqlite seed: %v", err)
 		}
 	}
 
@@ -71,4 +72,21 @@ func main() {
 	repository.SetStore(store)
 	log.Printf("storage initialized env=%s driver=%s database=%s sqlite_path=%s capabilities=%+v", storageConfig.Env, storageConfig.Driver, storageConfig.Name, storageConfig.SQLitePath, store.Capabilities())
 	log.Printf("database seed completed env=%s driver=%s database=%s sqlite_path=%s", storageConfig.Env, storageConfig.Driver, storageConfig.Name, storageConfig.SQLitePath)
+}
+
+func runLegacySQLiteSeed(ctx context.Context, store storagepkg.Store, sqlitePath string, initDB func(string) error, seedDB func() error) error {
+	state, err := bootstrap.InspectState(ctx, store)
+	if err != nil {
+		return fmt.Errorf("inspect auth state before legacy sqlite seed: %w", err)
+	}
+	if state.HasUsers {
+		return ErrLegacySQLiteSeedAuthEnabled
+	}
+	if err := initDB(sqlitePath); err != nil {
+		return fmt.Errorf("init legacy sqlite database: %w", err)
+	}
+	if err := seedDB(); err != nil {
+		return fmt.Errorf("seed legacy sqlite database: %w", err)
+	}
+	return nil
 }

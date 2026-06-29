@@ -124,6 +124,23 @@ func TestBootstrapCreatesMissingDefaultWorkspaceData(t *testing.T) {
 	assertAllWorkspaceScopedRowsHaveWorkspace(t, fixture.db)
 }
 
+func TestEnsureBootstrapWorkspaceDataRejectsDefaultsScopedToAnotherWorkspace(t *testing.T) {
+	fixture := openSQLiteBootstrapFixture(t)
+	cfg := validBootstrapConfig()
+	if err := EnsureAuthReady(context.Background(), fixture.store, cfg); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	seedSecondUserWorkspace(t, fixture.store)
+
+	err := EnsureBootstrapWorkspaceData(auth.ContextWithWorkspaceScope(context.Background(), "workspace_second"), fixture.store)
+	if !errors.Is(err, ErrBootstrapDefaultsAlreadyScoped) {
+		t.Fatalf("ensure bootstrap workspace data error = %v, want ErrBootstrapDefaultsAlreadyScoped", err)
+	}
+
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM folders WHERE workspace_id = ?`, 0, "workspace_second")
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM task_projects WHERE workspace_id = ?`, 0, "workspace_second")
+}
+
 type sqliteBootstrapFixture struct {
 	store storage.Store
 	db    *sql.DB
@@ -204,6 +221,38 @@ func seedExistingUserWorkspace(t *testing.T, store storage.Store) {
 	}
 	if err := store.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner"); err != nil {
 		t.Fatalf("seed existing membership: %v", err)
+	}
+}
+
+func seedSecondUserWorkspace(t *testing.T, store storage.Store) {
+	t.Helper()
+
+	ctx := context.Background()
+	user := &model.User{
+		ID:                 "user_second",
+		Email:              "second@example.com",
+		DisplayName:        "Second",
+		PasswordHash:       "second-hash",
+		MustChangePassword: false,
+		Role:               "user",
+		Status:             "active",
+	}
+	if err := store.Auth().CreateUser(ctx, user); err != nil {
+		t.Fatalf("seed second user: %v", err)
+	}
+	workspace := &model.Workspace{
+		ID:          "workspace_second",
+		Name:        "Second Workspace",
+		OwnerUserID: user.ID,
+	}
+	if err := store.Auth().CreateWorkspace(ctx, workspace); err != nil {
+		t.Fatalf("seed second workspace: %v", err)
+	}
+	if err := store.Auth().SetDefaultWorkspace(ctx, user.ID, workspace.ID); err != nil {
+		t.Fatalf("seed second default workspace: %v", err)
+	}
+	if err := store.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("seed second membership: %v", err)
 	}
 }
 
