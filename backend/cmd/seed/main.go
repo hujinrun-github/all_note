@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/bootstrap"
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/repository"
@@ -37,12 +38,6 @@ func main() {
 	}
 	defer store.Close()
 
-	if storageConfig.Driver == storagepkg.DriverSQLite {
-		if err := runLegacySQLiteSeed(startupCtx, store, storageConfig.SQLitePath, repository.InitDB, repository.SeedDB); err != nil {
-			log.Fatalf("legacy sqlite seed: %v", err)
-		}
-	}
-
 	authCfg, err := config.LoadAuthConfig(runtimeConfig.Environment)
 	if err != nil {
 		log.Fatalf("auth config: %v", err)
@@ -52,6 +47,13 @@ func main() {
 		AdminPassword: authCfg.Bootstrap.Password,
 		AdminName:     authCfg.Bootstrap.Name,
 	}
+
+	if storageConfig.Driver == storagepkg.DriverSQLite {
+		if err := runLegacySQLiteSeed(startupCtx, store, storageConfig.SQLitePath, bootstrapCfg, repository.InitDB, repository.SeedDB); err != nil {
+			log.Fatalf("legacy sqlite seed: %v", err)
+		}
+	}
+
 	if err := bootstrap.EnsureAuthReady(startupCtx, store, bootstrapCfg); err != nil {
 		log.Fatalf("auth bootstrap: %v", err)
 	}
@@ -74,13 +76,22 @@ func main() {
 	log.Printf("database seed completed env=%s driver=%s database=%s sqlite_path=%s", storageConfig.Env, storageConfig.Driver, storageConfig.Name, storageConfig.SQLitePath)
 }
 
-func runLegacySQLiteSeed(ctx context.Context, store storagepkg.Store, sqlitePath string, initDB func(string) error, seedDB func() error) error {
+func runLegacySQLiteSeed(ctx context.Context, store storagepkg.Store, sqlitePath string, bootstrapCfg bootstrap.Config, initDB func(string) error, seedDB func() error) error {
 	state, err := bootstrap.InspectState(ctx, store)
 	if err != nil {
 		return fmt.Errorf("inspect auth state before legacy sqlite seed: %w", err)
 	}
 	if state.HasUsers {
 		return ErrLegacySQLiteSeedAuthEnabled
+	}
+	if bootstrapCfg.Incomplete() {
+		return bootstrap.ErrBootstrapAdminIncomplete
+	}
+	if !bootstrapCfg.Configured() {
+		return bootstrap.ErrBootstrapAdminRequired
+	}
+	if _, err := auth.HashPassword(bootstrapCfg.AdminPassword); err != nil {
+		return err
 	}
 	if err := initDB(sqlitePath); err != nil {
 		return fmt.Errorf("init legacy sqlite database: %w", err)

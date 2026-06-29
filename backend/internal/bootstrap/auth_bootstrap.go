@@ -19,9 +19,10 @@ const (
 )
 
 var (
-	ErrBootstrapAdminRequired         = errors.New("bootstrap admin configuration required")
-	ErrBootstrapAdminIncomplete       = errors.New("bootstrap admin configuration incomplete")
-	ErrBootstrapDefaultsAlreadyScoped = errors.New("bootstrap default workspace data already scoped to another workspace")
+	ErrBootstrapAdminRequired                     = errors.New("bootstrap admin configuration required")
+	ErrBootstrapAdminIncomplete                   = errors.New("bootstrap admin configuration incomplete")
+	ErrBootstrapDefaultsAlreadyScoped             = errors.New("bootstrap default workspace data already scoped to another workspace")
+	ErrBootstrapDefaultsRequireBootstrapWorkspace = errors.New("bootstrap default workspace data requires bootstrap workspace")
 )
 
 type Config struct {
@@ -212,9 +213,9 @@ func AssignLegacyBusinessData(ctx context.Context, store storage.Store, workspac
 	return nil
 }
 
-// EnsureBootstrapWorkspaceData assigns legacy global default rows to the bootstrap workspace.
+// ensureBootstrapWorkspaceData assigns legacy global default rows to the bootstrap workspace.
 // It is not a general per-workspace default creator until workspace-scoped composite keys exist.
-func EnsureBootstrapWorkspaceData(ctx context.Context, store storage.Store) error {
+func ensureBootstrapWorkspaceData(ctx context.Context, store storage.Store) error {
 	runner, err := sqlRunnerFromStore(store)
 	if err != nil {
 		return err
@@ -222,6 +223,9 @@ func EnsureBootstrapWorkspaceData(ctx context.Context, store storage.Store) erro
 	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 	if err != nil {
 		return err
+	}
+	if workspaceID != bootstrapWorkspaceID {
+		return fmt.Errorf("%w: %s", ErrBootstrapDefaultsRequireBootstrapWorkspace, workspaceID)
 	}
 	dialect := dialectForStore(store)
 
@@ -279,7 +283,7 @@ func createBootstrapAdminAndWorkspace(ctx context.Context, store storage.Store, 
 			return err
 		}
 	}
-	if err := EnsureBootstrapWorkspaceData(scopeCtx, store); err != nil {
+	if err := ensureBootstrapWorkspaceData(scopeCtx, store); err != nil {
 		return err
 	}
 	return nil

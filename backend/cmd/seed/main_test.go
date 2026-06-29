@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/bootstrap"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
@@ -18,6 +20,7 @@ func TestRunLegacySQLiteSeedRefusesAuthEnabledStoreBeforeWriting(t *testing.T) {
 	initCalled := false
 	seedCalled := false
 	err := runLegacySQLiteSeed(context.Background(), store, "ignored.db",
+		bootstrap.Config{},
 		func(string) error {
 			initCalled = true
 			return nil
@@ -32,6 +35,55 @@ func TestRunLegacySQLiteSeedRefusesAuthEnabledStoreBeforeWriting(t *testing.T) {
 	}
 	if initCalled || seedCalled {
 		t.Fatalf("legacy seed callbacks called after auth users exist: init=%v seed=%v", initCalled, seedCalled)
+	}
+}
+
+func TestRunLegacySQLiteSeedRequiresValidBootstrapConfigBeforeWriting(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  bootstrap.Config
+		want error
+	}{
+		{
+			name: "missing config",
+			cfg:  bootstrap.Config{},
+			want: bootstrap.ErrBootstrapAdminRequired,
+		},
+		{
+			name: "weak password",
+			cfg: bootstrap.Config{
+				AdminEmail:    "admin@example.com",
+				AdminPassword: "weak",
+				AdminName:     "Admin",
+			},
+			want: auth.ErrWeakPassword,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openSeedSQLiteStore(t)
+			initCalled := false
+			seedCalled := false
+
+			err := runLegacySQLiteSeed(context.Background(), store, "ignored.db",
+				tt.cfg,
+				func(string) error {
+					initCalled = true
+					return nil
+				},
+				func() error {
+					seedCalled = true
+					return nil
+				},
+			)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("run legacy sqlite seed error = %v, want %v", err, tt.want)
+			}
+			if initCalled || seedCalled {
+				t.Fatalf("legacy seed callbacks called before valid bootstrap config: init=%v seed=%v", initCalled, seedCalled)
+			}
+		})
 	}
 }
 
