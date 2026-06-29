@@ -25,6 +25,32 @@ func TestBootstrapEmptyDBWithoutConfigNoop(t *testing.T) {
 	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM workspaces`, 0)
 }
 
+func TestBootstrapEmptyDBWithWeakConfiguredPasswordReturnsPasswordPolicyError(t *testing.T) {
+	fixture := openSQLiteBootstrapFixture(t)
+	cfg := weakBootstrapConfig()
+
+	err := EnsureAuthReady(context.Background(), fixture.store, cfg)
+	if !errors.Is(err, auth.ErrWeakPassword) {
+		t.Fatalf("bootstrap error = %v, want ErrWeakPassword", err)
+	}
+
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM users`, 0)
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM workspaces`, 0)
+}
+
+func TestBootstrapPartialConfigReturnsIncompleteConfigError(t *testing.T) {
+	fixture := openSQLiteBootstrapFixture(t)
+	cfg := Config{AdminEmail: "admin@example.com"}
+
+	err := EnsureAuthReady(context.Background(), fixture.store, cfg)
+	if !errors.Is(err, ErrBootstrapAdminIncomplete) {
+		t.Fatalf("bootstrap error = %v, want ErrBootstrapAdminIncomplete", err)
+	}
+
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM users`, 0)
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM workspaces`, 0)
+}
+
 func TestBootstrapExistingUserNoop(t *testing.T) {
 	fixture := openSQLiteBootstrapFixture(t)
 	seedExistingUserWorkspace(t, fixture.store)
@@ -40,6 +66,23 @@ func TestBootstrapExistingUserNoop(t *testing.T) {
 
 	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM users`, 1)
 	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM users WHERE lower(email) = lower(?)`, 0, cfg.AdminEmail)
+}
+
+func TestBootstrapLegacyDataWithWeakConfiguredPasswordReturnsPasswordPolicyError(t *testing.T) {
+	fixture := openSQLiteBootstrapFixture(t)
+	seedLegacyNote(t, fixture.store)
+	cfg := weakBootstrapConfig()
+
+	err := EnsureAuthReady(context.Background(), fixture.store, cfg)
+	if !errors.Is(err, auth.ErrWeakPassword) {
+		t.Fatalf("bootstrap error = %v, want ErrWeakPassword", err)
+	}
+	if errors.Is(err, ErrBootstrapAdminRequired) {
+		t.Fatalf("bootstrap error = %v, did not want ErrBootstrapAdminRequired", err)
+	}
+
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM users`, 0)
+	assertRowCount(t, fixture.db, `SELECT COUNT(*) FROM workspaces`, 0)
 }
 
 func TestBootstrapRequiresAdminConfigForLegacyData(t *testing.T) {
@@ -120,6 +163,14 @@ func validBootstrapConfig() Config {
 	return Config{
 		AdminEmail:    "admin@example.com",
 		AdminPassword: "abc12345",
+		AdminName:     "Admin",
+	}
+}
+
+func weakBootstrapConfig() Config {
+	return Config{
+		AdminEmail:    "admin@example.com",
+		AdminPassword: "weak",
 		AdminName:     "Admin",
 	}
 }

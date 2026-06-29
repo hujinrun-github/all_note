@@ -18,7 +18,10 @@ const (
 	bootstrapWorkspaceRole = "owner"
 )
 
-var ErrBootstrapAdminRequired = errors.New("bootstrap admin configuration required")
+var (
+	ErrBootstrapAdminRequired   = errors.New("bootstrap admin configuration required")
+	ErrBootstrapAdminIncomplete = errors.New("bootstrap admin configuration incomplete")
+)
 
 type Config struct {
 	AdminEmail    string
@@ -110,7 +113,10 @@ func EnsureAuthReady(ctx context.Context, store storage.Store, cfg Config) error
 	if state.HasUsers {
 		return nil
 	}
-	if !cfg.Valid() {
+	if cfg.Incomplete() {
+		return ErrBootstrapAdminIncomplete
+	}
+	if !cfg.Configured() {
 		if state.HasBusinessData {
 			return ErrBootstrapAdminRequired
 		}
@@ -121,7 +127,7 @@ func EnsureAuthReady(ctx context.Context, store storage.Store, cfg Config) error
 	})
 }
 
-func (c Config) Valid() bool {
+func (c Config) Configured() bool {
 	if strings.TrimSpace(c.AdminEmail) == "" {
 		return false
 	}
@@ -131,7 +137,18 @@ func (c Config) Valid() bool {
 	if strings.TrimSpace(c.AdminPassword) == "" {
 		return false
 	}
-	return auth.ValidatePasswordPolicy(c.AdminPassword) == nil
+	return true
+}
+
+func (c Config) Incomplete() bool {
+	hasAny := strings.TrimSpace(c.AdminEmail) != "" ||
+		strings.TrimSpace(c.AdminPassword) != "" ||
+		strings.TrimSpace(c.AdminName) != ""
+	return hasAny && !c.Configured()
+}
+
+func (c Config) Valid() bool {
+	return c.Configured()
 }
 
 func InspectState(ctx context.Context, store storage.Store) (State, error) {
