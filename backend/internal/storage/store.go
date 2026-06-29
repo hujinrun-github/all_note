@@ -73,6 +73,7 @@ type AuthRepository interface {
 	GetUserByID(context.Context, string) (*model.User, error)
 	ListUsers(context.Context, UserListFilter) ([]model.User, int, error)
 	UpdateUser(context.Context, string, *model.UpdateUserRequest) (*model.User, error)
+	UpdateUserStatus(context.Context, string, string) (*model.User, error)
 	UpdateUserLastLogin(context.Context, string, time.Time) error
 	UpdateUserPassword(context.Context, string, string, bool) error
 	CreateWorkspace(context.Context, *model.Workspace) error

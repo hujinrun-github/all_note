@@ -66,6 +66,41 @@ func TestLocalDirectoryBrowserRouteRegistrationFollowsConfig(t *testing.T) {
 	}
 }
 
+func TestAdminUserRoutesAreRegistered(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	routes := []string{
+		"GET /api/admin/users",
+		"POST /api/admin/users",
+		"PATCH /api/admin/users/:id",
+		"POST /api/admin/users/:id/reset-password",
+		"POST /api/admin/users/:id/disable",
+		"POST /api/admin/users/:id/enable",
+	}
+
+	registered := registeredRoutes(Setup(env.config))
+
+	for _, route := range routes {
+		if !registered[route] {
+			t.Fatalf("route %s is not registered", route)
+		}
+	}
+}
+
+func TestAdminUserRoutesRequireAdmin(t *testing.T) {
+	env := setupRouterAuthEnv(t, false, withRouterRole("user"))
+	token := "admin-users-non-admin-token"
+	createRouterSession(t, env, token)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	req.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: token})
+	w := httptest.NewRecorder()
+
+	Setup(env.config).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+}
+
 func TestLocalDirectoryBrowserRequiresAdmin(t *testing.T) {
 	env := setupRouterAuthEnv(t, true, withRouterRole("user"))
 	token := "local-directory-user-token"

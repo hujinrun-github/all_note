@@ -140,6 +140,22 @@ func (r authRepository) UpdateUser(ctx context.Context, id string, req *model.Up
 	return r.GetUserByID(ctx, id)
 }
 
+func (r authRepository) UpdateUserStatus(ctx context.Context, id string, status string) (*model.User, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE users
+		SET status = ?,
+			updated_at = ?
+		WHERE id = ?
+	`, status, nowUnix(), id)
+	if err != nil {
+		return nil, err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return r.GetUserByID(ctx, id)
+}
+
 func (r authRepository) UpdateUserLastLogin(ctx context.Context, userID string, at time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE users

@@ -40,6 +40,14 @@ func Setup(cfg Config) *gin.Engine {
 			systemAdmin.Use(authMiddleware.RequireAdmin())
 			systemAdmin.GET("/directories", handler.ListLocalDirectories)
 		}
+		admin := protected.Group("/admin")
+		admin.Use(authMiddleware.RequireAdmin())
+		admin.GET("/users", handler.ListUsers(cfg.Store))
+		admin.POST("/users", handler.CreateUser(cfg.Store))
+		admin.PATCH("/users/:id", handler.UpdateUser(cfg.Store))
+		admin.POST("/users/:id/reset-password", handler.ResetUserPassword(cfg.Store))
+		admin.POST("/users/:id/disable", handler.DisableUser(cfg.Store))
+		admin.POST("/users/:id/enable", handler.EnableUser(cfg.Store))
 
 		protected.GET("/notes", handler.GetNotes)
 		protected.GET("/notes/:id", handler.GetNote)

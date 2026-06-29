@@ -208,6 +208,13 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		if updated.Email != email || updated.DisplayName != displayName || updated.Role != role {
 			t.Fatalf("unexpected updated user: %+v", updated)
 		}
+		statusUpdated, err := store.Auth().UpdateUserStatus(ctx, "auth_user_update", "disabled")
+		if err != nil {
+			t.Fatalf("update user status: %v", err)
+		}
+		if statusUpdated.Status != "disabled" {
+			t.Fatalf("status = %q, want disabled", statusUpdated.Status)
+		}
 
 		loginAt := time.Now().UTC().Add(-time.Minute)
 		if err := store.Auth().UpdateUserLastLogin(ctx, "auth_user_update", loginAt); err != nil {
