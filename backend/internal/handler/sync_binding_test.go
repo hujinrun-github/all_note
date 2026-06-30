@@ -73,6 +73,59 @@ func TestPutNoteSyncBindingCreatesBinding(t *testing.T) {
 	}
 }
 
+func TestPutNoteSyncBindingUsesRequestWorkspaceScope(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	scopedStore, ok := store.(handlerScopedStore)
+	if !ok {
+		t.Fatalf("store = %T, want handlerScopedStore", store)
+	}
+	baseStore := scopedStore.Store
+	ctxB := auth.ContextWithWorkspaceScope(t.Context(), "handler-sync-request-workspace")
+	if err := provisioning.EnsureDefaultWorkspaceData(ctxB, baseStore); err != nil {
+		t.Fatalf("seed workspace B defaults: %v", err)
+	}
+	targetB := &model.SyncTarget{
+		Type:       "notion",
+		Name:       "Workspace B Target",
+		ConfigJSON: `{"data_source_id":"workspace-b"}`,
+		Enabled:    true,
+	}
+	if err := baseStore.Sync().SaveTarget(ctxB, targetB); err != nil {
+		t.Fatalf("save workspace B target: %v", err)
+	}
+	noteB, err := baseStore.Notes().Create(ctxB, &model.CreateNoteRequest{
+		Title:    "Workspace B Bind Note",
+		Body:     "Body\n",
+		FolderID: "__uncategorized",
+		Tags:     "[]",
+	})
+	if err != nil {
+		t.Fatalf("create workspace B note: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: noteB.ID}}
+	c.Request = httptest.NewRequest(http.MethodPut, "/notes/"+noteB.ID+"/sync-binding", bytes.NewBufferString(`{"target_id":"`+targetB.ID+`"}`)).WithContext(ctxB)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	PutNoteSyncBinding(store)(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if _, err := baseStore.Sync().GetBinding(handlerSyncStoreTestContext(t), noteB.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("workspace A binding err=%v, want sql.ErrNoRows", err)
+	}
+	binding, err := baseStore.Sync().GetBinding(ctxB, noteB.ID)
+	if err != nil {
+		t.Fatalf("get workspace B binding: %v", err)
+	}
+	if binding.TargetID != targetB.ID {
+		t.Fatalf("target_id = %q, want %q", binding.TargetID, targetB.ID)
+	}
+}
+
 func TestPutNoteSyncBindingRequiresConfirmWhenChangingTarget(t *testing.T) {
 	store := openHandlerSyncStoreTestDB(t)
 	oldTarget := saveHandlerObsidianTarget(t)
@@ -371,8 +424,9 @@ type handlerScopedStore struct {
 }
 
 func (store handlerScopedStore) Transact(ctx context.Context, fn func(storage.Store) error) error {
-	return store.Store.Transact(store.ctx, func(txStore storage.Store) error {
-		return fn(handlerScopedStore{Store: txStore, ctx: store.ctx})
+	effectiveCtx := handlerScopedContext(store.ctx, ctx)
+	return store.Store.Transact(effectiveCtx, func(txStore storage.Store) error {
+		return fn(handlerScopedStore{Store: txStore, ctx: effectiveCtx})
 	})
 }
 
@@ -390,39 +444,39 @@ type handlerScopedNoteRepository struct {
 }
 
 func (repo handlerScopedNoteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]model.Note, int, error) {
-	return repo.NoteRepository.List(repo.ctx, filter)
+	return repo.NoteRepository.List(handlerScopedContext(repo.ctx, ctx), filter)
 }
 
 func (repo handlerScopedNoteRepository) GetByID(ctx context.Context, id string) (*model.Note, error) {
-	return repo.NoteRepository.GetByID(repo.ctx, id)
+	return repo.NoteRepository.GetByID(handlerScopedContext(repo.ctx, ctx), id)
 }
 
 func (repo handlerScopedNoteRepository) Create(ctx context.Context, req *model.CreateNoteRequest) (*model.Note, error) {
-	return repo.NoteRepository.Create(repo.ctx, req)
+	return repo.NoteRepository.Create(handlerScopedContext(repo.ctx, ctx), req)
 }
 
 func (repo handlerScopedNoteRepository) CreateWithID(ctx context.Context, note *model.Note) error {
-	return repo.NoteRepository.CreateWithID(repo.ctx, note)
+	return repo.NoteRepository.CreateWithID(handlerScopedContext(repo.ctx, ctx), note)
 }
 
 func (repo handlerScopedNoteRepository) Update(ctx context.Context, id string, req *model.UpdateNoteRequest) (*model.Note, error) {
-	return repo.NoteRepository.Update(repo.ctx, id, req)
+	return repo.NoteRepository.Update(handlerScopedContext(repo.ctx, ctx), id, req)
 }
 
 func (repo handlerScopedNoteRepository) Delete(ctx context.Context, id string) error {
-	return repo.NoteRepository.Delete(repo.ctx, id)
+	return repo.NoteRepository.Delete(handlerScopedContext(repo.ctx, ctx), id)
 }
 
 func (repo handlerScopedNoteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
-	return repo.NoteRepository.ListAll(repo.ctx)
+	return repo.NoteRepository.ListAll(handlerScopedContext(repo.ctx, ctx))
 }
 
 func (repo handlerScopedNoteRepository) Recent(ctx context.Context, limit int) ([]model.Note, error) {
-	return repo.NoteRepository.Recent(repo.ctx, limit)
+	return repo.NoteRepository.Recent(handlerScopedContext(repo.ctx, ctx), limit)
 }
 
 func (repo handlerScopedNoteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error) {
-	return repo.NoteRepository.GetNotesByProjectIDs(repo.ctx, projectIDs)
+	return repo.NoteRepository.GetNotesByProjectIDs(handlerScopedContext(repo.ctx, ctx), projectIDs)
 }
 
 type handlerScopedSyncRepository struct {
@@ -431,123 +485,130 @@ type handlerScopedSyncRepository struct {
 }
 
 func (repo handlerScopedSyncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget) error {
-	return repo.base.SaveTarget(repo.ctx, target)
+	return repo.base.SaveTarget(handlerScopedContext(repo.ctx, ctx), target)
 }
 
 func (repo handlerScopedSyncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
-	return repo.base.GetTarget(repo.ctx, targetID)
+	return repo.base.GetTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
-	return repo.base.LockTarget(repo.ctx, targetID)
+	return repo.base.LockTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) GetDefaultTarget(ctx context.Context, targetType string) (*model.SyncTarget, error) {
-	return repo.base.GetDefaultTarget(repo.ctx, targetType)
+	return repo.base.GetDefaultTarget(handlerScopedContext(repo.ctx, ctx), targetType)
 }
 
 func (repo handlerScopedSyncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
-	return repo.base.ListTargets(repo.ctx)
+	return repo.base.ListTargets(handlerScopedContext(repo.ctx, ctx))
 }
 
 func (repo handlerScopedSyncRepository) DeleteTarget(ctx context.Context, targetID string) error {
-	return repo.base.DeleteTarget(repo.ctx, targetID)
+	return repo.base.DeleteTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
-	return repo.base.CountBindingsByTarget(repo.ctx, targetID)
+	return repo.base.CountBindingsByTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
-	return repo.base.CountClaimsByTarget(repo.ctx, targetID)
+	return repo.base.CountClaimsByTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
-	return repo.base.CountStatesByTarget(repo.ctx, targetID)
+	return repo.base.CountStatesByTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
-	return repo.base.UpsertState(repo.ctx, state)
+	return repo.base.UpsertState(handlerScopedContext(repo.ctx, ctx), state)
 }
 
 func (repo handlerScopedSyncRepository) GetState(ctx context.Context, noteID string, targetID string) (*model.SyncState, error) {
-	return repo.base.GetState(repo.ctx, noteID, targetID)
+	return repo.base.GetState(handlerScopedContext(repo.ctx, ctx), noteID, targetID)
 }
 
 func (repo handlerScopedSyncRepository) ListStatesByTarget(ctx context.Context, targetID string) ([]model.SyncState, error) {
-	return repo.base.ListStatesByTarget(repo.ctx, targetID)
+	return repo.base.ListStatesByTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) DeleteState(ctx context.Context, noteID string, targetID string) error {
-	return repo.base.DeleteState(repo.ctx, noteID, targetID)
+	return repo.base.DeleteState(handlerScopedContext(repo.ctx, ctx), noteID, targetID)
 }
 
 func (repo handlerScopedSyncRepository) ListExternalDeletedStates(ctx context.Context, targetID string) ([]model.ExternalDeletedNote, error) {
-	return repo.base.ListExternalDeletedStates(repo.ctx, targetID)
+	return repo.base.ListExternalDeletedStates(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) LockBindingSlot(ctx context.Context, noteID string) error {
-	return repo.base.LockBindingSlot(repo.ctx, noteID)
+	return repo.base.LockBindingSlot(handlerScopedContext(repo.ctx, ctx), noteID)
 }
 
 func (repo handlerScopedSyncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
-	return repo.base.GetBinding(repo.ctx, noteID)
+	return repo.base.GetBinding(handlerScopedContext(repo.ctx, ctx), noteID)
 }
 
 func (repo handlerScopedSyncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
-	return repo.base.PutBinding(repo.ctx, binding)
+	return repo.base.PutBinding(handlerScopedContext(repo.ctx, ctx), binding)
 }
 
 func (repo handlerScopedSyncRepository) DeleteBinding(ctx context.Context, noteID string) error {
-	return repo.base.DeleteBinding(repo.ctx, noteID)
+	return repo.base.DeleteBinding(handlerScopedContext(repo.ctx, ctx), noteID)
 }
 
 func (repo handlerScopedSyncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
-	return repo.base.ListBindingsByTarget(repo.ctx, targetID)
+	return repo.base.ListBindingsByTarget(handlerScopedContext(repo.ctx, ctx), targetID)
 }
 
 func (repo handlerScopedSyncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
-	return repo.base.GetExternalClaim(repo.ctx, externalKey)
+	return repo.base.GetExternalClaim(handlerScopedContext(repo.ctx, ctx), externalKey)
 }
 
 func (repo handlerScopedSyncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
-	return repo.base.GetExternalClaimByNote(repo.ctx, noteID)
+	return repo.base.GetExternalClaimByNote(handlerScopedContext(repo.ctx, ctx), noteID)
 }
 
 func (repo handlerScopedSyncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
-	return repo.base.PutExternalClaim(repo.ctx, claim)
+	return repo.base.PutExternalClaim(handlerScopedContext(repo.ctx, ctx), claim)
 }
 
 func (repo handlerScopedSyncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
-	return repo.base.ReleaseExternalClaim(repo.ctx, noteID)
+	return repo.base.ReleaseExternalClaim(handlerScopedContext(repo.ctx, ctx), noteID)
 }
 
 func (repo handlerScopedSyncRepository) PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error {
-	return repo.base.PutSuppression(repo.ctx, suppression)
+	return repo.base.PutSuppression(handlerScopedContext(repo.ctx, ctx), suppression)
 }
 
 func (repo handlerScopedSyncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
-	return repo.base.DeleteSuppression(repo.ctx, noteID, targetID)
+	return repo.base.DeleteSuppression(handlerScopedContext(repo.ctx, ctx), noteID, targetID)
 }
 
 func (repo handlerScopedSyncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
-	return repo.base.GetSuppression(repo.ctx, noteID, targetID)
+	return repo.base.GetSuppression(handlerScopedContext(repo.ctx, ctx), noteID, targetID)
 }
 
 func (repo handlerScopedSyncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
-	return repo.base.PutImportTombstone(repo.ctx, tombstone)
+	return repo.base.PutImportTombstone(handlerScopedContext(repo.ctx, ctx), tombstone)
 }
 
 func (repo handlerScopedSyncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
-	return repo.base.DeleteImportTombstone(repo.ctx, externalKey)
+	return repo.base.DeleteImportTombstone(handlerScopedContext(repo.ctx, ctx), externalKey)
 }
 
 func (repo handlerScopedSyncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
-	return repo.base.DeleteImportTombstonesForNoteTarget(repo.ctx, noteID, targetID)
+	return repo.base.DeleteImportTombstonesForNoteTarget(handlerScopedContext(repo.ctx, ctx), noteID, targetID)
 }
 
 func (repo handlerScopedSyncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
-	return repo.base.FindImportTombstone(repo.ctx, targetID, externalKey, formerNoteID, externalType)
+	return repo.base.FindImportTombstone(handlerScopedContext(repo.ctx, ctx), targetID, externalKey, formerNoteID, externalType)
+}
+
+func handlerScopedContext(fallback context.Context, ctx context.Context) context.Context {
+	if _, err := auth.WorkspaceIDFromContext(ctx); err == nil {
+		return ctx
+	}
+	return fallback
 }
 
 type bindingSlotLockFakeStore struct {

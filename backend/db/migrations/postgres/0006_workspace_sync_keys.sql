@@ -1,3 +1,9 @@
+CREATE UNIQUE INDEX IF NOT EXISTS notes_workspace_id_id_idx
+  ON notes (workspace_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_workspace_id_id_idx
+  ON sync_targets (workspace_id, id);
+
 CREATE UNIQUE INDEX IF NOT EXISTS note_sync_state_workspace_note_target_idx
   ON note_sync_state (workspace_id, note_id, target_id);
 

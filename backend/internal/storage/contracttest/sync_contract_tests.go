@@ -1,11 +1,14 @@
 package contracttest
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"testing"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 func RunSyncSuite(t *testing.T, factory StoreFactory) {
@@ -183,6 +186,26 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 		if _, err := store.Sync().GetTarget(ctxB, targetA.ID); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatalf("workspace B target A lookup err=%v, want sql.ErrNoRows", err)
 		}
+		conflictingTarget := &model.SyncTarget{
+			ID:         targetA.ID,
+			Type:       "notion",
+			Name:       "Conflicting Target ID",
+			ConfigJSON: `{"data_source_id":"conflict"}`,
+			Enabled:    true,
+		}
+		if err := store.Sync().SaveTarget(ctxB, conflictingTarget); err == nil {
+			t.Fatal("expected workspace B save with workspace A target id to fail")
+		}
+		unchangedTargetA, err := store.Sync().GetTarget(ctxA, targetA.ID)
+		if err != nil {
+			t.Fatalf("reload workspace A target after conflicting save: %v", err)
+		}
+		if unchangedTargetA.Name != targetA.Name || unchangedTargetA.Type != targetA.Type {
+			t.Fatalf("workspace A target changed after conflicting save: %+v", unchangedTargetA)
+		}
+		if _, err := store.Sync().GetTarget(ctxB, targetA.ID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B conflicting target lookup err=%v, want sql.ErrNoRows", err)
+		}
 
 		noteB, err := store.Notes().Create(ctxB, &model.CreateNoteRequest{
 			Title:    "Workspace B Sync Note",
@@ -204,6 +227,7 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("create workspace A note: %v", err)
 		}
+		assertSyncCompositeForeignKeysRejectCrossWorkspaceReferences(t, store, ctxB, noteA.ID, noteB.ID, targetA.ID, targetB.ID)
 		if err := store.Sync().PutBinding(ctxA, model.NoteSyncBinding{NoteID: noteA.ID, TargetID: targetA.ID}); err != nil {
 			t.Fatalf("put workspace A binding: %v", err)
 		}
@@ -336,4 +360,134 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 			t.Fatal("expected unsupported target type to be rejected")
 		}
 	})
+}
+
+type contractSQLRunner interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func assertSyncCompositeForeignKeysRejectCrossWorkspaceReferences(t *testing.T, store storage.Store, ctx context.Context, foreignNoteID, localNoteID, foreignTargetID, localTargetID string) {
+	t.Helper()
+
+	runner, ok := store.(contractSQLRunner)
+	if !ok {
+		t.Fatalf("store %T does not expose SQL runner", store)
+	}
+	workspaceID := workspaceIDForContractContext(t, ctx)
+	cases := []struct {
+		name   string
+		pgSQL  string
+		sqlite string
+		args   []any
+	}{
+		{
+			name: "binding foreign note",
+			pgSQL: `
+				INSERT INTO note_sync_bindings (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES ($1, $2, $3, now(), now())
+			`,
+			sqlite: `
+				INSERT INTO note_sync_bindings (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES (?, ?, ?, unixepoch(), unixepoch())
+			`,
+			args: []any{workspaceID, foreignNoteID, localTargetID},
+		},
+		{
+			name: "binding foreign target",
+			pgSQL: `
+				INSERT INTO note_sync_bindings (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES ($1, $2, $3, now(), now())
+			`,
+			sqlite: `
+				INSERT INTO note_sync_bindings (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES (?, ?, ?, unixepoch(), unixepoch())
+			`,
+			args: []any{workspaceID, localNoteID, foreignTargetID},
+		},
+		{
+			name: "state foreign note",
+			pgSQL: `
+				INSERT INTO note_sync_state (workspace_id, note_id, target_id, external_path, content_hash, status)
+				VALUES ($1, $2, $3, 'foreign-note.md', 'hash', 'pending')
+			`,
+			sqlite: `
+				INSERT INTO note_sync_state (workspace_id, note_id, target_id, external_path, content_hash, status)
+				VALUES (?, ?, ?, 'foreign-note.md', 'hash', 'pending')
+			`,
+			args: []any{workspaceID, foreignNoteID, localTargetID},
+		},
+		{
+			name: "state foreign target",
+			pgSQL: `
+				INSERT INTO note_sync_state (workspace_id, note_id, target_id, external_path, content_hash, status)
+				VALUES ($1, $2, $3, 'foreign-target.md', 'hash', 'pending')
+			`,
+			sqlite: `
+				INSERT INTO note_sync_state (workspace_id, note_id, target_id, external_path, content_hash, status)
+				VALUES (?, ?, ?, 'foreign-target.md', 'hash', 'pending')
+			`,
+			args: []any{workspaceID, localNoteID, foreignTargetID},
+		},
+		{
+			name: "suppression foreign note",
+			pgSQL: `
+				INSERT INTO note_sync_suppressions (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES ($1, $2, $3, now(), now())
+			`,
+			sqlite: `
+				INSERT INTO note_sync_suppressions (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES (?, ?, ?, unixepoch(), unixepoch())
+			`,
+			args: []any{workspaceID, foreignNoteID, localTargetID},
+		},
+		{
+			name: "suppression foreign target",
+			pgSQL: `
+				INSERT INTO note_sync_suppressions (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES ($1, $2, $3, now(), now())
+			`,
+			sqlite: `
+				INSERT INTO note_sync_suppressions (workspace_id, note_id, target_id, created_at, updated_at)
+				VALUES (?, ?, ?, unixepoch(), unixepoch())
+			`,
+			args: []any{workspaceID, localNoteID, foreignTargetID},
+		},
+		{
+			name: "tombstone foreign target",
+			pgSQL: `
+				INSERT INTO sync_import_tombstones (
+					workspace_id, external_key, target_id, former_note_id, external_type, created_at, updated_at
+				)
+				VALUES ($1, 'notion:foreign-target-tombstone', $2, $3, 'notion_page', now(), now())
+			`,
+			sqlite: `
+				INSERT INTO sync_import_tombstones (
+					workspace_id, external_key, target_id, former_note_id, external_type, created_at, updated_at
+				)
+				VALUES (?, 'notion:foreign-target-tombstone', ?, ?, 'notion_page', unixepoch(), unixepoch())
+			`,
+			args: []any{workspaceID, foreignTargetID, localNoteID},
+		},
+	}
+	for _, tc := range cases {
+		t.Run("RejectsCrossWorkspaceSyncFK/"+tc.name, func(t *testing.T) {
+			stmt := tc.sqlite
+			if store.Capabilities().TimeRanges {
+				stmt = tc.pgSQL
+			}
+			if _, err := runner.ExecContext(ctx, stmt, tc.args...); err == nil {
+				t.Fatalf("expected %s to reject cross-workspace reference", tc.name)
+			}
+		})
+	}
+}
+
+func workspaceIDForContractContext(t *testing.T, ctx context.Context) string {
+	t.Helper()
+
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		t.Fatalf("workspace scope missing: %v", err)
+	}
+	return workspaceID
 }

@@ -253,6 +253,10 @@ func createSQLiteWorkspaceScopedSyncIndexes(ctx context.Context, db interface {
 	statements := []string{
 		`DROP INDEX IF EXISTS sync_targets_type_name_idx`,
 		`DROP INDEX IF EXISTS sync_targets_one_default_per_type_idx`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS notes_workspace_id_id_idx
+			ON notes (workspace_id, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_workspace_id_id_idx
+			ON sync_targets (workspace_id, id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_workspace_type_name_idx
 			ON sync_targets (workspace_id, type, name)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_workspace_type_idx
@@ -403,7 +407,8 @@ CREATE TABLE sync_targets (
 	is_default INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
-	workspace_id TEXT NOT NULL DEFAULT ''
+	workspace_id TEXT NOT NULL DEFAULT '',
+	UNIQUE (workspace_id, id)
 )`
 
 const sqliteNoteSyncStateWorkspaceScopedDDL = `
@@ -422,8 +427,14 @@ CREATE TABLE note_sync_state (
 	error_message TEXT,
 	workspace_id TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (workspace_id, note_id, target_id),
-	FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
-	FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
+	FOREIGN KEY (workspace_id, note_id)
+		REFERENCES notes(workspace_id, id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
+	FOREIGN KEY (workspace_id, target_id)
+		REFERENCES sync_targets(workspace_id, id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED
 )`
 
 const sqliteNoteSyncBindingsWorkspaceScopedDDL = `
@@ -435,8 +446,14 @@ CREATE TABLE note_sync_bindings (
 	workspace_id TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (workspace_id, note_id),
 	UNIQUE (workspace_id, note_id, target_id),
-	FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
-	FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE RESTRICT
+	FOREIGN KEY (workspace_id, note_id)
+		REFERENCES notes(workspace_id, id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
+	FOREIGN KEY (workspace_id, target_id)
+		REFERENCES sync_targets(workspace_id, id)
+		ON DELETE RESTRICT
+		DEFERRABLE INITIALLY DEFERRED
 )`
 
 const sqliteSyncExternalClaimsWorkspaceScopedDDL = `
@@ -467,14 +484,20 @@ CREATE TABLE note_sync_suppressions (
 	updated_at INTEGER NOT NULL,
 	workspace_id TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (workspace_id, note_id, target_id),
-	FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
-	FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
+	FOREIGN KEY (workspace_id, note_id)
+		REFERENCES notes(workspace_id, id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED,
+	FOREIGN KEY (workspace_id, target_id)
+		REFERENCES sync_targets(workspace_id, id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED
 )`
 
 const sqliteSyncImportTombstonesWorkspaceScopedDDL = `
 CREATE TABLE sync_import_tombstones (
 	external_key TEXT NOT NULL,
-	target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+	target_id TEXT NOT NULL,
 	former_note_id TEXT NOT NULL,
 	external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
 	external_id TEXT NOT NULL DEFAULT '',
@@ -484,7 +507,11 @@ CREATE TABLE sync_import_tombstones (
 	updated_at INTEGER NOT NULL,
 	workspace_id TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (workspace_id, external_key),
-	UNIQUE (workspace_id, target_id, former_note_id, external_type)
+	UNIQUE (workspace_id, target_id, former_note_id, external_type),
+	FOREIGN KEY (workspace_id, target_id)
+		REFERENCES sync_targets(workspace_id, id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED
 )`
 
 func rebuildSQLiteWorkspaceScopedDefaultTables(ctx context.Context, db *sql.DB) error {
@@ -632,6 +659,7 @@ CREATE TABLE notes (
 	tags TEXT NOT NULL DEFAULT '[]',
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
+	UNIQUE (workspace_id, id),
 	FOREIGN KEY (workspace_id, folder_id)
 		REFERENCES folders(workspace_id, id)
 		DEFERRABLE INITIALLY DEFERRED

@@ -229,6 +229,11 @@ func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db postg
 }
 
 func applyWorkspaceScopedSyncKeys(ctx context.Context, db postgresRunner) error {
+	for _, table := range []string{"notes", "sync_targets"} {
+		if err := addWorkspaceCompositeKey(ctx, db, table); err != nil {
+			return err
+		}
+	}
 	if err := dropPostgresConstraintIfExists(ctx, db, "sync_targets", "sync_targets_type_name_key"); err != nil {
 		return err
 	}
@@ -256,6 +261,22 @@ func applyWorkspaceScopedSyncKeys(ctx context.Context, db postgresRunner) error 
 	}
 	if err := dropPostgresForeignKeysToTable(ctx, db, "sync_external_claims", "note_sync_bindings"); err != nil {
 		return err
+	}
+	for _, fk := range []struct {
+		child  string
+		parent string
+	}{
+		{child: "note_sync_state", parent: "notes"},
+		{child: "note_sync_state", parent: "sync_targets"},
+		{child: "note_sync_bindings", parent: "notes"},
+		{child: "note_sync_bindings", parent: "sync_targets"},
+		{child: "note_sync_suppressions", parent: "notes"},
+		{child: "note_sync_suppressions", parent: "sync_targets"},
+		{child: "sync_import_tombstones", parent: "sync_targets"},
+	} {
+		if err := dropPostgresForeignKeysToTable(ctx, db, fk.child, fk.parent); err != nil {
+			return err
+		}
 	}
 	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_state", []string{"workspace_id", "note_id", "target_id"}); err != nil {
 		return err
@@ -316,6 +337,114 @@ func applyWorkspaceScopedSyncKeys(ctx context.Context, db postgresRunner) error 
 			  DEFERRABLE INITIALLY DEFERRED
 		`); err != nil {
 			return fmt.Errorf("add sync_external_claims workspace binding foreign key: %w", err)
+		}
+	}
+	if err := addPostgresWorkspaceScopedSyncForeignKeys(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func addPostgresWorkspaceScopedSyncForeignKeys(ctx context.Context, db postgresRunner) error {
+	for _, fk := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{
+			table: "note_sync_state",
+			name:  "note_sync_state_workspace_note_fk",
+			definition: `
+				ALTER TABLE note_sync_state
+				  ADD CONSTRAINT note_sync_state_workspace_note_fk
+				  FOREIGN KEY (workspace_id, note_id)
+				  REFERENCES notes(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_state",
+			name:  "note_sync_state_workspace_target_fk",
+			definition: `
+				ALTER TABLE note_sync_state
+				  ADD CONSTRAINT note_sync_state_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_bindings",
+			name:  "note_sync_bindings_workspace_note_fk",
+			definition: `
+				ALTER TABLE note_sync_bindings
+				  ADD CONSTRAINT note_sync_bindings_workspace_note_fk
+				  FOREIGN KEY (workspace_id, note_id)
+				  REFERENCES notes(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_bindings",
+			name:  "note_sync_bindings_workspace_target_fk",
+			definition: `
+				ALTER TABLE note_sync_bindings
+				  ADD CONSTRAINT note_sync_bindings_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE RESTRICT
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_suppressions",
+			name:  "note_sync_suppressions_workspace_note_fk",
+			definition: `
+				ALTER TABLE note_sync_suppressions
+				  ADD CONSTRAINT note_sync_suppressions_workspace_note_fk
+				  FOREIGN KEY (workspace_id, note_id)
+				  REFERENCES notes(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_suppressions",
+			name:  "note_sync_suppressions_workspace_target_fk",
+			definition: `
+				ALTER TABLE note_sync_suppressions
+				  ADD CONSTRAINT note_sync_suppressions_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "sync_import_tombstones",
+			name:  "sync_import_tombstones_workspace_target_fk",
+			definition: `
+				ALTER TABLE sync_import_tombstones
+				  ADD CONSTRAINT sync_import_tombstones_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+	} {
+		exists, err := postgresConstraintExists(ctx, db, fk.table, fk.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fk.definition); err != nil {
+			return fmt.Errorf("add %s: %w", fk.name, err)
 		}
 	}
 	return nil

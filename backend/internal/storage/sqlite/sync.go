@@ -78,7 +78,7 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 				return err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default, created_at, updated_at, workspace_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
@@ -92,8 +92,15 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 				is_default = excluded.is_default,
 				updated_at = excluded.updated_at,
 				workspace_id = excluded.workspace_id
+			WHERE sync_targets.workspace_id = excluded.workspace_id
 		`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, boolToSQLiteInt(target.Enabled), boolToSQLiteInt(target.AutoSync), boolToSQLiteInt(target.IsDefault), target.CreatedAt, target.UpdatedAt, workspaceID)
-		return err
+		if err != nil {
+			return err
+		}
+		if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
 	})
 }
 
