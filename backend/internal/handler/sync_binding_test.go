@@ -319,7 +319,7 @@ func openHandlerSyncStoreTestDB(t *testing.T) storage.Store {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	dbPath := filepath.Join(t.TempDir(), "handler.flowspace.test.db")
-	store, err := sqlite.Provider{}.Open(t.Context(), storage.Config{
+	baseStore, err := sqlite.Provider{}.Open(t.Context(), storage.Config{
 		Env:        "test",
 		Driver:     storage.DriverSQLite,
 		SQLitePath: dbPath,
@@ -327,13 +327,15 @@ func openHandlerSyncStoreTestDB(t *testing.T) storage.Store {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
-	if err := provisioning.EnsureDefaultWorkspaceData(handlerSyncStoreTestContext(t), store); err != nil {
+	ctx := handlerSyncStoreTestContext(t)
+	if err := provisioning.EnsureDefaultWorkspaceData(ctx, baseStore); err != nil {
 		t.Fatalf("seed workspace defaults: %v", err)
 	}
+	store := handlerScopedStore{Store: baseStore, ctx: ctx}
 	repository.SetStore(store)
 	t.Cleanup(func() {
 		repository.SetStore(nil)
-		if err := store.Close(); err != nil {
+		if err := baseStore.Close(); err != nil {
 			t.Fatalf("close store: %v", err)
 		}
 	})
@@ -352,14 +354,200 @@ func handlerSyncStoreTestRequest(t *testing.T, method string, target string, bod
 
 func putHandlerBinding(t *testing.T, store storage.Store, noteID, targetID string) model.NoteSyncBinding {
 	t.Helper()
-	if err := store.Sync().PutBinding(t.Context(), model.NoteSyncBinding{NoteID: noteID, TargetID: targetID}); err != nil {
+	ctx := handlerSyncStoreTestContext(t)
+	if err := store.Sync().PutBinding(ctx, model.NoteSyncBinding{NoteID: noteID, TargetID: targetID}); err != nil {
 		t.Fatalf("put binding: %v", err)
 	}
-	binding, err := store.Sync().GetBinding(t.Context(), noteID)
+	binding, err := store.Sync().GetBinding(ctx, noteID)
 	if err != nil {
 		t.Fatalf("get binding: %v", err)
 	}
 	return *binding
+}
+
+type handlerScopedStore struct {
+	storage.Store
+	ctx context.Context
+}
+
+func (store handlerScopedStore) Transact(ctx context.Context, fn func(storage.Store) error) error {
+	return store.Store.Transact(store.ctx, func(txStore storage.Store) error {
+		return fn(handlerScopedStore{Store: txStore, ctx: store.ctx})
+	})
+}
+
+func (store handlerScopedStore) Notes() storage.NoteRepository {
+	return handlerScopedNoteRepository{NoteRepository: store.Store.Notes(), ctx: store.ctx}
+}
+
+func (store handlerScopedStore) Sync() storage.SyncRepository {
+	return handlerScopedSyncRepository{base: store.Store.Sync(), ctx: store.ctx}
+}
+
+type handlerScopedNoteRepository struct {
+	storage.NoteRepository
+	ctx context.Context
+}
+
+func (repo handlerScopedNoteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]model.Note, int, error) {
+	return repo.NoteRepository.List(repo.ctx, filter)
+}
+
+func (repo handlerScopedNoteRepository) GetByID(ctx context.Context, id string) (*model.Note, error) {
+	return repo.NoteRepository.GetByID(repo.ctx, id)
+}
+
+func (repo handlerScopedNoteRepository) Create(ctx context.Context, req *model.CreateNoteRequest) (*model.Note, error) {
+	return repo.NoteRepository.Create(repo.ctx, req)
+}
+
+func (repo handlerScopedNoteRepository) CreateWithID(ctx context.Context, note *model.Note) error {
+	return repo.NoteRepository.CreateWithID(repo.ctx, note)
+}
+
+func (repo handlerScopedNoteRepository) Update(ctx context.Context, id string, req *model.UpdateNoteRequest) (*model.Note, error) {
+	return repo.NoteRepository.Update(repo.ctx, id, req)
+}
+
+func (repo handlerScopedNoteRepository) Delete(ctx context.Context, id string) error {
+	return repo.NoteRepository.Delete(repo.ctx, id)
+}
+
+func (repo handlerScopedNoteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
+	return repo.NoteRepository.ListAll(repo.ctx)
+}
+
+func (repo handlerScopedNoteRepository) Recent(ctx context.Context, limit int) ([]model.Note, error) {
+	return repo.NoteRepository.Recent(repo.ctx, limit)
+}
+
+func (repo handlerScopedNoteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error) {
+	return repo.NoteRepository.GetNotesByProjectIDs(repo.ctx, projectIDs)
+}
+
+type handlerScopedSyncRepository struct {
+	base storage.SyncRepository
+	ctx  context.Context
+}
+
+func (repo handlerScopedSyncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget) error {
+	return repo.base.SaveTarget(repo.ctx, target)
+}
+
+func (repo handlerScopedSyncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return repo.base.GetTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return repo.base.LockTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) GetDefaultTarget(ctx context.Context, targetType string) (*model.SyncTarget, error) {
+	return repo.base.GetDefaultTarget(repo.ctx, targetType)
+}
+
+func (repo handlerScopedSyncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
+	return repo.base.ListTargets(repo.ctx)
+}
+
+func (repo handlerScopedSyncRepository) DeleteTarget(ctx context.Context, targetID string) error {
+	return repo.base.DeleteTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
+	return repo.base.CountBindingsByTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
+	return repo.base.CountClaimsByTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
+	return repo.base.CountStatesByTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
+	return repo.base.UpsertState(repo.ctx, state)
+}
+
+func (repo handlerScopedSyncRepository) GetState(ctx context.Context, noteID string, targetID string) (*model.SyncState, error) {
+	return repo.base.GetState(repo.ctx, noteID, targetID)
+}
+
+func (repo handlerScopedSyncRepository) ListStatesByTarget(ctx context.Context, targetID string) ([]model.SyncState, error) {
+	return repo.base.ListStatesByTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) DeleteState(ctx context.Context, noteID string, targetID string) error {
+	return repo.base.DeleteState(repo.ctx, noteID, targetID)
+}
+
+func (repo handlerScopedSyncRepository) ListExternalDeletedStates(ctx context.Context, targetID string) ([]model.ExternalDeletedNote, error) {
+	return repo.base.ListExternalDeletedStates(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) LockBindingSlot(ctx context.Context, noteID string) error {
+	return repo.base.LockBindingSlot(repo.ctx, noteID)
+}
+
+func (repo handlerScopedSyncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
+	return repo.base.GetBinding(repo.ctx, noteID)
+}
+
+func (repo handlerScopedSyncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
+	return repo.base.PutBinding(repo.ctx, binding)
+}
+
+func (repo handlerScopedSyncRepository) DeleteBinding(ctx context.Context, noteID string) error {
+	return repo.base.DeleteBinding(repo.ctx, noteID)
+}
+
+func (repo handlerScopedSyncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
+	return repo.base.ListBindingsByTarget(repo.ctx, targetID)
+}
+
+func (repo handlerScopedSyncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
+	return repo.base.GetExternalClaim(repo.ctx, externalKey)
+}
+
+func (repo handlerScopedSyncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
+	return repo.base.GetExternalClaimByNote(repo.ctx, noteID)
+}
+
+func (repo handlerScopedSyncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
+	return repo.base.PutExternalClaim(repo.ctx, claim)
+}
+
+func (repo handlerScopedSyncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
+	return repo.base.ReleaseExternalClaim(repo.ctx, noteID)
+}
+
+func (repo handlerScopedSyncRepository) PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error {
+	return repo.base.PutSuppression(repo.ctx, suppression)
+}
+
+func (repo handlerScopedSyncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
+	return repo.base.DeleteSuppression(repo.ctx, noteID, targetID)
+}
+
+func (repo handlerScopedSyncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
+	return repo.base.GetSuppression(repo.ctx, noteID, targetID)
+}
+
+func (repo handlerScopedSyncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
+	return repo.base.PutImportTombstone(repo.ctx, tombstone)
+}
+
+func (repo handlerScopedSyncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
+	return repo.base.DeleteImportTombstone(repo.ctx, externalKey)
+}
+
+func (repo handlerScopedSyncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
+	return repo.base.DeleteImportTombstonesForNoteTarget(repo.ctx, noteID, targetID)
+}
+
+func (repo handlerScopedSyncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
+	return repo.base.FindImportTombstone(repo.ctx, targetID, externalKey, formerNoteID, externalType)
 }
 
 type bindingSlotLockFakeStore struct {

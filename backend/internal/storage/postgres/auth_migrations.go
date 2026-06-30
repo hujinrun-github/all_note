@@ -142,6 +142,9 @@ func applyWorkspaceCompositeKeys(ctx context.Context, db postgresRunner) error {
 	if err := applyWorkspaceScopedLearningRoadmapProjectKey(ctx, db); err != nil {
 		return err
 	}
+	if err := applyWorkspaceScopedSyncKeys(ctx, db); err != nil {
+		return err
+	}
 	for _, table := range workspaceScopedTables {
 		if table == "folders" || table == "task_projects" {
 			continue
@@ -221,6 +224,99 @@ func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db postg
 		ON learning_roadmaps (workspace_id, project_id)
 	`); err != nil {
 		return fmt.Errorf("ensure learning_roadmaps(workspace_id,project_id) key: %w", err)
+	}
+	return nil
+}
+
+func applyWorkspaceScopedSyncKeys(ctx context.Context, db postgresRunner) error {
+	if err := dropPostgresConstraintIfExists(ctx, db, "sync_targets", "sync_targets_type_name_key"); err != nil {
+		return err
+	}
+	for _, index := range []string{
+		"sync_targets_type_name_idx",
+		"sync_targets_one_default_per_type_idx",
+	} {
+		stmt := fmt.Sprintf("DROP INDEX IF EXISTS %s", postgresIdent(index))
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("drop %s: %w", index, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_workspace_type_name_idx
+		ON sync_targets (workspace_id, type, name)
+	`); err != nil {
+		return fmt.Errorf("ensure sync_targets(workspace_id,type,name) key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_workspace_type_idx
+		ON sync_targets (workspace_id, type)
+		WHERE is_default = true
+	`); err != nil {
+		return fmt.Errorf("ensure sync_targets workspace default key: %w", err)
+	}
+	if err := dropPostgresForeignKeysToTable(ctx, db, "sync_external_claims", "note_sync_bindings"); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_state", []string{"workspace_id", "note_id", "target_id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_bindings", []string{"workspace_id", "note_id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "sync_external_claims", []string{"workspace_id", "external_key"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_suppressions", []string{"workspace_id", "note_id", "target_id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "sync_import_tombstones", []string{"workspace_id", "external_key"}); err != nil {
+		return err
+	}
+	for _, constraint := range []struct {
+		table string
+		name  string
+	}{
+		{table: "note_sync_bindings", name: "note_sync_bindings_note_id_target_id_key"},
+		{table: "sync_external_claims", name: "sync_external_claims_note_id_key"},
+		{table: "sync_import_tombstones", name: "sync_import_tombstones_target_id_former_note_id_external_type_key"},
+	} {
+		if err := dropPostgresConstraintIfExists(ctx, db, constraint.table, constraint.name); err != nil {
+			return err
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS note_sync_bindings_workspace_note_target_idx
+		ON note_sync_bindings (workspace_id, note_id, target_id)
+	`); err != nil {
+		return fmt.Errorf("ensure note_sync_bindings workspace note target key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_external_claims_workspace_note_idx
+		ON sync_external_claims (workspace_id, note_id)
+	`); err != nil {
+		return fmt.Errorf("ensure sync_external_claims workspace note key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_import_tombstones_workspace_target_note_type_idx
+		ON sync_import_tombstones (workspace_id, target_id, former_note_id, external_type)
+	`); err != nil {
+		return fmt.Errorf("ensure sync_import_tombstones workspace target note type key: %w", err)
+	}
+	exists, err := postgresConstraintExists(ctx, db, "sync_external_claims", "sync_external_claims_workspace_binding_fk")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := db.ExecContext(ctx, `
+			ALTER TABLE sync_external_claims
+			  ADD CONSTRAINT sync_external_claims_workspace_binding_fk
+			  FOREIGN KEY (workspace_id, note_id, target_id)
+			  REFERENCES note_sync_bindings(workspace_id, note_id, target_id)
+			  ON DELETE CASCADE
+			  DEFERRABLE INITIALLY DEFERRED
+		`); err != nil {
+			return fmt.Errorf("add sync_external_claims workspace binding foreign key: %w", err)
+		}
 	}
 	return nil
 }

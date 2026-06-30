@@ -205,6 +205,71 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected failed roadmap, got %+v", roadmap)
 		}
 	})
+
+	t.Run("RoadmapDataDoesNotCrossWorkspaces", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctxA := seedWorkspaceDefaults(t, store, "workspace_roadmap_a")
+		finalizeAuthSchemaIfSupported(t, store, ctxA)
+		ctxB := seedWorkspaceDefaults(t, store, "workspace_roadmap_b")
+
+		project, err := store.Tasks().CreateProject(ctxA, &model.CreateTaskProjectRequest{
+			Name: "Workspace A Roadmap",
+			Type: "learning",
+		})
+		if err != nil {
+			t.Fatalf("create workspace A project: %v", err)
+		}
+		roadmap, err := store.Roadmaps().ReplaceLearningRoadmap(ctxA, &model.LearningRoadmap{
+			ProjectID: project.ID,
+			Title:     "Workspace A Roadmap",
+			Goal:      "keep private",
+			Nodes: []model.RoadmapNode{{
+				ID:     "workspace-a-roadmap-node",
+				Title:  "Private Node",
+				Type:   "task",
+				Status: "todo",
+			}},
+		})
+		if err != nil {
+			t.Fatalf("replace workspace A roadmap: %v", err)
+		}
+		if err := store.Roadmaps().AddRoadmapResource(ctxA, &model.RoadmapResource{
+			NodeID:  "workspace-a-roadmap-node",
+			Title:   "Private Resource",
+			URL:     "https://example.com/private",
+			Summary: "workspace A only",
+		}); err != nil {
+			t.Fatalf("add workspace A resource: %v", err)
+		}
+
+		if _, err := store.Roadmaps().GetLearningRoadmap(ctxB, project.ID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B roadmap by project err=%v, want sql.ErrNoRows", err)
+		}
+		if _, err := store.Roadmaps().GetLearningRoadmapByID(ctxB, roadmap.ID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B roadmap by id err=%v, want sql.ErrNoRows", err)
+		}
+		if nodes, err := store.Roadmaps().ListRoadmapNodes(ctxB, roadmap.ID); err != nil || len(nodes) != 0 {
+			t.Fatalf("workspace B nodes = %+v err=%v, want none", nodes, err)
+		}
+		if _, err := store.Roadmaps().GetRoadmapNode(ctxB, "workspace-a-roadmap-node"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B node lookup err=%v, want sql.ErrNoRows", err)
+		}
+		if resources, err := store.Roadmaps().ListRoadmapResources(ctxB, "workspace-a-roadmap-node"); err != nil || len(resources) != 0 {
+			t.Fatalf("workspace B resources = %+v err=%v, want none", resources, err)
+		}
+		if err := store.Roadmaps().UpdateRoadmapNodeStatus(ctxB, "workspace-a-roadmap-node", "done"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B node status update err=%v, want sql.ErrNoRows", err)
+		}
+		node, err := store.Roadmaps().GetRoadmapNode(ctxA, "workspace-a-roadmap-node")
+		if err != nil {
+			t.Fatalf("get workspace A node after B update attempt: %v", err)
+		}
+		if node.Status != "todo" {
+			t.Fatalf("workspace A node status changed to %q", node.Status)
+		}
+	})
 }
 
 func findNode(t *testing.T, nodes []model.RoadmapNode, id string) model.RoadmapNode {

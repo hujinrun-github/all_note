@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -62,19 +63,23 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 		target.CreatedAt = now
 	}
 	target.UpdatedAt = now
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx postgresRunner) error {
 		if target.IsDefault {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE sync_targets
 				SET is_default = false, updated_at = $1
-				WHERE type = $2 AND id <> $3 AND is_default = true
-			`, unixToTime(target.UpdatedAt), target.Type, target.ID); err != nil {
+				WHERE workspace_id = $2 AND type = $3 AND id <> $4 AND is_default = true
+			`, unixToTime(target.UpdatedAt), workspaceID, target.Type, target.ID); err != nil {
 				return err
 			}
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config, enabled, auto_sync, is_default, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+			INSERT INTO sync_targets (id, type, name, vault_path, base_folder, config, enabled, auto_sync, is_default, created_at, updated_at, workspace_id)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)
 			ON CONFLICT (id) DO UPDATE SET
 				type = excluded.type,
 				name = excluded.name,
@@ -84,44 +89,62 @@ func (r syncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget
 				enabled = excluded.enabled,
 				auto_sync = excluded.auto_sync,
 				is_default = excluded.is_default,
-				updated_at = excluded.updated_at
-		`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, target.Enabled, target.AutoSync, target.IsDefault, unixToTime(target.CreatedAt), unixToTime(target.UpdatedAt))
+				updated_at = excluded.updated_at,
+				workspace_id = excluded.workspace_id
+		`, target.ID, target.Type, target.Name, target.VaultPath, target.BaseFolder, target.ConfigJSON, target.Enabled, target.AutoSync, target.IsDefault, unixToTime(target.CreatedAt), unixToTime(target.UpdatedAt), workspaceID)
 		return err
 	})
 }
 
 func (r syncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
-		WHERE id = $1
-	`, targetID))
+		WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, targetID))
 }
 
 func (r syncRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
-		WHERE id = $1
+		WHERE workspace_id = $1 AND id = $2
 		FOR UPDATE
-	`, targetID))
+	`, workspaceID, targetID))
 }
 
 func (r syncRepository) GetDefaultTarget(ctx context.Context, syncType string) (*model.SyncTarget, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresSyncTarget(r.db.QueryRowContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
-		WHERE type = $1 AND enabled = true AND is_default = true
+		WHERE workspace_id = $1 AND type = $2 AND enabled = true AND is_default = true
 		LIMIT 1
-	`, syncType))
+	`, workspaceID, syncType))
 }
 
 func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, type, name, vault_path, base_folder, config::text, enabled, auto_sync, is_default, created_at, updated_at
 		FROM sync_targets
+		WHERE workspace_id = $1
 		ORDER BY updated_at DESC
-	`)
+	`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,41 +161,61 @@ func (r syncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, er
 }
 
 func (r syncRepository) DeleteTarget(ctx context.Context, targetID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM sync_targets WHERE id = $1
-	`, targetID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM sync_targets WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, targetID)
 	return err
 }
 
 func (r syncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
 	return scanPostgresCount(r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM note_sync_bindings WHERE target_id = $1
-	`, targetID))
+		SELECT COUNT(*) FROM note_sync_bindings WHERE workspace_id = $1 AND target_id = $2
+	`, workspaceID, targetID))
 }
 
 func (r syncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
 	return scanPostgresCount(r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM sync_external_claims WHERE target_id = $1
-	`, targetID))
+		SELECT COUNT(*) FROM sync_external_claims WHERE workspace_id = $1 AND target_id = $2
+	`, workspaceID, targetID))
 }
 
 func (r syncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
 	return scanPostgresCount(r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM note_sync_state WHERE target_id = $1
-	`, targetID))
+		SELECT COUNT(*) FROM note_sync_state WHERE workspace_id = $1 AND target_id = $2
+	`, workspaceID, targetID))
 }
 
 func (r syncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
 	if state == nil {
 		return fmt.Errorf("sync state is nil")
 	}
-	_, err := r.db.ExecContext(ctx, `
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO note_sync_state (
 			note_id, target_id, external_path, external_id, external_url, content_hash, external_hash, external_mtime,
-			last_direction, last_synced_at, status, error_message
+			last_direction, last_synced_at, status, error_message, workspace_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		ON CONFLICT (note_id, target_id) DO UPDATE SET
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (workspace_id, note_id, target_id) DO UPDATE SET
 			external_path = excluded.external_path,
 			external_id = excluded.external_id,
 			external_url = excluded.external_url,
@@ -182,22 +225,31 @@ func (r syncRepository) UpsertState(ctx context.Context, state *model.SyncState)
 			last_direction = excluded.last_direction,
 			last_synced_at = excluded.last_synced_at,
 			status = excluded.status,
-			error_message = excluded.error_message
-	`, state.NoteID, state.TargetID, state.ExternalPath, nullableString(state.ExternalID), nullableString(state.ExternalURL), state.ContentHash, nullableString(state.ExternalHash), unixPtrToTime(state.ExternalMTime), nullableString(state.LastDirection), unixPtrToTime(state.LastSyncedAt), state.Status, state.ErrorMessage)
+			error_message = excluded.error_message,
+			workspace_id = excluded.workspace_id
+	`, state.NoteID, state.TargetID, state.ExternalPath, nullableString(state.ExternalID), nullableString(state.ExternalURL), state.ContentHash, nullableString(state.ExternalHash), unixPtrToTime(state.ExternalMTime), nullableString(state.LastDirection), unixPtrToTime(state.LastSyncedAt), state.Status, state.ErrorMessage, workspaceID)
 	return err
 }
 
 func (r syncRepository) GetState(ctx context.Context, noteID, targetID string) (*model.SyncState, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresSyncState(r.db.QueryRowContext(ctx, postgresSyncStateSelectSQL()+`
-		WHERE note_id = $1 AND target_id = $2
-	`, noteID, targetID))
+		WHERE workspace_id = $1 AND note_id = $2 AND target_id = $3
+	`, workspaceID, noteID, targetID))
 }
 
 func (r syncRepository) ListStatesByTarget(ctx context.Context, targetID string) ([]model.SyncState, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, postgresSyncStateSelectSQL()+`
-		WHERE target_id = $1
+		WHERE workspace_id = $1 AND target_id = $2
 		ORDER BY note_id
-	`, targetID)
+	`, workspaceID, targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,20 +266,28 @@ func (r syncRepository) ListStatesByTarget(ctx context.Context, targetID string)
 }
 
 func (r syncRepository) DeleteState(ctx context.Context, noteID, targetID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM note_sync_state WHERE note_id = $1 AND target_id = $2
-	`, noteID, targetID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_state WHERE workspace_id = $1 AND note_id = $2 AND target_id = $3
+	`, workspaceID, noteID, targetID)
 	return err
 }
 
 func (r syncRepository) ListExternalDeletedStates(ctx context.Context, targetID string) ([]model.ExternalDeletedNote, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT s.note_id, n.title, s.external_path, s.last_synced_at
 		FROM note_sync_state s
-		JOIN notes n ON n.id = s.note_id
-		WHERE s.target_id = $1 AND s.status = 'external_deleted'
+		JOIN notes n ON n.workspace_id = s.workspace_id AND n.id = s.note_id
+		WHERE s.workspace_id = $1 AND s.target_id = $2 AND s.status = 'external_deleted'
 		ORDER BY s.last_synced_at DESC, n.title ASC
-	`, targetID)
+	`, workspaceID, targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -246,14 +306,22 @@ func (r syncRepository) ListExternalDeletedStates(ctx context.Context, targetID 
 }
 
 func (r syncRepository) LockBindingSlot(ctx context.Context, noteID string) error {
-	_, err := r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, "note_sync_binding:"+noteID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, "note_sync_binding:"+workspaceID+":"+noteID)
 	return err
 }
 
 func (r syncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresNoteSyncBinding(r.db.QueryRowContext(ctx, postgresBindingSelectSQL()+`
-		WHERE note_id = $1
-	`, noteID))
+		WHERE workspace_id = $1 AND note_id = $2
+	`, workspaceID, noteID))
 }
 
 func (r syncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
@@ -262,28 +330,41 @@ func (r syncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBi
 		binding.CreatedAt = now
 	}
 	binding.UpdatedAt = now
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (note_id) DO UPDATE SET
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at, workspace_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (workspace_id, note_id) DO UPDATE SET
 			target_id = excluded.target_id,
-			updated_at = excluded.updated_at
-	`, binding.NoteID, binding.TargetID, unixToTime(binding.CreatedAt), unixToTime(binding.UpdatedAt))
+			updated_at = excluded.updated_at,
+			workspace_id = excluded.workspace_id
+	`, binding.NoteID, binding.TargetID, unixToTime(binding.CreatedAt), unixToTime(binding.UpdatedAt), workspaceID)
 	return err
 }
 
 func (r syncRepository) DeleteBinding(ctx context.Context, noteID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM note_sync_bindings WHERE note_id = $1
-	`, noteID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_bindings WHERE workspace_id = $1 AND note_id = $2
+	`, workspaceID, noteID)
 	return err
 }
 
 func (r syncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, postgresBindingSelectSQL()+`
-		WHERE target_id = $1
+		WHERE workspace_id = $1 AND target_id = $2
 		ORDER BY updated_at DESC, note_id
-	`, targetID)
+	`, workspaceID, targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -300,15 +381,23 @@ func (r syncRepository) ListBindingsByTarget(ctx context.Context, targetID strin
 }
 
 func (r syncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresExternalClaim(r.db.QueryRowContext(ctx, postgresExternalClaimSelectSQL()+`
-		WHERE external_key = $1
-	`, externalKey))
+		WHERE workspace_id = $1 AND external_key = $2
+	`, workspaceID, externalKey))
 }
 
 func (r syncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresExternalClaim(r.db.QueryRowContext(ctx, postgresExternalClaimSelectSQL()+`
-		WHERE note_id = $1
-	`, noteID))
+		WHERE workspace_id = $1 AND note_id = $2
+	`, workspaceID, noteID))
 }
 
 func (r syncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
@@ -317,34 +406,43 @@ func (r syncRepository) PutExternalClaim(ctx context.Context, claim model.SyncEx
 		claim.CreatedAt = now
 	}
 	claim.UpdatedAt = now
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx postgresRunner) error {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM sync_external_claims
-			WHERE note_id = $1 AND external_key <> $2
-		`, claim.NoteID, claim.ExternalKey); err != nil {
+			WHERE workspace_id = $1 AND note_id = $2 AND external_key <> $3
+		`, workspaceID, claim.NoteID, claim.ExternalKey); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO sync_external_claims (
-				external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at
+				external_key, note_id, target_id, external_type, external_id, external_path, created_at, updated_at, workspace_id
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (external_key) DO UPDATE SET
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (workspace_id, external_key) DO UPDATE SET
 				note_id = excluded.note_id,
 				target_id = excluded.target_id,
 				external_type = excluded.external_type,
 				external_id = excluded.external_id,
 				external_path = excluded.external_path,
-				updated_at = excluded.updated_at
-		`, claim.ExternalKey, claim.NoteID, claim.TargetID, claim.ExternalType, claim.ExternalID, claim.ExternalPath, unixToTime(claim.CreatedAt), unixToTime(claim.UpdatedAt))
+				updated_at = excluded.updated_at,
+				workspace_id = excluded.workspace_id
+		`, claim.ExternalKey, claim.NoteID, claim.TargetID, claim.ExternalType, claim.ExternalID, claim.ExternalPath, unixToTime(claim.CreatedAt), unixToTime(claim.UpdatedAt), workspaceID)
 		return err
 	})
 }
 
 func (r syncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM sync_external_claims WHERE note_id = $1
-	`, noteID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM sync_external_claims WHERE workspace_id = $1 AND note_id = $2
+	`, workspaceID, noteID)
 	return err
 }
 
@@ -357,27 +455,40 @@ func (r syncRepository) PutSuppression(ctx context.Context, suppression model.No
 		suppression.Reason = "user_unbound"
 	}
 	suppression.UpdatedAt = now
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (note_id, target_id) DO UPDATE SET
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at, workspace_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (workspace_id, note_id, target_id) DO UPDATE SET
 			reason = excluded.reason,
-			updated_at = excluded.updated_at
-	`, suppression.NoteID, suppression.TargetID, suppression.Reason, unixToTime(suppression.CreatedAt), unixToTime(suppression.UpdatedAt))
+			updated_at = excluded.updated_at,
+			workspace_id = excluded.workspace_id
+	`, suppression.NoteID, suppression.TargetID, suppression.Reason, unixToTime(suppression.CreatedAt), unixToTime(suppression.UpdatedAt), workspaceID)
 	return err
 }
 
 func (r syncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM note_sync_suppressions WHERE note_id = $1 AND target_id = $2
-	`, noteID, targetID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM note_sync_suppressions WHERE workspace_id = $1 AND note_id = $2 AND target_id = $3
+	`, workspaceID, noteID, targetID)
 	return err
 }
 
 func (r syncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresSuppression(r.db.QueryRowContext(ctx, postgresSuppressionSelectSQL()+`
-		WHERE note_id = $1 AND target_id = $2
-	`, noteID, targetID))
+		WHERE workspace_id = $1 AND note_id = $2 AND target_id = $3
+	`, workspaceID, noteID, targetID))
 }
 
 func (r syncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
@@ -389,45 +500,62 @@ func (r syncRepository) PutImportTombstone(ctx context.Context, tombstone model.
 		tombstone.Reason = "user_unbound"
 	}
 	tombstone.UpdatedAt = now
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx postgresRunner) error {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM sync_import_tombstones
-			WHERE external_key = $1
-				OR (target_id = $2 AND former_note_id = $3 AND external_type = $4)
-		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType); err != nil {
+			WHERE workspace_id = $1
+				AND (external_key = $2
+					OR (target_id = $3 AND former_note_id = $4 AND external_type = $5))
+		`, workspaceID, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO sync_import_tombstones (
-				external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at
+				external_key, target_id, former_note_id, external_type, external_id, external_path, reason, created_at, updated_at, workspace_id
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType, tombstone.ExternalID, tombstone.ExternalPath, tombstone.Reason, unixToTime(tombstone.CreatedAt), unixToTime(tombstone.UpdatedAt))
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, tombstone.ExternalKey, tombstone.TargetID, tombstone.FormerNoteID, tombstone.ExternalType, tombstone.ExternalID, tombstone.ExternalPath, tombstone.Reason, unixToTime(tombstone.CreatedAt), unixToTime(tombstone.UpdatedAt), workspaceID)
 		return err
 	})
 }
 
 func (r syncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM sync_import_tombstones WHERE external_key = $1
-	`, externalKey)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM sync_import_tombstones WHERE workspace_id = $1 AND external_key = $2
+	`, workspaceID, externalKey)
 	return err
 }
 
 func (r syncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		DELETE FROM sync_import_tombstones WHERE former_note_id = $1 AND target_id = $2
-	`, noteID, targetID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		DELETE FROM sync_import_tombstones WHERE workspace_id = $1 AND former_note_id = $2 AND target_id = $3
+	`, workspaceID, noteID, targetID)
 	return err
 }
 
 func (r syncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(targetID) != "" && strings.TrimSpace(externalKey) != "" {
 		tombstone, err := scanPostgresImportTombstone(r.db.QueryRowContext(ctx, postgresImportTombstoneSelectSQL()+`
-			WHERE target_id = $1 AND external_key = $2
+			WHERE workspace_id = $1 AND target_id = $2 AND external_key = $3
 			ORDER BY updated_at DESC, created_at DESC
 			LIMIT 1
-		`, targetID, externalKey))
+		`, workspaceID, targetID, externalKey))
 		if err == nil {
 			return tombstone, nil
 		}
@@ -437,10 +565,10 @@ func (r syncRepository) FindImportTombstone(ctx context.Context, targetID string
 	}
 	if strings.TrimSpace(targetID) != "" && strings.TrimSpace(formerNoteID) != "" && strings.TrimSpace(externalType) != "" {
 		tombstone, err := scanPostgresImportTombstone(r.db.QueryRowContext(ctx, postgresImportTombstoneSelectSQL()+`
-			WHERE target_id = $1 AND former_note_id = $2 AND external_type = $3
+			WHERE workspace_id = $1 AND target_id = $2 AND former_note_id = $3 AND external_type = $4
 			ORDER BY updated_at DESC, created_at DESC
 			LIMIT 1
-		`, targetID, formerNoteID, externalType))
+		`, workspaceID, targetID, formerNoteID, externalType))
 		if err == nil {
 			return tombstone, nil
 		}
@@ -450,10 +578,10 @@ func (r syncRepository) FindImportTombstone(ctx context.Context, targetID string
 	}
 	if strings.TrimSpace(formerNoteID) != "" && strings.TrimSpace(externalType) != "" {
 		return scanPostgresImportTombstone(r.db.QueryRowContext(ctx, postgresImportTombstoneSelectSQL()+`
-			WHERE former_note_id = $1 AND external_type = $2
+			WHERE workspace_id = $1 AND former_note_id = $2 AND external_type = $3
 			ORDER BY updated_at DESC, created_at DESC
 			LIMIT 1
-		`, formerNoteID, externalType))
+		`, workspaceID, formerNoteID, externalType))
 	}
 	return nil, sql.ErrNoRows
 }

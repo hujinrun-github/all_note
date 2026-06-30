@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -30,16 +31,20 @@ func (r searchRepository) Search(ctx context.Context, query string, page, pageSi
 	tagQuery := strings.TrimPrefix(query, "#")
 	offset := (page - 1) * pageSize
 	ftsQuery, useFTS := buildPostgresPrefixTSQuery(query)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	sqlText := postgresFallbackSearchSQL
 	countSQL := postgresFallbackSearchCountSQL
-	args := []interface{}{query, likeQuery, tagQuery, pageSize, offset}
-	countArgs := []interface{}{query, likeQuery, tagQuery}
+	args := []interface{}{workspaceID, query, likeQuery, tagQuery, pageSize, offset}
+	countArgs := []interface{}{workspaceID, query, likeQuery, tagQuery}
 	if useFTS {
 		sqlText = postgresFTSSearchSQL
 		countSQL = postgresFTSSearchCountSQL
-		args = []interface{}{query, likeQuery, tagQuery, ftsQuery, pageSize, offset}
-		countArgs = []interface{}{query, likeQuery, tagQuery, ftsQuery}
+		args = []interface{}{workspaceID, query, likeQuery, tagQuery, ftsQuery, pageSize, offset}
+		countArgs = []interface{}{workspaceID, query, likeQuery, tagQuery, ftsQuery}
 	}
 
 	total := 0
@@ -89,19 +94,23 @@ func (r searchRepository) Search(ctx context.Context, query string, page, pageSi
 const postgresFallbackSearchSQL = `
 WITH matched AS (
 	SELECT
+		s.workspace_id,
 		s.entity_type,
 		s.entity_id,
 		s.title,
 		s.content,
 		s.updated_at,
-		GREATEST(public.similarity(s.title, $1), public.similarity(s.content, $1)) AS rank
+		GREATEST(public.similarity(s.title, $2), public.similarity(s.content, $2)) AS rank
 	FROM search_index s
 	WHERE
-		s.title ILIKE $2
-		OR s.content ILIKE $2
-		OR EXISTS (
-			SELECT 1 FROM unnest(s.tags) tag
-			WHERE lower(tag) = lower($3)
+		s.workspace_id = $1
+		AND (
+			s.title ILIKE $3
+			OR s.content ILIKE $3
+			OR EXISTS (
+				SELECT 1 FROM unnest(s.tags) tag
+				WHERE lower(tag) = lower($4)
+			)
 		)
 ),
 visible AS (
@@ -116,9 +125,9 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.id = m.entity_id
-	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.id = m.entity_id
-	LEFT JOIN events e ON m.entity_type = 'event' AND e.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
+	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
 		(m.entity_type = 'note' AND n.id IS NOT NULL)
 		OR (m.entity_type = 'task' AND t.id IS NOT NULL)
@@ -134,7 +143,7 @@ numbered AS (
 		SELECT *, COUNT(*) OVER() AS total
 		FROM dedup
 		ORDER BY updated_at DESC, rank DESC
-		LIMIT $4 OFFSET $5
+		LIMIT $5 OFFSET $6
 	)
 SELECT entity_type, entity_id, title, content, updated_at, folder_id, done, kind
 FROM numbered
@@ -143,19 +152,23 @@ FROM numbered
 const postgresFallbackSearchCountSQL = `
 WITH matched AS (
 	SELECT
+		s.workspace_id,
 		s.entity_type,
 		s.entity_id,
 		s.title,
 		s.content,
 		s.updated_at,
-		GREATEST(public.similarity(s.title, $1), public.similarity(s.content, $1)) AS rank
+		GREATEST(public.similarity(s.title, $2), public.similarity(s.content, $2)) AS rank
 	FROM search_index s
 	WHERE
-		s.title ILIKE $2
-		OR s.content ILIKE $2
-		OR EXISTS (
-			SELECT 1 FROM unnest(s.tags) tag
-			WHERE lower(tag) = lower($3)
+		s.workspace_id = $1
+		AND (
+			s.title ILIKE $3
+			OR s.content ILIKE $3
+			OR EXISTS (
+				SELECT 1 FROM unnest(s.tags) tag
+				WHERE lower(tag) = lower($4)
+			)
 		)
 ),
 visible AS (
@@ -170,9 +183,9 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.id = m.entity_id
-	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.id = m.entity_id
-	LEFT JOIN events e ON m.entity_type = 'event' AND e.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
+	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
 		(m.entity_type = 'note' AND n.id IS NOT NULL)
 		OR (m.entity_type = 'task' AND t.id IS NOT NULL)
@@ -190,34 +203,39 @@ SELECT COUNT(*) FROM dedup
 const postgresFTSSearchSQL = `
 WITH fts AS (
 	SELECT
+		s.workspace_id,
 		s.entity_type,
 		s.entity_id,
 		s.title,
 		s.content,
 		s.updated_at,
-		ts_rank(s.search_vector, to_tsquery('simple', $4)) AS rank
+		ts_rank(s.search_vector, to_tsquery('simple', $5)) AS rank
 	FROM search_index s
-	WHERE s.search_vector @@ to_tsquery('simple', $4)
+	WHERE s.workspace_id = $1
+	  AND s.search_vector @@ to_tsquery('simple', $5)
 ),
 fallback AS (
 	SELECT
+		s.workspace_id,
 		s.entity_type,
 		s.entity_id,
 		s.title,
 		s.content,
 		s.updated_at,
-		GREATEST(public.similarity(s.title, $1), public.similarity(s.content, $1)) AS rank
+		GREATEST(public.similarity(s.title, $2), public.similarity(s.content, $2)) AS rank
 	FROM search_index s
 	WHERE
+		s.workspace_id = $1
+		AND
 		(
-			s.title ILIKE $2
-			OR s.content ILIKE $2
+			s.title ILIKE $3
+			OR s.content ILIKE $3
 			OR EXISTS (
 				SELECT 1 FROM unnest(s.tags) tag
-				WHERE lower(tag) = lower($3)
+				WHERE lower(tag) = lower($4)
 			)
 		)
-		AND NOT (s.search_vector @@ to_tsquery('simple', $4))
+		AND NOT (s.search_vector @@ to_tsquery('simple', $5))
 ),
 matched AS (
 	SELECT * FROM fts
@@ -236,9 +254,9 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.id = m.entity_id
-	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.id = m.entity_id
-	LEFT JOIN events e ON m.entity_type = 'event' AND e.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
+	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
 		(m.entity_type = 'note' AND n.id IS NOT NULL)
 		OR (m.entity_type = 'task' AND t.id IS NOT NULL)
@@ -254,7 +272,7 @@ dedup AS (
 		SELECT *, COUNT(*) OVER() AS total
 		FROM dedup
 		ORDER BY updated_at DESC, rank DESC
-		LIMIT $5 OFFSET $6
+		LIMIT $6 OFFSET $7
 	)
 SELECT entity_type, entity_id, title, content, updated_at, folder_id, done, kind
 FROM numbered
@@ -263,34 +281,39 @@ FROM numbered
 const postgresFTSSearchCountSQL = `
 WITH fts AS (
 	SELECT
+		s.workspace_id,
 		s.entity_type,
 		s.entity_id,
 		s.title,
 		s.content,
 		s.updated_at,
-		ts_rank(s.search_vector, to_tsquery('simple', $4)) AS rank
+		ts_rank(s.search_vector, to_tsquery('simple', $5)) AS rank
 	FROM search_index s
-	WHERE s.search_vector @@ to_tsquery('simple', $4)
+	WHERE s.workspace_id = $1
+	  AND s.search_vector @@ to_tsquery('simple', $5)
 ),
 fallback AS (
 	SELECT
+		s.workspace_id,
 		s.entity_type,
 		s.entity_id,
 		s.title,
 		s.content,
 		s.updated_at,
-		GREATEST(public.similarity(s.title, $1), public.similarity(s.content, $1)) AS rank
+		GREATEST(public.similarity(s.title, $2), public.similarity(s.content, $2)) AS rank
 	FROM search_index s
 	WHERE
+		s.workspace_id = $1
+		AND
 		(
-			s.title ILIKE $2
-			OR s.content ILIKE $2
+			s.title ILIKE $3
+			OR s.content ILIKE $3
 			OR EXISTS (
 				SELECT 1 FROM unnest(s.tags) tag
-				WHERE lower(tag) = lower($3)
+				WHERE lower(tag) = lower($4)
 			)
 		)
-		AND NOT (s.search_vector @@ to_tsquery('simple', $4))
+		AND NOT (s.search_vector @@ to_tsquery('simple', $5))
 ),
 matched AS (
 	SELECT * FROM fts
@@ -309,9 +332,9 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.id = m.entity_id
-	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.id = m.entity_id
-	LEFT JOIN events e ON m.entity_type = 'event' AND e.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
+	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
 		(m.entity_type = 'note' AND n.id IS NOT NULL)
 		OR (m.entity_type = 'task' AND t.id IS NOT NULL)

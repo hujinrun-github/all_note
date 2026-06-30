@@ -41,6 +41,9 @@ func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureSQLiteWorkspaceScopedSyncKeys(ctx, db); err != nil {
+		return err
+	}
 	if !workspaceColumnsChanged && !defaultKeysChanged {
 		return nil
 	}
@@ -191,6 +194,298 @@ func ensureSQLiteWorkspaceScopedDefaultKeys(ctx context.Context, db *sql.DB) (bo
 	}
 	return true, nil
 }
+
+func ensureSQLiteWorkspaceScopedSyncKeys(ctx context.Context, db *sql.DB) error {
+	exists, err := sqliteTableExists(db, "sync_targets")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	ready, err := sqliteWorkspaceScopedSyncTablesReady(db)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return rebuildSQLiteWorkspaceScopedSyncTables(ctx, db)
+	}
+	return createSQLiteWorkspaceScopedSyncIndexes(ctx, db)
+}
+
+func sqliteWorkspaceScopedSyncTablesReady(db *sql.DB) (bool, error) {
+	hasGlobalTargetName, err := sqliteUniqueKeyMatches(db, "sync_targets", []string{"type", "name"})
+	if err != nil {
+		return false, err
+	}
+	if hasGlobalTargetName {
+		return false, nil
+	}
+	checks := []struct {
+		table string
+		key   []string
+	}{
+		{table: "note_sync_state", key: []string{"workspace_id", "note_id", "target_id"}},
+		{table: "note_sync_bindings", key: []string{"workspace_id", "note_id"}},
+		{table: "sync_external_claims", key: []string{"workspace_id", "external_key"}},
+		{table: "note_sync_suppressions", key: []string{"workspace_id", "note_id", "target_id"}},
+		{table: "sync_import_tombstones", key: []string{"workspace_id", "external_key"}},
+	}
+	for _, check := range checks {
+		ready, err := sqlitePrimaryKeyMatches(db, check.table, check.key)
+		if err != nil {
+			return false, err
+		}
+		if !ready {
+			return false, nil
+		}
+	}
+	hasWorkspaceTargetName, err := sqliteUniqueKeyMatches(db, "sync_targets", []string{"workspace_id", "type", "name"})
+	if err != nil {
+		return false, err
+	}
+	return hasWorkspaceTargetName, nil
+}
+
+func createSQLiteWorkspaceScopedSyncIndexes(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+}) error {
+	statements := []string{
+		`DROP INDEX IF EXISTS sync_targets_type_name_idx`,
+		`DROP INDEX IF EXISTS sync_targets_one_default_per_type_idx`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_workspace_type_name_idx
+			ON sync_targets (workspace_id, type, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_workspace_type_idx
+			ON sync_targets (workspace_id, type)
+			WHERE is_default = 1`,
+		`CREATE INDEX IF NOT EXISTS note_sync_bindings_target_idx
+			ON note_sync_bindings (workspace_id, target_id, updated_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS sync_external_claims_workspace_note_idx
+			ON sync_external_claims (workspace_id, note_id)`,
+		`CREATE INDEX IF NOT EXISTS sync_external_claims_target_idx
+			ON sync_external_claims (workspace_id, target_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS note_sync_suppressions_target_updated_idx
+			ON note_sync_suppressions (workspace_id, target_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS sync_import_tombstones_target_updated_idx
+			ON sync_import_tombstones (workspace_id, target_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS sync_import_tombstones_note_type_idx
+			ON sync_import_tombstones (workspace_id, former_note_id, external_type, updated_at DESC, created_at DESC)`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure SQLite workspace scoped sync key with %q: %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+func rebuildSQLiteWorkspaceScopedSyncTables(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("disable SQLite foreign keys for workspace sync table rebuild: %w", err)
+	}
+	foreignKeysDisabled := true
+	defer func() {
+		if foreignKeysDisabled {
+			_, _ = db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
+		}
+	}()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite workspace sync table rebuild: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	statements := []string{
+		`PRAGMA legacy_alter_table=ON`,
+		`DROP TABLE IF EXISTS sync_targets_workspace_scope_old`,
+		`DROP TABLE IF EXISTS note_sync_state_workspace_scope_old`,
+		`DROP TABLE IF EXISTS note_sync_bindings_workspace_scope_old`,
+		`DROP TABLE IF EXISTS sync_external_claims_workspace_scope_old`,
+		`DROP TABLE IF EXISTS note_sync_suppressions_workspace_scope_old`,
+		`DROP TABLE IF EXISTS sync_import_tombstones_workspace_scope_old`,
+		`ALTER TABLE sync_targets RENAME TO sync_targets_workspace_scope_old`,
+		`ALTER TABLE note_sync_state RENAME TO note_sync_state_workspace_scope_old`,
+		`ALTER TABLE note_sync_bindings RENAME TO note_sync_bindings_workspace_scope_old`,
+		`ALTER TABLE sync_external_claims RENAME TO sync_external_claims_workspace_scope_old`,
+		`ALTER TABLE note_sync_suppressions RENAME TO note_sync_suppressions_workspace_scope_old`,
+		`ALTER TABLE sync_import_tombstones RENAME TO sync_import_tombstones_workspace_scope_old`,
+		sqliteSyncTargetsWorkspaceScopedDDL,
+		sqliteNoteSyncStateWorkspaceScopedDDL,
+		sqliteNoteSyncBindingsWorkspaceScopedDDL,
+		sqliteSyncExternalClaimsWorkspaceScopedDDL,
+		sqliteNoteSyncSuppressionsWorkspaceScopedDDL,
+		sqliteSyncImportTombstonesWorkspaceScopedDDL,
+		`INSERT INTO sync_targets (
+				id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default,
+				created_at, updated_at, workspace_id
+			)
+			SELECT
+				id, type, name, vault_path, base_folder, config_json, enabled, auto_sync, is_default,
+				created_at, updated_at, COALESCE(workspace_id, '')
+			FROM sync_targets_workspace_scope_old`,
+		`INSERT INTO note_sync_state (
+				note_id, target_id, external_path, external_id, external_url, content_hash, external_hash,
+				external_mtime, last_direction, last_synced_at, status, error_message, workspace_id
+			)
+			SELECT
+				note_id, target_id, external_path, external_id, external_url, content_hash, external_hash,
+				external_mtime, last_direction, last_synced_at, status, error_message, COALESCE(workspace_id, '')
+			FROM note_sync_state_workspace_scope_old`,
+		`INSERT INTO note_sync_bindings (note_id, target_id, created_at, updated_at, workspace_id)
+			SELECT note_id, target_id, created_at, updated_at, COALESCE(workspace_id, '')
+			FROM note_sync_bindings_workspace_scope_old`,
+		`INSERT INTO sync_external_claims (
+				external_key, note_id, target_id, external_type, external_id, external_path,
+				created_at, updated_at, workspace_id
+			)
+			SELECT
+				external_key, note_id, target_id, external_type, external_id, external_path,
+				created_at, updated_at, COALESCE(workspace_id, '')
+			FROM sync_external_claims_workspace_scope_old`,
+		`INSERT INTO note_sync_suppressions (note_id, target_id, reason, created_at, updated_at, workspace_id)
+			SELECT note_id, target_id, reason, created_at, updated_at, COALESCE(workspace_id, '')
+			FROM note_sync_suppressions_workspace_scope_old`,
+		`INSERT INTO sync_import_tombstones (
+				external_key, target_id, former_note_id, external_type, external_id, external_path,
+				reason, created_at, updated_at, workspace_id
+			)
+			SELECT
+				external_key, target_id, former_note_id, external_type, external_id, external_path,
+				reason, created_at, updated_at, COALESCE(workspace_id, '')
+			FROM sync_import_tombstones_workspace_scope_old`,
+		`DROP TABLE sync_targets_workspace_scope_old`,
+		`DROP TABLE note_sync_state_workspace_scope_old`,
+		`DROP TABLE note_sync_bindings_workspace_scope_old`,
+		`DROP TABLE sync_external_claims_workspace_scope_old`,
+		`DROP TABLE note_sync_suppressions_workspace_scope_old`,
+		`DROP TABLE sync_import_tombstones_workspace_scope_old`,
+		`PRAGMA legacy_alter_table=OFF`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("rebuild SQLite workspace sync tables with %q: %w", stmt, err)
+		}
+	}
+	if err := createSQLiteWorkspaceScopedSyncIndexes(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite workspace sync table rebuild: %w", err)
+	}
+	committed = true
+
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		return fmt.Errorf("reenable SQLite foreign keys after workspace sync table rebuild: %w", err)
+	}
+	foreignKeysDisabled = false
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_key_check`); err != nil {
+		return fmt.Errorf("check SQLite foreign keys after workspace sync table rebuild: %w", err)
+	}
+	return nil
+}
+
+const sqliteSyncTargetsWorkspaceScopedDDL = `
+CREATE TABLE sync_targets (
+	id TEXT PRIMARY KEY,
+	type TEXT NOT NULL CHECK (type IN ('obsidian', 'notion')),
+	name TEXT NOT NULL,
+	vault_path TEXT NOT NULL,
+	base_folder TEXT NOT NULL,
+	config_json TEXT NOT NULL DEFAULT '{}',
+	enabled INTEGER NOT NULL DEFAULT 1,
+	auto_sync INTEGER NOT NULL DEFAULT 0,
+	is_default INTEGER NOT NULL DEFAULT 0,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	workspace_id TEXT NOT NULL DEFAULT ''
+)`
+
+const sqliteNoteSyncStateWorkspaceScopedDDL = `
+CREATE TABLE note_sync_state (
+	note_id TEXT NOT NULL,
+	target_id TEXT NOT NULL,
+	external_path TEXT NOT NULL,
+	external_id TEXT,
+	external_url TEXT,
+	content_hash TEXT NOT NULL,
+	external_hash TEXT,
+	external_mtime INTEGER,
+	last_direction TEXT CHECK (last_direction IN ('push', 'pull', 'import', 'restore', 'delete', 'delete_detected') OR last_direction IS NULL),
+	last_synced_at INTEGER,
+	status TEXT NOT NULL,
+	error_message TEXT,
+	workspace_id TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (workspace_id, note_id, target_id),
+	FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+	FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
+)`
+
+const sqliteNoteSyncBindingsWorkspaceScopedDDL = `
+CREATE TABLE note_sync_bindings (
+	note_id TEXT NOT NULL,
+	target_id TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	workspace_id TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (workspace_id, note_id),
+	UNIQUE (workspace_id, note_id, target_id),
+	FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+	FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE RESTRICT
+)`
+
+const sqliteSyncExternalClaimsWorkspaceScopedDDL = `
+CREATE TABLE sync_external_claims (
+	external_key TEXT NOT NULL,
+	note_id TEXT NOT NULL,
+	target_id TEXT NOT NULL,
+	external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+	external_id TEXT NOT NULL DEFAULT '',
+	external_path TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	workspace_id TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (workspace_id, external_key),
+	UNIQUE (workspace_id, note_id),
+	FOREIGN KEY (workspace_id, note_id, target_id)
+		REFERENCES note_sync_bindings(workspace_id, note_id, target_id)
+		ON DELETE CASCADE
+		DEFERRABLE INITIALLY DEFERRED
+)`
+
+const sqliteNoteSyncSuppressionsWorkspaceScopedDDL = `
+CREATE TABLE note_sync_suppressions (
+	note_id TEXT NOT NULL,
+	target_id TEXT NOT NULL,
+	reason TEXT NOT NULL DEFAULT 'user_unbound' CHECK (reason IN ('user_unbound', 'target_changed')),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	workspace_id TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (workspace_id, note_id, target_id),
+	FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+	FOREIGN KEY (target_id) REFERENCES sync_targets(id) ON DELETE CASCADE
+)`
+
+const sqliteSyncImportTombstonesWorkspaceScopedDDL = `
+CREATE TABLE sync_import_tombstones (
+	external_key TEXT NOT NULL,
+	target_id TEXT NOT NULL REFERENCES sync_targets(id) ON DELETE CASCADE,
+	former_note_id TEXT NOT NULL,
+	external_type TEXT NOT NULL CHECK (external_type IN ('obsidian_file', 'notion_page')),
+	external_id TEXT NOT NULL DEFAULT '',
+	external_path TEXT NOT NULL DEFAULT '',
+	reason TEXT NOT NULL DEFAULT 'user_unbound' CHECK (reason IN ('user_unbound', 'target_changed', 'note_deleted')),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	workspace_id TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (workspace_id, external_key),
+	UNIQUE (workspace_id, target_id, former_note_id, external_type)
+)`
 
 func rebuildSQLiteWorkspaceScopedDefaultTables(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {

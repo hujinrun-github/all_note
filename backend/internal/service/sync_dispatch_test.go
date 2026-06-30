@@ -1050,7 +1050,7 @@ func TestTargetBidirectionalUsesTargetScope(t *testing.T) {
 func openServiceSyncStoreTestDB(t *testing.T) storage.Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "service.flowspace.test.db")
-	store, err := sqlite.Provider{}.Open(t.Context(), storage.Config{
+	baseStore, err := sqlite.Provider{}.Open(t.Context(), storage.Config{
 		Env:        "test",
 		Driver:     storage.DriverSQLite,
 		SQLitePath: dbPath,
@@ -1058,13 +1058,15 @@ func openServiceSyncStoreTestDB(t *testing.T) storage.Store {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
-	if err := provisioning.EnsureDefaultWorkspaceData(serviceSyncTestContext(t), store); err != nil {
+	ctx := serviceSyncTestContext(t)
+	if err := provisioning.EnsureDefaultWorkspaceData(ctx, baseStore); err != nil {
 		t.Fatalf("seed workspace defaults: %v", err)
 	}
+	store := scopedRepositoryStore{Store: baseStore, ctx: ctx}
 	repository.SetStore(store)
 	t.Cleanup(func() {
 		repository.SetStore(nil)
-		if err := store.Close(); err != nil {
+		if err := baseStore.Close(); err != nil {
 			t.Fatalf("close store: %v", err)
 		}
 	})

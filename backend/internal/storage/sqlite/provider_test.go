@@ -310,10 +310,10 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 		Enabled:    true,
 		IsDefault:  true,
 	}
-	if err := opened.Sync().SaveTarget(context.Background(), target); err != nil {
+	if err := opened.Sync().SaveTarget(ctx, target); err != nil {
 		t.Fatalf("save default target after upgrade: %v", err)
 	}
-	defaultTarget, err := opened.Sync().GetDefaultTarget(context.Background(), "notion")
+	defaultTarget, err := opened.Sync().GetDefaultTarget(ctx, "notion")
 	if err != nil {
 		t.Fatalf("get default target after upgrade: %v", err)
 	}
@@ -330,13 +330,13 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 	if err != nil {
 		t.Fatalf("create note after upgrade: %v", err)
 	}
-	if err := opened.Sync().PutBinding(context.Background(), model.NoteSyncBinding{
+	if err := opened.Sync().PutBinding(ctx, model.NoteSyncBinding{
 		NoteID:   note.ID,
 		TargetID: target.ID,
 	}); err != nil {
 		t.Fatalf("put binding after upgrade: %v", err)
 	}
-	binding, err := opened.Sync().GetBinding(context.Background(), note.ID)
+	binding, err := opened.Sync().GetBinding(ctx, note.ID)
 	if err != nil {
 		t.Fatalf("get binding after upgrade: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 		t.Fatalf("binding target = %q, want %q", binding.TargetID, target.ID)
 	}
 
-	if err := opened.Sync().SaveTarget(context.Background(), &model.SyncTarget{
+	if err := opened.Sync().SaveTarget(ctx, &model.SyncTarget{
 		ID:         "unsupported-target",
 		Type:       "unsupported",
 		Name:       "Unsupported Target",
@@ -354,7 +354,7 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 		t.Fatal("expected unsupported sync target type to fail after legacy upgrade")
 	}
 
-	if err := opened.Sync().SaveTarget(context.Background(), &model.SyncTarget{
+	if err := opened.Sync().SaveTarget(ctx, &model.SyncTarget{
 		ID:         "duplicate-name-target",
 		Type:       target.Type,
 		Name:       target.Name,

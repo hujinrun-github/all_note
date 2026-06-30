@@ -180,6 +180,31 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected tag query to find note, total=%d results=%+v", total, results)
 		}
 	})
+
+	t.Run("SearchDoesNotReturnOtherWorkspaceResults", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctxA := seedWorkspaceDefaults(t, store, "workspace_search_a")
+		finalizeAuthSchemaIfSupported(t, store, ctxA)
+		ctxB := seedWorkspaceDefaults(t, store, "workspace_search_b")
+
+		if _, err := store.Notes().Create(ctxA, &model.CreateNoteRequest{
+			Title:    "private phrase alpha",
+			Body:     "workspace A only",
+			FolderID: "__uncategorized",
+		}); err != nil {
+			t.Fatalf("create note: %v", err)
+		}
+
+		results, total, err := searchStore(ctxB, store, "private phrase alpha", 1, 20)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if total != 0 || len(results) != 0 {
+			t.Fatalf("workspace B saw workspace A search results: total=%d results=%+v", total, results)
+		}
+	})
 }
 
 type searchRepository interface {

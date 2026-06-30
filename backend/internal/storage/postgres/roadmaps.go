@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/lib/pq"
 )
@@ -20,21 +21,25 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 	if roadmap == nil {
 		return nil, fmt.Errorf("roadmap is nil")
 	}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r.applyRoadmapDefaults(roadmap)
 	if err := r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM learning_roadmaps WHERE project_id = $1`, roadmap.ProjectID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM learning_roadmaps WHERE workspace_id = $1 AND project_id = $2`, workspaceID, roadmap.ProjectID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO learning_roadmaps (id, project_id, title, goal, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, roadmap.ID, roadmap.ProjectID, roadmap.Title, roadmap.Goal, roadmap.Status, unixToTime(roadmap.CreatedAt), unixToTime(roadmap.UpdatedAt)); err != nil {
+			INSERT INTO learning_roadmaps (id, project_id, title, goal, status, created_at, updated_at, workspace_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, roadmap.ID, roadmap.ProjectID, roadmap.Title, roadmap.Goal, roadmap.Status, unixToTime(roadmap.CreatedAt), unixToTime(roadmap.UpdatedAt), workspaceID); err != nil {
 			return err
 		}
 		for index := range roadmap.Nodes {
 			node := &roadmap.Nodes[index]
 			r.applyNodeDefaults(roadmap.ID, node, index)
-			if err := insertPostgresRoadmapNode(ctx, tx, node, nil); err != nil {
+			if err := insertPostgresRoadmapNode(ctx, tx, workspaceID, node, nil); err != nil {
 				return err
 			}
 		}
@@ -44,8 +49,8 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 				continue
 			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE roadmap_nodes SET parent_id = $1, updated_at = $2 WHERE id = $3 AND roadmap_id = $4
-			`, *node.ParentID, unixToTime(node.UpdatedAt), node.ID, roadmap.ID); err != nil {
+				UPDATE roadmap_nodes SET parent_id = $1, updated_at = $2 WHERE workspace_id = $3 AND id = $4 AND roadmap_id = $5
+			`, *node.ParentID, unixToTime(node.UpdatedAt), workspaceID, node.ID, roadmap.ID); err != nil {
 				return err
 			}
 		}
@@ -53,9 +58,9 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 			edge := &roadmap.Edges[index]
 			r.applyEdgeDefaults(roadmap.ID, edge)
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6)
-			`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, unixToTime(edge.CreatedAt)); err != nil {
+				INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at, workspace_id)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, unixToTime(edge.CreatedAt), workspaceID); err != nil {
 				return err
 			}
 		}
@@ -83,21 +88,29 @@ func (r roadmapRepository) SaveFailedLearningRoadmap(ctx context.Context, projec
 }
 
 func (r roadmapRepository) GetLearningRoadmap(ctx context.Context, projectID string) (*model.LearningRoadmap, error) {
-	return r.loadLearningRoadmap(ctx, `WHERE project_id = $1`, projectID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadLearningRoadmap(ctx, `WHERE workspace_id = $1 AND project_id = $2`, workspaceID, projectID)
 }
 
 func (r roadmapRepository) GetLearningRoadmapByID(ctx context.Context, roadmapID string) (*model.LearningRoadmap, error) {
-	return r.loadLearningRoadmap(ctx, `WHERE id = $1`, roadmapID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadLearningRoadmap(ctx, `WHERE workspace_id = $1 AND id = $2`, workspaceID, roadmapID)
 }
 
-func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string, arg interface{}) (*model.LearningRoadmap, error) {
+func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string, args ...interface{}) (*model.LearningRoadmap, error) {
 	var roadmap model.LearningRoadmap
 	var createdAt time.Time
 	var updatedAt time.Time
 	if err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT id, project_id, title, goal, status, created_at, updated_at
 		FROM learning_roadmaps %s
-	`, where), arg).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &createdAt, &updatedAt); err != nil {
+	`, where), args...).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	roadmap.CreatedAt = timeToUnix(createdAt)
@@ -116,10 +129,14 @@ func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string
 }
 
 func (r roadmapRepository) ListRoadmapNodes(ctx context.Context, roadmapID string) ([]model.RoadmapNode, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, postgresRoadmapNodeSelectSQL()+`
-		WHERE roadmap_id = $1
+		WHERE workspace_id = $1 AND roadmap_id = $2
 		ORDER BY order_index ASC, created_at ASC
-	`, roadmapID)
+	`, workspaceID, roadmapID)
 	if err != nil {
 		return nil, err
 	}
@@ -140,12 +157,16 @@ func (r roadmapRepository) ListRoadmapNodes(ctx context.Context, roadmapID strin
 }
 
 func (r roadmapRepository) ListRoadmapEdges(ctx context.Context, roadmapID string) ([]model.RoadmapEdge, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, roadmap_id, source_node_id, target_node_id, style, created_at
 		FROM roadmap_edges
-		WHERE roadmap_id = $1
+		WHERE workspace_id = $1 AND roadmap_id = $2
 		ORDER BY created_at ASC
-	`, roadmapID)
+	`, workspaceID, roadmapID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +186,11 @@ func (r roadmapRepository) ListRoadmapEdges(ctx context.Context, roadmapID strin
 }
 
 func (r roadmapRepository) GetRoadmapNode(ctx context.Context, id string) (*model.RoadmapNode, error) {
-	node, err := scanPostgresRoadmapNode(r.db.QueryRowContext(ctx, postgresRoadmapNodeSelectSQL()+` WHERE id = $1`, id))
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	node, err := scanPostgresRoadmapNode(r.db.QueryRowContext(ctx, postgresRoadmapNodeSelectSQL()+` WHERE workspace_id = $1 AND id = $2`, workspaceID, id))
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +206,13 @@ func (r roadmapRepository) CreateRoadmapNode(ctx context.Context, node *model.Ro
 	if node == nil {
 		return nil, fmt.Errorf("roadmap node is nil")
 	}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r.applyNodeDefaults(node.RoadmapID, node, 0)
 	if err := r.withTx(ctx, func(tx *sql.Tx) error {
-		if err := insertPostgresRoadmapNode(ctx, tx, node, node.ParentID); err != nil {
+		if err := insertPostgresRoadmapNode(ctx, tx, workspaceID, node, node.ParentID); err != nil {
 			return err
 		}
 		if edge == nil {
@@ -194,9 +223,9 @@ func (r roadmapRepository) CreateRoadmapNode(ctx context.Context, node *model.Ro
 			edge.TargetNodeID = node.ID
 		}
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, unixToTime(edge.CreatedAt))
+			INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at, workspace_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, unixToTime(edge.CreatedAt), workspaceID)
 		return err
 	}); err != nil {
 		return nil, err
@@ -205,6 +234,10 @@ func (r roadmapRepository) CreateRoadmapNode(ctx context.Context, node *model.Ro
 }
 
 func (r roadmapRepository) UpdateRoadmapNode(ctx context.Context, id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	builder := newPgSetBuilder(1)
 	builder.Add("updated_at", time.Now().UTC())
 	if req.Title != nil {
@@ -244,8 +277,8 @@ func (r roadmapRepository) UpdateRoadmapNode(ctx context.Context, id string, req
 		builder.Add("position", position)
 	}
 	clause, args := builder.ClauseAndArgs()
-	args = append(args, id)
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE roadmap_nodes SET %s WHERE id = %s", clause, pgPlaceholder(len(args))), args...)
+	args = append(args, workspaceID, id)
+	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE roadmap_nodes SET %s WHERE workspace_id = %s AND id = %s", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +289,11 @@ func (r roadmapRepository) UpdateRoadmapNode(ctx context.Context, id string, req
 }
 
 func (r roadmapRepository) DeleteRoadmapNode(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_nodes WHERE id = $1`, id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_nodes WHERE workspace_id = $1 AND id = $2`, workspaceID, id)
 	if err != nil {
 		return err
 	}
@@ -267,13 +304,27 @@ func (r roadmapRepository) DeleteRoadmapNode(ctx context.Context, id string) err
 }
 
 func (r roadmapRepository) UpdateRoadmapNodeStatus(ctx context.Context, id, status string) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE roadmap_nodes SET status = $1, updated_at = $2 WHERE id = $3
-	`, normalizeNodeStatus(status), time.Now().UTC(), id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE roadmap_nodes SET status = $1, updated_at = $2 WHERE workspace_id = $3 AND id = $4
+	`, normalizeNodeStatus(status), time.Now().UTC(), workspaceID, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
 	return err
 }
 
 func (r roadmapRepository) UpdateRoadmapLayout(ctx context.Context, roadmapID string, nodes []model.RoadmapLayoutNode) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		for _, node := range nodes {
 			position, err := roadmapPositionJSON(node.X, node.Y)
@@ -281,8 +332,8 @@ func (r roadmapRepository) UpdateRoadmapLayout(ctx context.Context, roadmapID st
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE roadmap_nodes SET position = $1, updated_at = $2 WHERE id = $3 AND roadmap_id = $4
-			`, position, time.Now().UTC(), node.ID, roadmapID); err != nil {
+				UPDATE roadmap_nodes SET position = $1, updated_at = $2 WHERE workspace_id = $3 AND id = $4 AND roadmap_id = $5
+			`, position, time.Now().UTC(), workspaceID, node.ID, roadmapID); err != nil {
 				return err
 			}
 		}
@@ -291,12 +342,16 @@ func (r roadmapRepository) UpdateRoadmapLayout(ctx context.Context, roadmapID st
 }
 
 func (r roadmapRepository) ListRoadmapResources(ctx context.Context, nodeID string) ([]model.RoadmapResource, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, node_id, title, url, summary, source_type, added_by, created_at, updated_at
 		FROM roadmap_resources
-		WHERE node_id = $1
+		WHERE workspace_id = $1 AND node_id = $2
 		ORDER BY created_at DESC
-	`, nodeID)
+	`, workspaceID, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -318,15 +373,23 @@ func (r roadmapRepository) AddRoadmapResource(ctx context.Context, resource *mod
 	if resource.AddedBy == "" {
 		resource.AddedBy = "user"
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO roadmap_resources (id, node_id, title, url, summary, source_type, added_by, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, resource.ID, resource.NodeID, resource.Title, resource.URL, resource.Summary, resource.SourceType, resource.AddedBy, unixToTime(now), unixToTime(now))
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO roadmap_resources (id, node_id, title, url, summary, source_type, added_by, created_at, updated_at, workspace_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, resource.ID, resource.NodeID, resource.Title, resource.URL, resource.Summary, resource.SourceType, resource.AddedBy, unixToTime(now), unixToTime(now), workspaceID)
 	return err
 }
 
 func (r roadmapRepository) DeleteRoadmapResource(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_resources WHERE id = $1`, id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_resources WHERE workspace_id = $1 AND id = $2`, workspaceID, id)
 	if err != nil {
 		return err
 	}
@@ -419,7 +482,7 @@ func (r roadmapRepository) withTx(ctx context.Context, fn func(*sql.Tx) error) e
 	return nil
 }
 
-func insertPostgresRoadmapNode(ctx context.Context, tx *sql.Tx, node *model.RoadmapNode, parentID *string) error {
+func insertPostgresRoadmapNode(ctx context.Context, tx *sql.Tx, workspaceID string, node *model.RoadmapNode, parentID *string) error {
 	position, err := roadmapPositionJSON(node.X, node.Y)
 	if err != nil {
 		return err
@@ -428,12 +491,12 @@ func insertPostgresRoadmapNode(ctx context.Context, tx *sql.Tx, node *model.Road
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO roadmap_nodes (
 			id, roadmap_id, parent_id, type, title, description, path_type, status,
-			deliverable, acceptance_criteria, position, order_index, article_search_queries, created_at, updated_at
+			deliverable, acceptance_criteria, position, order_index, article_search_queries, created_at, updated_at, workspace_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13::text[], $14, $15)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13::text[], $14, $15, $16)
 	`, node.ID, node.RoadmapID, parentID, node.Type, strings.TrimSpace(node.Title), strings.TrimSpace(node.Description),
 		node.PathType, node.Status, strings.TrimSpace(node.Deliverable), strings.TrimSpace(node.AcceptanceCriteria),
-		position, node.OrderIndex, pq.Array(queries), unixToTime(node.CreatedAt), unixToTime(node.UpdatedAt))
+		position, node.OrderIndex, pq.Array(queries), unixToTime(node.CreatedAt), unixToTime(node.UpdatedAt), workspaceID)
 	return err
 }
 
