@@ -3,10 +3,13 @@ package contracttest
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -89,6 +92,25 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		expectSessionMissing(t, store, ctx, "auth_revoked_hash")
 	})
 
+	t.Run("CreateAndUpdateUserReturnEmailAlreadyExists", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := context.Background()
+		seedAuthUserWorkspace(t, ctx, store, "auth_user_email_existing", "auth_workspace_email_existing", "existing@example.com")
+
+		duplicate := contractUser("auth_user_email_duplicate", "Existing@Example.com", "Duplicate User", "user")
+		if err := store.Auth().CreateUser(ctx, duplicate); !errors.Is(err, auth.ErrEmailAlreadyExists) {
+			t.Fatalf("duplicate create error = %v, want ErrEmailAlreadyExists", err)
+		}
+
+		seedAuthUserWorkspace(t, ctx, store, "auth_user_email_update", "auth_workspace_email_update", "update-email@example.com")
+		email := "existing@example.com"
+		if _, err := store.Auth().UpdateUser(ctx, "auth_user_email_update", &model.UpdateUserRequest{Email: &email}); !errors.Is(err, auth.ErrEmailAlreadyExists) {
+			t.Fatalf("duplicate update error = %v, want ErrEmailAlreadyExists", err)
+		}
+	})
+
 	t.Run("RevokeUserSessionsExceptRevokesAllButCurrentSession", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
@@ -160,6 +182,49 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		}
 		if err := store.Auth().RecordAuditEvent(ctx, event); err != nil {
 			t.Fatalf("record audit event: %v", err)
+		}
+	})
+
+	t.Run("RecordAuditEventSanitizesMetadataAtStorageBoundary", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := context.Background()
+		seedAuthUserWorkspace(t, ctx, store, "auth_user_audit_sanitized", "auth_workspace_audit_sanitized", "audit-sanitized@example.com")
+		userID := "auth_user_audit_sanitized"
+		workspaceID := "auth_workspace_audit_sanitized"
+		event := &model.AuditEvent{
+			ID:          "auth_audit_sanitized_event",
+			ActorUserID: &userID,
+			WorkspaceID: &workspaceID,
+			Action:      "auth.contract.sanitized",
+			Metadata: map[string]any{
+				"safe":    "kept",
+				"api_key": "api-secret",
+				"nested": map[string]any{
+					"minio_secret_key": "minio-secret",
+					"safe_nested":      "kept-nested",
+				},
+				"items": []any{
+					map[string]any{"access_key": "access-secret", "name": "kept-item"},
+				},
+			},
+		}
+		if err := store.Auth().RecordAuditEvent(ctx, event); err != nil {
+			t.Fatalf("record audit event: %v", err)
+		}
+
+		metadata := loadContractAuditMetadata(t, ctx, store, event.ID)
+		raw := marshalContractAuditMetadata(t, metadata)
+		for _, forbidden := range []string{"api-secret", "minio-secret", "access-secret", "api_key", "minio_secret_key", "access_key"} {
+			if strings.Contains(raw, forbidden) {
+				t.Fatalf("stored audit metadata contains forbidden value %q: %s", forbidden, raw)
+			}
+		}
+		for _, want := range []string{"kept", "kept-nested", "kept-item"} {
+			if !strings.Contains(raw, want) {
+				t.Fatalf("stored audit metadata missing safe value %q: %s", want, raw)
+			}
 		}
 	})
 
@@ -354,4 +419,38 @@ func hasUserID(users []model.User, id string) bool {
 		}
 	}
 	return false
+}
+
+type contractAuditMetadataReader interface {
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+}
+
+func loadContractAuditMetadata(t *testing.T, ctx context.Context, store storage.Store, eventID string) map[string]any {
+	t.Helper()
+	reader, ok := store.(contractAuditMetadataReader)
+	if !ok {
+		t.Fatalf("store %T does not expose QueryRowContext", store)
+	}
+	placeholder := "?"
+	if store.Capabilities().TimeRanges {
+		placeholder = "$1"
+	}
+	var raw string
+	if err := reader.QueryRowContext(ctx, "SELECT metadata FROM audit_events WHERE id = "+placeholder, eventID).Scan(&raw); err != nil {
+		t.Fatalf("load audit metadata: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		t.Fatalf("decode audit metadata: %v; raw = %s", err, raw)
+	}
+	return metadata
+}
+
+func marshalContractAuditMetadata(t *testing.T, metadata map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal audit metadata: %v", err)
+	}
+	return strings.ToLower(string(raw))
 }

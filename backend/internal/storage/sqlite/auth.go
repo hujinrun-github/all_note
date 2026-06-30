@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -44,6 +45,9 @@ func (r authRepository) CreateUser(ctx context.Context, user *model.User) error 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, boolToSQLiteInt(user.MustChangePassword), nullableString(user.DefaultWorkspaceID),
 		user.Role, user.Status, user.CreatedAt, user.UpdatedAt, nullableUnixPtr(user.LastLoginAt), nullableUnixPtr(user.PasswordChangedAt))
+	if isSQLiteEmailAlreadyExists(err) {
+		return auth.ErrEmailAlreadyExists
+	}
 	return err
 }
 
@@ -135,6 +139,9 @@ func (r authRepository) UpdateUser(ctx context.Context, id string, req *model.Up
 	}
 	args = append(args, id)
 	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE users SET %s WHERE id = ?", strings.Join(sets, ", ")), args...); err != nil {
+		if isSQLiteEmailAlreadyExists(err) {
+			return nil, auth.ErrEmailAlreadyExists
+		}
 		return nil, err
 	}
 	return r.GetUserByID(ctx, id)
@@ -304,6 +311,7 @@ func (r authRepository) RecordAuditEvent(ctx context.Context, event *model.Audit
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
+	metadata = auth.SanitizeAuditMetadata(metadata)
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("encode audit metadata: %w", err)
@@ -449,4 +457,17 @@ func nullableStringPtr(value *string) interface{} {
 		return nil
 	}
 	return *value
+}
+
+func isSQLiteEmailAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "unique constraint failed") && !strings.Contains(message, "constraint failed") {
+		return false
+	}
+	return strings.Contains(message, "users_email_lower_idx") ||
+		strings.Contains(message, "users.email") ||
+		strings.Contains(message, "index 'users_email_lower_idx'")
 }

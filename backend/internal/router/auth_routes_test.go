@@ -101,6 +101,35 @@ func TestAdminUserRoutesRequireAdmin(t *testing.T) {
 	}
 }
 
+func TestAdminUserRoutesRequireAuthentication(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	w := httptest.NewRecorder()
+
+	Setup(env.config).ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body = %s", w.Code, w.Body.String())
+	}
+	assertRouterErrorCode(t, w.Body.String(), "UNAUTHENTICATED")
+}
+
+func TestAdminUserRoutesRequireSettledPasswordBeforeAdminCheck(t *testing.T) {
+	env := setupRouterAuthEnv(t, false, withRouterMustChangePassword(true))
+	token := "admin-users-must-change-token"
+	createRouterSession(t, env, token)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	req.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: token})
+	w := httptest.NewRecorder()
+
+	Setup(env.config).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+	assertRouterErrorCode(t, w.Body.String(), "PASSWORD_CHANGE_REQUIRED")
+}
+
 func TestLocalDirectoryBrowserRequiresAdmin(t *testing.T) {
 	env := setupRouterAuthEnv(t, true, withRouterRole("user"))
 	token := "local-directory-user-token"
@@ -154,6 +183,12 @@ type routerUserOption func(*model.User)
 func withRouterRole(role string) routerUserOption {
 	return func(user *model.User) {
 		user.Role = role
+	}
+}
+
+func withRouterMustChangePassword(value bool) routerUserOption {
+	return func(user *model.User) {
+		user.MustChangePassword = value
 	}
 }
 

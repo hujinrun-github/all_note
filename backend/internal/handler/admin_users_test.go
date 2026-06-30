@@ -114,6 +114,22 @@ func TestAdminCreateUserAuditDoesNotIncludeTemporaryPasswordOrHash(t *testing.T)
 	assertAdminAuditMetadataExcludes(t, metadata, "auditPass123", "temporary_password", "password_hash")
 }
 
+func TestAdminCreateDuplicateEmailReturnsConflict(t *testing.T) {
+	env := setupAdminTestEnv(t)
+	body := `{"email":"admin@example.com","display_name":"Duplicate User","temporary_password":"dupePass123","role":"user"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t, env))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w.Body.String(), "EMAIL_ALREADY_EXISTS")
+}
+
 func TestAdminPatchRejectsStatusAndPassword(t *testing.T) {
 	env := setupAdminTestEnv(t)
 	seedAdminTestUser(t, env.store, adminSeedUser{
@@ -133,6 +149,39 @@ func TestAdminPatchRejectsStatusAndPassword(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminUpdateDuplicateEmailReturnsConflict(t *testing.T) {
+	env := setupAdminTestEnv(t)
+	seedAdminTestUser(t, env.store, adminSeedUser{
+		ID:          "user_existing_email",
+		Email:       "existing@example.com",
+		DisplayName: "Existing User",
+		Role:        "user",
+		Status:      "active",
+	})
+	seedAdminTestUser(t, env.store, adminSeedUser{
+		ID:          "user_update_email",
+		Email:       "update-email@example.com",
+		DisplayName: "Update Email",
+		Role:        "user",
+		Status:      "active",
+	})
+	body := `{"email":"existing@example.com"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/admin/users/user_update_email", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t, env))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w.Body.String(), "EMAIL_ALREADY_EXISTS")
+	if got := adminTestUser(t, env.store, "user_update_email").Email; got != "update-email@example.com" {
+		t.Fatalf("email = %q, want original email after conflict", got)
 	}
 }
 
@@ -285,6 +334,40 @@ func TestAdminResetPasswordAuditMetadataExcludesSecretsAndRevokesSessions(t *tes
 		"token_hash",
 		"should-not-be-audited",
 	)
+}
+
+func TestAdminResetPasswordRollsBackWhenSessionRevokeFails(t *testing.T) {
+	env := setupAdminTestEnv(t)
+	seedAdminTestUser(t, env.store, adminSeedUser{
+		ID:          "user_reset_rollback",
+		Email:       "reset-rollback@example.com",
+		DisplayName: "Reset Rollback",
+		Role:        "user",
+		Status:      "active",
+	})
+	createAdminTestSession(t, env, "user_reset_rollback", "session_reset_rollback", "reset-rollback-token")
+	installAdminRevokeFailureTrigger(t, env.dbPath)
+	body := `{"temporary_password":"newReset123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/user_reset_rollback/reset-password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminSessionCookie(t, env))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+	loaded := adminTestUser(t, env.store, "user_reset_rollback")
+	if loaded.MustChangePassword {
+		t.Fatal("must_change_password changed even though session revoke failed")
+	}
+	if err := authpkg.VerifyPassword(loaded.PasswordHash, adminTestPassword); err != nil {
+		t.Fatalf("original password should remain valid after rollback: %v", err)
+	}
+	if err := authpkg.VerifyPassword(loaded.PasswordHash, "newReset123"); err == nil {
+		t.Fatal("new password should not verify after rollback")
+	}
 }
 
 func TestAdminDisableRevokesSessionsAndAudits(t *testing.T) {

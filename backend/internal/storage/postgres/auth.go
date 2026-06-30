@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type authRepository struct {
@@ -44,6 +47,9 @@ func (r authRepository) CreateUser(ctx context.Context, user *model.User) error 
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, user.MustChangePassword, nullableString(user.DefaultWorkspaceID),
 		user.Role, user.Status, unixToTime(user.CreatedAt), unixToTime(user.UpdatedAt), unixPtrToTime(user.LastLoginAt), unixPtrToTime(user.PasswordChangedAt))
+	if isPostgresEmailAlreadyExists(err) {
+		return auth.ErrEmailAlreadyExists
+	}
 	return err
 }
 
@@ -137,6 +143,9 @@ func (r authRepository) UpdateUser(ctx context.Context, id string, req *model.Up
 	clause, args := builder.ClauseAndArgs()
 	args = append(args, id)
 	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE users SET %s WHERE id = %s", clause, pgPlaceholder(len(args))), args...); err != nil {
+		if isPostgresEmailAlreadyExists(err) {
+			return nil, auth.ErrEmailAlreadyExists
+		}
 		return nil, err
 	}
 	return r.GetUserByID(ctx, id)
@@ -307,6 +316,7 @@ func (r authRepository) RecordAuditEvent(ctx context.Context, event *model.Audit
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
+	metadata = auth.SanitizeAuditMetadata(metadata)
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("encode audit metadata: %w", err)
@@ -427,4 +437,15 @@ func nullTimeToTimePtr(value sql.NullTime) *time.Time {
 	}
 	at := value.Time.UTC()
 	return &at
+}
+
+func isPostgresEmailAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && pgErr.ConstraintName == "users_email_lower_idx"
 }

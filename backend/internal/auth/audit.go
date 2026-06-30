@@ -42,7 +42,17 @@ func sanitizeAuditValue(value any) any {
 
 func isSecretAuditKey(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
-	for _, marker := range []string{"password", "token", "cookie", "authorization"} {
+	for _, marker := range []string{
+		"password",
+		"token",
+		"cookie",
+		"authorization",
+		"secret",
+		"api_key",
+		"access_key",
+		"credential",
+		"bearer",
+	} {
 		if strings.Contains(normalized, marker) {
 			return true
 		}

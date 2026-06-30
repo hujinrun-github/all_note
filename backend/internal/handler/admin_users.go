@@ -14,24 +14,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/provisioning"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
-
-type adminSQLRunner interface {
-	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
-}
-
-type adminDefaultFolder struct {
-	ID        string
-	Name      string
-	SortOrder float64
-}
-
-var adminDefaultFolders = []adminDefaultFolder{
-	{ID: "__uncategorized", Name: "Uncategorized", SortOrder: 0},
-	{ID: "__work", Name: "Work", SortOrder: 1},
-	{ID: "__personal", Name: "Personal", SortOrder: 2},
-}
 
 var adminPatchForbiddenFields = map[string]bool{
 	"id":                   true,
@@ -132,7 +117,7 @@ func CreateUser(store storage.Store) gin.HandlerFunc {
 				return err
 			}
 			targetCtx := auth.ContextWithWorkspaceScope(c.Request.Context(), workspace.ID)
-			if err := createDefaultWorkspaceData(targetCtx, tx); err != nil {
+			if err := provisioning.EnsureDefaultWorkspaceData(targetCtx, tx); err != nil {
 				return err
 			}
 			return tx.Auth().RecordAuditEvent(c.Request.Context(), &model.AuditEvent{
@@ -147,7 +132,7 @@ func CreateUser(store storage.Store) gin.HandlerFunc {
 			})
 		})
 		if err != nil {
-			internalError(c, "create user failed")
+			handleAdminUserError(c, err, "create user failed")
 			return
 		}
 		created(c, gin.H{"user": user, "workspace": workspace})
@@ -375,54 +360,6 @@ func EnableUser(store storage.Store) gin.HandlerFunc {
 	}
 }
 
-func createDefaultWorkspaceData(ctx context.Context, store storage.Store) error {
-	runner, ok := store.(adminSQLRunner)
-	if !ok {
-		return fmt.Errorf("storage store %T does not expose SQL runner", store)
-	}
-	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
-	if err != nil {
-		return err
-	}
-	if store.Capabilities().TimeRanges {
-		for _, folder := range adminDefaultFolders {
-			if _, err := runner.ExecContext(ctx, `
-				INSERT INTO folders (id, name, sort_order, created_at, workspace_id)
-				VALUES ($1, $2, $3, now(), $4)
-				ON CONFLICT (workspace_id, id) DO NOTHING
-			`, folder.ID, folder.Name, folder.SortOrder, workspaceID); err != nil {
-				return fmt.Errorf("provision default folder %s: %w", folder.ID, err)
-			}
-		}
-		if _, err := runner.ExecContext(ctx, `
-			INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
-			VALUES ($1, $2, $3, $4, now(), now(), $5)
-			ON CONFLICT (workspace_id, id) DO NOTHING
-		`, "personal", "Personal", "personal", "Default personal task project", workspaceID); err != nil {
-			return fmt.Errorf("provision default task project: %w", err)
-		}
-		return nil
-	}
-
-	for _, folder := range adminDefaultFolders {
-		if _, err := runner.ExecContext(ctx, `
-			INSERT INTO folders (id, name, sort_order, created_at, workspace_id)
-			VALUES (?, ?, ?, unixepoch(), ?)
-			ON CONFLICT (workspace_id, id) DO NOTHING
-		`, folder.ID, folder.Name, folder.SortOrder, workspaceID); err != nil {
-			return fmt.Errorf("provision default folder %s: %w", folder.ID, err)
-		}
-	}
-	if _, err := runner.ExecContext(ctx, `
-		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
-		VALUES (?, ?, ?, ?, unixepoch(), unixepoch(), ?)
-		ON CONFLICT (workspace_id, id) DO NOTHING
-	`, "personal", "Personal", "personal", "Default personal task project", workspaceID); err != nil {
-		return fmt.Errorf("provision default task project: %w", err)
-	}
-	return nil
-}
-
 func ensureCanRemoveActiveAdmin(ctx context.Context, store storage.Store, targetUserID string) error {
 	admins, err := store.Auth().LockActiveAdmins(ctx)
 	if err != nil {
@@ -470,6 +407,8 @@ func handleAdminUserError(c *gin.Context, err error, message string) {
 		notFound(c, "user not found")
 	case errors.Is(err, auth.ErrLastAdminRequired):
 		conflict(c, "LAST_ADMIN_REQUIRED", "at least one active admin is required")
+	case errors.Is(err, auth.ErrEmailAlreadyExists):
+		conflict(c, "EMAIL_ALREADY_EXISTS", "email already exists")
 	default:
 		internalError(c, message)
 	}

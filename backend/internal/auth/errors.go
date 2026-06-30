@@ -10,4 +10,5 @@ var (
 	ErrPasswordChangeRequired = errors.New("password change required")
 	ErrWorkspaceAccessRevoked = errors.New("workspace access revoked")
 	ErrLastAdminRequired      = errors.New("last active admin required")
+	ErrEmailAlreadyExists     = errors.New("email already exists")
 )
