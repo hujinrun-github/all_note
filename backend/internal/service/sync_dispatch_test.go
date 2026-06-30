@@ -372,6 +372,189 @@ func TestTargetPullRejectsBindingConflict(t *testing.T) {
 	}
 }
 
+func TestLegacyNotionBidirectionalScopedBindsDefaultLocalPush(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123","required_tags":["sync"]}`)
+	note := createServiceStoreNote(t, "Legacy Bidirectional", "Body\n", `["sync"]`)
+
+	result := SyncNotionBidirectionalScoped(serviceSyncTestContext(t), store)
+
+	if result.Pushed != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(fake.created) != 1 || fake.created[0] != note.ID {
+		t.Fatalf("created = %#v, want %s", fake.created, note.ID)
+	}
+	binding, err := store.Sync().GetBinding(t.Context(), note.ID)
+	if err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	if binding.TargetID != target.ID {
+		t.Fatalf("binding target = %q, want %q", binding.TargetID, target.ID)
+	}
+}
+
+func TestLegacyNotionBidirectionalScopedSkipsUnmatchedLocalPush(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123","required_tags":["sync"]}`)
+	note := createServiceStoreNote(t, "Legacy Private", "Body\n", `["private"]`)
+
+	result := SyncNotionBidirectionalScoped(serviceSyncTestContext(t), store)
+
+	if result.Pushed != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(fake.created) != 0 {
+		t.Fatalf("created = %#v, want none", fake.created)
+	}
+	if _, err := store.Sync().GetBinding(t.Context(), note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestLegacyNotionRestoreBindingConflictDoesNotCallGateway(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTargetNamed(t, "Restore Default", `{"data_source_id":"ds-restore"}`)
+	other := model.SyncTarget{
+		Type:       "notion",
+		Name:       "Other Notion",
+		ConfigJSON: `{"data_source_id":"ds-other"}`,
+		Enabled:    true,
+		IsDefault:  false,
+	}
+	if err := repository.SaveSyncTarget(&other); err != nil {
+		t.Fatalf("save other target: %v", err)
+	}
+	note := createServiceStoreNote(t, "Restore Conflict", "Body\n", `["sync"]`)
+	putServiceStoreBinding(t, store, note.ID, other.ID)
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-conflict",
+		ExternalID:    "page-conflict",
+		ExternalURL:   "https://www.notion.so/page-conflict",
+		ContentHash:   "content",
+		ExternalHash:  "external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "delete_detected",
+		Status:        "external_deleted",
+	}); err != nil {
+		t.Fatalf("upsert external deleted state: %v", err)
+	}
+
+	_, err := RestoreNotionDeletionScoped(serviceSyncTestContext(t), store, note.ID)
+
+	if !errors.Is(err, ErrSyncBindingConflict) {
+		t.Fatalf("error = %v, want ErrSyncBindingConflict", err)
+	}
+	if len(fake.restored) != 0 {
+		t.Fatalf("restored = %#v, want none", fake.restored)
+	}
+}
+
+func TestTargetNotionRestoreBindingConflictDoesNotCallGateway(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTargetNamed(t, "Restore Target", `{"data_source_id":"ds-restore"}`)
+	other := model.SyncTarget{
+		Type:       "notion",
+		Name:       "Other Notion",
+		ConfigJSON: `{"data_source_id":"ds-other"}`,
+		Enabled:    true,
+		IsDefault:  false,
+	}
+	if err := repository.SaveSyncTarget(&other); err != nil {
+		t.Fatalf("save other target: %v", err)
+	}
+	note := createServiceStoreNote(t, "Target Restore Conflict", "Body\n", `["sync"]`)
+	putServiceStoreBinding(t, store, note.ID, other.ID)
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-target-conflict",
+		ExternalID:    "page-target-conflict",
+		ExternalURL:   "https://www.notion.so/page-target-conflict",
+		ContentHash:   "content",
+		ExternalHash:  "external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "delete_detected",
+		Status:        "external_deleted",
+	}); err != nil {
+		t.Fatalf("upsert external deleted state: %v", err)
+	}
+
+	_, err := RestoreNotionDeletionForTargetScoped(serviceSyncTestContext(t), store, note.ID, target.ID)
+
+	if !errors.Is(err, ErrSyncBindingConflict) {
+		t.Fatalf("error = %v, want ErrSyncBindingConflict", err)
+	}
+	if len(fake.restored) != 0 {
+		t.Fatalf("restored = %#v, want none", fake.restored)
+	}
+}
+
+func TestTargetNotionRestoreMissingBindingDoesNotCallGateway(t *testing.T) {
+	store := openServiceSyncStoreTestDB(t)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+	target := saveServiceStoreNotionTargetNamed(t, "Restore Missing Binding", `{"data_source_id":"ds-restore"}`)
+	note := createServiceStoreNote(t, "Target Restore Missing Binding", "Body\n", `["sync"]`)
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-target-missing",
+		ExternalID:    "page-target-missing",
+		ExternalURL:   "https://www.notion.so/page-target-missing",
+		ContentHash:   "content",
+		ExternalHash:  "external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "delete_detected",
+		Status:        "external_deleted",
+	}); err != nil {
+		t.Fatalf("upsert external deleted state: %v", err)
+	}
+
+	_, err := RestoreNotionDeletionForTargetScoped(serviceSyncTestContext(t), store, note.ID, target.ID)
+
+	if !errors.Is(err, ErrSyncBindingRequired) {
+		t.Fatalf("error = %v, want ErrSyncBindingRequired", err)
+	}
+	if len(fake.restored) != 0 {
+		t.Fatalf("restored = %#v, want none", fake.restored)
+	}
+}
+
+func TestScopedRepositoryStoreSyncUsesScopedContext(t *testing.T) {
+	repo := &scopedContextSyncRepository{}
+	store := scopedRepositoryStore{
+		Store: &scopedContextStore{syncRepo: repo},
+		ctx:   serviceSyncTestContext(t),
+	}
+
+	_, _ = store.Sync().GetDefaultTarget(context.Background(), "notion")
+
+	workspaceID, err := auth.WorkspaceIDFromContext(repo.ctx)
+	if err != nil {
+		t.Fatalf("workspace scope missing: %v", err)
+	}
+	if workspaceID != "service-sync-test-workspace" {
+		t.Fatalf("workspace id = %q", workspaceID)
+	}
+}
+
 func TestNotionPullDoesNotAutoBindSuppressedNote(t *testing.T) {
 	store := openServiceSyncStoreTestDB(t)
 	fake := &fakeNotionGateway{}
@@ -974,6 +1157,25 @@ func withServiceNotionGateway(t *testing.T, gateway notionSyncGateway) {
 
 type recoverableNotionGateway struct {
 	*fakeNotionGateway
+}
+
+type scopedContextStore struct {
+	storage.Store
+	syncRepo storage.SyncRepository
+}
+
+func (store *scopedContextStore) Sync() storage.SyncRepository {
+	return store.syncRepo
+}
+
+type scopedContextSyncRepository struct {
+	storage.SyncRepository
+	ctx context.Context
+}
+
+func (repo *scopedContextSyncRepository) GetDefaultTarget(ctx context.Context, targetType string) (*model.SyncTarget, error) {
+	repo.ctx = ctx
+	return &model.SyncTarget{ID: "target-1", Type: targetType, Enabled: true}, nil
 }
 
 func (fake *recoverableNotionGateway) CreateRemoteNote(config notionTargetConfig, note *model.Note) (notionRemoteNote, error) {

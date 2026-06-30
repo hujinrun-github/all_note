@@ -343,7 +343,7 @@ func TestNotionTargetWithMockProviderForcesNotionEnabled(t *testing.T) {
 }
 
 func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	target := saveHandlerNotionTarget(t)
 	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
@@ -355,9 +355,9 @@ func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
 
-	SyncNotionNote(handlerSyncTestStore{})(c)
+	SyncNotionNote(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -383,19 +383,62 @@ func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
 	if state.Status != "synced" || state.ExternalID != "mock-created-"+note.ID {
 		t.Fatalf("state = %+v", state)
 	}
+	binding, err := store.Sync().GetBinding(handlerSyncStoreTestContext(t), note.ID)
+	if err != nil {
+		t.Fatalf("get sync binding: %v", err)
+	}
+	if binding.TargetID != target.ID {
+		t.Fatalf("binding target = %q, want %q", binding.TargetID, target.ID)
+	}
+}
+
+func TestSyncNotionNoteWithMockProviderDoesNotBindSkippedNote(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	t.Setenv("NOTION_PROVIDER", "mock")
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	note := insertHandlerTaggedNoteForTest(t, "Skipped Notion", "Local body\n", `["later"]`)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: note.ID}}
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
+
+	SyncNotionNote(store)(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Item model.SyncResultItem `json:"item"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.Item.Status != "skipped" {
+		t.Fatalf("item = %+v", body.Data.Item)
+	}
+	if _, err := store.Sync().GetBinding(handlerSyncStoreTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
+	}
 }
 
 func TestSyncNotionNoteMissingNoteReturnsNotFound(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	saveHandlerNotionTarget(t)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "id", Value: "missing-note"}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/missing-note", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/notes/missing-note", nil)
 
-	SyncNotionNote(handlerSyncTestStore{})(c)
+	SyncNotionNote(store)(c)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
@@ -417,16 +460,16 @@ func TestSyncNotionNoteEmptyIDReturnsBadRequest(t *testing.T) {
 }
 
 func TestListNotionDeletionsReturnsExternalDeletedStates(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Deleted In Notion", "Body\n")
 	insertHandlerNotionExternalDeletedState(t, note.ID, target.ID)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/sync/notion/deletions", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodGet, "/sync/notion/deletions", nil)
 
-	ListNotionDeletions(c)
+	ListNotionDeletions(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -445,13 +488,13 @@ func TestListNotionDeletionsReturnsExternalDeletedStates(t *testing.T) {
 }
 
 func TestListNotionDeletionsWithoutTargetReturnsNotFound(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/sync/notion/deletions", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodGet, "/sync/notion/deletions", nil)
 
-	ListNotionDeletions(c)
+	ListNotionDeletions(store)(c)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
@@ -459,7 +502,7 @@ func TestListNotionDeletionsWithoutTargetReturnsNotFound(t *testing.T) {
 }
 
 func TestConfirmNotionDeletionDeletesFlowSpaceNoteAndState(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Confirm Notion Delete", "Body\n")
 	insertHandlerNotionExternalDeletedState(t, note.ID, target.ID)
@@ -467,23 +510,23 @@ func TestConfirmNotionDeletionDeletesFlowSpaceNoteAndState(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
 
-	ConfirmNotionDeletion(c)
+	ConfirmNotionDeletion(store)(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
 	}
-	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(handlerSyncStoreTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("get note error = %v, want sql.ErrNoRows", err)
 	}
-	if _, err := repository.GetSyncState(note.ID, target.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Sync().GetState(t.Context(), note.ID, target.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("get sync state error = %v, want sql.ErrNoRows", err)
 	}
 }
 
 func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Restore Notion Delete", "Body\n")
@@ -492,9 +535,9 @@ func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/deletions/"+note.ID+"/restore", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/restore", nil)
 
-	RestoreNotionDeletion(c)
+	RestoreNotionDeletion(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -510,7 +553,7 @@ func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
 	if body.Data.Item.Status != "synced" || body.Data.Item.ExternalID != "page-deleted" {
 		t.Fatalf("item = %+v", body.Data.Item)
 	}
-	state, err := repository.GetSyncState(note.ID, target.ID)
+	state, err := store.Sync().GetState(t.Context(), note.ID, target.ID)
 	if err != nil {
 		t.Fatalf("get sync state: %v", err)
 	}
@@ -519,8 +562,44 @@ func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
 	}
 }
 
+func TestRestoreNotionDeletionRejectsNonDeletedStateWithoutBinding(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	target := saveHandlerNotionTarget(t)
+	note := insertHandlerNoteForTest(t, "Restore Not Deleted", "Body\n")
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-live",
+		ExternalID:    "page-live",
+		ExternalURL:   "https://www.notion.so/page-live",
+		ContentHash:   "content",
+		ExternalHash:  "external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/restore", nil)
+
+	RestoreNotionDeletion(store)(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if _, err := store.Sync().GetBinding(t.Context(), note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestConfirmNotionDeletionRejectsNonDeletedState(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Not Deleted", "Body\n")
 	now := int64(1700000000)
@@ -543,9 +622,9 @@ func TestConfirmNotionDeletionRejectsNonDeletedState(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
 
-	ConfirmNotionDeletion(c)
+	ConfirmNotionDeletion(store)(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())

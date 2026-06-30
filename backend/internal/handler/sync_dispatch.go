@@ -70,14 +70,14 @@ func ListTargetDeletions(store storage.Store) gin.HandlerFunc {
 		}
 		switch targetType {
 		case "obsidian":
-			items, err := service.ListObsidianDeletionCandidatesForTarget(targetID)
+			items, err := service.ListObsidianDeletionCandidatesForTargetScoped(c.Request.Context(), store, targetID)
 			if err != nil {
 				targetDeletionError(c, err)
 				return
 			}
 			success(c, gin.H{"items": items})
 		case "notion":
-			items, err := service.ListNotionDeletionCandidatesForTarget(targetID)
+			items, err := service.ListNotionDeletionCandidatesForTargetScoped(c.Request.Context(), store, targetID)
 			if err != nil {
 				targetDeletionError(c, err)
 				return
@@ -163,6 +163,10 @@ func targetDeletionError(c *gin.Context, err error) {
 		notFound(c, err.Error())
 	case errors.Is(err, service.ErrObsidianDeletionConflict), errors.Is(err, service.ErrNotionDeletionConflict):
 		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
+	case errors.Is(err, service.ErrSyncBindingRequired):
+		errorResponse(c, http.StatusConflict, "binding_required", "note is not bound to a sync target")
+	case errors.Is(err, service.ErrSyncBindingConflict):
+		errorResponse(c, http.StatusConflict, "binding_mismatch", "note is bound to another sync target")
 	case errors.Is(err, service.ErrObsidianDeletionInvalidState), errors.Is(err, service.ErrNotionDeletionInvalidState):
 		badRequest(c, err.Error())
 	default:

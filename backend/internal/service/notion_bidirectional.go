@@ -68,6 +68,247 @@ func pullNotionRemoteScoped(ctx context.Context, store storage.Store, svc *Notio
 	return result
 }
 
+func SyncNoteToNotionScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	var item *model.SyncResultItem
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		item, err = syncNoteToNotionScoped(ctx, store, noteID)
+	})
+	return item, err
+}
+
+func syncNoteToNotionScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	if strings.TrimSpace(noteID) == "" {
+		return nil, errors.New("note id is required")
+	}
+
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		return nil, fmt.Errorf("load notion sync target: %w", err)
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return nil, err
+	}
+	note, err := repository.GetNoteByID(noteID)
+	if err != nil {
+		return nil, fmt.Errorf("load note: %w", err)
+	}
+	if !noteMatchesRequiredSyncTags(*note, config.RequiredTags) {
+		return &model.SyncResultItem{
+			NoteID: note.ID,
+			Status: "skipped",
+		}, nil
+	}
+	if err := bindLegacyDefaultSyncTarget(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	var state model.SyncState
+	hasState := false
+	existing, err := repository.GetSyncState(noteID, target.ID)
+	if err == nil {
+		state = *existing
+		hasState = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("load notion sync state: %w", err)
+	}
+
+	item := NewNotionSyncService(gateway).pushNotionLocalNote(config, *target, *note, state, hasState)
+	if item.Status == "failed" {
+		return &item, errors.New(item.ErrorMessage)
+	}
+	return &item, nil
+}
+
+func SyncNotionAllScoped(ctx context.Context, store storage.Store) model.SyncBatchResult {
+	var result model.SyncBatchResult
+	withScopedRepositoryStore(ctx, store, func() {
+		result = syncNotionAllScoped(ctx, store)
+	})
+	return result
+}
+
+func syncNotionAllScoped(ctx context.Context, store storage.Store) model.SyncBatchResult {
+	target, err := repository.GetDefaultSyncTarget("notion")
+	if err != nil {
+		return failedNotionBatchResult(fmt.Errorf("load notion sync target: %w", err))
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return failedNotionBatchResult(err)
+	}
+	if len(config.RequiredTags) == 0 {
+		return model.SyncBatchResult{Items: []model.SyncResultItem{}}
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return failedNotionBatchResult(err)
+	}
+	svc := NewNotionSyncService(gateway)
+	if svc.gateway == nil {
+		return failedNotionBatchResult(errors.New("notion sync gateway is required"))
+	}
+	if err := svc.gateway.TestDataSource(config); err != nil {
+		return failedNotionBatchResult(fmt.Errorf("test notion data source: %w", err))
+	}
+	notesList, err := repository.ListAllNotes()
+	if err != nil {
+		return failedNotionBatchResult(fmt.Errorf("load notes: %w", err))
+	}
+	statesList, err := repository.ListSyncStatesByTarget(target.ID)
+	if err != nil {
+		return failedNotionBatchResult(fmt.Errorf("load notion sync states: %w", err))
+	}
+	statesByNote := statesByNoteID(statesList)
+
+	result := model.SyncBatchResult{
+		Items: make([]model.SyncResultItem, 0),
+	}
+	sort.Slice(notesList, func(i, j int) bool {
+		return notesList[i].ID < notesList[j].ID
+	})
+	for i := range notesList {
+		note := notesList[i]
+		if !noteMatchesRequiredSyncTags(note, config.RequiredTags) {
+			continue
+		}
+		state, hasState := statesByNote[note.ID]
+		if hasState && state.Status == "external_deleted" {
+			continue
+		}
+		if hasState && notionLocalContentHash(note) == state.ContentHash {
+			continue
+		}
+		if err := bindLegacyDefaultSyncTarget(ctx, store, note.ID, target.ID); err != nil {
+			result.Failed++
+			result.Items = append(result.Items, model.SyncResultItem{
+				NoteID:       note.ID,
+				Status:       "failed",
+				ErrorMessage: err.Error(),
+			})
+			continue
+		}
+
+		item := svc.pushNotionLocalNote(config, *target, note, state, hasState)
+		if item.Status == "failed" {
+			result.Failed++
+		} else {
+			result.Synced++
+		}
+		result.Items = append(result.Items, item)
+	}
+
+	return result
+}
+
+func SyncNotionPullScoped(ctx context.Context, store storage.Store) model.NotionBidirectionalResult {
+	var result model.NotionBidirectionalResult
+	withScopedRepositoryStore(ctx, store, func() {
+		result = SyncNotionPull()
+	})
+	return result
+}
+
+func SyncNotionBidirectionalScoped(ctx context.Context, store storage.Store) model.NotionBidirectionalResult {
+	var result model.NotionBidirectionalResult
+	ctx = contextWithLegacyDefaultSyncBinding(ctx)
+	withScopedRepositoryStore(ctx, store, func() {
+		result = SyncNotionBidirectional()
+	})
+	return result
+}
+
+func ListNotionDeletionCandidatesScoped(ctx context.Context, store storage.Store) ([]model.ExternalDeletedNote, error) {
+	var items []model.ExternalDeletedNote
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		items, err = ListNotionDeletionCandidates()
+	})
+	return items, err
+}
+
+func ListNotionDeletionCandidatesForTargetScoped(ctx context.Context, store storage.Store, targetID string) ([]model.ExternalDeletedNote, error) {
+	var items []model.ExternalDeletedNote
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		items, err = ListNotionDeletionCandidatesForTarget(targetID)
+	})
+	return items, err
+}
+
+func ConfirmNotionDeletionScoped(ctx context.Context, store storage.Store, noteID string) error {
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		err = ConfirmNotionDeletion(noteID)
+	})
+	return err
+}
+
+func RestoreNotionDeletionScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	var item *model.SyncResultItem
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		item, err = restoreNotionDeletionScoped(ctx, store, noteID)
+	})
+	return item, err
+}
+
+func restoreNotionDeletionScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	target, err := loadNotionDeletionTarget()
+	if err != nil {
+		return nil, err
+	}
+	state, err := loadNotionExternalDeletedState(noteID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	note, err := loadNotionDeletionNote(noteID)
+	if err != nil {
+		return nil, err
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return nil, err
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateLegacyDefaultSyncTargetBinding(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+
+	remote, err := gateway.RestoreRemoteNote(config, note, notionStateSnapshot(*state))
+	if err != nil {
+		return nil, fmt.Errorf("restore notion page: %w", err)
+	}
+	remote = withNotionRemoteDefaults(remote)
+	if remote.PageID == "" {
+		remote.PageID = notionStateExternalID(*state)
+	}
+	if remote.URL == "" {
+		remote.URL = state.ExternalURL
+	}
+	if err := bindLegacyDefaultSyncTarget(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	if err := recordSyncedNotionRemote(note, *target, remote, "restore"); err != nil {
+		return nil, fmt.Errorf("record restored notion sync state: %w", err)
+	}
+	return &model.SyncResultItem{
+		NoteID:       note.ID,
+		Status:       "synced",
+		ExternalPath: notionExternalPath(remote.PageID),
+		ExternalID:   remote.PageID,
+		ExternalURL:  remote.URL,
+	}, nil
+}
+
 func ConfirmNotionDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) error {
 	var err error
 	withScopedRepositoryStore(ctx, store, func() {
@@ -80,9 +321,57 @@ func RestoreNotionDeletionForTargetScoped(ctx context.Context, store storage.Sto
 	var item *model.SyncResultItem
 	var err error
 	withScopedRepositoryStore(ctx, store, func() {
-		item, err = RestoreNotionDeletionForTarget(noteID, targetID)
+		item, err = restoreNotionDeletionForTargetScoped(ctx, store, noteID, targetID)
 	})
 	return item, err
+}
+
+func restoreNotionDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) (*model.SyncResultItem, error) {
+	target, err := loadNotionTargetByID(targetID)
+	if err != nil {
+		return nil, err
+	}
+	state, err := loadNotionExternalDeletedState(noteID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	note, err := loadNotionDeletionNote(noteID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureNoteBoundToSyncTargetInStore(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		return nil, err
+	}
+	gateway, err := notionGatewayForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	remote, err := gateway.RestoreRemoteNote(config, note, notionStateSnapshot(*state))
+	if err != nil {
+		return nil, fmt.Errorf("restore notion page: %w", err)
+	}
+	remote = withNotionRemoteDefaults(remote)
+	if remote.PageID == "" {
+		remote.PageID = notionStateExternalID(*state)
+	}
+	if remote.URL == "" {
+		remote.URL = state.ExternalURL
+	}
+	if err := recordSyncedNotionRemote(note, *target, remote, "restore"); err != nil {
+		return nil, fmt.Errorf("record restored notion sync state: %w", err)
+	}
+	return &model.SyncResultItem{
+		NoteID:       note.ID,
+		Status:       "synced",
+		ExternalPath: notionExternalPath(remote.PageID),
+		ExternalID:   remote.PageID,
+		ExternalURL:  remote.URL,
+	}, nil
 }
 
 func TestNotionTarget(target *model.SyncTarget) error {
@@ -560,12 +849,16 @@ func (svc *NotionSyncService) SyncBidirectional(target model.SyncTarget) model.N
 	}
 	statesByNote = statesByNoteID(currentStatesList)
 
+	legacyLocalPushRequiresTags := legacyDefaultSyncBindingEnabled(repositoryStoreContext(repository.CurrentStore(), context.Background()))
 	sort.Slice(notesList, func(i, j int) bool {
 		return notesList[i].ID < notesList[j].ID
 	})
 	for i := range notesList {
 		note := notesList[i]
 		if _, ok := handledNoteIDs[note.ID]; ok {
+			continue
+		}
+		if legacyLocalPushRequiresTags && !noteMatchesRequiredSyncTags(note, config.RequiredTags) {
 			continue
 		}
 
@@ -805,6 +1098,13 @@ func (svc *NotionSyncService) pushNotionLocalNote(config notionTargetConfig, tar
 			hasState = true
 		}
 	}
+	if err := bindLegacyDefaultSyncTargetBeforeNotionPush(&note, target); err != nil {
+		return model.SyncResultItem{
+			NoteID:       note.ID,
+			Status:       "failed",
+			ErrorMessage: err.Error(),
+		}
+	}
 	if hasState && notionStateExternalID(state) != "" {
 		pageID := notionStateExternalID(state)
 		if err := reserveNotionClaimBeforeRemoteWrite(&note, target, pageID); err != nil {
@@ -855,6 +1155,18 @@ func (svc *NotionSyncService) pushNotionLocalNote(config notionTargetConfig, tar
 		ExternalID:   remote.PageID,
 		ExternalURL:  remote.URL,
 	}
+}
+
+func bindLegacyDefaultSyncTargetBeforeNotionPush(note *model.Note, target model.SyncTarget) error {
+	store := repository.CurrentStore()
+	if store == nil || note == nil {
+		return nil
+	}
+	ctx := repositoryStoreContext(store, context.Background())
+	if !legacyDefaultSyncBindingEnabled(ctx) {
+		return nil
+	}
+	return bindLegacyDefaultSyncTarget(ctx, store, note.ID, target.ID)
 }
 
 func (svc *NotionSyncService) findExistingNotionRemoteByFlowSpaceID(config notionTargetConfig, noteID string) (notionRemoteNote, bool, error) {

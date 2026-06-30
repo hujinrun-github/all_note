@@ -153,7 +153,7 @@ func SyncObsidianNote(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyNoteSyncCompatible(c, store, noteID, "obsidian") {
 			return
 		}
-		item, err := service.SyncNoteToObsidian(noteID)
+		item, err := service.SyncNoteToObsidianScoped(c.Request.Context(), store, noteID)
 		if err != nil {
 			internalError(c, err.Error())
 			return
@@ -172,7 +172,7 @@ func SyncNotionNote(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyNoteSyncCompatible(c, store, noteID, "notion") {
 			return
 		}
-		item, err := service.SyncNoteToNotion(noteID)
+		item, err := service.SyncNoteToNotionScoped(c.Request.Context(), store, noteID)
 		if err != nil {
 			notionNoteSyncError(c, err)
 			return
@@ -191,7 +191,7 @@ func SyncObsidianFolder(store storage.Store) gin.HandlerFunc {
 			internalError(c, "failed to load notes")
 			return
 		}
-		result := service.SyncNotesToObsidian(notes)
+		result := service.SyncNotesToObsidianScoped(c.Request.Context(), store, notes)
 		success(c, gin.H{"result": result})
 	}
 }
@@ -206,7 +206,7 @@ func SyncObsidianAll(store storage.Store) gin.HandlerFunc {
 			internalError(c, "failed to load notes")
 			return
 		}
-		result := service.SyncNotesToObsidian(notes)
+		result := service.SyncNotesToObsidianScoped(c.Request.Context(), store, notes)
 		success(c, gin.H{"result": result})
 	}
 }
@@ -216,7 +216,7 @@ func SyncNotionAll(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyBatchSyncCompatible(c, store, "notion") {
 			return
 		}
-		result := service.SyncNotionAll()
+		result := service.SyncNotionAllScoped(c.Request.Context(), store)
 		success(c, gin.H{"result": result})
 	}
 }
@@ -226,7 +226,7 @@ func SyncObsidianPull(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyBatchSyncCompatible(c, store, "obsidian") {
 			return
 		}
-		result := service.SyncObsidianPull()
+		result := service.SyncObsidianPullScoped(c.Request.Context(), store)
 		success(c, gin.H{"result": result})
 	}
 }
@@ -236,7 +236,7 @@ func SyncNotionPull(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyBatchSyncCompatible(c, store, "notion") {
 			return
 		}
-		result := service.SyncNotionPull()
+		result := service.SyncNotionPullScoped(c.Request.Context(), store)
 		success(c, gin.H{"result": result})
 	}
 }
@@ -246,7 +246,7 @@ func SyncObsidianBidirectional(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyBatchSyncCompatible(c, store, "obsidian") {
 			return
 		}
-		result := service.SyncObsidianBidirectional()
+		result := service.SyncObsidianBidirectionalScoped(c.Request.Context(), store)
 		success(c, gin.H{"result": result})
 	}
 }
@@ -256,61 +256,73 @@ func SyncNotionBidirectional(store storage.Store) gin.HandlerFunc {
 		if !ensureLegacyBatchSyncCompatible(c, store, "notion") {
 			return
 		}
-		result := service.SyncNotionBidirectional()
+		result := service.SyncNotionBidirectionalScoped(c.Request.Context(), store)
 		success(c, gin.H{"result": result})
 	}
 }
 
-func ListObsidianDeletions(c *gin.Context) {
-	items, err := service.ListObsidianDeletionCandidates()
-	if err != nil {
-		internalError(c, err.Error())
-		return
+func ListObsidianDeletions(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		items, err := service.ListObsidianDeletionCandidatesScoped(c.Request.Context(), store)
+		if err != nil {
+			internalError(c, err.Error())
+			return
+		}
+		success(c, gin.H{"items": items})
 	}
-	success(c, gin.H{"items": items})
 }
 
-func ListNotionDeletions(c *gin.Context) {
-	items, err := service.ListNotionDeletionCandidates()
-	if err != nil {
-		notionDeletionError(c, err)
-		return
+func ListNotionDeletions(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		items, err := service.ListNotionDeletionCandidatesScoped(c.Request.Context(), store)
+		if err != nil {
+			notionDeletionError(c, err)
+			return
+		}
+		success(c, gin.H{"items": items})
 	}
-	success(c, gin.H{"items": items})
 }
 
-func ConfirmObsidianDeletion(c *gin.Context) {
-	if err := service.ConfirmObsidianDeletion(c.Param("note_id")); err != nil {
-		obsidianDeletionError(c, err)
-		return
+func ConfirmObsidianDeletion(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := service.ConfirmObsidianDeletionScoped(c.Request.Context(), store, c.Param("note_id")); err != nil {
+			obsidianDeletionError(c, err)
+			return
+		}
+		noContent(c)
 	}
-	noContent(c)
 }
 
-func ConfirmNotionDeletion(c *gin.Context) {
-	if err := service.ConfirmNotionDeletion(c.Param("note_id")); err != nil {
-		notionDeletionError(c, err)
-		return
+func ConfirmNotionDeletion(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := service.ConfirmNotionDeletionScoped(c.Request.Context(), store, c.Param("note_id")); err != nil {
+			notionDeletionError(c, err)
+			return
+		}
+		noContent(c)
 	}
-	noContent(c)
 }
 
-func RestoreObsidianDeletion(c *gin.Context) {
-	item, err := service.RestoreObsidianDeletion(c.Param("note_id"))
-	if err != nil {
-		obsidianDeletionError(c, err)
-		return
+func RestoreObsidianDeletion(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		item, err := service.RestoreObsidianDeletionScoped(c.Request.Context(), store, c.Param("note_id"))
+		if err != nil {
+			obsidianDeletionError(c, err)
+			return
+		}
+		success(c, gin.H{"item": item})
 	}
-	success(c, gin.H{"item": item})
 }
 
-func RestoreNotionDeletion(c *gin.Context) {
-	item, err := service.RestoreNotionDeletion(c.Param("note_id"))
-	if err != nil {
-		notionDeletionError(c, err)
-		return
+func RestoreNotionDeletion(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		item, err := service.RestoreNotionDeletionScoped(c.Request.Context(), store, c.Param("note_id"))
+		if err != nil {
+			notionDeletionError(c, err)
+			return
+		}
+		success(c, gin.H{"item": item})
 	}
-	success(c, gin.H{"item": item})
 }
 
 func obsidianDeletionError(c *gin.Context, err error) {
@@ -319,6 +331,8 @@ func obsidianDeletionError(c *gin.Context, err error) {
 		notFound(c, err.Error())
 	case errors.Is(err, service.ErrObsidianDeletionConflict):
 		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
+	case errors.Is(err, service.ErrSyncBindingConflict):
+		errorResponse(c, http.StatusConflict, "binding_mismatch", err.Error())
 	case errors.Is(err, service.ErrObsidianDeletionInvalidState):
 		badRequest(c, err.Error())
 	default:
@@ -332,6 +346,8 @@ func notionDeletionError(c *gin.Context, err error) {
 		notFound(c, err.Error())
 	case errors.Is(err, service.ErrNotionDeletionConflict):
 		errorResponse(c, http.StatusConflict, "CONFLICT", err.Error())
+	case errors.Is(err, service.ErrSyncBindingConflict):
+		errorResponse(c, http.StatusConflict, "binding_mismatch", err.Error())
 	case errors.Is(err, service.ErrNotionDeletionInvalidState):
 		badRequest(c, err.Error())
 	default:

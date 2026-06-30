@@ -29,6 +29,24 @@ var (
 	ErrObsidianDeletionInvalidState = errors.New("note is not marked as deleted in obsidian")
 )
 
+type legacyDefaultSyncBindingContextKey struct{}
+
+func contextWithLegacyDefaultSyncBinding(ctx context.Context) context.Context {
+	return context.WithValue(ctx, legacyDefaultSyncBindingContextKey{}, true)
+}
+
+func legacyDefaultSyncBindingEnabled(ctx context.Context) bool {
+	enabled, _ := ctx.Value(legacyDefaultSyncBindingContextKey{}).(bool)
+	return enabled
+}
+
+func repositoryStoreContext(store storage.Store, fallback context.Context) context.Context {
+	if scoped, ok := store.(scopedRepositoryStore); ok && scoped.ctx != nil {
+		return scoped.ctx
+	}
+	return fallback
+}
+
 type scopedRepositoryStore struct {
 	storage.Store
 	ctx context.Context
@@ -46,6 +64,10 @@ func (store scopedRepositoryStore) Folders() storage.FolderRepository {
 
 func (store scopedRepositoryStore) Notes() storage.NoteRepository {
 	return scopedNoteRepository{NoteRepository: store.Store.Notes(), ctx: store.ctx}
+}
+
+func (store scopedRepositoryStore) Sync() storage.SyncRepository {
+	return scopedSyncRepository{base: store.Store.Sync(), ctx: store.ctx}
 }
 
 type scopedFolderRepository struct {
@@ -102,15 +124,139 @@ func (repo scopedNoteRepository) GetNotesByProjectIDs(ctx context.Context, proje
 	return repo.NoteRepository.GetNotesByProjectIDs(repo.ctx, projectIDs)
 }
 
+type scopedSyncRepository struct {
+	base storage.SyncRepository
+	ctx  context.Context
+}
+
+var _ storage.SyncRepository = scopedSyncRepository{}
+
+func (repo scopedSyncRepository) SaveTarget(ctx context.Context, target *model.SyncTarget) error {
+	return repo.base.SaveTarget(repo.ctx, target)
+}
+
+func (repo scopedSyncRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return repo.base.GetTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return repo.base.LockTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) GetDefaultTarget(ctx context.Context, targetType string) (*model.SyncTarget, error) {
+	return repo.base.GetDefaultTarget(repo.ctx, targetType)
+}
+
+func (repo scopedSyncRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
+	return repo.base.ListTargets(repo.ctx)
+}
+
+func (repo scopedSyncRepository) DeleteTarget(ctx context.Context, targetID string) error {
+	return repo.base.DeleteTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
+	return repo.base.CountBindingsByTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
+	return repo.base.CountClaimsByTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
+	return repo.base.CountStatesByTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) UpsertState(ctx context.Context, state *model.SyncState) error {
+	return repo.base.UpsertState(repo.ctx, state)
+}
+
+func (repo scopedSyncRepository) GetState(ctx context.Context, noteID string, targetID string) (*model.SyncState, error) {
+	return repo.base.GetState(repo.ctx, noteID, targetID)
+}
+
+func (repo scopedSyncRepository) ListStatesByTarget(ctx context.Context, targetID string) ([]model.SyncState, error) {
+	return repo.base.ListStatesByTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) DeleteState(ctx context.Context, noteID string, targetID string) error {
+	return repo.base.DeleteState(repo.ctx, noteID, targetID)
+}
+
+func (repo scopedSyncRepository) ListExternalDeletedStates(ctx context.Context, targetID string) ([]model.ExternalDeletedNote, error) {
+	return repo.base.ListExternalDeletedStates(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) LockBindingSlot(ctx context.Context, noteID string) error {
+	return repo.base.LockBindingSlot(repo.ctx, noteID)
+}
+
+func (repo scopedSyncRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
+	return repo.base.GetBinding(repo.ctx, noteID)
+}
+
+func (repo scopedSyncRepository) PutBinding(ctx context.Context, binding model.NoteSyncBinding) error {
+	return repo.base.PutBinding(repo.ctx, binding)
+}
+
+func (repo scopedSyncRepository) DeleteBinding(ctx context.Context, noteID string) error {
+	return repo.base.DeleteBinding(repo.ctx, noteID)
+}
+
+func (repo scopedSyncRepository) ListBindingsByTarget(ctx context.Context, targetID string) ([]model.NoteSyncBinding, error) {
+	return repo.base.ListBindingsByTarget(repo.ctx, targetID)
+}
+
+func (repo scopedSyncRepository) GetExternalClaim(ctx context.Context, externalKey string) (*model.SyncExternalClaim, error) {
+	return repo.base.GetExternalClaim(repo.ctx, externalKey)
+}
+
+func (repo scopedSyncRepository) GetExternalClaimByNote(ctx context.Context, noteID string) (*model.SyncExternalClaim, error) {
+	return repo.base.GetExternalClaimByNote(repo.ctx, noteID)
+}
+
+func (repo scopedSyncRepository) PutExternalClaim(ctx context.Context, claim model.SyncExternalClaim) error {
+	return repo.base.PutExternalClaim(repo.ctx, claim)
+}
+
+func (repo scopedSyncRepository) ReleaseExternalClaim(ctx context.Context, noteID string) error {
+	return repo.base.ReleaseExternalClaim(repo.ctx, noteID)
+}
+
+func (repo scopedSyncRepository) PutSuppression(ctx context.Context, suppression model.NoteSyncSuppression) error {
+	return repo.base.PutSuppression(repo.ctx, suppression)
+}
+
+func (repo scopedSyncRepository) DeleteSuppression(ctx context.Context, noteID string, targetID string) error {
+	return repo.base.DeleteSuppression(repo.ctx, noteID, targetID)
+}
+
+func (repo scopedSyncRepository) GetSuppression(ctx context.Context, noteID string, targetID string) (*model.NoteSyncSuppression, error) {
+	return repo.base.GetSuppression(repo.ctx, noteID, targetID)
+}
+
+func (repo scopedSyncRepository) PutImportTombstone(ctx context.Context, tombstone model.SyncImportTombstone) error {
+	return repo.base.PutImportTombstone(repo.ctx, tombstone)
+}
+
+func (repo scopedSyncRepository) DeleteImportTombstone(ctx context.Context, externalKey string) error {
+	return repo.base.DeleteImportTombstone(repo.ctx, externalKey)
+}
+
+func (repo scopedSyncRepository) DeleteImportTombstonesForNoteTarget(ctx context.Context, noteID string, targetID string) error {
+	return repo.base.DeleteImportTombstonesForNoteTarget(repo.ctx, noteID, targetID)
+}
+
+func (repo scopedSyncRepository) FindImportTombstone(ctx context.Context, targetID string, externalKey string, formerNoteID string, externalType string) (*model.SyncImportTombstone, error) {
+	return repo.base.FindImportTombstone(repo.ctx, targetID, externalKey, formerNoteID, externalType)
+}
+
 func withScopedRepositoryStore(ctx context.Context, store storage.Store, fn func()) {
 	if store == nil {
 		fn()
 		return
 	}
-	previous := repository.CurrentStore()
-	repository.SetStore(scopedRepositoryStore{Store: store, ctx: ctx})
-	defer repository.SetStore(previous)
-	fn()
+	repository.WithScopedStore(scopedRepositoryStore{Store: store, ctx: ctx}, fn)
 }
 
 func syncObsidianPullTargetScoped(ctx context.Context, store storage.Store, target *model.SyncTarget) model.ObsidianBidirectionalResult {
@@ -119,6 +265,92 @@ func syncObsidianPullTargetScoped(ctx context.Context, store storage.Store, targ
 		result = syncObsidianPullTarget(target)
 	})
 	return result
+}
+
+func SyncObsidianPullScoped(ctx context.Context, store storage.Store) model.ObsidianBidirectionalResult {
+	var result model.ObsidianBidirectionalResult
+	withScopedRepositoryStore(ctx, store, func() {
+		result = SyncObsidianPull()
+	})
+	return result
+}
+
+func SyncObsidianBidirectionalScoped(ctx context.Context, store storage.Store) model.ObsidianBidirectionalResult {
+	var result model.ObsidianBidirectionalResult
+	ctx = contextWithLegacyDefaultSyncBinding(ctx)
+	withScopedRepositoryStore(ctx, store, func() {
+		result = SyncObsidianBidirectional()
+	})
+	return result
+}
+
+func ListObsidianDeletionCandidatesScoped(ctx context.Context, store storage.Store) ([]model.ExternalDeletedNote, error) {
+	var items []model.ExternalDeletedNote
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		items, err = ListObsidianDeletionCandidates()
+	})
+	return items, err
+}
+
+func ListObsidianDeletionCandidatesForTargetScoped(ctx context.Context, store storage.Store, targetID string) ([]model.ExternalDeletedNote, error) {
+	var items []model.ExternalDeletedNote
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		items, err = ListObsidianDeletionCandidatesForTarget(targetID)
+	})
+	return items, err
+}
+
+func ConfirmObsidianDeletionScoped(ctx context.Context, store storage.Store, noteID string) error {
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		err = ConfirmObsidianDeletion(noteID)
+	})
+	return err
+}
+
+func RestoreObsidianDeletionScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	var item *model.SyncResultItem
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		item, err = restoreObsidianDeletionScoped(ctx, store, noteID)
+	})
+	return item, err
+}
+
+func restoreObsidianDeletionScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	target, err := loadObsidianDeletionTarget()
+	if err != nil {
+		return nil, err
+	}
+	state, err := loadObsidianExternalDeletedState(noteID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	mappedPath, err := validateObsidianDeletionActionPath(state, target)
+	if err != nil {
+		return nil, err
+	}
+	note, err := loadObsidianDeletionNote(noteID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateLegacyDefaultSyncTargetBinding(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	if err := bindLegacyDefaultSyncTarget(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	item, err := writeNoteToOutputPath(note, target, mappedPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := markObsidianRestoreSynced(note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	item.Status = "synced"
+	return item, nil
 }
 
 func ConfirmObsidianDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) error {
@@ -262,12 +494,17 @@ func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 		})
 	}
 
+	legacyLocalPushRequiresTags := legacyDefaultSyncBindingEnabled(repositoryStoreContext(repository.CurrentStore(), context.Background()))
+	requiredTags := requiredSyncTagsFromTarget(target)
 	sort.Slice(notesList, func(i, j int) bool {
 		return notesList[i].ID < notesList[j].ID
 	})
 	for i := range notesList {
 		note := notesList[i]
 		if _, ok := handledNoteIDs[note.ID]; ok {
+			continue
+		}
+		if legacyLocalPushRequiresTags && !noteMatchesRequiredSyncTags(note, requiredTags) {
 			continue
 		}
 
