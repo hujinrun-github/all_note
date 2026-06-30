@@ -35,6 +35,18 @@ func sanitizeAuditValue(value any) any {
 			out = append(out, sanitizeAuditValue(item))
 		}
 		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, SanitizeAuditMetadata(item))
+		}
+		return out
+	case []map[string]string:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, sanitizeAuditValue(item))
+		}
+		return out
 	default:
 		return value
 	}

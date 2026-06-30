@@ -63,6 +63,48 @@ func TestSanitizeAuditMetadataRemovesProviderSecretKeys(t *testing.T) {
 	}
 }
 
+func TestSanitizeAuditMetadataRemovesSecretsFromTypedAnyMapSlices(t *testing.T) {
+	metadata := map[string]any{
+		"items": []map[string]any{
+			{
+				"api_key": "leak",
+				"safe":    "ok",
+			},
+		},
+	}
+
+	sanitized := SanitizeAuditMetadata(metadata)
+
+	raw := marshalAuditMetadataForTest(t, sanitized)
+	if strings.Contains(raw, "leak") || strings.Contains(raw, "api_key") {
+		t.Fatalf("sanitized metadata contains typed slice secret: %s", raw)
+	}
+	if !strings.Contains(raw, "ok") {
+		t.Fatalf("sanitized metadata removed safe typed slice value: %s", raw)
+	}
+}
+
+func TestSanitizeAuditMetadataRemovesSecretsFromTypedStringMapSlices(t *testing.T) {
+	metadata := map[string]any{
+		"items": []map[string]string{
+			{
+				"access_key": "leak",
+				"name":       "ok",
+			},
+		},
+	}
+
+	sanitized := SanitizeAuditMetadata(metadata)
+
+	raw := marshalAuditMetadataForTest(t, sanitized)
+	if strings.Contains(raw, "leak") || strings.Contains(raw, "access_key") {
+		t.Fatalf("sanitized metadata contains typed string map slice secret: %s", raw)
+	}
+	if !strings.Contains(raw, "ok") {
+		t.Fatalf("sanitized metadata removed safe typed string map slice value: %s", raw)
+	}
+}
+
 func marshalAuditMetadataForTest(t *testing.T, metadata map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(metadata)
