@@ -1,23 +1,24 @@
 package service
 
 import (
+	"context"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetEvents(month string, page, pageSize int) ([]model.Event, int, error) {
+func GetEvents(ctx context.Context, store storage.Store, month string, page, pageSize int) ([]model.Event, int, error) {
 	t, err := time.Parse("2006-01", month)
 	if err != nil {
 		return nil, 0, err
 	}
 	monthStart := t.Unix()
 	monthEnd := t.AddDate(0, 1, 0).Unix()
-	return repository.GetEvents(monthStart, monthEnd, page, pageSize)
+	return store.Events().List(ctx, monthStart, monthEnd, page, pageSize)
 }
 
-func CreateEvent(req *model.CreateEventRequest) (*model.Event, error) {
+func CreateEvent(ctx context.Context, store storage.Store, req *model.CreateEventRequest) (*model.Event, error) {
 	event := &model.Event{
 		Title:     req.Title,
 		StartTime: req.StartTime,
@@ -25,16 +26,16 @@ func CreateEvent(req *model.CreateEventRequest) (*model.Event, error) {
 		Location:  req.Location,
 		Kind:      req.Kind,
 	}
-	if err := repository.CreateEvent(event); err != nil {
+	if err := store.Events().Create(ctx, event); err != nil {
 		return nil, err
 	}
 	return event, nil
 }
 
-func UpdateEvent(id string, req *model.UpdateEventRequest) (*model.Event, error) {
-	return repository.UpdateEvent(id, req)
+func UpdateEvent(ctx context.Context, store storage.Store, id string, req *model.UpdateEventRequest) (*model.Event, error) {
+	return store.Events().Update(ctx, id, req)
 }
 
-func DeleteEvent(id string) error {
-	return repository.DeleteEvent(id)
+func DeleteEvent(ctx context.Context, store storage.Store, id string) error {
+	return store.Events().Delete(ctx, id)
 }

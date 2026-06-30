@@ -21,7 +21,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		user := contractUser("auth_user_contract", "Contract.User@Example.com", "Contract User", "user")
 		workspace := contractWorkspace("auth_workspace_contract", user.ID, "Contract Workspace")
 		user.DefaultWorkspaceID = workspace.ID
@@ -63,7 +63,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_sessions", "auth_workspace_sessions", "sessions@example.com")
 
 		now := time.Now().UTC()
@@ -96,7 +96,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_email_existing", "auth_workspace_email_existing", "existing@example.com")
 
 		duplicate := contractUser("auth_user_email_duplicate", "Existing@Example.com", "Duplicate User", "user")
@@ -115,7 +115,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_revoke_except", "auth_workspace_revoke_except", "revoke-except@example.com")
 
 		now := time.Now().UTC()
@@ -141,7 +141,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_revoke_all", "auth_workspace_revoke_all", "revoke-all@example.com")
 
 		now := time.Now().UTC()
@@ -165,7 +165,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_audit", "auth_workspace_audit", "audit@example.com")
 		userID := "auth_user_audit"
 		workspaceID := "auth_workspace_audit"
@@ -189,7 +189,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_audit_sanitized", "auth_workspace_audit_sanitized", "audit-sanitized@example.com")
 		userID := "auth_user_audit_sanitized"
 		workspaceID := "auth_workspace_audit_sanitized"
@@ -232,7 +232,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_query_ada", "auth_workspace_query_ada", "ada@example.com", withDisplayName("Ada Lovelace"))
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_query_grace", "auth_workspace_query_grace", "grace@example.com", withDisplayName("Grace Hopper"))
 
@@ -256,7 +256,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_update", "auth_workspace_update", "update@example.com")
 
 		email := "Updated.User@Example.com"
@@ -322,7 +322,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_active_admin", "auth_workspace_active_admin", "active-admin@example.com", withRole("admin"))
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_regular", "auth_workspace_regular", "regular@example.com", withRole("user"))
 		seedAuthUserWorkspace(t, ctx, store, "auth_user_disabled_admin", "auth_workspace_disabled_admin", "disabled-admin@example.com", withRole("admin"), withStatus("disabled"))

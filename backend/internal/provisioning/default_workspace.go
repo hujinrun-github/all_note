@@ -49,17 +49,31 @@ func EnsureDefaultWorkspaceData(ctx context.Context, store storage.Store) error 
 func ensurePostgresDefaults(ctx context.Context, runner SQLRunner, workspaceID string) error {
 	for _, folder := range defaultFolders {
 		if _, err := runner.ExecContext(ctx, `
+			UPDATE folders
+			SET workspace_id = $1
+			WHERE id = $2 AND (workspace_id IS NULL OR workspace_id = '')
+		`, workspaceID, folder.ID); err != nil {
+			return fmt.Errorf("scope legacy default folder %s: %w", folder.ID, err)
+		}
+		if _, err := runner.ExecContext(ctx, `
 			INSERT INTO folders (id, name, sort_order, created_at, workspace_id)
 			VALUES ($1, $2, $3, now(), $4)
-			ON CONFLICT (workspace_id, id) DO NOTHING
+			ON CONFLICT DO NOTHING
 		`, folder.ID, folder.Name, folder.SortOrder, workspaceID); err != nil {
 			return fmt.Errorf("provision default folder %s: %w", folder.ID, err)
 		}
 	}
 	if _, err := runner.ExecContext(ctx, `
+		UPDATE task_projects
+		SET workspace_id = $1
+		WHERE id = 'personal' AND (workspace_id IS NULL OR workspace_id = '')
+	`, workspaceID); err != nil {
+		return fmt.Errorf("scope legacy default task project: %w", err)
+	}
+	if _, err := runner.ExecContext(ctx, `
 		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
 		VALUES ($1, $2, $3, $4, now(), now(), $5)
-		ON CONFLICT (workspace_id, id) DO NOTHING
+		ON CONFLICT DO NOTHING
 	`, "personal", "Personal", "personal", "Default personal task project", workspaceID); err != nil {
 		return fmt.Errorf("provision default task project: %w", err)
 	}

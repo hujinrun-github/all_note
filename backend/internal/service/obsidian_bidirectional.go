@@ -29,6 +29,115 @@ var (
 	ErrObsidianDeletionInvalidState = errors.New("note is not marked as deleted in obsidian")
 )
 
+type scopedRepositoryStore struct {
+	storage.Store
+	ctx context.Context
+}
+
+func (store scopedRepositoryStore) Transact(ctx context.Context, fn func(storage.Store) error) error {
+	return store.Store.Transact(store.ctx, func(txStore storage.Store) error {
+		return fn(scopedRepositoryStore{Store: txStore, ctx: store.ctx})
+	})
+}
+
+func (store scopedRepositoryStore) Folders() storage.FolderRepository {
+	return scopedFolderRepository{FolderRepository: store.Store.Folders(), ctx: store.ctx}
+}
+
+func (store scopedRepositoryStore) Notes() storage.NoteRepository {
+	return scopedNoteRepository{NoteRepository: store.Store.Notes(), ctx: store.ctx}
+}
+
+type scopedFolderRepository struct {
+	storage.FolderRepository
+	ctx context.Context
+}
+
+func (repo scopedFolderRepository) List(ctx context.Context) ([]model.Folder, error) {
+	return repo.FolderRepository.List(repo.ctx)
+}
+
+func (repo scopedFolderRepository) Exists(ctx context.Context, id string) (bool, error) {
+	return repo.FolderRepository.Exists(repo.ctx, id)
+}
+
+type scopedNoteRepository struct {
+	storage.NoteRepository
+	ctx context.Context
+}
+
+func (repo scopedNoteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]model.Note, int, error) {
+	return repo.NoteRepository.List(repo.ctx, filter)
+}
+
+func (repo scopedNoteRepository) GetByID(ctx context.Context, id string) (*model.Note, error) {
+	return repo.NoteRepository.GetByID(repo.ctx, id)
+}
+
+func (repo scopedNoteRepository) Create(ctx context.Context, req *model.CreateNoteRequest) (*model.Note, error) {
+	return repo.NoteRepository.Create(repo.ctx, req)
+}
+
+func (repo scopedNoteRepository) CreateWithID(ctx context.Context, note *model.Note) error {
+	return repo.NoteRepository.CreateWithID(repo.ctx, note)
+}
+
+func (repo scopedNoteRepository) Update(ctx context.Context, id string, req *model.UpdateNoteRequest) (*model.Note, error) {
+	return repo.NoteRepository.Update(repo.ctx, id, req)
+}
+
+func (repo scopedNoteRepository) Delete(ctx context.Context, id string) error {
+	return repo.NoteRepository.Delete(repo.ctx, id)
+}
+
+func (repo scopedNoteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
+	return repo.NoteRepository.ListAll(repo.ctx)
+}
+
+func (repo scopedNoteRepository) Recent(ctx context.Context, limit int) ([]model.Note, error) {
+	return repo.NoteRepository.Recent(repo.ctx, limit)
+}
+
+func (repo scopedNoteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error) {
+	return repo.NoteRepository.GetNotesByProjectIDs(repo.ctx, projectIDs)
+}
+
+func withScopedRepositoryStore(ctx context.Context, store storage.Store, fn func()) {
+	if store == nil {
+		fn()
+		return
+	}
+	previous := repository.CurrentStore()
+	repository.SetStore(scopedRepositoryStore{Store: store, ctx: ctx})
+	defer repository.SetStore(previous)
+	fn()
+}
+
+func syncObsidianPullTargetScoped(ctx context.Context, store storage.Store, target *model.SyncTarget) model.ObsidianBidirectionalResult {
+	var result model.ObsidianBidirectionalResult
+	withScopedRepositoryStore(ctx, store, func() {
+		result = syncObsidianPullTarget(target)
+	})
+	return result
+}
+
+func ConfirmObsidianDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) error {
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		err = ConfirmObsidianDeletionForTarget(noteID, targetID)
+	})
+	return err
+}
+
+func RestoreObsidianDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) (*model.SyncResultItem, error) {
+	var item *model.SyncResultItem
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		item, err = RestoreObsidianDeletionForTarget(noteID, targetID)
+	})
+	return item, err
+}
+
 func SyncObsidianBidirectional() model.ObsidianBidirectionalResult {
 	result := model.ObsidianBidirectionalResult{
 		Items: make([]model.SyncResultItem, 0),

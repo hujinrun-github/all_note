@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,14 +15,16 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/provisioning"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
 )
 
 func TestGetNoteSyncBindingReturnsNullWhenUnbound(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	note := insertHandlerNoteForTest(t, "Unbound Note", "Body\n")
 
 	recorder := httptest.NewRecorder()
@@ -29,7 +32,7 @@ func TestGetNoteSyncBindingReturnsNullWhenUnbound(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-binding", nil)
 
-	GetNoteSyncBinding(c)
+	GetNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -56,7 +59,7 @@ func TestPutNoteSyncBindingCreatesBinding(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPut, "/notes/"+note.ID+"/sync-binding", bytes.NewBufferString(`{"target_id":"`+target.ID+`"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	PutNoteSyncBinding(c)
+	PutNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -86,7 +89,7 @@ func TestPutNoteSyncBindingRequiresConfirmWhenChangingTarget(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	PutNoteSyncBinding(c)
+	PutNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusConflict, recorder.Body.String())
@@ -117,7 +120,7 @@ func TestPutNoteSyncBindingRejectsExpectedTargetMismatch(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	PutNoteSyncBinding(c)
+	PutNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusConflict, recorder.Body.String())
@@ -156,7 +159,7 @@ func TestPutNoteSyncBindingDeletesSuppressionAndTombstoneOnExplicitRebind(t *tes
 	c.Request = httptest.NewRequest(http.MethodPut, "/notes/"+note.ID+"/sync-binding", bytes.NewBufferString(`{"target_id":"`+target.ID+`"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	PutNoteSyncBinding(c)
+	PutNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -182,7 +185,7 @@ func TestPutNoteSyncBindingAcquiresBindingSlotLockBeforeWrite(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPut, "/notes/note-1/sync-binding", bytes.NewBufferString(`{"target_id":"target-1"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	PutNoteSyncBinding(c)
+	PutNoteSyncBinding(&bindingSlotLockFakeStore{syncRepo: repo})(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -193,7 +196,7 @@ func TestPutNoteSyncBindingAcquiresBindingSlotLockBeforeWrite(t *testing.T) {
 }
 
 func TestDeleteNoteSyncBindingRequiresExpectedTarget(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	note := insertHandlerNoteForTest(t, "Delete Missing Expected", "Body\n")
 
 	recorder := httptest.NewRecorder()
@@ -202,7 +205,7 @@ func TestDeleteNoteSyncBindingRequiresExpectedTarget(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodDelete, "/notes/"+note.ID+"/sync-binding", bytes.NewBufferString(`{}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	DeleteNoteSyncBinding(c)
+	DeleteNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -224,7 +227,7 @@ func TestDeleteNoteSyncBindingRejectsExpectedUpdatedAtMismatch(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	DeleteNoteSyncBinding(c)
+	DeleteNoteSyncBinding(store)(c)
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusConflict, recorder.Body.String())
@@ -259,7 +262,7 @@ func TestDeleteNoteSyncBindingWritesSuppressionAndTombstoneBeforeClaimRelease(t 
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	DeleteNoteSyncBinding(c)
+	DeleteNoteSyncBinding(store)(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
@@ -302,7 +305,7 @@ func TestDeleteNoteSyncBindingAcquiresBindingSlotLockBeforeDelete(t *testing.T) 
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	DeleteNoteSyncBinding(c)
+	DeleteNoteSyncBinding(&bindingSlotLockFakeStore{syncRepo: repo})(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
@@ -324,6 +327,9 @@ func openHandlerSyncStoreTestDB(t *testing.T) storage.Store {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
+	if err := provisioning.EnsureDefaultWorkspaceData(handlerSyncStoreTestContext(t), store); err != nil {
+		t.Fatalf("seed workspace defaults: %v", err)
+	}
 	repository.SetStore(store)
 	t.Cleanup(func() {
 		repository.SetStore(nil)
@@ -332,6 +338,16 @@ func openHandlerSyncStoreTestDB(t *testing.T) storage.Store {
 		}
 	})
 	return store
+}
+
+func handlerSyncStoreTestContext(t *testing.T) context.Context {
+	t.Helper()
+	return auth.ContextWithWorkspaceScope(t.Context(), "handler-sync-test-workspace")
+}
+
+func handlerSyncStoreTestRequest(t *testing.T, method string, target string, body io.Reader) *http.Request {
+	t.Helper()
+	return httptest.NewRequest(method, target, body).WithContext(handlerSyncStoreTestContext(t))
 }
 
 func putHandlerBinding(t *testing.T, store storage.Store, noteID, targetID string) model.NoteSyncBinding {

@@ -26,7 +26,7 @@ func TestGetNoteSyncStateReturnsBindingMismatchForOtherType(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-state?target=obsidian", nil)
 
-	GetNoteSyncState(c)
+	GetNoteSyncState(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -49,7 +49,7 @@ func TestGetNoteSyncStateReturnsBindingMismatchForOtherType(t *testing.T) {
 }
 
 func TestGetNoteSyncStateReturnsDefaultTargetMissingWhenNoBindingAndNoDefault(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	note := insertHandlerNoteForTest(t, "No Default State", "Body\n")
 
 	recorder := httptest.NewRecorder()
@@ -57,7 +57,7 @@ func TestGetNoteSyncStateReturnsDefaultTargetMissingWhenNoBindingAndNoDefault(t 
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-state?target=notion", nil)
 
-	GetNoteSyncState(c)
+	GetNoteSyncState(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -77,7 +77,7 @@ func TestGetNoteSyncStateReturnsDefaultTargetMissingWhenNoBindingAndNoDefault(t 
 }
 
 func TestLegacyExecutionReturnsDefaultTargetMissingConflict(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	note := insertHandlerNoteForTest(t, "No Default Execute", "Body\n")
 
 	recorder := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestLegacyExecutionReturnsDefaultTargetMissingConflict(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodPost, "/sync/obsidian/notes/"+note.ID, nil)
 
-	SyncObsidianNote(c)
+	SyncObsidianNote(store)(c)
 
 	assertSyncCompatibilityConflict(t, recorder, "default_target_missing")
 }
@@ -101,7 +101,7 @@ func TestLegacyExecutionReturnsBindingMismatchConflict(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodPost, "/sync/obsidian/notes/"+note.ID, nil)
 
-	SyncObsidianNote(c)
+	SyncObsidianNote(store)(c)
 
 	assertSyncCompatibilityConflict(t, recorder, "binding_mismatch")
 }
@@ -127,7 +127,7 @@ func TestLegacyExecutionReturnsBindingMismatchWhenDefaultDiffersFromBinding(t *t
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
 
-	SyncNotionNote(c)
+	SyncNotionNote(store)(c)
 
 	assertSyncCompatibilityConflict(t, recorder, "binding_mismatch")
 }
@@ -143,7 +143,7 @@ func TestLegacyBatchExecutionReturnsBindingMismatchConflict(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/sync/obsidian/all", nil)
 
-	SyncObsidianAll(c)
+	SyncObsidianAll(store)(c)
 
 	assertSyncCompatibilityConflict(t, recorder, "binding_mismatch")
 }

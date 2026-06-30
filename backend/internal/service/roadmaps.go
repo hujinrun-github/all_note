@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -19,7 +20,7 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 	"golang.org/x/net/html"
 )
 
@@ -72,8 +73,8 @@ var (
 	stackExchangeSearchURL = "https://api.stackexchange.com/2.3/search/advanced"
 )
 
-func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
-	project, err := repository.GetTaskProjectByID(projectID)
+func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID string) (*model.LearningRoadmap, error) {
+	project, err := store.Tasks().GetProjectByID(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 
 	draft, err := generateRoadmapDraft(*project)
 	if err != nil {
-		_, _ = repository.SaveFailedLearningRoadmap(project.ID, project.Name+" 学习路线", project.Description)
+		_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
 		return nil, err
 	}
 
@@ -98,14 +99,14 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 		Nodes:     draft.Nodes,
 		Edges:     draft.Edges,
 	}
-	saved, err := repository.ReplaceLearningRoadmap(roadmap)
+	saved, err := store.Roadmaps().ReplaceLearningRoadmap(ctx, roadmap)
 	if err != nil {
 		return nil, err
 	}
-	if err := attachInitialRoadmapResources(draft); err != nil {
+	if err := attachInitialRoadmapResources(ctx, store, draft); err != nil {
 		return saved, nil
 	}
-	withResources, err := repository.GetLearningRoadmap(project.ID)
+	withResources, err := store.Roadmaps().GetLearningRoadmap(ctx, project.ID)
 	if err != nil {
 		return saved, nil
 	}
@@ -113,8 +114,8 @@ func GenerateLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	return withResources, nil
 }
 
-func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
-	roadmap, err := repository.GetLearningRoadmap(projectID)
+func GetLearningRoadmap(ctx context.Context, store storage.Store, projectID string) (*model.LearningRoadmap, error) {
+	roadmap, err := store.Roadmaps().GetLearningRoadmap(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +123,11 @@ func GetLearningRoadmap(projectID string) (*model.LearningRoadmap, error) {
 	return roadmap, nil
 }
 
-func UpdateRoadmapNode(id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
-	return repository.UpdateRoadmapNode(id, req)
+func UpdateRoadmapNode(ctx context.Context, store storage.Store, id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	return store.Roadmaps().UpdateRoadmapNode(ctx, id, req)
 }
 
-func CreateRoadmapNode(roadmapID string, req *model.CreateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+func CreateRoadmapNode(ctx context.Context, store storage.Store, roadmapID string, req *model.CreateRoadmapNodeRequest) (*model.RoadmapNode, error) {
 	if req == nil {
 		return nil, errors.New("request body is required")
 	}
@@ -135,7 +136,7 @@ func CreateRoadmapNode(roadmapID string, req *model.CreateRoadmapNodeRequest) (*
 		return nil, errors.New("title is required")
 	}
 
-	roadmap, err := repository.GetLearningRoadmapByID(roadmapID)
+	roadmap, err := store.Roadmaps().GetLearningRoadmapByID(ctx, roadmapID)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +170,7 @@ func CreateRoadmapNode(roadmapID string, req *model.CreateRoadmapNodeRequest) (*
 		y = *req.Y
 	}
 
-	return repository.CreateRoadmapNode(&model.RoadmapNode{
+	return store.Roadmaps().CreateRoadmapNode(ctx, &model.RoadmapNode{
 		RoadmapID:          roadmap.ID,
 		ParentID:           parentID,
 		Type:               nodeType,
@@ -185,16 +186,16 @@ func CreateRoadmapNode(roadmapID string, req *model.CreateRoadmapNodeRequest) (*
 	}, edge)
 }
 
-func DeleteRoadmapNode(id string) error {
-	return repository.DeleteRoadmapNode(id)
+func DeleteRoadmapNode(ctx context.Context, store storage.Store, id string) error {
+	return store.Roadmaps().DeleteRoadmapNode(ctx, id)
 }
 
-func UpdateRoadmapLayout(roadmapID string, nodes []model.RoadmapLayoutNode) error {
-	return repository.UpdateRoadmapLayout(roadmapID, nodes)
+func UpdateRoadmapLayout(ctx context.Context, store storage.Store, roadmapID string, nodes []model.RoadmapLayoutNode) error {
+	return store.Roadmaps().UpdateRoadmapLayout(ctx, roadmapID, nodes)
 }
 
-func OptimizeRoadmapLayout(roadmapID string) (*model.LearningRoadmap, error) {
-	roadmap, err := repository.GetLearningRoadmapByID(roadmapID)
+func OptimizeRoadmapLayout(ctx context.Context, store storage.Store, roadmapID string) (*model.LearningRoadmap, error) {
+	roadmap, err := store.Roadmaps().GetLearningRoadmapByID(ctx, roadmapID)
 	if err != nil {
 		return nil, err
 	}
@@ -210,10 +211,10 @@ func OptimizeRoadmapLayout(roadmapID string) (*model.LearningRoadmap, error) {
 	for _, node := range draft.Nodes {
 		layoutNodes = append(layoutNodes, model.RoadmapLayoutNode{ID: node.ID, X: node.X, Y: node.Y})
 	}
-	if err := repository.UpdateRoadmapLayout(roadmap.ID, layoutNodes); err != nil {
+	if err := store.Roadmaps().UpdateRoadmapLayout(ctx, roadmap.ID, layoutNodes); err != nil {
 		return nil, err
 	}
-	optimized, err := repository.GetLearningRoadmapByID(roadmap.ID)
+	optimized, err := store.Roadmaps().GetLearningRoadmapByID(ctx, roadmap.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +222,8 @@ func OptimizeRoadmapLayout(roadmapID string) (*model.LearningRoadmap, error) {
 	return optimized, nil
 }
 
-func SearchRoadmapNodeResources(nodeID string, req *model.SearchRoadmapResourcesRequest) ([]model.RoadmapResource, error) {
-	node, err := repository.GetRoadmapNode(nodeID)
+func SearchRoadmapNodeResources(ctx context.Context, store storage.Store, nodeID string, req *model.SearchRoadmapResourcesRequest) ([]model.RoadmapResource, error) {
+	node, err := store.Roadmaps().GetRoadmapNode(ctx, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +232,7 @@ func SearchRoadmapNodeResources(nodeID string, req *model.SearchRoadmapResources
 	if req != nil {
 		sources = req.Sources
 	}
-	linkedTasks, err := repository.GetTasksByRoadmapNodeID(node.ID)
+	linkedTasks, _, err := store.Tasks().List(ctx, storage.TaskFilter{RoadmapNodeID: node.ID, Page: 1, PageSize: 10000})
 	if err != nil {
 		return nil, err
 	}
@@ -254,8 +255,8 @@ func SearchRoadmapNodeResources(nodeID string, req *model.SearchRoadmapResources
 	return results, nil
 }
 
-func AddRoadmapNodeResource(nodeID string, req *model.CreateRoadmapResourceRequest) (*model.RoadmapResource, error) {
-	if _, err := repository.GetRoadmapNode(nodeID); err != nil {
+func AddRoadmapNodeResource(ctx context.Context, store storage.Store, nodeID string, req *model.CreateRoadmapResourceRequest) (*model.RoadmapResource, error) {
+	if _, err := store.Roadmaps().GetRoadmapNode(ctx, nodeID); err != nil {
 		return nil, err
 	}
 	title := strings.TrimSpace(req.Title)
@@ -271,14 +272,14 @@ func AddRoadmapNodeResource(nodeID string, req *model.CreateRoadmapResourceReque
 		SourceType: "manual",
 		AddedBy:    "user",
 	}
-	if err := repository.AddRoadmapResource(resource); err != nil {
+	if err := store.Roadmaps().AddRoadmapResource(ctx, resource); err != nil {
 		return nil, err
 	}
 	return resource, nil
 }
 
-func DeleteRoadmapResource(id string) error {
-	return repository.DeleteRoadmapResource(id)
+func DeleteRoadmapResource(ctx context.Context, store storage.Store, id string) error {
+	return store.Roadmaps().DeleteRoadmapResource(ctx, id)
 }
 
 func generateRoadmapDraft(project model.TaskProject) (*roadmapDraft, error) {
@@ -774,7 +775,7 @@ func hasRoadmapBranching(draft *roadmapDraft) bool {
 	return false
 }
 
-func attachInitialRoadmapResources(draft *roadmapDraft) error {
+func attachInitialRoadmapResources(ctx context.Context, store storage.Store, draft *roadmapDraft) error {
 	if draft == nil {
 		return nil
 	}
@@ -791,7 +792,7 @@ func attachInitialRoadmapResources(draft *roadmapDraft) error {
 			resources[index].NodeID = node.ID
 			resources[index].SourceType = "article"
 			resources[index].AddedBy = "search"
-			if err := repository.AddRoadmapResource(&resources[index]); err != nil {
+			if err := store.Roadmaps().AddRoadmapResource(ctx, &resources[index]); err != nil {
 				return err
 			}
 		}

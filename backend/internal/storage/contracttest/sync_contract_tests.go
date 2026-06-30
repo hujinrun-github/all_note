@@ -1,7 +1,6 @@
 package contracttest
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -16,7 +15,7 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		target := &model.SyncTarget{
 			ID:         "sync-target-contract",
 			Type:       "notion",
@@ -133,7 +132,7 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		target := &model.SyncTarget{
 			Type:       "notion",
 			Name:       "Invalid Config",
@@ -149,7 +148,7 @@ func RunSyncSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		target := &model.SyncTarget{
 			Type:       "unsupported",
 			Name:       "Unsupported Target",

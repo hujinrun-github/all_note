@@ -60,6 +60,31 @@ func NewNotionSyncService(gateway notionSyncGateway) *NotionSyncService {
 	return &NotionSyncService{gateway: gateway}
 }
 
+func pullNotionRemoteScoped(ctx context.Context, store storage.Store, svc *NotionSyncService, target model.SyncTarget) model.NotionBidirectionalResult {
+	var result model.NotionBidirectionalResult
+	withScopedRepositoryStore(ctx, store, func() {
+		result = svc.PullRemote(target)
+	})
+	return result
+}
+
+func ConfirmNotionDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) error {
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		err = ConfirmNotionDeletionForTarget(noteID, targetID)
+	})
+	return err
+}
+
+func RestoreNotionDeletionForTargetScoped(ctx context.Context, store storage.Store, noteID string, targetID string) (*model.SyncResultItem, error) {
+	var item *model.SyncResultItem
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		item, err = RestoreNotionDeletionForTarget(noteID, targetID)
+	})
+	return item, err
+}
+
 func TestNotionTarget(target *model.SyncTarget) error {
 	config, err := parseNotionTargetConfig(target)
 	if err != nil {

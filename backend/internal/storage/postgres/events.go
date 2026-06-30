@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -15,11 +16,15 @@ type eventRepository struct {
 }
 
 func (r eventRepository) List(ctx context.Context, start, end int64, page, pageSize int) ([]model.Event, int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	var total int
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM events
-		WHERE time_range && tstzrange($1, $2, '[)')
-	`, unixToTime(start), unixToTime(end)).Scan(&total); err != nil {
+		WHERE workspace_id = $1 AND time_range && tstzrange($2, $3, '[)')
+	`, workspaceID, unixToTime(start), unixToTime(end)).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if page <= 0 {
@@ -32,9 +37,9 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
 		FROM events
-		WHERE time_range && tstzrange($1, $2, '[)')
-		ORDER BY start_at ASC LIMIT $3 OFFSET $4
-	`, unixToTime(start), unixToTime(end), pageSize, offset)
+		WHERE workspace_id = $1 AND time_range && tstzrange($2, $3, '[)')
+		ORDER BY start_at ASC LIMIT $4 OFFSET $5
+	`, workspaceID, unixToTime(start), unixToTime(end), pageSize, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -47,6 +52,10 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 }
 
 func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	event.ID = newID()
 	now := nowUnix()
 	event.CreatedAt = now
@@ -56,16 +65,20 @@ func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
 	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO events (id, title, start_at, end_at, time_range, location, kind, note_id, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, tstzrange($3, $4, '[)'), $5, $6, $7, $8, $9)
-		`, event.ID, event.Title, unixToTime(event.StartTime), unixToTime(event.EndTime), event.Location, event.Kind, event.NoteID, unixToTime(event.CreatedAt), unixToTime(event.UpdatedAt)); err != nil {
+			INSERT INTO events (id, title, start_at, end_at, time_range, location, kind, note_id, created_at, updated_at, workspace_id)
+			VALUES ($1, $2, $3, $4, tstzrange($3, $4, '[)'), $5, $6, $7, $8, $9, $10)
+		`, event.ID, event.Title, unixToTime(event.StartTime), unixToTime(event.EndTime), event.Location, event.Kind, event.NoteID, unixToTime(event.CreatedAt), unixToTime(event.UpdatedAt), workspaceID); err != nil {
 			return err
 		}
-		return upsertEventSearchIndex(ctx, tx, event)
+		return upsertEventSearchIndex(ctx, tx, workspaceID, event)
 	})
 }
 
 func (r eventRepository) Update(ctx context.Context, id string, req *model.UpdateEventRequest) (*model.Event, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	builder := newPgSetBuilder(1)
 	builder.Add("updated_at", time.Now().UTC())
 	if req.Title != nil {
@@ -84,24 +97,24 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 		builder.Add("kind", *req.Kind)
 	}
 	clause, args := builder.ClauseAndArgs()
-	args = append(args, id)
+	args = append(args, id, workspaceID)
 
 	var updated *model.Event
-	err := r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = %s", clause, pgPlaceholder(len(args))), args...); err != nil {
+	err = r.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = %s AND workspace_id = %s", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE events SET time_range = tstzrange(start_at, end_at, '[)') WHERE id = $1`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE events SET time_range = tstzrange(start_at, end_at, '[)') WHERE id = $1 AND workspace_id = $2`, id, workspaceID); err != nil {
 			return err
 		}
 		event, err := scanPostgresEvent(tx.QueryRowContext(ctx, `
 			SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
-			FROM events WHERE id = $1
-		`, id))
+			FROM events WHERE id = $1 AND workspace_id = $2
+		`, id, workspaceID))
 		if err != nil {
 			return err
 		}
-		if err := upsertEventSearchIndex(ctx, tx, event); err != nil {
+		if err := upsertEventSearchIndex(ctx, tx, workspaceID, event); err != nil {
 			return err
 		}
 		updated = event
@@ -114,29 +127,41 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 }
 
 func (r eventRepository) GetByID(ctx context.Context, id string) (*model.Event, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresEvent(r.db.QueryRowContext(ctx, `
 		SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
-		FROM events WHERE id = $1
-	`, id))
+		FROM events WHERE id = $1 AND workspace_id = $2
+	`, id, workspaceID))
 }
 
 func (r eventRepository) Delete(ctx context.Context, id string) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id = $1`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id = $1 AND workspace_id = $2`, id, workspaceID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE entity_type = 'event' AND entity_id = $1`, id)
+		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'event' AND entity_id = $2`, workspaceID, id)
 		return err
 	})
 }
 
 func (r eventRepository) Today(ctx context.Context, start, end int64) ([]model.Event, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
 		FROM events
-		WHERE time_range && tstzrange($1, $2, '[)')
+		WHERE workspace_id = $1 AND time_range && tstzrange($2, $3, '[)')
 		ORDER BY start_at ASC
-	`, unixToTime(start), unixToTime(end))
+	`, workspaceID, unixToTime(start), unixToTime(end))
 	if err != nil {
 		return nil, err
 	}
@@ -208,28 +233,30 @@ func scanPostgresEvents(rows *sql.Rows) ([]model.Event, error) {
 	return events, rows.Err()
 }
 
-func upsertEventSearchIndex(ctx context.Context, tx *sql.Tx, event *model.Event) error {
+func upsertEventSearchIndex(ctx context.Context, tx *sql.Tx, workspaceID string, event *model.Event) error {
 	contentParts := []string{event.Kind}
 	if event.Location != nil {
 		contentParts = append([]string{*event.Location}, contentParts...)
 	}
 	content := strings.Join(contentParts, " ")
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO search_index (entity_type, entity_id, title, content, tags, updated_at, search_vector)
+		INSERT INTO search_index (workspace_id, entity_type, entity_id, title, content, tags, updated_at, search_vector)
 		VALUES (
-			'event',
 			$1,
+			'event',
 			$2,
 			$3,
-			'{}'::text[],
 			$4,
-			to_tsvector('simple', coalesce($2, '') || ' ' || coalesce($3, ''))
+			'{}'::text[],
+			$5,
+			to_tsvector('simple', coalesce($3, '') || ' ' || coalesce($4, ''))
 		)
 		ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+			workspace_id = excluded.workspace_id,
 			title = excluded.title,
 			content = excluded.content,
 			updated_at = excluded.updated_at,
 			search_vector = excluded.search_vector
-	`, event.ID, event.Title, content, unixToTime(event.UpdatedAt))
+	`, workspaceID, event.ID, event.Title, content, unixToTime(event.UpdatedAt))
 	return err
 }

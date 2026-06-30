@@ -36,7 +36,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractAllowsOneBindingPerNote
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "One Binding")
 	targetA := createContractTarget(t, ctx, store, "binding-target-a", "notion", "Binding Target A", true)
 	targetB := createContractTarget(t, ctx, store, "binding-target-b", "obsidian", "Binding Target B", true)
@@ -75,7 +75,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractClaimRequiresCurrentBin
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Claim Binding")
 	targetA := createContractTarget(t, ctx, store, "claim-target-a", "notion", "Claim Target A", true)
 	targetB := createContractTarget(t, ctx, store, "claim-target-b", "obsidian", "Claim Target B", true)
@@ -123,7 +123,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractBindingDeleteCascadesCl
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Cascade Claim")
 	target := createContractTarget(t, ctx, store, "cascade-target", "notion", "Cascade Target", true)
 	if err := store.Sync().PutBinding(ctx, model.NoteSyncBinding{NoteID: note.ID, TargetID: target.ID}); err != nil {
@@ -150,7 +150,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractTombstoneSurvivesNoteDe
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Tombstone Survives")
 	target := createContractTarget(t, ctx, store, "tombstone-target", "obsidian", "Tombstone Target", true)
 	tombstone := model.SyncImportTombstone{
@@ -180,7 +180,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractFindsTombstoneAfterExte
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Renamed Tombstone")
 	target := createContractTarget(t, ctx, store, "rename-target", "obsidian", "Rename Target", true)
 	if err := store.Sync().PutImportTombstone(ctx, model.SyncImportTombstone{
@@ -206,7 +206,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractOneDefaultTargetPerType
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	targetA := createContractTarget(t, ctx, store, "default-notion-a", "notion", "Default Notion A", true)
 	targetB := createContractTarget(t, ctx, store, "default-notion-b", "notion", "Default Notion B", true)
 	targetA.IsDefault = true
@@ -243,7 +243,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractDefaultTargetDoesNotUse
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	defaultTarget := createContractTarget(t, ctx, store, "stable-default", "obsidian", "Stable Default", true)
 	latestTarget := createContractTarget(t, ctx, store, "latest-non-default", "obsidian", "Latest Non Default", true)
 	defaultTarget.IsDefault = true
@@ -275,7 +275,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractTargetIdentityLockCount
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Lock Counts")
 	target := createContractTarget(t, ctx, store, "lock-count-target", "notion", "Lock Count Target", true)
 	if err := store.Sync().PutBinding(ctx, model.NoteSyncBinding{NoteID: note.ID, TargetID: target.ID}); err != nil {
@@ -321,7 +321,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractLockTargetReturnsTarget
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	target := createContractTarget(t, ctx, store, "lock-target", "obsidian", "Lock Target", true)
 	err := store.Transact(ctx, func(txStore storage.Store) error {
 		locked, err := txStore.Sync().LockTarget(ctx, target.ID)
@@ -350,7 +350,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractTargetDeleteRestrictedB
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Target Restrict")
 	target := createContractTarget(t, ctx, store, "restrict-target", "notion", "Restrict Target", true)
 	if err := store.Sync().PutBinding(ctx, model.NoteSyncBinding{NoteID: note.ID, TargetID: target.ID}); err != nil {
@@ -372,7 +372,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractSuppressionReasonDefaul
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Suppression Reason")
 	target := createContractTarget(t, ctx, store, "suppression-reason-target", "obsidian", "Suppression Reason Target", true)
 	if err := store.Sync().PutSuppression(ctx, model.NoteSyncSuppression{NoteID: note.ID, TargetID: target.ID}); err != nil {
@@ -391,7 +391,7 @@ func (s syncBindingContractSuite) TestSyncBindingContractTombstoneReasonDefaults
 	store := s.factory(t)
 	defer store.Close()
 
-	ctx := context.Background()
+	ctx := scopedContractContext(t, store)
 	note := createContractNote(t, ctx, store, "Tombstone Reason")
 	target := createContractTarget(t, ctx, store, "tombstone-reason-target", "obsidian", "Tombstone Reason Target", true)
 	if err := store.Sync().PutImportTombstone(ctx, model.SyncImportTombstone{

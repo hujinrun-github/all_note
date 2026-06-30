@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/provisioning"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
@@ -297,6 +300,7 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 		t.Fatalf("open upgraded sqlite provider: %v", err)
 	}
 	defer opened.Close()
+	ctx := scopedSQLiteTestContext(t, opened, "sqlite_provider_legacy_sync_workspace")
 
 	target := &model.SyncTarget{
 		ID:         "legacy-default-target",
@@ -317,7 +321,7 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 		t.Fatalf("default target ID = %q, want %q", defaultTarget.ID, target.ID)
 	}
 
-	note, err := opened.Notes().Create(context.Background(), &model.CreateNoteRequest{
+	note, err := opened.Notes().Create(ctx, &model.CreateNoteRequest{
 		Title:    "Legacy Binding Note",
 		Body:     "Body",
 		FolderID: "__uncategorized",
@@ -468,6 +472,46 @@ func openTestStore(t *testing.T) *store {
 		t.Fatalf("expected sqlite store, got %T", opened)
 	}
 	return sqliteStore
+}
+
+func scopedSQLiteTestContext(t *testing.T, store storage.Store, workspaceID string) context.Context {
+	t.Helper()
+
+	now := time.Now().Unix()
+	userID := workspaceID + "_owner"
+	ctx := auth.ContextWithWorkspaceScope(context.Background(), workspaceID)
+	if err := store.Transact(ctx, func(tx storage.Store) error {
+		if err := tx.Auth().CreateUser(context.Background(), &model.User{
+			ID:                 userID,
+			Email:              fmt.Sprintf("%s@example.com", workspaceID),
+			DisplayName:        workspaceID,
+			PasswordHash:       "hash",
+			MustChangePassword: false,
+			DefaultWorkspaceID: workspaceID,
+			Role:               "admin",
+			Status:             "active",
+			CreatedAt:          now,
+			UpdatedAt:          now,
+		}); err != nil {
+			return fmt.Errorf("create workspace user %s: %w", userID, err)
+		}
+		if err := tx.Auth().CreateWorkspace(context.Background(), &model.Workspace{
+			ID:          workspaceID,
+			Name:        workspaceID,
+			OwnerUserID: userID,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			return fmt.Errorf("create workspace %s: %w", workspaceID, err)
+		}
+		if err := tx.Auth().AddWorkspaceMember(context.Background(), workspaceID, userID, "owner"); err != nil {
+			return fmt.Errorf("add workspace member %s: %w", workspaceID, err)
+		}
+		return provisioning.EnsureDefaultWorkspaceData(ctx, tx)
+	}); err != nil {
+		t.Fatalf("seed workspace %s: %v", workspaceID, err)
+	}
+	return ctx
 }
 
 func assertTableExists(t *testing.T, store *store, table string) {

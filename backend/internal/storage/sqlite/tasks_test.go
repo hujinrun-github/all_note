@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -22,33 +23,35 @@ func TestTaskUpdateSyncsRoadmapNodeStatus(t *testing.T) {
 	defer opened.Close()
 
 	store := opened.(*store)
-	if _, err := store.db.Exec(`
-		INSERT INTO learning_roadmaps (id, project_id, title, goal, status, created_at, updated_at)
-		VALUES ('roadmap-task-sync', 'personal', 'Roadmap', '', 'active', unixepoch(), unixepoch())
-	`); err != nil {
+	workspaceID := "sqlite_task_status_workspace"
+	ctx := scopedSQLiteTestContext(t, opened, workspaceID)
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO learning_roadmaps (id, project_id, workspace_id, title, goal, status, created_at, updated_at)
+		VALUES ('roadmap-task-sync', 'personal', ?, 'Roadmap', '', 'active', unixepoch(), unixepoch())
+	`, workspaceID); err != nil {
 		t.Fatalf("insert roadmap: %v", err)
 	}
-	if _, err := store.db.Exec(`
-		INSERT INTO roadmap_nodes (id, roadmap_id, title, status, created_at, updated_at)
-		VALUES ('node-task-sync', 'roadmap-task-sync', 'Node', 'todo', unixepoch(), unixepoch())
-	`); err != nil {
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO roadmap_nodes (id, roadmap_id, workspace_id, title, status, created_at, updated_at)
+		VALUES ('node-task-sync', 'roadmap-task-sync', ?, 'Node', 'todo', unixepoch(), unixepoch())
+	`, workspaceID); err != nil {
 		t.Fatalf("insert roadmap node: %v", err)
 	}
 
 	nodeID := "node-task-sync"
 	task := &model.Task{Title: "linked task", Status: "open", Horizon: "week", Scope: "daily", RoadmapNodeID: &nodeID}
-	if err := opened.Tasks().Create(context.Background(), task); err != nil {
+	if err := opened.Tasks().Create(ctx, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 
 	done := 1
-	if _, err := opened.Tasks().Update(context.Background(), task.ID, &model.UpdateTaskRequest{Done: &done}); err != nil {
+	if _, err := opened.Tasks().Update(ctx, task.ID, &model.UpdateTaskRequest{Done: &done}); err != nil {
 		t.Fatalf("update task done: %v", err)
 	}
 	assertSQLiteRoadmapNodeStatus(t, store, nodeID, "done")
 
 	openStatus := "open"
-	if _, err := opened.Tasks().Update(context.Background(), task.ID, &model.UpdateTaskRequest{Status: &openStatus}); err != nil {
+	if _, err := opened.Tasks().Update(ctx, task.ID, &model.UpdateTaskRequest{Status: &openStatus}); err != nil {
 		t.Fatalf("update task open: %v", err)
 	}
 	assertSQLiteRoadmapNodeStatus(t, store, nodeID, "active")
@@ -66,7 +69,7 @@ func TestTaskFiltersTreatLegacyBlankExecutionTypeAsSingle(t *testing.T) {
 	defer opened.Close()
 
 	store := opened.(*store)
-	ctx := context.Background()
+	ctx := scopedSQLiteTestContext(t, opened, "sqlite_task_blank_exec_workspace")
 	localDay := time.Date(2026, 6, 16, 0, 0, 0, 0, time.Local)
 	todayStart := localDay.Unix()
 	todayEnd := localDay.Add(24 * time.Hour).Unix()
@@ -83,7 +86,8 @@ func TestTaskFiltersTreatLegacyBlankExecutionTypeAsSingle(t *testing.T) {
 	if err := opened.Tasks().Create(ctx, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := store.db.ExecContext(ctx, `UPDATE tasks SET execution_type = '' WHERE id = ?`, task.ID); err != nil {
+	workspaceID, _ := auth.WorkspaceIDFromContext(ctx)
+	if _, err := store.db.ExecContext(ctx, `UPDATE tasks SET execution_type = '' WHERE workspace_id = ? AND id = ?`, workspaceID, task.ID); err != nil {
 		t.Fatalf("write legacy blank execution type: %v", err)
 	}
 

@@ -1,7 +1,6 @@
 package contracttest
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -18,7 +17,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "recurring daily review",
 			Content: "review PRs",
@@ -115,7 +114,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "upsert occurrence test",
 			Content: "test complete/reopen/skip",
@@ -166,7 +165,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected completed_at nil for skipped, got %v", skip.CompletedAt)
 		}
 
-		// Complete again (upsert done over skipped) — verify we can go back to done
+		// Complete again (upsert done over skipped) 閳?verify we can go back to done
 		completedAt2 := time.Date(2026, 6, 21, 14, 0, 0, 0, time.Local).Unix()
 		completeAgain, err := store.Recurrence().CompleteOccurrence(ctx, task.ID, date, completedAt2)
 		if err != nil {
@@ -184,7 +183,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Health Project",
 			Type: "regular",
@@ -254,7 +253,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "task to delete",
 			Content: "will be cascaded",
@@ -323,7 +322,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Summary Project",
 			Type: "learning",
@@ -402,7 +401,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		if summaries[0].OccurrenceDate == "2026-06-22" && summaries[1].OccurrenceDate == "2026-06-21" {
 			// correct order (descending by completed_at)
 		} else if summaries[0].OccurrenceDate == "2026-06-21" && summaries[1].OccurrenceDate == "2026-06-22" {
-			// Also acceptable — just verify the timestamps are decreasing
+			// Also acceptable 閳?just verify the timestamps are decreasing
 			if summaries[0].CompletedAt != nil && summaries[1].CompletedAt != nil {
 				if *summaries[0].CompletedAt < *summaries[1].CompletedAt {
 					t.Fatalf("expected summaries ordered by completed_at DESC, got %+v", summaries)
@@ -415,7 +414,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "count test task",
 			Content: "testing count",
@@ -452,7 +451,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected 3 occurrences, got %d", count)
 		}
 
-		// Skip one — count should remain the same (upsert, not insert)
+		// Skip one 閳?count should remain the same (upsert, not insert)
 		if _, err := store.Recurrence().SkipOccurrence(ctx, task.ID, dates[0]); err != nil {
 			t.Fatalf("skip occurrence: %v", err)
 		}
@@ -464,7 +463,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected 3 occurrences after skip (upsert, not new), got %d", count)
 		}
 
-		// Reopen one — count still the same
+		// Reopen one 閳?count still the same
 		if _, err := store.Recurrence().ReopenOccurrence(ctx, task.ID, dates[1]); err != nil {
 			t.Fatalf("reopen occurrence: %v", err)
 		}
@@ -500,7 +499,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "upsert rule test",
 			Content: "rule upsert",

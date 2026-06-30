@@ -1,7 +1,6 @@
 package contracttest
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -16,11 +15,11 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name:        "AI Infra Roadmap",
 			Type:        "learning",
-			Description: "系统学习",
+			Description: "provider migration learning path",
 		})
 		if err != nil {
 			t.Fatalf("create project: %v", err)
@@ -30,19 +29,19 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 		roadmap, err := store.Roadmaps().ReplaceLearningRoadmap(ctx, &model.LearningRoadmap{
 			ProjectID: project.ID,
 			Title:     "AI Infra Roadmap",
-			Goal:      "掌握系统设计",
+			Goal:      "learn provider architecture",
 			Status:    "ready",
 			Nodes: []model.RoadmapNode{
 				{
 					ID:                   "node-child-contract",
 					ParentID:             &parentID,
 					Type:                 "task",
-					Title:                "实现迁移",
-					Description:          "完成 provider 迁移",
+					Title:                "write provider tests",
+					Description:          "鐎瑰本鍨?provider 鏉╀胶些",
 					PathType:             "required",
 					Status:               "todo",
-					Deliverable:          "迁移 PR",
-					AcceptanceCriteria:   "测试通过",
+					Deliverable:          "鏉╀胶些 PR",
+					AcceptanceCriteria:   "濞村鐦柅姘崇箖",
 					X:                    30.5,
 					Y:                    40.5,
 					OrderIndex:           2,
@@ -51,7 +50,7 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 				{
 					ID:         parentID,
 					Type:       "phase",
-					Title:      "理解 schema",
+					Title:      "閻炲棜袙 schema",
 					PathType:   "required",
 					Status:     "active",
 					X:          12.5,
@@ -112,7 +111,7 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Node Lifecycle", Type: "learning"})
 		if err != nil {
 			t.Fatalf("create project: %v", err)
@@ -120,7 +119,7 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 		roadmap, err := store.Roadmaps().ReplaceLearningRoadmap(ctx, &model.LearningRoadmap{
 			ProjectID: project.ID,
 			Title:     "Node Lifecycle",
-			Goal:      "验证节点更新",
+			Goal:      "exercise node lifecycle",
 			Nodes:     []model.RoadmapNode{{ID: "root-node-contract", Title: "Root", Type: "phase"}},
 		})
 		if err != nil {
@@ -193,12 +192,12 @@ func RunRoadmapSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Failed Roadmap", Type: "learning"})
 		if err != nil {
 			t.Fatalf("create project: %v", err)
 		}
-		roadmap, err := store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, "失败路线图", "生成失败")
+		roadmap, err := store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, "failed roadmap", "generation failed")
 		if err != nil {
 			t.Fatalf("save failed roadmap: %v", err)
 		}

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
@@ -30,16 +29,11 @@ type TargetSyncResult struct {
 	Items           []model.SyncResultItem `json:"items"`
 }
 
-func SyncNote(noteID string) (*model.SyncResultItem, error) {
+func SyncNote(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
 	noteID = strings.TrimSpace(noteID)
 	if noteID == "" {
 		return nil, errors.New("note id is required")
 	}
-	store, err := currentSyncStore()
-	if err != nil {
-		return nil, err
-	}
-	ctx := context.Background()
 	binding, err := store.Sync().GetBinding(ctx, noteID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSyncBindingRequired
@@ -54,26 +48,25 @@ func SyncNote(noteID string) (*model.SyncResultItem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load sync target: %w", err)
 	}
-	return syncNoteToExplicitTarget(noteID, target)
+	return syncNoteToExplicitTarget(ctx, store, noteID, target)
 }
 
-func SyncTargetPush(targetID string) (model.SyncBatchResult, error) {
+func SyncTargetPush(ctx context.Context, store storage.Store, targetID string) (model.SyncBatchResult, error) {
 	targetID = strings.TrimSpace(targetID)
 	if targetID == "" {
 		return model.SyncBatchResult{}, ErrSyncTargetNotFound
 	}
-	store, target, err := loadSyncTargetForDispatch(targetID)
+	target, err := loadSyncTargetForDispatch(ctx, store, targetID)
 	if err != nil {
 		return model.SyncBatchResult{}, err
 	}
-	ctx := context.Background()
 	bindings, err := store.Sync().ListBindingsByTarget(ctx, target.ID)
 	if err != nil {
 		return model.SyncBatchResult{}, fmt.Errorf("list sync bindings: %w", err)
 	}
 	result := model.SyncBatchResult{Items: make([]model.SyncResultItem, 0, len(bindings))}
 	for _, binding := range bindings {
-		item, err := syncNoteToExplicitTarget(binding.NoteID, target)
+		item, err := syncNoteToExplicitTarget(ctx, store, binding.NoteID, target)
 		if err != nil {
 			result.Failed++
 			result.Items = append(result.Items, model.SyncResultItem{
@@ -93,23 +86,22 @@ func SyncTargetPush(targetID string) (model.SyncBatchResult, error) {
 	return result, nil
 }
 
-func SyncTargetPull(targetID string) (TargetSyncResult, error) {
+func SyncTargetPull(ctx context.Context, store storage.Store, targetID string) (TargetSyncResult, error) {
 	targetID = strings.TrimSpace(targetID)
 	if targetID == "" {
 		return TargetSyncResult{}, ErrSyncTargetNotFound
 	}
-	store, target, err := loadSyncTargetForDispatch(targetID)
+	target, err := loadSyncTargetForDispatch(ctx, store, targetID)
 	if err != nil {
 		return TargetSyncResult{}, err
 	}
-	ctx := context.Background()
 	if err := ensureTargetSyncHasNoForeignBindings(ctx, store, target.ID); err != nil {
 		return TargetSyncResult{}, err
 	}
 
 	switch target.Type {
 	case "obsidian":
-		return targetSyncResultFromObsidian(syncObsidianPullTarget(target)), nil
+		return targetSyncResultFromObsidian(syncObsidianPullTargetScoped(ctx, store, target)), nil
 	case "notion":
 		config, err := parseNotionTargetConfig(target)
 		if err != nil {
@@ -119,18 +111,18 @@ func SyncTargetPull(targetID string) (TargetSyncResult, error) {
 		if err != nil {
 			return TargetSyncResult{}, err
 		}
-		return targetSyncResultFromNotion(NewNotionSyncService(gateway).PullRemote(*target)), nil
+		return targetSyncResultFromNotion(pullNotionRemoteScoped(ctx, store, NewNotionSyncService(gateway), *target)), nil
 	default:
 		return TargetSyncResult{}, fmt.Errorf("unsupported sync target type %q", target.Type)
 	}
 }
 
-func SyncTargetBidirectional(targetID string) (TargetSyncResult, error) {
-	pullResult, err := SyncTargetPull(targetID)
+func SyncTargetBidirectional(ctx context.Context, store storage.Store, targetID string) (TargetSyncResult, error) {
+	pullResult, err := SyncTargetPull(ctx, store, targetID)
 	if err != nil {
 		return TargetSyncResult{}, err
 	}
-	pushResult, err := SyncTargetPush(targetID)
+	pushResult, err := SyncTargetPush(ctx, store, targetID)
 	if err != nil {
 		return TargetSyncResult{}, err
 	}
@@ -140,22 +132,18 @@ func SyncTargetBidirectional(targetID string) (TargetSyncResult, error) {
 	return pullResult, nil
 }
 
-func loadSyncTargetForDispatch(targetID string) (storage.Store, *model.SyncTarget, error) {
-	store, err := currentSyncStore()
-	if err != nil {
-		return nil, nil, err
-	}
-	target, err := store.Sync().GetTarget(context.Background(), targetID)
+func loadSyncTargetForDispatch(ctx context.Context, store storage.Store, targetID string) (*model.SyncTarget, error) {
+	target, err := store.Sync().GetTarget(ctx, targetID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, ErrSyncTargetNotFound
+		return nil, ErrSyncTargetNotFound
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("load sync target: %w", err)
+		return nil, fmt.Errorf("load sync target: %w", err)
 	}
 	if target == nil || !target.Enabled {
-		return nil, nil, ErrSyncTargetNotFound
+		return nil, ErrSyncTargetNotFound
 	}
-	return store, target, nil
+	return target, nil
 }
 
 func ensureTargetSyncHasNoForeignBindings(ctx context.Context, store storage.Store, targetID string) error {
@@ -255,14 +243,14 @@ func targetSyncResultFromNotion(result model.NotionBidirectionalResult) TargetSy
 	}
 }
 
-func syncNoteToExplicitTarget(noteID string, target *model.SyncTarget) (*model.SyncResultItem, error) {
+func syncNoteToExplicitTarget(ctx context.Context, store storage.Store, noteID string, target *model.SyncTarget) (*model.SyncResultItem, error) {
 	if target == nil {
 		return nil, ErrSyncTargetNotFound
 	}
 	if !target.Enabled {
 		return nil, fmt.Errorf("sync target is disabled")
 	}
-	note, err := repository.GetNoteByID(noteID)
+	note, err := store.Notes().GetByID(ctx, noteID)
 	if err != nil {
 		return nil, fmt.Errorf("load note: %w", err)
 	}
@@ -273,13 +261,13 @@ func syncNoteToExplicitTarget(noteID string, target *model.SyncTarget) (*model.S
 		}
 		return writeNoteToTarget(note, target)
 	case "notion":
-		return syncNoteToExplicitNotionTarget(note, *target)
+		return syncNoteToExplicitNotionTarget(ctx, store, note, *target)
 	default:
 		return nil, fmt.Errorf("unsupported sync target type %q", target.Type)
 	}
 }
 
-func syncNoteToExplicitNotionTarget(note *model.Note, target model.SyncTarget) (*model.SyncResultItem, error) {
+func syncNoteToExplicitNotionTarget(ctx context.Context, store storage.Store, note *model.Note, target model.SyncTarget) (*model.SyncResultItem, error) {
 	config, err := parseNotionTargetConfig(&target)
 	if err != nil {
 		return nil, err
@@ -290,7 +278,7 @@ func syncNoteToExplicitNotionTarget(note *model.Note, target model.SyncTarget) (
 	}
 	var state model.SyncState
 	hasState := false
-	existing, err := repository.GetSyncState(note.ID, target.ID)
+	existing, err := store.Sync().GetState(ctx, note.ID, target.ID)
 	if err == nil {
 		state = *existing
 		hasState = true
@@ -298,21 +286,19 @@ func syncNoteToExplicitNotionTarget(note *model.Note, target model.SyncTarget) (
 		return nil, fmt.Errorf("load notion sync state: %w", err)
 	}
 	if !hasState {
-		if store := repository.CurrentStore(); store != nil {
-			claim, err := store.Sync().GetExternalClaimByNote(context.Background(), note.ID)
-			if err == nil && claim.TargetID == target.ID && claim.ExternalType == "notion_page" && strings.TrimSpace(claim.ExternalID) != "" {
-				state = model.SyncState{
-					NoteID:       note.ID,
-					TargetID:     target.ID,
-					ExternalPath: notionExternalPath(claim.ExternalID),
-					ExternalID:   claim.ExternalID,
-					ExternalURL:  "",
-					Status:       "synced",
-				}
-				hasState = true
-			} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("load notion external claim: %w", err)
+		claim, err := store.Sync().GetExternalClaimByNote(ctx, note.ID)
+		if err == nil && claim.TargetID == target.ID && claim.ExternalType == "notion_page" && strings.TrimSpace(claim.ExternalID) != "" {
+			state = model.SyncState{
+				NoteID:       note.ID,
+				TargetID:     target.ID,
+				ExternalPath: notionExternalPath(claim.ExternalID),
+				ExternalID:   claim.ExternalID,
+				ExternalURL:  "",
+				Status:       "synced",
 			}
+			hasState = true
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("load notion external claim: %w", err)
 		}
 	}
 	item := NewNotionSyncService(gateway).pushNotionLocalNote(config, target, *note, state, hasState)
@@ -320,12 +306,4 @@ func syncNoteToExplicitNotionTarget(note *model.Note, target model.SyncTarget) (
 		return &item, errors.New(item.ErrorMessage)
 	}
 	return &item, nil
-}
-
-func currentSyncStore() (storage.Store, error) {
-	store := repository.CurrentStore()
-	if store == nil {
-		return nil, errors.New("storage provider is not initialized")
-	}
-	return store, nil
 }

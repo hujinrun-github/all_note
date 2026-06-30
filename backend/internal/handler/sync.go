@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,98 +11,109 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/service"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func ListSyncTargets(c *gin.Context) {
-	targets, err := repository.ListSyncTargets()
-	if err != nil {
-		internalError(c, "failed to list sync targets")
-		return
+var (
+	errSyncTargetInUse          = errors.New("sync target is in use")
+	errSyncTargetIdentityLocked = errors.New("sync target identity is locked")
+)
+
+func ListSyncTargets(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		targets, err := store.Sync().ListTargets(c.Request.Context())
+		if err != nil {
+			internalError(c, "failed to list sync targets")
+			return
+		}
+		success(c, gin.H{"targets": targets})
 	}
-	success(c, gin.H{"targets": targets})
 }
 
-func SaveSyncTarget(c *gin.Context) {
-	var req model.SaveSyncTargetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "invalid sync target")
-		return
+func SaveSyncTarget(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req model.SaveSyncTargetRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			badRequest(c, "invalid sync target")
+			return
+		}
+		target := syncTargetFromRequest(&req)
+		if err := validateSyncTargetRequest(target); err != nil {
+			badRequest(c, err.Error())
+			return
+		}
+		if req.IsDefault == nil {
+			target.IsDefault = true
+		}
+		if err := store.Sync().SaveTarget(c.Request.Context(), target); err != nil {
+			internalError(c, "failed to save sync target")
+			return
+		}
+		success(c, gin.H{"target": target})
 	}
-
-	target := syncTargetFromRequest(&req)
-	if err := validateSyncTargetRequest(target); err != nil {
-		badRequest(c, err.Error())
-		return
-	}
-	if req.IsDefault == nil {
-		target.IsDefault = true
-	}
-	if err := repository.SaveSyncTarget(target); err != nil {
-		internalError(c, "failed to save sync target")
-		return
-	}
-	success(c, gin.H{"target": target})
 }
 
-func UpdateSyncTarget(c *gin.Context) {
-	var req model.SaveSyncTargetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "invalid sync target")
-		return
+func UpdateSyncTarget(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req model.SaveSyncTargetRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			badRequest(c, "invalid sync target")
+			return
+		}
+		target := syncTargetFromRequest(&req)
+		target.ID = c.Param("id")
+		if strings.TrimSpace(target.ID) == "" {
+			badRequest(c, "sync target id is required")
+			return
+		}
+		if err := validateSyncTargetRequest(target); err != nil {
+			badRequest(c, err.Error())
+			return
+		}
+		err := updateSyncTargetGuarded(c.Request.Context(), store, target, req.IsDefault == nil, syncTargetIdentityChanged)
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "sync target not found")
+			return
+		}
+		if errors.Is(err, errSyncTargetIdentityLocked) {
+			errorResponse(c, http.StatusConflict, "target_identity_locked", "sync target identity is locked")
+			return
+		}
+		if err != nil && strings.Contains(err.Error(), "sync target config") {
+			badRequest(c, err.Error())
+			return
+		}
+		if err != nil {
+			internalError(c, "failed to update sync target")
+			return
+		}
+		success(c, gin.H{"target": target})
 	}
-
-	target := syncTargetFromRequest(&req)
-	target.ID = c.Param("id")
-	if target.ID == "" {
-		badRequest(c, "sync target id is required")
-		return
-	}
-	if err := validateSyncTargetRequest(target); err != nil {
-		badRequest(c, err.Error())
-		return
-	}
-	err := repository.UpdateSyncTargetGuarded(target, req.IsDefault == nil, syncTargetIdentityChanged)
-	if errors.Is(err, sql.ErrNoRows) {
-		notFound(c, "sync target not found")
-		return
-	}
-	if errors.Is(err, repository.ErrSyncTargetIdentityLocked) {
-		errorResponse(c, http.StatusConflict, "target_identity_locked", "同步目标已被使用，不能修改身份字段")
-		return
-	}
-	if err != nil && strings.Contains(err.Error(), "sync target config") {
-		badRequest(c, err.Error())
-		return
-	}
-	if err != nil {
-		internalError(c, "failed to update sync target")
-		return
-	}
-	success(c, gin.H{"target": target})
 }
 
-func DeleteSyncTarget(c *gin.Context) {
-	targetID := strings.TrimSpace(c.Param("id"))
-	if targetID == "" {
-		badRequest(c, "sync target id is required")
-		return
+func DeleteSyncTarget(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		targetID := strings.TrimSpace(c.Param("id"))
+		if targetID == "" {
+			badRequest(c, "sync target id is required")
+			return
+		}
+		err := deleteSyncTargetGuarded(c.Request.Context(), store, targetID)
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "sync target not found")
+			return
+		}
+		if errors.Is(err, errSyncTargetInUse) {
+			errorResponse(c, http.StatusConflict, "target_in_use", "sync target is in use")
+			return
+		}
+		if err != nil {
+			internalError(c, "failed to delete sync target")
+			return
+		}
+		noContent(c)
 	}
-	err := repository.DeleteSyncTargetGuarded(targetID)
-	if errors.Is(err, sql.ErrNoRows) {
-		notFound(c, "sync target not found")
-		return
-	}
-	if errors.Is(err, repository.ErrSyncTargetInUse) {
-		errorResponse(c, http.StatusConflict, "target_in_use", "同步目标已被使用，不能删除")
-		return
-	}
-	if err != nil {
-		internalError(c, "failed to delete sync target")
-		return
-	}
-	noContent(c)
 }
 
 func TestObsidianTarget(c *gin.Context) {
@@ -110,7 +122,6 @@ func TestObsidianTarget(c *gin.Context) {
 		badRequest(c, "invalid sync target")
 		return
 	}
-
 	target := syncTargetFromRequest(&req)
 	target.Enabled = true
 	if err := service.TestObsidianTarget(target); err != nil {
@@ -126,7 +137,6 @@ func TestNotionTarget(c *gin.Context) {
 		badRequest(c, "invalid sync target")
 		return
 	}
-
 	target := syncTargetFromRequest(&req)
 	target.Type = "notion"
 	target.Enabled = true
@@ -137,100 +147,118 @@ func TestNotionTarget(c *gin.Context) {
 	success(c, gin.H{"ok": true})
 }
 
-func SyncObsidianNote(c *gin.Context) {
-	noteID := strings.TrimSpace(c.Param("id"))
-	if !ensureLegacyNoteSyncCompatible(c, noteID, "obsidian") {
-		return
+func SyncObsidianNote(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		noteID := strings.TrimSpace(c.Param("id"))
+		if !ensureLegacyNoteSyncCompatible(c, store, noteID, "obsidian") {
+			return
+		}
+		item, err := service.SyncNoteToObsidian(noteID)
+		if err != nil {
+			internalError(c, err.Error())
+			return
+		}
+		success(c, gin.H{"item": item})
 	}
-	item, err := service.SyncNoteToObsidian(noteID)
-	if err != nil {
-		internalError(c, err.Error())
-		return
-	}
-	success(c, gin.H{"item": item})
 }
 
-func SyncNotionNote(c *gin.Context) {
-	noteID := strings.TrimSpace(c.Param("id"))
-	if noteID == "" {
-		badRequest(c, "note id is required")
-		return
+func SyncNotionNote(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		noteID := strings.TrimSpace(c.Param("id"))
+		if noteID == "" {
+			badRequest(c, "note id is required")
+			return
+		}
+		if !ensureLegacyNoteSyncCompatible(c, store, noteID, "notion") {
+			return
+		}
+		item, err := service.SyncNoteToNotion(noteID)
+		if err != nil {
+			notionNoteSyncError(c, err)
+			return
+		}
+		success(c, gin.H{"item": item})
 	}
-	if !ensureLegacyNoteSyncCompatible(c, noteID, "notion") {
-		return
-	}
-	item, err := service.SyncNoteToNotion(noteID)
-	if err != nil {
-		notionNoteSyncError(c, err)
-		return
-	}
-	success(c, gin.H{"item": item})
 }
 
-func SyncObsidianFolder(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
-		return
+func SyncObsidianFolder(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "obsidian") {
+			return
+		}
+		notes, _, err := service.GetNotes(c.Request.Context(), store, c.Param("folder_id"), "", "recent", false, 1, 10000)
+		if err != nil {
+			internalError(c, "failed to load notes")
+			return
+		}
+		result := service.SyncNotesToObsidian(notes)
+		success(c, gin.H{"result": result})
 	}
-	notes, _, err := service.GetNotes(c.Param("folder_id"), "", "recent", false, 1, 10000)
-	if err != nil {
-		internalError(c, "failed to load notes")
-		return
-	}
-	result := service.SyncNotesToObsidian(notes)
-	success(c, gin.H{"result": result})
 }
 
-func SyncObsidianAll(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
-		return
+func SyncObsidianAll(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "obsidian") {
+			return
+		}
+		notes, _, err := service.GetNotes(c.Request.Context(), store, "", "", "recent", false, 1, 10000)
+		if err != nil {
+			internalError(c, "failed to load notes")
+			return
+		}
+		result := service.SyncNotesToObsidian(notes)
+		success(c, gin.H{"result": result})
 	}
-	notes, _, err := service.GetNotes("", "", "recent", false, 1, 10000)
-	if err != nil {
-		internalError(c, "failed to load notes")
-		return
-	}
-	result := service.SyncNotesToObsidian(notes)
-	success(c, gin.H{"result": result})
 }
 
-func SyncNotionAll(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "notion") {
-		return
+func SyncNotionAll(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "notion") {
+			return
+		}
+		result := service.SyncNotionAll()
+		success(c, gin.H{"result": result})
 	}
-	result := service.SyncNotionAll()
-	success(c, gin.H{"result": result})
 }
 
-func SyncObsidianPull(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
-		return
+func SyncObsidianPull(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "obsidian") {
+			return
+		}
+		result := service.SyncObsidianPull()
+		success(c, gin.H{"result": result})
 	}
-	result := service.SyncObsidianPull()
-	success(c, gin.H{"result": result})
 }
 
-func SyncNotionPull(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "notion") {
-		return
+func SyncNotionPull(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "notion") {
+			return
+		}
+		result := service.SyncNotionPull()
+		success(c, gin.H{"result": result})
 	}
-	result := service.SyncNotionPull()
-	success(c, gin.H{"result": result})
 }
 
-func SyncObsidianBidirectional(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "obsidian") {
-		return
+func SyncObsidianBidirectional(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "obsidian") {
+			return
+		}
+		result := service.SyncObsidianBidirectional()
+		success(c, gin.H{"result": result})
 	}
-	result := service.SyncObsidianBidirectional()
-	success(c, gin.H{"result": result})
 }
 
-func SyncNotionBidirectional(c *gin.Context) {
-	if !ensureLegacyBatchSyncCompatible(c, "notion") {
-		return
+func SyncNotionBidirectional(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !ensureLegacyBatchSyncCompatible(c, store, "notion") {
+			return
+		}
+		result := service.SyncNotionBidirectional()
+		success(c, gin.H{"result": result})
 	}
-	result := service.SyncNotionBidirectional()
-	success(c, gin.H{"result": result})
 }
 
 func ListObsidianDeletions(c *gin.Context) {
@@ -320,40 +348,10 @@ func notionNoteSyncError(c *gin.Context, err error) {
 	}
 }
 
-func GetNoteSyncState(c *gin.Context) {
-	if store := repository.CurrentStore(); store != nil {
+func GetNoteSyncState(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		getNoteSyncStateWithStore(c, store)
-		return
 	}
-	targetType := strings.TrimSpace(c.Query("target"))
-	if targetType == "" {
-		targetType = "obsidian"
-	}
-	if targetType != "obsidian" && targetType != "notion" {
-		badRequest(c, "unsupported sync target")
-		return
-	}
-
-	target, err := repository.GetDefaultSyncTarget(targetType)
-	if err == sql.ErrNoRows {
-		success(c, gin.H{"state": nil})
-		return
-	}
-	if err != nil {
-		internalError(c, "failed to get sync target")
-		return
-	}
-
-	state, err := repository.GetSyncState(c.Param("id"), target.ID)
-	if err == sql.ErrNoRows {
-		success(c, gin.H{"state": nil})
-		return
-	}
-	if err != nil {
-		internalError(c, "failed to get sync state")
-		return
-	}
-	success(c, gin.H{"state": state})
 }
 
 func syncTargetFromRequest(req *model.SaveSyncTargetRequest) *model.SyncTarget {
@@ -386,6 +384,76 @@ func validateSyncTargetRequest(target *model.SyncTarget) error {
 		return errors.New("obsidian sync target requires vault_path and base_folder")
 	}
 	return nil
+}
+
+type syncTargetIdentityChangedFunc func(existing, proposed *model.SyncTarget) (bool, error)
+
+func updateSyncTargetGuarded(ctx context.Context, store storage.Store, target *model.SyncTarget, preserveIsDefault bool, identityChanged syncTargetIdentityChangedFunc) error {
+	if target == nil {
+		return errors.New("sync target is nil")
+	}
+	return store.Transact(ctx, func(tx storage.Store) error {
+		existing, err := tx.Sync().LockTarget(ctx, target.ID)
+		if err != nil {
+			return err
+		}
+		target.CreatedAt = existing.CreatedAt
+		if preserveIsDefault {
+			target.IsDefault = existing.IsDefault
+		}
+		inUse, err := syncTargetInUse(ctx, tx.Sync(), target.ID)
+		if err != nil {
+			return err
+		}
+		if inUse {
+			changed, err := identityChanged(existing, target)
+			if err != nil {
+				return err
+			}
+			if changed {
+				return errSyncTargetIdentityLocked
+			}
+		}
+		return tx.Sync().SaveTarget(ctx, target)
+	})
+}
+
+func deleteSyncTargetGuarded(ctx context.Context, store storage.Store, targetID string) error {
+	return store.Transact(ctx, func(tx storage.Store) error {
+		if _, err := tx.Sync().LockTarget(ctx, targetID); err != nil {
+			return err
+		}
+		inUse, err := syncTargetInUse(ctx, tx.Sync(), targetID)
+		if err != nil {
+			return err
+		}
+		if inUse {
+			return errSyncTargetInUse
+		}
+		return tx.Sync().DeleteTarget(ctx, targetID)
+	})
+}
+
+func syncTargetInUse(ctx context.Context, repo storage.SyncRepository, targetID string) (bool, error) {
+	bindings, err := repo.CountBindingsByTarget(ctx, targetID)
+	if err != nil {
+		return false, err
+	}
+	if bindings > 0 {
+		return true, nil
+	}
+	claims, err := repo.CountClaimsByTarget(ctx, targetID)
+	if err != nil {
+		return false, err
+	}
+	if claims > 0 {
+		return true, nil
+	}
+	states, err := repo.CountStatesByTarget(ctx, targetID)
+	if err != nil {
+		return false, err
+	}
+	return states > 0, nil
 }
 
 func syncTargetIdentityChanged(existing, next *model.SyncTarget) (bool, error) {

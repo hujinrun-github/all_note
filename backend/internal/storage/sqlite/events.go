@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -14,11 +15,15 @@ type eventRepository struct {
 }
 
 func (r eventRepository) List(ctx context.Context, start, end int64, page, pageSize int) ([]model.Event, int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	var total int
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM events
-		WHERE start_time < ? AND end_time > ?
-	`, end, start).Scan(&total); err != nil {
+		WHERE workspace_id = ? AND start_time < ? AND end_time > ?
+	`, workspaceID, end, start).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if page <= 0 {
@@ -31,9 +36,9 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, start_time, end_time, location, kind, note_id, created_at, updated_at
 		FROM events
-		WHERE start_time < ? AND end_time > ?
+		WHERE workspace_id = ? AND start_time < ? AND end_time > ?
 		ORDER BY start_time ASC LIMIT ? OFFSET ?
-	`, end, start, pageSize, offset)
+	`, workspaceID, end, start, pageSize, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -46,6 +51,10 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 }
 
 func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	event.ID = newID()
 	now := nowUnix()
 	event.CreatedAt = now
@@ -53,14 +62,18 @@ func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
 	if event.Kind == "" {
 		event.Kind = "work"
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO events (id, title, start_time, end_time, location, kind, note_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.ID, event.Title, event.StartTime, event.EndTime, event.Location, event.Kind, event.NoteID, event.CreatedAt, event.UpdatedAt)
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO events (id, title, start_time, end_time, location, kind, note_id, created_at, updated_at, workspace_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.ID, event.Title, event.StartTime, event.EndTime, event.Location, event.Kind, event.NoteID, event.CreatedAt, event.UpdatedAt, workspaceID)
 	return err
 }
 
 func (r eventRepository) Update(ctx context.Context, id string, req *model.UpdateEventRequest) (*model.Event, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 	if req.Title != nil {
@@ -84,29 +97,42 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 		args = append(args, *req.Kind)
 	}
 	args = append(args, id)
-	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = ?", strings.Join(sets, ", ")), args...); err != nil {
+	args = append(args, workspaceID)
+	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = ? AND workspace_id = ?", strings.Join(sets, ", ")), args...); err != nil {
 		return nil, err
 	}
 	return r.GetByID(ctx, id)
 }
 
 func (r eventRepository) GetByID(ctx context.Context, id string) (*model.Event, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanSQLiteEvent(r.db.QueryRowContext(ctx, `
 		SELECT id, title, start_time, end_time, location, kind, note_id, created_at, updated_at
-		FROM events WHERE id = ?
-	`, id))
+		FROM events WHERE workspace_id = ? AND id = ?
+	`, workspaceID, id))
 }
 
 func (r eventRepository) Delete(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM events WHERE id = ?", id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, "DELETE FROM events WHERE workspace_id = ? AND id = ?", workspaceID, id)
 	return err
 }
 
 func (r eventRepository) Today(ctx context.Context, start, end int64) ([]model.Event, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, start_time, end_time, location, kind, note_id, created_at, updated_at
-		FROM events WHERE start_time < ? AND end_time > ? ORDER BY start_time ASC
-	`, end, start)
+		FROM events WHERE workspace_id = ? AND start_time < ? AND end_time > ? ORDER BY start_time ASC
+	`, workspaceID, end, start)
 	if err != nil {
 		return nil, err
 	}

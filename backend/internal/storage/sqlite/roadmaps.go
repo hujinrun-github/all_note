@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -18,15 +19,19 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 	if roadmap == nil {
 		return nil, fmt.Errorf("roadmap is nil")
 	}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r.applyRoadmapDefaults(roadmap)
 	if err := r.withTx(ctx, func(tx sqliteRunner) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM learning_roadmaps WHERE project_id = ?`, roadmap.ProjectID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM learning_roadmaps WHERE workspace_id = ? AND project_id = ?`, workspaceID, roadmap.ProjectID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO learning_roadmaps (id, project_id, title, goal, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, roadmap.ID, roadmap.ProjectID, roadmap.Title, roadmap.Goal, roadmap.Status, roadmap.CreatedAt, roadmap.UpdatedAt); err != nil {
+			INSERT INTO learning_roadmaps (id, project_id, workspace_id, title, goal, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, roadmap.ID, roadmap.ProjectID, workspaceID, roadmap.Title, roadmap.Goal, roadmap.Status, roadmap.CreatedAt, roadmap.UpdatedAt); err != nil {
 			return err
 		}
 		for index := range roadmap.Nodes {
@@ -82,19 +87,27 @@ func (r roadmapRepository) SaveFailedLearningRoadmap(ctx context.Context, projec
 }
 
 func (r roadmapRepository) GetLearningRoadmap(ctx context.Context, projectID string) (*model.LearningRoadmap, error) {
-	return r.loadLearningRoadmap(ctx, `WHERE project_id = ?`, projectID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadLearningRoadmap(ctx, `WHERE workspace_id = ? AND project_id = ?`, workspaceID, projectID)
 }
 
 func (r roadmapRepository) GetLearningRoadmapByID(ctx context.Context, roadmapID string) (*model.LearningRoadmap, error) {
-	return r.loadLearningRoadmap(ctx, `WHERE id = ?`, roadmapID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadLearningRoadmap(ctx, `WHERE workspace_id = ? AND id = ?`, workspaceID, roadmapID)
 }
 
-func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string, arg interface{}) (*model.LearningRoadmap, error) {
+func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string, args ...interface{}) (*model.LearningRoadmap, error) {
 	var roadmap model.LearningRoadmap
 	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT id, project_id, title, goal, status, created_at, updated_at
 		FROM learning_roadmaps %s
-	`, where), arg).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &roadmap.CreatedAt, &roadmap.UpdatedAt)
+	`, where), args...).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &roadmap.CreatedAt, &roadmap.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

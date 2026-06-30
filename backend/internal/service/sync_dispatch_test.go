@@ -9,17 +9,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/provisioning"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
 )
 
 func TestSyncNoteRequiresBinding(t *testing.T) {
-	openServiceSyncStoreTestDB(t)
+	store := openServiceSyncStoreTestDB(t)
 	note := createServiceStoreNote(t, "Unbound", "Body\n", "[]")
 
-	_, err := SyncNote(note.ID)
+	_, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if !errors.Is(err, ErrSyncBindingRequired) {
 		t.Fatalf("error = %v, want ErrSyncBindingRequired", err)
@@ -33,7 +35,7 @@ func TestSyncNoteDispatchesToBoundObsidianTarget(t *testing.T) {
 	note := createServiceStoreNote(t, "Bound Obsidian", "Body\n", "[]")
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("sync note: %v", err)
@@ -53,7 +55,7 @@ func TestObsidianPushReservesClaimBeforeWrite(t *testing.T) {
 	note := createServiceStoreNote(t, "Claimed Obsidian", "Body\n", "[]")
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("sync note: %v", err)
@@ -97,7 +99,7 @@ func TestObsidianPushClaimFailureDoesNotWriteFile(t *testing.T) {
 		t.Fatalf("put owner claim: %v", err)
 	}
 
-	_, err = SyncNote(blocked.ID)
+	_, err = SyncNote(serviceSyncTestContext(t), store, blocked.ID)
 
 	if err == nil {
 		t.Fatal("expected claim conflict")
@@ -122,7 +124,7 @@ func TestSyncNoteDispatchesToBoundNotionTarget(t *testing.T) {
 	note := createServiceStoreNote(t, "Bound Notion", "Body\n", "[]")
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("sync note: %v", err)
@@ -143,7 +145,7 @@ func TestSyncNoteIgnoresRequiredTagsForExplicitBoundNote(t *testing.T) {
 	note := createServiceStoreNote(t, "No Sync Tag", "Body\n", "[]")
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("sync note: %v", err)
@@ -170,7 +172,7 @@ func TestNotionUpdateUsesExistingClaim(t *testing.T) {
 		t.Fatalf("put claim: %v", err)
 	}
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("sync note: %v", err)
@@ -214,7 +216,7 @@ func TestNotionUpdateRejectsStaleStateClaimBeforeRemoteWrite(t *testing.T) {
 		t.Fatalf("put conflicting claim: %v", err)
 	}
 
-	_, err := SyncNote(noteA.ID)
+	_, err := SyncNote(serviceSyncTestContext(t), store, noteA.ID)
 
 	if err == nil || !strings.Contains(err.Error(), ErrSyncClaimConflict.Error()) {
 		t.Fatalf("error = %v, want claim conflict", err)
@@ -232,7 +234,7 @@ func TestNotionCreatePageRecordsClaimAndState(t *testing.T) {
 	note := createServiceStoreNote(t, "Claimed Notion", "Body\n", "[]")
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("sync note: %v", err)
@@ -270,7 +272,7 @@ func TestNotionCreatePageDatabaseFailureLeavesRecoverableFlowSpaceID(t *testing.
 		remaining: &remainingFailures,
 	})
 
-	_, err := SyncNote(note.ID)
+	_, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err == nil {
 		t.Fatal("expected first sync to fail after remote create")
@@ -279,7 +281,7 @@ func TestNotionCreatePageDatabaseFailureLeavesRecoverableFlowSpaceID(t *testing.
 		t.Fatalf("created after first sync = %#v, want one created page", fake.created)
 	}
 
-	item, err := SyncNote(note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
 
 	if err != nil {
 		t.Fatalf("retry sync note: %v", err)
@@ -315,7 +317,7 @@ func TestTargetPushOnlyProcessesBoundNotesForTarget(t *testing.T) {
 	unboundTagged := createServiceStoreNote(t, "Unbound Tagged", "Body\n", `["sync"]`)
 	putServiceStoreBinding(t, store, bound.ID, target.ID)
 
-	result, err := SyncTargetPush(target.ID)
+	result, err := SyncTargetPush(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target push: %v", err)
@@ -329,14 +331,14 @@ func TestTargetPushOnlyProcessesBoundNotesForTarget(t *testing.T) {
 }
 
 func TestTargetPushRejectsDisabledTarget(t *testing.T) {
-	openServiceSyncStoreTestDB(t)
+	store := openServiceSyncStoreTestDB(t)
 	target := saveServiceStoreNotionTarget(t, `{"data_source_id":"ds-123"}`)
 	target.Enabled = false
 	if err := repository.SaveSyncTarget(&target); err != nil {
 		t.Fatalf("disable target: %v", err)
 	}
 
-	_, err := SyncTargetPush(target.ID)
+	_, err := SyncTargetPush(serviceSyncTestContext(t), store, target.ID)
 
 	if !errors.Is(err, ErrSyncTargetNotFound) {
 		t.Fatalf("error = %v, want ErrSyncTargetNotFound", err)
@@ -363,7 +365,7 @@ func TestTargetPullRejectsBindingConflict(t *testing.T) {
 		t.Fatalf("upsert sync state: %v", err)
 	}
 
-	_, err := SyncTargetPull(targetB.ID)
+	_, err := SyncTargetPull(serviceSyncTestContext(t), store, targetB.ID)
 
 	if !errors.Is(err, ErrSyncBindingConflict) {
 		t.Fatalf("error = %v, want ErrSyncBindingConflict", err)
@@ -391,7 +393,7 @@ func TestNotionPullDoesNotAutoBindSuppressedNote(t *testing.T) {
 		Tags:        []string{"sync"},
 	}}
 
-	result, err := SyncTargetPull(target.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -402,7 +404,7 @@ func TestNotionPullDoesNotAutoBindSuppressedNote(t *testing.T) {
 	if _, err := store.Sync().GetBinding(t.Context(), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
 	}
-	got, err := repository.GetNoteByID(note.ID)
+	got, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID)
 	if err != nil {
 		t.Fatalf("get note: %v", err)
 	}
@@ -427,7 +429,7 @@ func TestNotionPullDetectsForeignBindingByFlowSpaceID(t *testing.T) {
 		Tags:        []string{"sync"},
 	}}
 
-	result, err := SyncTargetPull(targetB.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, targetB.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -435,7 +437,7 @@ func TestNotionPullDetectsForeignBindingByFlowSpaceID(t *testing.T) {
 	if result.Failed != 1 || len(result.Items) != 1 || result.Items[0].ErrorMessage != ErrSyncBindingConflict.Error() {
 		t.Fatalf("result = %+v", result)
 	}
-	got, err := repository.GetNoteByID(note.ID)
+	got, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID)
 	if err != nil {
 		t.Fatalf("get note: %v", err)
 	}
@@ -468,7 +470,7 @@ func TestNotionPullChecksTombstoneByFormerNoteID(t *testing.T) {
 		Tags:        []string{"sync"},
 	}}
 
-	result, err := SyncTargetPull(target.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -476,7 +478,7 @@ func TestNotionPullChecksTombstoneByFormerNoteID(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].Status != "import_tombstoned" {
 		t.Fatalf("result = %+v", result)
 	}
-	if _, err := repository.GetNoteByID(formerNoteID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(serviceSyncTestContext(t), formerNoteID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -502,7 +504,7 @@ func TestTargetPullRejectsObsidianFlowSpaceIDBoundToAnotherTarget(t *testing.T) 
 		t.Fatalf("write markdown: %v", err)
 	}
 
-	result, err := SyncTargetPull(targetB.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, targetB.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -513,7 +515,7 @@ func TestTargetPullRejectsObsidianFlowSpaceIDBoundToAnotherTarget(t *testing.T) 
 	if result.Items[0].ErrorMessage != ErrSyncBindingConflict.Error() {
 		t.Fatalf("error message = %q, want %q", result.Items[0].ErrorMessage, ErrSyncBindingConflict.Error())
 	}
-	got, err := repository.GetNoteByID(note.ID)
+	got, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID)
 	if err != nil {
 		t.Fatalf("get note: %v", err)
 	}
@@ -547,7 +549,7 @@ func TestObsidianPullDoesNotAutoBindSuppressedNote(t *testing.T) {
 		t.Fatalf("write markdown: %v", err)
 	}
 
-	result, err := SyncTargetPull(target.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -558,7 +560,7 @@ func TestObsidianPullDoesNotAutoBindSuppressedNote(t *testing.T) {
 	if _, err := store.Sync().GetBinding(t.Context(), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
 	}
-	got, err := repository.GetNoteByID(note.ID)
+	got, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID)
 	if err != nil {
 		t.Fatalf("get note: %v", err)
 	}
@@ -585,7 +587,7 @@ func TestObsidianPullAutoBindsUnsuppressedNote(t *testing.T) {
 		t.Fatalf("write markdown: %v", err)
 	}
 
-	result, err := SyncTargetPull(target.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -600,7 +602,7 @@ func TestObsidianPullAutoBindsUnsuppressedNote(t *testing.T) {
 	if binding.TargetID != target.ID {
 		t.Fatalf("target_id = %q, want %q", binding.TargetID, target.ID)
 	}
-	got, err := repository.GetNoteByID(note.ID)
+	got, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID)
 	if err != nil {
 		t.Fatalf("get note: %v", err)
 	}
@@ -637,7 +639,7 @@ func TestObsidianPullChecksTombstoneAfterPathRename(t *testing.T) {
 		t.Fatalf("write markdown: %v", err)
 	}
 
-	result, err := SyncTargetPull(target.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -645,7 +647,7 @@ func TestObsidianPullChecksTombstoneAfterPathRename(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].Status != "import_tombstoned" {
 		t.Fatalf("result = %+v", result)
 	}
-	if _, err := repository.GetNoteByID(formerNoteID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(serviceSyncTestContext(t), formerNoteID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -695,10 +697,10 @@ func TestObsidianConfirmDeletionUsesTargetID(t *testing.T) {
 	}
 	_ = targetA
 
-	if err := ConfirmObsidianDeletionForTarget(note.ID, targetB.ID); err != nil {
+	if err := ConfirmObsidianDeletionForTargetScoped(serviceSyncTestContext(t), repository.CurrentStore(), note.ID, targetB.ID); err != nil {
 		t.Fatalf("confirm deletion: %v", err)
 	}
-	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := repository.CurrentStore().Notes().GetByID(serviceSyncTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 	tombstone, err := repository.CurrentStore().Sync().FindImportTombstone(t.Context(), targetB.ID, externalKey, note.ID, "obsidian_file")
@@ -723,7 +725,7 @@ func TestObsidianRestoreDeletionUsesTargetID(t *testing.T) {
 	putServiceStoreBinding(t, repository.CurrentStore(), note.ID, targetB.ID)
 	_ = targetA
 
-	item, err := RestoreObsidianDeletionForTarget(note.ID, targetB.ID)
+	item, err := RestoreObsidianDeletionForTargetScoped(serviceSyncTestContext(t), repository.CurrentStore(), note.ID, targetB.ID)
 
 	if err != nil {
 		t.Fatalf("restore deletion: %v", err)
@@ -772,10 +774,10 @@ func TestNotionConfirmDeletionUsesTargetID(t *testing.T) {
 		t.Fatalf("put external claim: %v", err)
 	}
 
-	if err := ConfirmNotionDeletionForTarget(note.ID, target.ID); err != nil {
+	if err := ConfirmNotionDeletionForTargetScoped(serviceSyncTestContext(t), repository.CurrentStore(), note.ID, target.ID); err != nil {
 		t.Fatalf("confirm deletion: %v", err)
 	}
-	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 	tombstone, err := store.Sync().FindImportTombstone(t.Context(), target.ID, "notion:page-confirm", note.ID, "notion_page")
@@ -796,7 +798,7 @@ func TestNotionRestoreDeletionUsesTargetID(t *testing.T) {
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 	putNotionExternalDeletedStateForServiceTest(t, note.ID, target.ID, "page-restore")
 
-	item, err := RestoreNotionDeletionForTarget(note.ID, target.ID)
+	item, err := RestoreNotionDeletionForTargetScoped(serviceSyncTestContext(t), repository.CurrentStore(), note.ID, target.ID)
 
 	if err != nil {
 		t.Fatalf("restore deletion: %v", err)
@@ -823,7 +825,7 @@ func TestTargetPullImportsNewObsidianNoteWithBinding(t *testing.T) {
 		t.Fatalf("write markdown: %v", err)
 	}
 
-	result, err := SyncTargetPull(target.ID)
+	result, err := SyncTargetPull(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target pull: %v", err)
@@ -849,7 +851,7 @@ func TestTargetBidirectionalUsesTargetScope(t *testing.T) {
 	unboundTagged := createServiceStoreNote(t, "Unbound Bidirectional", "Body\n", `["sync"]`)
 	putServiceStoreBinding(t, store, bound.ID, target.ID)
 
-	result, err := SyncTargetBidirectional(target.ID)
+	result, err := SyncTargetBidirectional(serviceSyncTestContext(t), store, target.ID)
 
 	if err != nil {
 		t.Fatalf("target bidirectional: %v", err)
@@ -873,6 +875,9 @@ func openServiceSyncStoreTestDB(t *testing.T) storage.Store {
 	if err != nil {
 		t.Fatalf("open sqlite store: %v", err)
 	}
+	if err := provisioning.EnsureDefaultWorkspaceData(serviceSyncTestContext(t), store); err != nil {
+		t.Fatalf("seed workspace defaults: %v", err)
+	}
 	repository.SetStore(store)
 	t.Cleanup(func() {
 		repository.SetStore(nil)
@@ -881,6 +886,11 @@ func openServiceSyncStoreTestDB(t *testing.T) storage.Store {
 		}
 	})
 	return store
+}
+
+func serviceSyncTestContext(t *testing.T) context.Context {
+	t.Helper()
+	return auth.ContextWithWorkspaceScope(t.Context(), "service-sync-test-workspace")
 }
 
 func saveServiceStoreObsidianTarget(t *testing.T, vault string) model.SyncTarget {
@@ -927,8 +937,17 @@ func saveServiceStoreNotionTargetNamed(t *testing.T, name string, configJSON str
 
 func createServiceStoreNote(t *testing.T, title string, body string, tags string) model.Note {
 	t.Helper()
-	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: tags}
-	if err := repository.CreateNote(note); err != nil {
+	store := repository.CurrentStore()
+	if store == nil {
+		t.Fatal("no service test store is configured")
+	}
+	note, err := store.Notes().Create(serviceSyncTestContext(t), &model.CreateNoteRequest{
+		Title:    title,
+		Body:     body,
+		FolderID: "__uncategorized",
+		Tags:     tags,
+	})
+	if err != nil {
 		t.Fatalf("create note: %v", err)
 	}
 	return *note

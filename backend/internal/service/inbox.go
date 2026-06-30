@@ -1,108 +1,119 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetInboxItems(kind string, page, pageSize int) ([]model.InboxItem, int, error) {
-	return repository.GetInboxItems(kind, page, pageSize)
+func GetInboxItems(ctx context.Context, store storage.Store, kind string, page, pageSize int) ([]model.InboxItem, int, error) {
+	return store.Inbox().List(ctx, kind, page, pageSize)
 }
 
-func CreateInboxItem(req *model.CreateInboxRequest) (*model.InboxItem, error) {
+func CreateInboxItem(ctx context.Context, store storage.Store, req *model.CreateInboxRequest) (*model.InboxItem, error) {
 	item := &model.InboxItem{
 		Kind:  req.Kind,
 		Title: req.Title,
 		Body:  req.Body,
 	}
-	if err := repository.CreateInboxItem(item); err != nil {
+	if err := store.Inbox().Create(ctx, item); err != nil {
 		return nil, err
 	}
 	return item, nil
 }
 
-func ConvertInboxItem(id string, req *model.ConvertInboxRequest) (interface{}, error) {
-	inboxItem, err := repository.GetInboxItemByID(id)
-	if err != nil {
-		return nil, errors.New("inbox item not found")
-	}
-	if inboxItem.ConvertedTo != nil {
-		return nil, errors.New("already converted")
-	}
-
+func ConvertInboxItem(ctx context.Context, store storage.Store, id string, req *model.ConvertInboxRequest) (interface{}, error) {
 	now := time.Now()
 	tomorrow9am := time.Date(now.Year(), now.Month(), now.Day()+1, 9, 0, 0, 0, now.Location()).Unix()
 	tomorrow10am := time.Date(now.Year(), now.Month(), now.Day()+1, 10, 0, 0, 0, now.Location()).Unix()
 
 	var convertedID string
+	var converted interface{}
 
-	switch req.Kind {
-	case "note":
-		body := ""
-		if inboxItem.Body != nil {
-			body = *inboxItem.Body
+	err := store.Transact(ctx, func(tx storage.Store) error {
+		inboxItem, err := tx.Inbox().GetByID(ctx, id)
+		if err != nil {
+			return errors.New("inbox item not found")
 		}
-		note := &model.Note{
-			Title: inboxItem.Title,
-			Body:  body,
+		if inboxItem.ConvertedTo != nil {
+			return errors.New("already converted")
 		}
-		if err := repository.CreateNote(note); err != nil {
-			return nil, err
-		}
-		convertedID = note.ID
 
-	case "task":
-		task := &model.Task{
-			Title: inboxItem.Title,
-		}
-		if err := repository.CreateTask(task); err != nil {
-			return nil, err
-		}
-		convertedID = task.ID
+		switch req.Kind {
+		case "note":
+			body := ""
+			if inboxItem.Body != nil {
+				body = *inboxItem.Body
+			}
+			note, err := tx.Notes().Create(ctx, &model.CreateNoteRequest{
+				Title:    inboxItem.Title,
+				Body:     body,
+				FolderID: "__uncategorized",
+				Tags:     "[]",
+			})
+			if err != nil {
+				return err
+			}
+			convertedID = note.ID
+			converted = note
 
-	case "event":
-		event := &model.Event{
-			Title:     inboxItem.Title,
-			StartTime: tomorrow9am,
-			EndTime:   tomorrow10am,
-		}
-		if err := repository.CreateEvent(event); err != nil {
-			return nil, err
-		}
-		convertedID = event.ID
+		case "task":
+			task := &model.Task{
+				Title:         inboxItem.Title,
+				Status:        "open",
+				ExecutionType: "single",
+			}
+			if err := tx.Tasks().Create(ctx, task); err != nil {
+				return err
+			}
+			convertedID = task.ID
+			got, err := tx.Tasks().GetByID(ctx, task.ID)
+			if err != nil {
+				return err
+			}
+			converted = got
 
-	default:
-		return nil, errors.New("invalid target kind")
-	}
+		case "event":
+			event := &model.Event{
+				Title:     inboxItem.Title,
+				StartTime: tomorrow9am,
+				EndTime:   tomorrow10am,
+			}
+			if err := tx.Events().Create(ctx, event); err != nil {
+				return err
+			}
+			convertedID = event.ID
+			converted = event
 
-	if err := repository.MarkInboxConverted(id, convertedID); err != nil {
+		default:
+			return errors.New("invalid target kind")
+		}
+
+		if err := tx.Inbox().MarkConverted(ctx, id, fmt.Sprintf("%s:%s", req.Kind, convertedID)); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	switch req.Kind {
-	case "note":
-		return repository.GetNoteByID(convertedID)
-	case "task":
-		return repository.GetTaskByID(convertedID)
-	case "event":
-		return repository.GetEventByID(convertedID)
-	}
-	return nil, errors.New("unexpected kind")
+	return converted, nil
 }
 
-func DeleteInboxItem(id string) error {
-	return repository.DeleteInboxItem(id)
+func DeleteInboxItem(ctx context.Context, store storage.Store, id string) error {
+	return store.Inbox().Delete(ctx, id)
 }
 
-func BatchInbox(req *model.BatchInboxRequest) (int64, error) {
+func BatchInbox(ctx context.Context, store storage.Store, req *model.BatchInboxRequest) (int64, error) {
 	switch req.Action {
 	case "archive":
-		return repository.BatchArchiveInbox(req.IDs)
+		return store.Inbox().BatchArchive(ctx, req.IDs)
 	case "delete":
-		return repository.BatchDeleteInbox(req.IDs)
+		return store.Inbox().BatchDelete(ctx, req.IDs)
 	default:
 		return 0, errors.New("invalid action: must be 'archive' or 'delete'")
 	}

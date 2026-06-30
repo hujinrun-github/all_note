@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -16,14 +17,18 @@ type taskRepository struct {
 }
 
 func (r taskRepository) List(ctx context.Context, filter storage.TaskFilter) ([]model.Task, int, error) {
-	where, args := postgresTaskWhere(filter)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	where, args := postgresTaskWhere(filter, workspaceID)
 	whereClause := strings.Join(where, " AND ")
 
 	var total int
 	if err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*)
 		FROM tasks t
-		LEFT JOIN task_projects p ON p.id = t.project_id
+		LEFT JOIN task_projects p ON p.workspace_id = t.workspace_id AND p.id = t.project_id
 		WHERE %s
 	`, whereClause), args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -65,10 +70,10 @@ func (r taskRepository) List(ctx context.Context, filter storage.TaskFilter) ([]
 	return tasks, total, nil
 }
 
-func postgresTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
-	where := []string{"1=1"}
-	args := []interface{}{}
-	next := 1
+func postgresTaskWhere(filter storage.TaskFilter, workspaceID string) ([]string, []interface{}) {
+	where := []string{"t.workspace_id = $1"}
+	args := []interface{}{workspaceID}
+	next := 2
 	if filter.Project != "" {
 		where = append(where, fmt.Sprintf("(COALESCE(p.name, t.project, '') = %s OR t.project = %s)", pgPlaceholder(next), pgPlaceholder(next+1)))
 		args = append(args, filter.Project, filter.Project)
@@ -117,11 +122,16 @@ func postgresTaskWhere(filter storage.TaskFilter) ([]string, []interface{}) {
 }
 
 func (r taskRepository) ListProjects(ctx context.Context) ([]model.TaskProject, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, type, description, created_at, updated_at
 		FROM task_projects
+		WHERE workspace_id = $1
 		ORDER BY CASE WHEN id = 'personal' THEN 0 ELSE 1 END, updated_at DESC, lower(name) ASC
-	`)
+	`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +140,10 @@ func (r taskRepository) ListProjects(ctx context.Context) ([]model.TaskProject, 
 }
 
 func (r taskRepository) CreateProject(ctx context.Context, req *model.CreateTaskProjectRequest) (*model.TaskProject, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, fmt.Errorf("project name is required")
@@ -147,8 +161,8 @@ func (r taskRepository) CreateProject(ctx context.Context, req *model.CreateTask
 		if _, err := r.db.ExecContext(ctx, `
 			UPDATE task_projects
 			SET type = $1, description = $2, updated_at = $3
-			WHERE id = $4
-		`, projectType, strings.TrimSpace(req.Description), now, existing.ID); err != nil {
+			WHERE workspace_id = $4 AND id = $5
+		`, projectType, strings.TrimSpace(req.Description), now, workspaceID, existing.ID); err != nil {
 			return nil, err
 		}
 		return r.GetProjectByID(ctx, existing.ID)
@@ -156,15 +170,19 @@ func (r taskRepository) CreateProject(ctx context.Context, req *model.CreateTask
 		return nil, err
 	}
 	if _, err := r.db.ExecContext(ctx, `
-		INSERT INTO task_projects (id, name, type, description, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $5)
-	`, id, name, projectType, strings.TrimSpace(req.Description), now); err != nil {
+		INSERT INTO task_projects (id, name, type, description, created_at, updated_at, workspace_id)
+		VALUES ($1, $2, $3, $4, $5, $5, $6)
+	`, id, name, projectType, strings.TrimSpace(req.Description), now, workspaceID); err != nil {
 		return nil, err
 	}
 	return r.GetProjectByName(ctx, name)
 }
 
 func (r taskRepository) UpdateProject(ctx context.Context, id string, req *model.UpdateTaskProjectRequest) (*model.TaskProject, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	builder := newPgSetBuilder(1)
 	builder.Add("updated_at", time.Now().UTC())
 	if req.Name != nil {
@@ -181,14 +199,18 @@ func (r taskRepository) UpdateProject(ctx context.Context, id string, req *model
 		builder.Add("description", strings.TrimSpace(*req.Description))
 	}
 	clause, args := builder.ClauseAndArgs()
-	args = append(args, id)
-	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE task_projects SET %s WHERE id = %s", clause, pgPlaceholder(len(args))), args...); err != nil {
+	args = append(args, id, workspaceID)
+	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE task_projects SET %s WHERE id = %s AND workspace_id = %s", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...); err != nil {
 		return nil, err
 	}
 	return r.GetProjectByID(ctx, id)
 }
 
 func (r taskRepository) DeleteProject(ctx context.Context, id string) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("project id is required")
@@ -198,7 +220,7 @@ func (r taskRepository) DeleteProject(ctx context.Context, id string) error {
 	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		var existingID string
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM task_projects WHERE id = $1`, id).Scan(&existingID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM task_projects WHERE workspace_id = $1 AND id = $2`, workspaceID, id).Scan(&existingID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -209,14 +231,15 @@ func (r taskRepository) DeleteProject(ctx context.Context, id string) error {
 			FROM task_projects AS deleting
 			LEFT JOIN task_projects AS personal
 				ON personal.id = 'personal'
-				AND personal.workspace_id IS NOT DISTINCT FROM deleting.workspace_id
-			WHERE deleting.id = $1
+				AND personal.workspace_id = deleting.workspace_id
+			WHERE deleting.workspace_id = $1
+				AND deleting.id = $2
 				AND t.project_id = deleting.id
-				AND t.workspace_id IS NOT DISTINCT FROM deleting.workspace_id
-		`, id); err != nil {
+				AND t.workspace_id = deleting.workspace_id
+		`, workspaceID, id); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `DELETE FROM task_projects WHERE id = $1`, id)
+		result, err := tx.ExecContext(ctx, `DELETE FROM task_projects WHERE workspace_id = $1 AND id = $2`, workspaceID, id)
 		if err != nil {
 			return err
 		}
@@ -228,46 +251,62 @@ func (r taskRepository) DeleteProject(ctx context.Context, id string) error {
 }
 
 func (r taskRepository) GetProjectByID(ctx context.Context, id string) (*model.TaskProject, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresTaskProject(r.db.QueryRowContext(ctx, `
 		SELECT id, name, type, description, created_at, updated_at
-		FROM task_projects WHERE id = $1
-	`, id))
+		FROM task_projects WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, id))
 }
 
 func (r taskRepository) GetProjectByName(ctx context.Context, name string) (*model.TaskProject, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresTaskProject(r.db.QueryRowContext(ctx, `
 		SELECT id, name, type, description, created_at, updated_at
-		FROM task_projects WHERE name = $1
-	`, strings.TrimSpace(name)))
+		FROM task_projects WHERE workspace_id = $1 AND name = $2
+	`, workspaceID, strings.TrimSpace(name)))
 }
 
 func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	task.ID = newID()
 	now := nowUnix()
 	task.CreatedAt = now
 	task.UpdatedAt = now
-	if err := r.normalizeTaskDefaults(ctx, task); err != nil {
+	if err := r.normalizeTaskDefaults(ctx, workspaceID, task); err != nil {
 		return err
 	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks (
-				id, title, content, project, project_id, due_at, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, execution_type, created_at, updated_at
+				id, title, content, project, project_id, due_at, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, execution_type, created_at, updated_at, workspace_id
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-		`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, postgresTimePtr(task.Due), task.PlannedDate, task.Priority, task.Done == 1, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.ExecutionType, unixToTime(task.CreatedAt), unixToTime(task.UpdatedAt)); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, postgresTimePtr(task.Due), task.PlannedDate, task.Priority, task.Done == 1, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.ExecutionType, unixToTime(task.CreatedAt), unixToTime(task.UpdatedAt), workspaceID); err != nil {
 			return err
 		}
-		return upsertTaskSearchIndex(ctx, tx, task)
+		return upsertTaskSearchIndex(ctx, tx, workspaceID, task)
 	})
 }
 
 func (r taskRepository) Update(ctx context.Context, id string, req *model.UpdateTaskRequest) (*model.Task, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var updated *model.Task
-	err := r.withTx(ctx, func(tx *sql.Tx) error {
+	err = r.withTx(ctx, func(tx *sql.Tx) error {
 		// TOCTOU: read current done state inside transaction
 		var currentDone bool
-		if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE id = $1`, id).Scan(&currentDone); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE workspace_id = $1 AND id = $2`, workspaceID, id).Scan(&currentDone); err != nil {
 			return err
 		}
 
@@ -280,14 +319,14 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 			builder.Add("content", strings.TrimSpace(*req.Content))
 		}
 		if req.ProjectID != nil {
-			project, err := r.GetProjectByID(ctx, *req.ProjectID)
+			project, err := r.getProjectByID(ctx, workspaceID, *req.ProjectID)
 			if err != nil {
 				return err
 			}
 			builder.Add("project_id", project.ID)
 			builder.Add("project", project.Name)
 		} else if req.Project != nil {
-			projectID, err := r.ensureTaskProjectByName(ctx, *req.Project, "regular")
+			projectID, err := r.ensureTaskProjectByName(ctx, workspaceID, *req.Project, "regular")
 			if err != nil {
 				return err
 			}
@@ -350,23 +389,23 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 			builder.Add("execution_type", *req.ExecutionType)
 		}
 		clause, args := builder.ClauseAndArgs()
-		args = append(args, id)
+		args = append(args, id, workspaceID)
 
-		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = %s", clause, pgPlaceholder(len(args))), args...)
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = %s AND workspace_id = %s", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...)
 		if err != nil {
 			return err
 		}
 		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 			return sql.ErrNoRows
 		}
-		task, err := scanPostgresTaskRow(tx.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.id = $1`, id))
+		task, err := scanPostgresTaskRow(tx.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.workspace_id = $1 AND t.id = $2`, workspaceID, id))
 		if err != nil {
 			return err
 		}
-		if err := upsertTaskSearchIndex(ctx, tx, task); err != nil {
+		if err := upsertTaskSearchIndex(ctx, tx, workspaceID, task); err != nil {
 			return err
 		}
-		if err := r.syncRoadmapNodeStatus(ctx, tx, task); err != nil {
+		if err := r.syncRoadmapNodeStatus(ctx, tx, workspaceID, task); err != nil {
 			return err
 		}
 		updated = task
@@ -379,31 +418,43 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 }
 
 func (r taskRepository) GetByID(ctx context.Context, id string) (*model.Task, error) {
-	return scanPostgresTaskRow(r.db.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.id = $1`, id))
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return scanPostgresTaskRow(r.db.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.workspace_id = $1 AND t.id = $2`, workspaceID, id))
 }
 
 func (r taskRepository) Delete(ctx context.Context, id string) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = $1`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE workspace_id = $1 AND id = $2`, workspaceID, id); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE entity_type = 'task' AND entity_id = $1`, id)
+		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'task' AND entity_id = $2`, workspaceID, id)
 		return err
 	})
 }
 
 func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdueCutoff int64) ([]model.Task, []model.Task, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	todayDate := time.Unix(todayStart, 0).In(time.Local).Format("2006-01-02")
 	overdueCutoffDate := time.Unix(overdueCutoff, 0).In(time.Local).Format("2006-01-02")
 	rows, err := r.db.QueryContext(ctx, postgresTaskSelectSQL()+`
-		WHERE t.done = false AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single') AND (
-			(t.due_at >= $1 AND t.due_at < $2)
-			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long' AND t.planned_date = $3::date)
+		WHERE t.workspace_id = $1 AND t.done = false AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single') AND (
+			(t.due_at >= $2 AND t.due_at < $3)
+			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long' AND t.planned_date = $4::date)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) = 'long'
 				AND COALESCE(t.status, CASE WHEN t.done THEN 'done' ELSE 'open' END) = 'active')
 		)
 		ORDER BY t.sort_order ASC, t.created_at DESC
-	`, unixToTime(todayStart), unixToTime(todayEnd), todayDate)
+	`, workspaceID, unixToTime(todayStart), unixToTime(todayEnd), todayDate)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -414,13 +465,14 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	}
 
 	rows, err = r.db.QueryContext(ctx, postgresTaskSelectSQL()+`
-		WHERE t.done = false
+		WHERE t.workspace_id = $1
+			AND t.done = false
 			AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single')
 			AND COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long'
-			AND ((t.due_at < $1 AND t.due_at >= $2) OR (t.due_at IS NULL AND t.planned_date < $3::date AND t.planned_date >= $4::date))
-			AND (t.planned_date IS NULL OR t.planned_date <> $3::date)
+			AND ((t.due_at < $2 AND t.due_at >= $3) OR (t.due_at IS NULL AND t.planned_date < $4::date AND t.planned_date >= $5::date))
+			AND (t.planned_date IS NULL OR t.planned_date <> $4::date)
 		ORDER BY t.due_at ASC LIMIT 10
-	`, unixToTime(todayStart), unixToTime(overdueCutoff), todayDate, overdueCutoffDate)
+	`, workspaceID, unixToTime(todayStart), unixToTime(overdueCutoff), todayDate, overdueCutoffDate)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -433,10 +485,14 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 }
 
 func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to int64, page, pageSize int) ([]model.TaskSummary, int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	var total int
 	if err := r.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM tasks WHERE completed_at >= $1 AND completed_at < $2`,
-		unixToTime(from), unixToTime(to),
+		`SELECT COUNT(*) FROM tasks WHERE workspace_id = $1 AND completed_at >= $2 AND completed_at < $3`,
+		workspaceID, unixToTime(from), unixToTime(to),
 	).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -444,10 +500,10 @@ func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to i
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT t.id, t.title, t.done, t.planned_date, t.due_at, t.completed_at, t.note_id,
 		        p.id, p.name, p.type
-		 FROM tasks t LEFT JOIN task_projects p ON t.project_id = p.id
-		 WHERE t.completed_at >= $1 AND t.completed_at < $2
-		 ORDER BY t.completed_at DESC LIMIT $3 OFFSET $4`,
-		unixToTime(from), unixToTime(to), pageSize, offset,
+		 FROM tasks t LEFT JOIN task_projects p ON p.workspace_id = t.workspace_id AND t.project_id = p.id
+		 WHERE t.workspace_id = $1 AND t.completed_at >= $2 AND t.completed_at < $3
+		 ORDER BY t.completed_at DESC LIMIT $4 OFFSET $5`,
+		workspaceID, unixToTime(from), unixToTime(to), pageSize, offset,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -484,12 +540,16 @@ func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to i
 }
 
 func (r taskRepository) GetSummaryStats(ctx context.Context, from, to int64) (int, int, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
 	var activeDays, projectCount int
-	err := r.db.QueryRowContext(ctx,
+	err = r.db.QueryRowContext(ctx,
 		`SELECT COUNT(DISTINCT DATE(completed_at)),
 		        COUNT(DISTINCT project_id)
-		 FROM tasks WHERE completed_at >= $1 AND completed_at < $2`,
-		unixToTime(from), unixToTime(to),
+		 FROM tasks WHERE workspace_id = $1 AND completed_at >= $2 AND completed_at < $3`,
+		workspaceID, unixToTime(from), unixToTime(to),
 	).Scan(&activeDays, &projectCount)
 	return activeDays, projectCount, err
 }
@@ -504,11 +564,11 @@ func postgresTaskSelectSQL() string {
 			t.scope, t.sort_order, t.note_id, t.roadmap_node_id, t.created_at, t.updated_at,
 			t.completed_at, t.execution_type
 		FROM tasks t
-		LEFT JOIN task_projects p ON p.id = t.project_id
+		LEFT JOIN task_projects p ON p.workspace_id = t.workspace_id AND p.id = t.project_id
 	`
 }
 
-func (r taskRepository) normalizeTaskDefaults(ctx context.Context, task *model.Task) error {
+func (r taskRepository) normalizeTaskDefaults(ctx context.Context, workspaceID string, task *model.Task) error {
 	task.Title = strings.TrimSpace(task.Title)
 	if task.Scope == "" {
 		task.Scope = "daily"
@@ -539,7 +599,7 @@ func (r taskRepository) normalizeTaskDefaults(ctx context.Context, task *model.T
 	}
 	if task.ProjectID == nil || strings.TrimSpace(*task.ProjectID) == "" {
 		if task.Project != nil {
-			projectID, err := r.ensureTaskProjectByName(ctx, *task.Project, "regular")
+			projectID, err := r.ensureTaskProjectByName(ctx, workspaceID, *task.Project, "regular")
 			if err != nil {
 				return err
 			}
@@ -550,7 +610,7 @@ func (r taskRepository) normalizeTaskDefaults(ctx context.Context, task *model.T
 		projectID := "personal"
 		task.ProjectID = &projectID
 	}
-	if project, err := r.GetProjectByID(ctx, *task.ProjectID); err == nil {
+	if project, err := r.getProjectByID(ctx, workspaceID, *task.ProjectID); err == nil {
 		name := project.Name
 		task.Project = &name
 		task.ProjectType = &project.Type
@@ -558,12 +618,12 @@ func (r taskRepository) normalizeTaskDefaults(ctx context.Context, task *model.T
 	return nil
 }
 
-func (r taskRepository) ensureTaskProjectByName(ctx context.Context, name, projectType string) (string, error) {
+func (r taskRepository) ensureTaskProjectByName(ctx context.Context, workspaceID string, name, projectType string) (string, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" || strings.EqualFold(trimmed, "personal") || trimmed == "个人" {
 		return "personal", nil
 	}
-	project, err := r.GetProjectByName(ctx, trimmed)
+	project, err := r.getProjectByName(ctx, workspaceID, trimmed)
 	if err == nil {
 		return project.ID, nil
 	}
@@ -577,7 +637,21 @@ func (r taskRepository) ensureTaskProjectByName(ctx context.Context, name, proje
 	return created.ID, nil
 }
 
-func (r taskRepository) syncRoadmapNodeStatus(ctx context.Context, tx *sql.Tx, task *model.Task) error {
+func (r taskRepository) getProjectByID(ctx context.Context, workspaceID string, id string) (*model.TaskProject, error) {
+	return scanPostgresTaskProject(r.db.QueryRowContext(ctx, `
+		SELECT id, name, type, description, created_at, updated_at
+		FROM task_projects WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, id))
+}
+
+func (r taskRepository) getProjectByName(ctx context.Context, workspaceID string, name string) (*model.TaskProject, error) {
+	return scanPostgresTaskProject(r.db.QueryRowContext(ctx, `
+		SELECT id, name, type, description, created_at, updated_at
+		FROM task_projects WHERE workspace_id = $1 AND name = $2
+	`, workspaceID, strings.TrimSpace(name)))
+}
+
+func (r taskRepository) syncRoadmapNodeStatus(ctx context.Context, tx *sql.Tx, workspaceID string, task *model.Task) error {
 	if task.RoadmapNodeID == nil {
 		return nil
 	}
@@ -593,8 +667,8 @@ func (r taskRepository) syncRoadmapNodeStatus(ctx context.Context, tx *sql.Tx, t
 	_, err := tx.ExecContext(ctx, `
 		UPDATE roadmap_nodes
 		SET status = $1, updated_at = $2
-		WHERE id = $3
-	`, status, time.Now().UTC(), *task.RoadmapNodeID)
+		WHERE workspace_id = $3 AND id = $4
+	`, status, time.Now().UTC(), workspaceID, *task.RoadmapNodeID)
 	return err
 }
 
@@ -765,23 +839,25 @@ func scanPostgresTaskRows(rows *sql.Rows) ([]model.Task, error) {
 	return tasks, rows.Err()
 }
 
-func upsertTaskSearchIndex(ctx context.Context, tx *sql.Tx, task *model.Task) error {
+func upsertTaskSearchIndex(ctx context.Context, tx *sql.Tx, workspaceID string, task *model.Task) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO search_index (entity_type, entity_id, title, content, tags, updated_at, search_vector)
+		INSERT INTO search_index (workspace_id, entity_type, entity_id, title, content, tags, updated_at, search_vector)
 		VALUES (
-			'task',
 			$1,
+			'task',
 			$2,
 			$3,
-			'{}'::text[],
 			$4,
-			to_tsvector('simple', coalesce($2, '') || ' ' || coalesce($3, ''))
+			'{}'::text[],
+			$5,
+			to_tsvector('simple', coalesce($3, '') || ' ' || coalesce($4, ''))
 		)
 		ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+			workspace_id = excluded.workspace_id,
 			title = excluded.title,
 			content = excluded.content,
 			updated_at = excluded.updated_at,
 			search_vector = excluded.search_vector
-	`, task.ID, task.Title, task.Content, unixToTime(task.UpdatedAt))
+	`, workspaceID, task.ID, task.Title, task.Content, unixToTime(task.UpdatedAt))
 	return err
 }

@@ -70,7 +70,7 @@ func TestBootstrapExistingUserNoop(t *testing.T) {
 
 func TestBootstrapLegacyDataWithWeakConfiguredPasswordReturnsPasswordPolicyError(t *testing.T) {
 	fixture := openSQLiteBootstrapFixture(t)
-	seedLegacyNote(t, fixture.store)
+	seedLegacyNote(t, fixture.db)
 	cfg := weakBootstrapConfig()
 
 	err := EnsureAuthReady(context.Background(), fixture.store, cfg)
@@ -87,7 +87,7 @@ func TestBootstrapLegacyDataWithWeakConfiguredPasswordReturnsPasswordPolicyError
 
 func TestBootstrapRequiresAdminConfigForLegacyData(t *testing.T) {
 	fixture := openSQLiteBootstrapFixture(t)
-	seedLegacyNote(t, fixture.store)
+	seedLegacyNote(t, fixture.db)
 
 	err := EnsureAuthReady(context.Background(), fixture.store, Config{})
 	if !errors.Is(err, ErrBootstrapAdminRequired) {
@@ -112,7 +112,7 @@ func TestBootstrapAssignsLegacyDataBeforeDefaultRows(t *testing.T) {
 func TestBootstrapCreatesMissingDefaultWorkspaceData(t *testing.T) {
 	fixture := openSQLiteBootstrapFixture(t)
 	mustExec(t, fixture.db, `DELETE FROM folders WHERE id = '__work'`)
-	seedLegacyNote(t, fixture.store)
+	seedLegacyNote(t, fixture.db)
 	cfg := validBootstrapConfig()
 
 	if err := EnsureAuthReady(context.Background(), fixture.store, cfg); err != nil {
@@ -232,17 +232,10 @@ func seedExistingUserWorkspace(t *testing.T, store storage.Store) {
 	}
 }
 
-func seedLegacyNote(t *testing.T, store storage.Store) {
+func seedLegacyNote(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	if _, err := store.Notes().Create(context.Background(), &model.CreateNoteRequest{
-		Title:    "Legacy note",
-		Body:     "legacy body",
-		FolderID: "__uncategorized",
-		Tags:     `[]`,
-	}); err != nil {
-		t.Fatalf("seed legacy note: %v", err)
-	}
+	mustExec(t, db, `INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at) VALUES ('legacy_note', 'Legacy note', 'legacy body', '__uncategorized', '[]', unixepoch(), unixepoch())`)
 }
 
 func seedLegacyWorkspaceScopedRows(t *testing.T, db *sql.DB) {
