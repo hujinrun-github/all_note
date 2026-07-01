@@ -133,7 +133,7 @@ func PutNoteSyncBinding(store storage.Store) gin.HandlerFunc {
 
 		success(c, model.SaveNoteSyncBindingResponse{
 			Binding:       savedBinding,
-			Target:        savedTarget,
+			Target:        sanitizeSyncTarget(savedTarget),
 			ChangedTarget: changedTarget,
 		})
 	}
@@ -220,7 +220,7 @@ func buildNoteSyncBindingResponse(ctx context.Context, syncRepo storage.SyncRepo
 
 	return model.NoteSyncBindingResponse{
 		Binding:    binding,
-		Target:     target,
+		Target:     sanitizeSyncTargetPtr(target),
 		State:      state,
 		Candidates: candidates,
 	}, nil
@@ -246,7 +246,7 @@ func buildNoteSyncBindingCandidates(ctx context.Context, syncRepo storage.SyncRe
 			state = existingState
 		}
 		candidates = append(candidates, model.NoteSyncBindingCandidate{
-			Target: target,
+			Target: sanitizeSyncTarget(target),
 			State:  state,
 		})
 	}

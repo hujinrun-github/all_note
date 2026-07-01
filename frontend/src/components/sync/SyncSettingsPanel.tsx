@@ -37,7 +37,13 @@ function syncErrorMessage(error: unknown) {
   return '同步目标操作失败，请稍后重试'
 }
 
-export function SyncSettingsPanel({ onClose }: { onClose: () => void }) {
+export function SyncSettingsPanel({
+  onClose,
+  open = true,
+}: {
+  onClose: () => void
+  open?: boolean
+}) {
   const [activeTab, setActiveTab] = useState<SyncTab>('obsidian')
   const [message, setMessage] = useState<SyncMessage | null>(null)
   const targetsQ = useSyncTargets()
@@ -67,8 +73,8 @@ export function SyncSettingsPanel({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="sync-overlay" onClick={onClose}>
-      <section className="sync-panel sync-panel-wide" onClick={(event) => event.stopPropagation()}>
+    <div className="sync-overlay" hidden={!open} aria-hidden={!open}>
+      <section className="sync-panel sync-panel-wide" role="dialog" aria-modal="true" aria-label="同步设置">
         <header className="sync-panel-header">
           <div>
             <span>同步</span>

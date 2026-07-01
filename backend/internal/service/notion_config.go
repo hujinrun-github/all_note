@@ -4,14 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
+var notionIDPattern = regexp.MustCompile(`(?i)[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
 type notionTargetConfig struct {
 	DataSourceID             string   `json:"data_source_id"`
+	Token                    string   `json:"token"`
 	TokenEnv                 string   `json:"token_env"`
 	TitleProperty            string   `json:"title_property"`
 	FlowSpaceIDProperty      string   `json:"flowspace_id_property"`
@@ -41,10 +46,11 @@ func parseNotionTargetConfig(target *model.SyncTarget) (notionTargetConfig, erro
 		return notionTargetConfig{}, fmt.Errorf("parse notion sync target config: %w", err)
 	}
 
-	config.DataSourceID = strings.TrimSpace(config.DataSourceID)
+	config.DataSourceID = notionResourceIDFromInput(config.DataSourceID)
+	config.Token = strings.TrimSpace(config.Token)
 	config.TokenEnv = defaultString(config.TokenEnv, "FLOWSPACE_NOTION_TOKEN")
 	config.TitleProperty = defaultString(config.TitleProperty, "Name")
-	config.FlowSpaceIDProperty = defaultString(config.FlowSpaceIDProperty, "FlowSpace ID")
+	config.FlowSpaceIDProperty = strings.TrimSpace(config.FlowSpaceIDProperty)
 	config.FolderProperty = defaultString(config.FolderProperty, "Folder")
 	config.TagsProperty = defaultString(config.TagsProperty, "Tags")
 	config.FlowSpaceUpdatedProperty = defaultString(config.FlowSpaceUpdatedProperty, "FlowSpace Updated At")
@@ -56,7 +62,37 @@ func parseNotionTargetConfig(target *model.SyncTarget) (notionTargetConfig, erro
 	return config, nil
 }
 
+func notionResourceIDFromInput(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	searchValue := value
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		searchValue = parsed.Path
+	}
+	matches := notionIDPattern.FindAllString(searchValue, -1)
+	if len(matches) == 0 {
+		return value
+	}
+	return normalizeNotionID(matches[len(matches)-1])
+}
+
+func normalizeNotionID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 36 {
+		return value
+	}
+	if len(value) != 32 {
+		return value
+	}
+	return value[:8] + "-" + value[8:12] + "-" + value[12:16] + "-" + value[16:20] + "-" + value[20:]
+}
+
 func notionToken(config notionTargetConfig) (string, error) {
+	if token := strings.TrimSpace(config.Token); token != "" {
+		return token, nil
+	}
 	envName := strings.TrimSpace(config.TokenEnv)
 	if envName == "" {
 		envName = "FLOWSPACE_NOTION_TOKEN"

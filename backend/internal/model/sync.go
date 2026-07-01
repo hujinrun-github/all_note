@@ -68,6 +68,7 @@ type SyncImportTombstone struct {
 }
 
 type SaveSyncTargetRequest struct {
+	ID         string `json:"id"`
 	Type       string `json:"type"`
 	Name       string `json:"name" binding:"required"`
 	VaultPath  string `json:"vault_path"`

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -45,6 +46,61 @@ func TestGetNoteSyncBindingReturnsNullWhenUnbound(t *testing.T) {
 	}
 	if body.Data.Binding != nil {
 		t.Fatalf("binding = %+v, want nil", body.Data.Binding)
+	}
+}
+
+func TestGetNoteSyncBindingRedactsTargetToken(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	const rawToken = "ntn_unit_test_binding_token"
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"` + rawToken + `","required_tags":["sync"]}`
+	if err := store.Sync().SaveTarget(handlerSyncStoreTestContext(t), &target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	note := insertHandlerNoteForTest(t, "Bound Notion", "Body\n")
+	putHandlerBinding(t, store, note.ID, target.ID)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: note.ID}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-binding", nil)
+
+	GetNoteSyncBinding(store)(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), rawToken) {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+	var body struct {
+		Data model.NoteSyncBindingResponse `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.Target == nil {
+		t.Fatalf("target = nil; body = %s", recorder.Body.String())
+	}
+	var responseConfig map[string]any
+	if err := json.Unmarshal([]byte(body.Data.Target.ConfigJSON), &responseConfig); err != nil {
+		t.Fatalf("decode response config: %v", err)
+	}
+	if _, ok := responseConfig["token"]; ok {
+		t.Fatalf("response config includes raw token: %v", responseConfig)
+	}
+	if responseConfig["token_set"] != true {
+		t.Fatalf("token_set = %v, want true", responseConfig["token_set"])
+	}
+	if len(body.Data.Candidates) == 0 {
+		t.Fatalf("candidates = empty; body = %s", recorder.Body.String())
+	}
+	var candidateConfig map[string]any
+	if err := json.Unmarshal([]byte(body.Data.Candidates[0].Target.ConfigJSON), &candidateConfig); err != nil {
+		t.Fatalf("decode candidate config: %v", err)
+	}
+	if _, ok := candidateConfig["token"]; ok || candidateConfig["token_set"] != true {
+		t.Fatalf("candidate config is not redacted: %v", candidateConfig)
 	}
 }
 

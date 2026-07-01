@@ -62,11 +62,32 @@ func newNotionHTTPClient(token string, baseURL string) *notionHTTPClient {
 }
 
 func (client *notionHTTPClient) QueryDataSource(dataSourceID string) ([]notionPage, error) {
-	dataSourceID = strings.TrimSpace(dataSourceID)
+	dataSourceID = notionResourceIDFromInput(dataSourceID)
 	if dataSourceID == "" {
 		return nil, fmt.Errorf("notion data source id is required")
 	}
 
+	pages, err := client.queryDataSource(dataSourceID)
+	if err == nil {
+		return pages, nil
+	}
+	if !isNotFoundNotionError(err) {
+		return nil, err
+	}
+	resolvedID, resolveErr := client.ResolveDataSourceID(dataSourceID)
+	if resolveErr != nil {
+		if isPageInsteadOfDatabaseNotionError(resolveErr) {
+			return nil, resolveErr
+		}
+		return nil, err
+	}
+	if resolvedID == "" || resolvedID == dataSourceID {
+		return nil, err
+	}
+	return client.queryDataSource(resolvedID)
+}
+
+func (client *notionHTTPClient) queryDataSource(dataSourceID string) ([]notionPage, error) {
 	pages := make([]notionPage, 0)
 	cursor := ""
 	for {
@@ -94,6 +115,28 @@ func (client *notionHTTPClient) QueryDataSource(dataSourceID string) ([]notionPa
 			return nil, fmt.Errorf("notion data source query has_more without next_cursor")
 		}
 	}
+}
+
+func (client *notionHTTPClient) ResolveDataSourceID(databaseID string) (string, error) {
+	databaseID = notionResourceIDFromInput(databaseID)
+	if databaseID == "" {
+		return "", fmt.Errorf("notion database id is required")
+	}
+	var response struct {
+		DataSources []struct {
+			ID string `json:"id"`
+		} `json:"data_sources"`
+	}
+	path := "/v1/databases/" + url.PathEscape(databaseID)
+	if err := client.doJSON(http.MethodGet, path, nil, &response); err != nil {
+		return "", err
+	}
+	for _, dataSource := range response.DataSources {
+		if id := notionResourceIDFromInput(dataSource.ID); id != "" {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("notion database %s has no data sources", databaseID)
 }
 
 func (client *notionHTTPClient) RetrievePageBlocks(pageID string) ([]notionBlock, error) {
@@ -131,6 +174,22 @@ func (client *notionHTTPClient) RetrievePageBlocks(pageID string) ([]notionBlock
 }
 
 func (client *notionHTTPClient) CreatePage(config notionTargetConfig, note *model.Note, blocks []notionBlock) (notionPage, error) {
+	dataSourceID := notionResourceIDFromInput(config.DataSourceID)
+	page, err := client.createPage(dataSourceID, config, note, blocks)
+	if err == nil {
+		return page, nil
+	}
+	if !isNotFoundNotionError(err) {
+		return page, err
+	}
+	resolvedID, resolveErr := client.ResolveDataSourceID(dataSourceID)
+	if resolveErr != nil || resolvedID == "" || resolvedID == dataSourceID {
+		return page, err
+	}
+	return client.createPage(resolvedID, config, note, blocks)
+}
+
+func (client *notionHTTPClient) createPage(dataSourceID string, config notionTargetConfig, note *model.Note, blocks []notionBlock) (notionPage, error) {
 	var page notionPage
 	if note == nil {
 		return page, fmt.Errorf("note is required")
@@ -138,7 +197,7 @@ func (client *notionHTTPClient) CreatePage(config notionTargetConfig, note *mode
 	body := map[string]any{
 		"parent": map[string]any{
 			"type":           "data_source_id",
-			"data_source_id": strings.TrimSpace(config.DataSourceID),
+			"data_source_id": strings.TrimSpace(dataSourceID),
 		},
 		"properties": notionNotePropertyPayload(config, note),
 		"children":   notionBlockChildrenPayload(blocks),
@@ -232,15 +291,17 @@ func (client *notionHTTPClient) doJSON(method, path string, body any, out any) e
 
 func notionNotePropertyPayload(config notionTargetConfig, note *model.Note) map[string]any {
 	titleProperty := defaultString(config.TitleProperty, "Name")
-	flowSpaceIDProperty := defaultString(config.FlowSpaceIDProperty, "FlowSpace ID")
+	flowSpaceIDProperty := strings.TrimSpace(config.FlowSpaceIDProperty)
 	tagsProperty := defaultString(config.TagsProperty, "Tags")
 	payload := map[string]any{
 		titleProperty: map[string]any{
 			"title": []map[string]any{notionTextRequest(note.Title)},
 		},
-		flowSpaceIDProperty: map[string]any{
+	}
+	if strings.TrimSpace(flowSpaceIDProperty) != "" {
+		payload[flowSpaceIDProperty] = map[string]any{
 			"rich_text": []map[string]any{notionTextRequest(note.ID)},
-		},
+		}
 	}
 	if strings.TrimSpace(tagsProperty) != "" {
 		payload[tagsProperty] = map[string]any{
@@ -409,6 +470,16 @@ func notionErrorMessage(data []byte) string {
 func isRetryableNotionError(err error) bool {
 	httpErr, ok := err.(notionHTTPError)
 	return ok && (httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode == 529)
+}
+
+func isNotFoundNotionError(err error) bool {
+	httpErr, ok := err.(notionHTTPError)
+	return ok && httpErr.StatusCode == http.StatusNotFound
+}
+
+func isPageInsteadOfDatabaseNotionError(err error) bool {
+	httpErr, ok := err.(notionHTTPError)
+	return ok && httpErr.StatusCode == http.StatusBadRequest && strings.Contains(httpErr.Message, "is a page, not a database")
 }
 
 func notionRetryAfter(header string) time.Duration {

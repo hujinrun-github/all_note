@@ -28,13 +28,20 @@ describe('notion sync api', () => {
       'fetch',
       vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
         return new Response(
-          JSON.stringify({ data: { target: { id: 'target-1' }, result: { imported: 1 }, items: [], state: null } }),
+          JSON.stringify({
+            data: {
+              target: { id: 'target-1' },
+              result: { imported: 1 },
+              items: [],
+              state: null,
+            },
+          }),
           {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
-          },
+          }
         )
-      }),
+      })
     )
   })
 
@@ -48,7 +55,10 @@ describe('notion sync api', () => {
       name: 'Personal Notion',
       vault_path: '',
       base_folder: '',
-      config_json: JSON.stringify({ data_source_id: 'ds-123', token_env: 'FLOWSPACE_NOTION_TOKEN' }),
+      config_json: JSON.stringify({
+        data_source_id: 'ds-123',
+        token_env: 'FLOWSPACE_NOTION_TOKEN',
+      }),
       enabled: true,
       auto_sync: false,
     })
@@ -62,7 +72,10 @@ describe('notion sync api', () => {
       name: 'Personal Notion',
       vault_path: '',
       base_folder: '',
-      config_json: JSON.stringify({ data_source_id: 'ds-123', token_env: 'FLOWSPACE_NOTION_TOKEN' }),
+      config_json: JSON.stringify({
+        data_source_id: 'ds-123',
+        token_env: 'FLOWSPACE_NOTION_TOKEN',
+      }),
       enabled: true,
       auto_sync: false,
     })
@@ -76,12 +89,18 @@ describe('notion sync api', () => {
       name: 'Personal Notion',
       vault_path: '',
       base_folder: '',
-      config_json: JSON.stringify({ data_source_id: 'ds-123', token_env: 'FLOWSPACE_NOTION_TOKEN' }),
+      config_json: JSON.stringify({
+        data_source_id: 'ds-123',
+        token_env: 'FLOWSPACE_NOTION_TOKEN',
+      }),
       enabled: true,
       auto_sync: false,
       token: 'secret-token',
       secret: 'secret-value',
-    } as Parameters<typeof saveSyncTarget>[0] & { token: string; secret: string })
+    } as Parameters<typeof saveSyncTarget>[0] & {
+      token: string
+      secret: string
+    })
 
     const fetchMock = vi.mocked(fetch)
     const [input, init] = fetchMock.mock.calls[0]
@@ -94,7 +113,10 @@ describe('notion sync api', () => {
       name: 'Personal Notion',
       vault_path: '',
       base_folder: '',
-      config_json: JSON.stringify({ data_source_id: 'ds-123', token_env: 'FLOWSPACE_NOTION_TOKEN' }),
+      config_json: JSON.stringify({
+        data_source_id: 'ds-123',
+        token_env: 'FLOWSPACE_NOTION_TOKEN',
+      }),
       enabled: true,
       auto_sync: false,
     })
@@ -126,6 +148,7 @@ describe('notion sync api', () => {
 
   it('allowlists test notion target payload fields', async () => {
     await testNotionTarget({
+      id: 'target-1',
       type: 'notion',
       name: 'Personal Notion',
       vault_path: '',
@@ -135,7 +158,10 @@ describe('notion sync api', () => {
       auto_sync: false,
       token: 'secret-token',
       secret: 'secret-value',
-    } as Parameters<typeof testNotionTarget>[0] & { token: string; secret: string })
+    } as Parameters<typeof testNotionTarget>[0] & {
+      token: string
+      secret: string
+    })
 
     const fetchMock = vi.mocked(fetch)
     const [input, init] = fetchMock.mock.calls[0]
@@ -143,6 +169,7 @@ describe('notion sync api', () => {
 
     expect(String(input)).toContain('/api/sync/notion/test')
     expect(body).toEqual({
+      id: 'target-1',
       type: 'notion',
       name: 'Personal Notion',
       vault_path: '',
@@ -176,14 +203,36 @@ describe('notion sync api', () => {
     await getNoteSyncState('note/1', 'notion')
 
     const paths = vi.mocked(fetch).mock.calls.map(([input]) => String(input))
-    expect(paths.some((path) => path.includes('/api/sync/notion/test'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/notion/bidirectional'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/notion/all'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/notion/pull'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/notion/deletions'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/notion/deletions/note%2F1/confirm'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/notion/deletions/note%2F1/restore'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/notes/note%2F1/sync-state?target=notion'))).toBe(true)
+    expect(paths.some((path) => path.includes('/api/sync/notion/test'))).toBe(
+      true
+    )
+    expect(
+      paths.some((path) => path.includes('/api/sync/notion/bidirectional'))
+    ).toBe(true)
+    expect(paths.some((path) => path.includes('/api/sync/notion/all'))).toBe(
+      true
+    )
+    expect(paths.some((path) => path.includes('/api/sync/notion/pull'))).toBe(
+      true
+    )
+    expect(
+      paths.some((path) => path.includes('/api/sync/notion/deletions'))
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/sync/notion/deletions/note%2F1/confirm')
+      )
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/sync/notion/deletions/note%2F1/restore')
+      )
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/notes/note%2F1/sync-state?target=notion')
+      )
+    ).toBe(true)
   })
 
   it('gets note sync binding from the binding endpoint', async () => {
@@ -227,17 +276,22 @@ describe('notion sync api', () => {
 
   it('preserves delete error code and message', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: { code: 'sync_binding_conflict', message: 'stale binding' } }), {
-        status: 409,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      new Response(
+        JSON.stringify({
+          error: { code: 'sync_binding_conflict', message: 'stale binding' },
+        }),
+        {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
     )
 
     await expect(
       deleteNoteSyncBinding('note/1', {
         expected_target_id: 'target-1',
         expected_updated_at: 123,
-      }),
+      })
     ).rejects.toMatchObject({
       status: 409,
       code: 'sync_binding_conflict',
@@ -264,13 +318,35 @@ describe('notion sync api', () => {
 
     const calls = vi.mocked(fetch).mock.calls
     const paths = calls.map(([input]) => String(input))
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1/push'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1/pull'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1/bidirectional'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1/deletions'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1/deletions/note%2F1/confirm'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1/deletions/note%2F1/restore'))).toBe(true)
-    expect(paths.some((path) => path.includes('/api/sync/targets/target%2F1'))).toBe(true)
+    expect(
+      paths.some((path) => path.includes('/api/sync/targets/target%2F1/push'))
+    ).toBe(true)
+    expect(
+      paths.some((path) => path.includes('/api/sync/targets/target%2F1/pull'))
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/sync/targets/target%2F1/bidirectional')
+      )
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/sync/targets/target%2F1/deletions')
+      )
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/sync/targets/target%2F1/deletions/note%2F1/confirm')
+      )
+    ).toBe(true)
+    expect(
+      paths.some((path) =>
+        path.includes('/api/sync/targets/target%2F1/deletions/note%2F1/restore')
+      )
+    ).toBe(true)
+    expect(
+      paths.some((path) => path.includes('/api/sync/targets/target%2F1'))
+    ).toBe(true)
     expect(calls.at(-1)?.[1]?.method).toBe('DELETE')
   })
 })

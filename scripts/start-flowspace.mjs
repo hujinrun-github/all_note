@@ -85,6 +85,14 @@ async function main() {
         PORT: options.backendPort,
         FLOWSPACE_ENV: options.env,
         ...(options.dbPath ? { FLOWSPACE_DB_PATH: options.dbPath } : {}),
+        ...(process.env.FLOWSPACE_DATABASE_URL ? { FLOWSPACE_DATABASE_URL: process.env.FLOWSPACE_DATABASE_URL } : {}),
+        ...(process.env.FLOWSPACE_DATABASE_DRIVER ? { FLOWSPACE_DATABASE_DRIVER: process.env.FLOWSPACE_DATABASE_DRIVER } : {}),
+        ...(process.env.FLOWSPACE_SQLITE_PATH ? { FLOWSPACE_SQLITE_PATH: process.env.FLOWSPACE_SQLITE_PATH } : {}),
+        ...(process.env.FLOWSPACE_NOTION_TOKEN ? { FLOWSPACE_NOTION_TOKEN: process.env.FLOWSPACE_NOTION_TOKEN } : {}),
+        ...(process.env.AI_PROVIDER ? { AI_PROVIDER: process.env.AI_PROVIDER } : {}),
+        ...(process.env.AI_BASE_URL ? { AI_BASE_URL: process.env.AI_BASE_URL } : {}),
+        ...(process.env.AI_MODEL ? { AI_MODEL: process.env.AI_MODEL } : {}),
+        ...(process.env.AI_API_KEY ? { AI_API_KEY: process.env.AI_API_KEY } : {}),
       },
     })
   }

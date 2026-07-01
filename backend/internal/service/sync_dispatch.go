@@ -301,7 +301,10 @@ func syncNoteToExplicitNotionTarget(ctx context.Context, store storage.Store, no
 			return nil, fmt.Errorf("load notion external claim: %w", err)
 		}
 	}
-	item := NewNotionSyncService(gateway).pushNotionLocalNote(config, target, *note, state, hasState)
+	var item model.SyncResultItem
+	withScopedRepositoryStore(ctx, store, func() {
+		item = NewNotionSyncService(gateway).pushNotionLocalNote(config, target, *note, state, hasState)
+	})
 	if item.Status == "failed" {
 		return &item, errors.New(item.ErrorMessage)
 	}

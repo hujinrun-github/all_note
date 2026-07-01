@@ -380,6 +380,17 @@ $env:FLOWSPACE_NOTION_TOKEN = "secret_xxx"
 11. 点击 `同步此笔记` 或目标面板里的 `同步到 Notion`，把已绑定的 FlowSpace 笔记写入 Notion。
 12. 如需把 Notion 中新增或修改的页面同步回 FlowSpace，点击该目标的 `从 Notion 手动拉取`。
 
+Notion 字段映射：
+
+| FlowSpace 笔记字段 | Notion 数据库位置 | Notion 属性类型 | 说明 |
+|---|---|---|---|
+| `title` | `Name`，或 Notion 设置中的 `Title property` | `title` | 笔记标题。默认属性名是 `Name`，如果 Notion 数据库标题属性叫别的名字，需要在配置里改成对应名称。 |
+| `tags` | `Tags`，或 Notion 设置中的 `Tags property` | `multi_select` | 笔记标签。手动拉取时，`Sync tags` 也是通过这个属性过滤页面。 |
+| `body` | Notion 页面正文 blocks | blocks | 笔记正文不会写入数据库的普通字段，而是写成页面内容。Markdown 会转换为段落、标题、列表、todo、引用、代码块和分割线等 Notion blocks。 |
+| `id` | 可选的 `FlowSpace ID` 字段 | `rich_text` | 只有配置了 `flowspace_id_property` 时才会写入，用于在本地同步状态丢失后尝试找回对应页面；默认不写入。 |
+
+目前不会自动写入 `Content`、`Notes`、`Source URL` 等自定义字段；这些字段可以保留给 Notion 内部使用。同步关系、Notion page id、内容哈希和上次同步状态保存在 FlowSpace 本地数据库的 `note_sync_state` / `sync_external_claims` 中，不作为 Notion 数据库字段保存。
+
 安全边界：
 
 - FlowSpace 不在前端收集 Notion token，也不会把 token 写入 SQLite 或 PostgreSQL。

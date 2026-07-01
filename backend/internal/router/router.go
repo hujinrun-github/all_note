@@ -79,7 +79,7 @@ func Setup(cfg Config) *gin.Engine {
 		protected.GET("/sync/obsidian/deletions", handler.ListObsidianDeletions(cfg.Store))
 		protected.POST("/sync/obsidian/deletions/:note_id/confirm", handler.ConfirmObsidianDeletion(cfg.Store))
 		protected.POST("/sync/obsidian/deletions/:note_id/restore", handler.RestoreObsidianDeletion(cfg.Store))
-		protected.POST("/sync/notion/test", handler.TestNotionTarget)
+		protected.POST("/sync/notion/test", handler.TestNotionTargetWithStore(cfg.Store))
 		protected.POST("/sync/notion/all", handler.SyncNotionAll(cfg.Store))
 		protected.POST("/sync/notion/pull", handler.SyncNotionPull(cfg.Store))
 		protected.POST("/sync/notion/bidirectional", handler.SyncNotionBidirectional(cfg.Store))

@@ -258,6 +258,67 @@ func TestNotionCreatePageRecordsClaimAndState(t *testing.T) {
 	}
 }
 
+func TestNotionExplicitSyncPreservesWorkspaceScopeWithUnscopedActiveStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "service.unscoped.flowspace.test.db")
+	baseStore, err := sqlite.Provider{}.Open(t.Context(), storage.Config{
+		Env:        "test",
+		Driver:     storage.DriverSQLite,
+		SQLitePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	t.Cleanup(func() {
+		repository.SetStore(nil)
+		if err := baseStore.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	ctx := serviceSyncTestContext(t)
+	if err := provisioning.EnsureDefaultWorkspaceData(ctx, baseStore); err != nil {
+		t.Fatalf("seed workspace defaults: %v", err)
+	}
+	repository.SetStore(baseStore)
+	fake := &fakeNotionGateway{}
+	withServiceNotionGateway(t, fake)
+
+	target := model.SyncTarget{
+		Type:       "notion",
+		Name:       "Unscoped Active Store Notion",
+		ConfigJSON: `{"data_source_id":"ds-123"}`,
+		Enabled:    true,
+		IsDefault:  true,
+	}
+	if err := baseStore.Sync().SaveTarget(ctx, &target); err != nil {
+		t.Fatalf("save target: %v", err)
+	}
+	note, err := baseStore.Notes().Create(ctx, &model.CreateNoteRequest{
+		Title:    "Scoped Notion",
+		Body:     "Body\n",
+		FolderID: "__uncategorized",
+		Tags:     "[]",
+	})
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	if err := baseStore.Sync().PutBinding(ctx, model.NoteSyncBinding{NoteID: note.ID, TargetID: target.ID}); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+
+	item, err := SyncNote(ctx, baseStore, note.ID)
+
+	if err != nil {
+		t.Fatalf("sync note: %v", err)
+	}
+	if item.ExternalID != "created-"+note.ID {
+		t.Fatalf("item = %+v", item)
+	}
+	if _, err := baseStore.Sync().GetState(ctx, note.ID, target.ID); err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+}
+
 func TestNotionCreatePageDatabaseFailureLeavesRecoverableFlowSpaceID(t *testing.T) {
 	store := openServiceSyncStoreTestDB(t)
 	fake := &recoverableNotionGateway{fakeNotionGateway: &fakeNotionGateway{}}
@@ -266,13 +327,14 @@ func TestNotionCreatePageDatabaseFailureLeavesRecoverableFlowSpaceID(t *testing.
 	note := createServiceStoreNote(t, "Recoverable Notion", "Body\n", `["sync"]`)
 	putServiceStoreBinding(t, store, note.ID, target.ID)
 	remainingFailures := 1
-	repository.SetStore(&putClaimFailOnceStore{
+	failingStore := &putClaimFailOnceStore{
 		Store:     store,
 		err:       errors.New("claim database unavailable"),
 		remaining: &remainingFailures,
-	})
+	}
+	repository.SetStore(failingStore)
 
-	_, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
+	_, err := SyncNote(serviceSyncTestContext(t), failingStore, note.ID)
 
 	if err == nil {
 		t.Fatal("expected first sync to fail after remote create")
@@ -281,7 +343,7 @@ func TestNotionCreatePageDatabaseFailureLeavesRecoverableFlowSpaceID(t *testing.
 		t.Fatalf("created after first sync = %#v, want one created page", fake.created)
 	}
 
-	item, err := SyncNote(serviceSyncTestContext(t), store, note.ID)
+	item, err := SyncNote(serviceSyncTestContext(t), failingStore, note.ID)
 
 	if err != nil {
 		t.Fatalf("retry sync note: %v", err)

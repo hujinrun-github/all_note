@@ -27,7 +27,7 @@ func ListSyncTargets(store storage.Store) gin.HandlerFunc {
 			internalError(c, "failed to list sync targets")
 			return
 		}
-		success(c, gin.H{"targets": targets})
+		success(c, gin.H{"targets": sanitizeSyncTargets(targets)})
 	}
 }
 
@@ -43,6 +43,10 @@ func SaveSyncTarget(store storage.Store) gin.HandlerFunc {
 			badRequest(c, err.Error())
 			return
 		}
+		if err := normalizeSyncTargetConfigForStorage(target); err != nil {
+			badRequest(c, err.Error())
+			return
+		}
 		if req.IsDefault == nil {
 			target.IsDefault = true
 		}
@@ -50,7 +54,7 @@ func SaveSyncTarget(store storage.Store) gin.HandlerFunc {
 			internalError(c, "failed to save sync target")
 			return
 		}
-		success(c, gin.H{"target": target})
+		success(c, gin.H{"target": sanitizeSyncTarget(*target)})
 	}
 }
 
@@ -71,6 +75,10 @@ func UpdateSyncTarget(store storage.Store) gin.HandlerFunc {
 			badRequest(c, err.Error())
 			return
 		}
+		if err := normalizeSyncTargetConfigForStorage(target); err != nil {
+			badRequest(c, err.Error())
+			return
+		}
 		err := updateSyncTargetGuarded(c.Request.Context(), store, target, req.IsDefault == nil, syncTargetIdentityChanged)
 		if errors.Is(err, sql.ErrNoRows) {
 			notFound(c, "sync target not found")
@@ -88,7 +96,7 @@ func UpdateSyncTarget(store storage.Store) gin.HandlerFunc {
 			internalError(c, "failed to update sync target")
 			return
 		}
-		success(c, gin.H{"target": target})
+		success(c, gin.H{"target": sanitizeSyncTarget(*target)})
 	}
 }
 
@@ -132,19 +140,52 @@ func TestObsidianTarget(c *gin.Context) {
 }
 
 func TestNotionTarget(c *gin.Context) {
-	var req model.SaveSyncTargetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "invalid sync target")
-		return
+	testNotionTargetWithStore(nil)(c)
+}
+
+func TestNotionTargetWithStore(store storage.Store) gin.HandlerFunc {
+	return testNotionTargetWithStore(store)
+}
+
+func testNotionTargetWithStore(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req model.SaveSyncTargetRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			badRequest(c, "invalid sync target")
+			return
+		}
+		target := syncTargetFromRequest(&req)
+		target.ID = strings.TrimSpace(req.ID)
+		target.Type = "notion"
+		target.Enabled = true
+		if err := mergeTestNotionTargetConfig(c.Request.Context(), store, target); err != nil {
+			if strings.Contains(err.Error(), "sync target config") {
+				badRequest(c, err.Error())
+				return
+			}
+			internalError(c, "failed to load sync target")
+			return
+		}
+		if err := service.TestNotionTarget(target); err != nil {
+			badRequest(c, err.Error())
+			return
+		}
+		success(c, gin.H{"ok": true})
 	}
-	target := syncTargetFromRequest(&req)
-	target.Type = "notion"
-	target.Enabled = true
-	if err := service.TestNotionTarget(target); err != nil {
-		badRequest(c, err.Error())
-		return
+}
+
+func mergeTestNotionTargetConfig(ctx context.Context, store storage.Store, target *model.SyncTarget) error {
+	if store == nil || target == nil || strings.TrimSpace(target.ID) == "" {
+		return nil
 	}
-	success(c, gin.H{"ok": true})
+	existing, err := store.Sync().GetTarget(ctx, target.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return mergeSyncTargetSecretConfig(existing, target)
 }
 
 func SyncObsidianNote(store storage.Store) gin.HandlerFunc {
@@ -395,6 +436,148 @@ func syncTargetFromRequest(req *model.SaveSyncTargetRequest) *model.SyncTarget {
 	}
 }
 
+func normalizeSyncTargetConfigForStorage(target *model.SyncTarget) error {
+	if target == nil || strings.TrimSpace(target.Type) != "notion" {
+		return nil
+	}
+	config, err := syncTargetConfigObject(target.ConfigJSON)
+	if err != nil {
+		return err
+	}
+	normalizeNotionSecretConfig(config)
+	target.ConfigJSON = mustMarshalSyncTargetConfig(config)
+	return nil
+}
+
+func mergeSyncTargetSecretConfig(existing, next *model.SyncTarget) error {
+	if existing == nil || next == nil || strings.TrimSpace(next.Type) != "notion" {
+		return nil
+	}
+	existingConfig, err := syncTargetConfigObject(existing.ConfigJSON)
+	if err != nil {
+		return err
+	}
+	nextConfig, err := syncTargetConfigObject(next.ConfigJSON)
+	if err != nil {
+		return err
+	}
+
+	nextToken, hasNextToken := trimmedConfigString(nextConfig, "token")
+	if hasNextToken && nextToken != "" {
+		nextConfig["token"] = nextToken
+	} else {
+		if existingToken, hasExistingToken := trimmedConfigString(existingConfig, "token"); hasExistingToken && existingToken != "" {
+			nextConfig["token"] = existingToken
+		} else {
+			delete(nextConfig, "token")
+		}
+	}
+
+	nextTokenEnv, hasNextTokenEnv := trimmedConfigString(nextConfig, "token_env")
+	if hasNextTokenEnv {
+		if nextTokenEnv == "" || (hasNextToken && nextToken != "") {
+			delete(nextConfig, "token_env")
+		} else {
+			nextConfig["token_env"] = nextTokenEnv
+		}
+	} else if existingTokenEnv, hasExistingTokenEnv := trimmedConfigString(existingConfig, "token_env"); hasExistingTokenEnv && existingTokenEnv != "" && nextToken == "" {
+		nextConfig["token_env"] = existingTokenEnv
+	}
+
+	delete(nextConfig, "token_set")
+	next.ConfigJSON = mustMarshalSyncTargetConfig(nextConfig)
+	return nil
+}
+
+func sanitizeSyncTargets(targets []model.SyncTarget) []model.SyncTarget {
+	sanitized := make([]model.SyncTarget, len(targets))
+	for index, target := range targets {
+		sanitized[index] = sanitizeSyncTarget(target)
+	}
+	return sanitized
+}
+
+func sanitizeSyncTarget(target model.SyncTarget) model.SyncTarget {
+	if strings.TrimSpace(target.Type) != "notion" {
+		return target
+	}
+	config, err := syncTargetConfigObject(target.ConfigJSON)
+	if err != nil {
+		target.ConfigJSON = "{}"
+		return target
+	}
+	token, hasToken := trimmedConfigString(config, "token")
+	delete(config, "token")
+	if hasToken && token != "" {
+		config["token_set"] = true
+	} else if tokenSet, ok := config["token_set"].(bool); ok && tokenSet {
+		config["token_set"] = true
+	} else {
+		delete(config, "token_set")
+	}
+	target.ConfigJSON = mustMarshalSyncTargetConfig(config)
+	return target
+}
+
+func sanitizeSyncTargetPtr(target *model.SyncTarget) *model.SyncTarget {
+	if target == nil {
+		return nil
+	}
+	sanitized := sanitizeSyncTarget(*target)
+	return &sanitized
+}
+
+func syncTargetConfigObject(raw string) (map[string]any, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = "{}"
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil, errors.New("sync target config_json must be a JSON object")
+	}
+	if config == nil {
+		return nil, errors.New("sync target config_json must be a JSON object")
+	}
+	return config, nil
+}
+
+func normalizeNotionSecretConfig(config map[string]any) {
+	token, hasToken := trimmedConfigString(config, "token")
+	if hasToken && token != "" {
+		config["token"] = token
+	} else {
+		delete(config, "token")
+	}
+	tokenEnv, hasTokenEnv := trimmedConfigString(config, "token_env")
+	if hasTokenEnv && tokenEnv != "" {
+		config["token_env"] = tokenEnv
+	} else {
+		delete(config, "token_env")
+	}
+	delete(config, "token_set")
+}
+
+func trimmedConfigString(config map[string]any, key string) (string, bool) {
+	value, ok := config[key]
+	if !ok || value == nil {
+		return "", false
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(text), true
+}
+
+func mustMarshalSyncTargetConfig(config map[string]any) string {
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
 func validateSyncTargetRequest(target *model.SyncTarget) error {
 	if target.Type == "obsidian" && (strings.TrimSpace(target.VaultPath) == "" || strings.TrimSpace(target.BaseFolder) == "") {
 		return errors.New("obsidian sync target requires vault_path and base_folder")
@@ -414,6 +597,9 @@ func updateSyncTargetGuarded(ctx context.Context, store storage.Store, target *m
 			return err
 		}
 		target.CreatedAt = existing.CreatedAt
+		if err := mergeSyncTargetSecretConfig(existing, target); err != nil {
+			return err
+		}
 		if preserveIsDefault {
 			target.IsDefault = existing.IsDefault
 		}

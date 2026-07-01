@@ -15,7 +15,12 @@ vi.mock('./ObsidianSyncPanel', () => ({
 }))
 
 vi.mock('./NotionSyncPanel', () => ({
-  NotionSyncPanel: () => <div>Notion 面板</div>,
+  NotionSyncPanel: () => (
+    <label>
+      Notion 草稿
+      <input aria-label="Notion 草稿" />
+    </label>
+  ),
 }))
 
 const targets: SyncTarget[] = [
@@ -47,7 +52,7 @@ const targets: SyncTarget[] = [
   },
 ]
 
-function renderPanel() {
+function renderPanel(props: { onClose?: () => void; open?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -55,7 +60,7 @@ function renderPanel() {
     },
   })
 
-  return render(<SyncSettingsPanel onClose={vi.fn()} />, {
+  return render(<SyncSettingsPanel onClose={props.onClose ?? vi.fn()} open={props.open ?? true} />, {
     wrapper: ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     ),
@@ -100,6 +105,39 @@ describe('SyncSettingsPanel', () => {
 
     await user.click(screen.getByRole('button', { name: '关闭同步设置面板' }))
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the sync settings panel open when the backdrop is clicked', async () => {
+    const onClose = vi.fn()
+    const user = userEvent.setup()
+    const { container } = renderPanel({ onClose })
+
+    const overlay = container.querySelector('.sync-overlay')
+    expect(overlay).not.toBeNull()
+    await user.click(overlay!)
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: '同步设置' })).toBeVisible()
+  })
+
+  it('keeps unsaved form content when hidden and reopened', async () => {
+    const user = userEvent.setup()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { container, rerender } = render(<SyncSettingsPanel onClose={vi.fn()} open />, {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    })
+
+    await user.click(screen.getByRole('tab', { name: 'Notion' }))
+    await user.type(screen.getByLabelText('Notion 草稿'), 'draft-source-id')
+
+    rerender(<SyncSettingsPanel onClose={vi.fn()} open={false} />)
+    expect(container.querySelector('.sync-overlay')).toHaveAttribute('hidden')
+
+    rerender(<SyncSettingsPanel onClose={vi.fn()} open />)
+    expect(screen.getByLabelText('Notion 草稿')).toHaveValue('draft-source-id')
+    expect(screen.getByRole('tabpanel', { name: 'Notion 同步设置' })).toBeVisible()
   })
 
   it('marks one default target per type', async () => {

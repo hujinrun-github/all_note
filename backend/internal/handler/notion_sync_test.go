@@ -133,6 +133,156 @@ func TestSaveSyncTargetDefaultsNewTargetToDefaultWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestSaveNotionTargetRedactsRawTokenInResponse(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	const rawToken = "ntn_unit_test_raw_token"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets", bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\",\"token\":\"`+rawToken+`\",\"required_tags\":[\"sync\"]}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	SaveSyncTarget(handlerSyncTestStore{})(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), rawToken) {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Target model.SyncTarget `json:"target"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var responseConfig map[string]any
+	if err := json.Unmarshal([]byte(body.Data.Target.ConfigJSON), &responseConfig); err != nil {
+		t.Fatalf("decode response config: %v", err)
+	}
+	if _, ok := responseConfig["token"]; ok {
+		t.Fatalf("response config includes raw token: %v", responseConfig)
+	}
+	if responseConfig["token_set"] != true {
+		t.Fatalf("token_set = %v, want true", responseConfig["token_set"])
+	}
+	stored, err := repository.GetSyncTarget(body.Data.Target.ID)
+	if err != nil {
+		t.Fatalf("get stored target: %v", err)
+	}
+	if !strings.Contains(stored.ConfigJSON, rawToken) {
+		t.Fatalf("stored config did not keep raw token: %s", stored.ConfigJSON)
+	}
+}
+
+func TestPatchNotionTargetPreservesRawTokenWhenOmitted(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	const rawToken = "ntn_unit_test_existing_token"
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"` + rawToken + `","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\",\"title_property\":\"Title\",\"required_tags\":[\"sync\"]}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), rawToken) {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+	updated, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get updated target: %v", err)
+	}
+	var storedConfig map[string]any
+	if err := json.Unmarshal([]byte(updated.ConfigJSON), &storedConfig); err != nil {
+		t.Fatalf("decode stored config: %v", err)
+	}
+	if storedConfig["token"] != rawToken {
+		t.Fatalf("token = %v, want existing token", storedConfig["token"])
+	}
+	if storedConfig["title_property"] != "Title" {
+		t.Fatalf("title_property = %v", storedConfig["title_property"])
+	}
+	var body struct {
+		Data struct {
+			Target model.SyncTarget `json:"target"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var responseConfig map[string]any
+	if err := json.Unmarshal([]byte(body.Data.Target.ConfigJSON), &responseConfig); err != nil {
+		t.Fatalf("decode response config: %v", err)
+	}
+	if responseConfig["token_set"] != true {
+		t.Fatalf("token_set = %v, want true", responseConfig["token_set"])
+	}
+}
+
+func TestPatchNotionTargetOverwritesRawTokenWhenProvided(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"ntn_unit_test_old_token","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\",\"token\":\"ntn_unit_test_new_token\",\"required_tags\":[\"sync\"]}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	updated, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get updated target: %v", err)
+	}
+	var storedConfig map[string]any
+	if err := json.Unmarshal([]byte(updated.ConfigJSON), &storedConfig); err != nil {
+		t.Fatalf("decode stored config: %v", err)
+	}
+	if storedConfig["token"] != "ntn_unit_test_new_token" {
+		t.Fatalf("token = %v, want new token", storedConfig["token"])
+	}
+	if strings.Contains(recorder.Body.String(), "ntn_unit_test_new_token") {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+}
+
 func TestValidateSyncTargetRequestRejectsUpdateObsidianWithoutPaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -339,6 +489,35 @@ func TestNotionTargetWithMockProviderForcesNotionEnabled(t *testing.T) {
 	}
 	if !body.Data.OK {
 		t.Fatalf("ok = false; body = %s", recorder.Body.String())
+	}
+}
+
+func TestMergeTestNotionTargetConfigUsesSavedRawToken(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	const rawToken = "ntn_unit_test_saved_test_token"
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"` + rawToken + `","required_tags":["sync"]}`
+	if err := store.Sync().SaveTarget(handlerSyncStoreTestContext(t), &target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	proposed := &model.SyncTarget{
+		ID:         target.ID,
+		Type:       "notion",
+		Name:       "Personal Notion",
+		ConfigJSON: `{"data_source_id":"ds-123","required_tags":["sync"]}`,
+		Enabled:    true,
+	}
+
+	if err := mergeTestNotionTargetConfig(handlerSyncStoreTestContext(t), store, proposed); err != nil {
+		t.Fatalf("merge test config: %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal([]byte(proposed.ConfigJSON), &config); err != nil {
+		t.Fatalf("decode proposed config: %v", err)
+	}
+	if config["token"] != rawToken {
+		t.Fatalf("token = %v, want saved raw token", config["token"])
 	}
 }
 

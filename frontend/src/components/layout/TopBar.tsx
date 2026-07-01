@@ -9,6 +9,8 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/inbox': { title: '未整理捕获', subtitle: '把临时想法转为笔记、任务或日程' },
   '/search': { title: '全局搜索', subtitle: '跨笔记、任务和日程找回上下文' },
   '/summary': { title: '每日总结', subtitle: '回顾你已经完成的事项和产出' },
+  '/admin/users': { title: '账号管理', subtitle: '管理登录账号、角色权限和临时密码' },
+  '/change-password': { title: '修改密码', subtitle: '更新当前账号的登录凭据' },
 }
 
 export function TopBar() {

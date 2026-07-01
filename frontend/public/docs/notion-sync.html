@@ -9,7 +9,7 @@
         color: #2c241b;
         background: #fbf7ef;
         font-family:
-          Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+          Inter, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
       }
 
       body {
@@ -70,49 +70,68 @@
       </p>
 
       <section id="data-source-id">
-        <h2>Data Source ID（数据源 ID）是什么</h2>
+        <h2>数据库链接或 Data Source ID 是什么</h2>
         <p>
-          Data Source ID 是你希望 FlowSpace 写入的 Notion 数据源标识。它通常来自
-          Notion 数据源或数据库页面的 URL，不是页面标题，也不是集成 Token。
+          这里可以直接粘贴 Notion 数据库右上角菜单里的
+          <code>Copy link</code> 链接，也可以填写 Notion 的 Data Source
+          ID。FlowSpace 会自动从链接里提取数据库
+          ID，并在需要时解析到真正的数据源。
         </p>
         <p>
-          配置时，先在 Notion 中准备一个用于存放 FlowSpace 笔记的数据源，并把它
-          share 给你的 Notion integration。FlowSpace 会用这个 ID 确认笔记应该同步到
-          哪个 Notion 数据源里。
+          配置时，先在 Notion 中准备一个用于存放 FlowSpace
+          笔记的数据库，并把它分享给 Notion
+          integration。你截图里的菜单如果看不到 Data Source ID 入口，就用
+          <code>Copy link</code>。
+        </p>
+        <p>
+          不要复制普通 Notion 页面链接。FlowSpace
+          需要的是数据库本体的链接；如果页面里嵌入了表格或 linked
+          database，请打开那个数据库本体后再复制链接。
+        </p>
+        <p>
+          如果仍然出现 404，通常不是 ID 格式问题，而是这个数据库还没有在
+          <code>Connections</code> 里授权给对应 integration。
         </p>
       </section>
 
-      <section id="token-env">
-        <h2>Token environment variable（令牌环境变量）是什么</h2>
+      <section id="token">
+        <h2>Notion Token（原始令牌）是什么</h2>
         <p>
-          这个输入框填写的是“后端环境变量的名字”，不是 Notion Token 的原文。
-          默认值是 <code>FLOWSPACE_NOTION_TOKEN</code>。
+          这个输入框填写 Notion integration 的原始 Token，通常以
+          <code>ntn_</code> 或 <code>secret_</code> 开头。
         </p>
         <p>
-          实际 Token 需要放在启动后端服务的环境变量里。同步时，后端会按这里填写的
-          变量名读取真实 Token。这样 SQLite 里只保存变量名，不保存敏感令牌。
+          保存后 FlowSpace 不会在设置界面回显
+          Token。再次编辑时留空会继续使用已保存的 Token，输入新 Token
+          后会覆盖旧值。旧版通过环境变量保存的配置仍可继续使用。
         </p>
       </section>
 
       <section>
         <h2>推荐配置步骤</h2>
         <ol>
-          <li>在 Notion 创建或选择一个用于 FlowSpace 笔记同步的数据源。</li>
-          <li>创建 Notion integration，并把该数据源 share 给这个 integration。</li>
+          <li>在 Notion 创建或选择一个用于 FlowSpace 笔记同步的数据库。</li>
           <li>
-            在启动后端前设置环境变量，例如
-            <code>FLOWSPACE_NOTION_TOKEN=secret_xxx</code>。
+            创建 Notion integration，并在数据库的
+            <code>Connections</code> 里确认已经添加这个 integration。
           </li>
-          <li>在 FlowSpace 同步设置中填写 Data Source ID 和环境变量名。</li>
-          <li>如果只想同步部分笔记，在同步标签里填写标签名，并给对应笔记打标签。</li>
+          <li>复制 integration 的原始 Token。</li>
+          <li>
+            在数据库右上角菜单点击 <code>Copy link</code>，把链接粘贴到
+            FlowSpace 的“数据库链接或 Data Source ID”。
+          </li>
+          <li>在 FlowSpace 同步设置中填写 Notion Token。</li>
+          <li>
+            如果只想同步部分笔记，在同步标签里填写标签名，并给对应笔记打标签。
+          </li>
         </ol>
       </section>
 
       <div class="callout">
         <p>
-          如果连接测试失败，优先检查三件事：Data Source ID 是否来自正确数据源、
-          integration 是否已被分享访问该数据源、后端服务启动时是否带上了正确的
-          Token 环境变量。
+          如果连接测试失败，优先检查三件事：数据库链接是否来自正确数据库、
+          integration 是否已在 <code>Connections</code> 里获得访问权限、Notion
+          Token 是否来自正确的 integration。
         </p>
       </div>
     </main>

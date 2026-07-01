@@ -58,7 +58,7 @@ func buildNoteSyncStateCompatibilityResponse(ctx context.Context, syncRepo stora
 	}
 	return model.NoteSyncStateCompatibilityResponse{
 		State:  state,
-		Target: target,
+		Target: sanitizeSyncTargetPtr(target),
 	}, nil
 }
 
@@ -76,7 +76,7 @@ func noteSyncStateForBinding(ctx context.Context, syncRepo storage.SyncRepositor
 			},
 		}
 		if requestedTarget, err := syncRepo.GetDefaultTarget(ctx, requestedType); err == nil {
-			response.Target = requestedTarget
+			response.Target = sanitizeSyncTargetPtr(requestedTarget)
 		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return model.NoteSyncStateCompatibilityResponse{}, err
 		}
@@ -90,7 +90,7 @@ func noteSyncStateForBinding(ctx context.Context, syncRepo storage.SyncRepositor
 	}
 	return model.NoteSyncStateCompatibilityResponse{
 		State:  state,
-		Target: target,
+		Target: sanitizeSyncTargetPtr(target),
 	}, nil
 }
 
