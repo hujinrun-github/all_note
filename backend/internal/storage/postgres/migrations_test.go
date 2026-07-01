@@ -271,6 +271,429 @@ func TestRunPostgresMigrationsReplacesCustomLastDirectionCheck(t *testing.T) {
 	}
 }
 
+func TestMultiUserAuthMigrationEnforcesDefaultOwnedWorkspace(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_default_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_owner', 'owner@example.com', 'Owner', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_owner', 'Owner Workspace', 'user_owner');
+		UPDATE users SET default_workspace_id = 'workspace_owner' WHERE id = 'user_owner';
+		UPDATE folders SET workspace_id = 'workspace_owner';
+		UPDATE task_projects SET workspace_id = 'workspace_owner';
+	`); err != nil {
+		t.Fatalf("seed valid owner workspace: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_a', 'a@example.com', 'A', 'hash', false, 'workspace_b', 'user', 'active')
+	`)
+	if err == nil {
+		t.Fatal("expected default workspace ownership constraint to reject invalid row")
+	}
+}
+
+func TestMultiUserAuthMigrationCreatesPlannedAuthSchema(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_schema_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	if err := RunPostgresMigrationsContext(context.Background(), db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"users", "last_login_at"},
+		{"users", "password_changed_at"},
+		{"sessions", "workspace_id"},
+		{"sessions", "user_agent"},
+		{"sessions", "ip_address"},
+		{"sessions", "last_seen_at"},
+		{"audit_events", "target_user_id"},
+	} {
+		assertPostgresColumnExists(t, db, schema, column.table, column.name)
+	}
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"sessions", "updated_at"},
+		{"workspace_members", "updated_at"},
+		{"audit_events", "entity_type"},
+		{"audit_events", "entity_id"},
+	} {
+		assertPostgresColumnMissing(t, db, schema, column.table, column.name)
+	}
+	assertPostgresColumnDefault(t, db, schema, "workspace_members", "role", "'owner'::text")
+	assertPostgresColumnDefault(t, db, schema, "users", "must_change_password", "false")
+	assertPostgresColumnDefault(t, db, schema, "sessions", "last_seen_at", "now()")
+	assertPostgresColumnNullable(t, db, schema, "sessions", "last_seen_at", "NO")
+}
+
+func TestMultiUserAuthFinalizerCreatesDeferrableDefaultWorkspaceFK(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_deferrable_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_existing', 'existing@example.com', 'Existing', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_existing', 'Existing Workspace', 'user_existing');
+		UPDATE users SET default_workspace_id = 'workspace_existing' WHERE id = 'user_existing';
+		UPDATE folders SET workspace_id = 'workspace_existing';
+		UPDATE task_projects SET workspace_id = 'workspace_existing';
+	`); err != nil {
+		t.Fatalf("seed finalizer data: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+	childFKs := []struct {
+		table string
+		name  string
+	}{
+		{table: "notes", name: "notes_workspace_folder_fk"},
+		{table: "tasks", name: "tasks_workspace_project_fk"},
+		{table: "note_project_links", name: "note_project_links_workspace_project_fk"},
+		{table: "learning_roadmaps", name: "learning_roadmaps_workspace_project_fk"},
+	}
+	firstChildFKOIDs := make(map[string]string, len(childFKs))
+	for _, fk := range childFKs {
+		firstChildFKOIDs[fk.name] = postgresConstraintOID(t, db, fk.table, fk.name)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("second finalizer should be idempotent: %v", err)
+	}
+	for _, fk := range childFKs {
+		secondOID := postgresConstraintOID(t, db, fk.table, fk.name)
+		if secondOID != firstChildFKOIDs[fk.name] {
+			t.Fatalf("%s OID changed after second finalizer run: first=%s second=%s", fk.name, firstChildFKOIDs[fk.name], secondOID)
+		}
+	}
+
+	var deferrable, deferred bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT condeferrable, condeferred
+		FROM pg_constraint
+		WHERE conname = 'users_default_owned_workspace_fk'
+	`).Scan(&deferrable, &deferred); err != nil {
+		t.Fatalf("read default workspace constraint: %v", err)
+	}
+	if !deferrable || !deferred {
+		t.Fatalf("constraint deferrable=%v deferred=%v, want true/true", deferrable, deferred)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_later_workspace', 'later@example.com', 'Later', 'hash', true, 'workspace_later', 'user', 'active')
+	`); err != nil {
+		t.Fatalf("insert user before workspace should be deferred: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_later', 'Later Workspace', 'user_later_workspace')
+	`); err != nil {
+		t.Fatalf("insert later workspace: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit deferred default workspace FK: %v", err)
+	}
+}
+
+func TestMultiUserAuthFinalizerRollsBackDDLWhenCompositeFKFails(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_rollback_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	seedFinalizedWorkspace(t, ctx, db, "user_workspace_a", "workspace_a")
+	insertPostgresWorkspace(t, ctx, db, "user_workspace_b", "workspace_b")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', 'workspace_a');
+		INSERT INTO tasks (id, title, content, project_id, workspace_id)
+		VALUES ('task_cross_workspace_project', 'Cross Workspace Project', '', 'workspace_a_only_project', 'workspace_b');
+	`); err != nil {
+		t.Fatalf("seed cross-workspace task: %v", err)
+	}
+	assertRowCount(t, db, postgresOriginalTasksProjectFKCountSQL(), 1)
+
+	if err := runMultiUserAuthFinalizer(ctx, db); err == nil {
+		t.Fatal("expected finalizer to fail while adding composite task project FK")
+	}
+
+	assertRowCount(t, db, postgresOriginalTasksProjectFKCountSQL(), 1)
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = 'tasks'
+			AND c.conname = 'tasks_workspace_project_fk'
+	`, 0)
+}
+
+func TestMultiUserAuthFinalizerAllowsWorkspaceScopedDefaultFolderAndProjectIDs(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_scoped_defaults_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	seedFinalizedWorkspace(t, ctx, db, "user_workspace_a", "workspace_a")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO folders (id, name, sort_order, workspace_id)
+		VALUES ('workspace_a_only_folder', 'Workspace A Only Folder', 99, 'workspace_a');
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+		VALUES ('workspace_a_only_project', 'Workspace A Only Project', 'regular', '', 'workspace_a');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+		VALUES ('roadmap_workspace_a_default', 'personal', 'Workspace A Default Roadmap', '', 'workspace_a');
+	`); err != nil {
+		t.Fatalf("seed workspace A scoped rows: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+
+	insertPostgresWorkspace(t, ctx, db, "user_workspace_b", "workspace_b")
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO folders (id, name, sort_order, workspace_id)
+		VALUES
+			('__uncategorized', 'Uncategorized', 0, 'workspace_b'),
+			('__work', 'Work', 1, 'workspace_b'),
+			('__personal', 'Personal', 2, 'workspace_b');
+		INSERT INTO task_projects (id, name, type, description, workspace_id)
+			VALUES ('personal', 'Personal', 'personal', 'Default personal task project', 'workspace_b');
+		INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+			VALUES ('roadmap_workspace_b_default', 'personal', 'Workspace B Default Roadmap', '', 'workspace_b');
+	`); err != nil {
+		t.Fatalf("insert workspace B default rows with reused IDs: %v", err)
+	}
+
+	assertRowCount(t, db, `SELECT COUNT(*) FROM folders WHERE id IN ('__uncategorized', '__work', '__personal')`, 6)
+	assertRowCount(t, db, `SELECT COUNT(*) FROM task_projects WHERE id = 'personal'`, 2)
+	assertRowCount(t, db, `SELECT COUNT(*) FROM learning_roadmaps WHERE project_id = 'personal'`, 2)
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO notes (id, title, body, folder_id, tags, workspace_id)
+		VALUES ('note_workspace_b_default', 'Workspace B Default Note', '', '__work', '{}'::text[], 'workspace_b');
+		INSERT INTO tasks (id, title, content, project_id, workspace_id)
+		VALUES ('task_workspace_b_default', 'Workspace B Default Task', '', 'personal', 'workspace_b');
+		INSERT INTO note_project_links (note_id, project_id, workspace_id)
+		VALUES ('note_workspace_b_default', 'personal', 'workspace_b');
+	`); err != nil {
+		t.Fatalf("insert workspace B child rows for reused defaults: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "notes folder",
+			sql: `INSERT INTO notes (id, title, body, folder_id, tags, workspace_id)
+				VALUES ('note_cross_workspace_folder', 'Cross Workspace Folder', '', 'workspace_a_only_folder', '{}'::text[], 'workspace_b')`,
+		},
+		{
+			name: "tasks project",
+			sql: `INSERT INTO tasks (id, title, content, project_id, workspace_id)
+				VALUES ('task_cross_workspace_project', 'Cross Workspace Project', '', 'workspace_a_only_project', 'workspace_b')`,
+		},
+		{
+			name: "note project links project",
+			sql: `INSERT INTO note_project_links (note_id, project_id, workspace_id)
+				VALUES ('note_workspace_b_default', 'workspace_a_only_project', 'workspace_b')`,
+		},
+		{
+			name: "learning roadmaps project",
+			sql: `INSERT INTO learning_roadmaps (id, project_id, title, goal, workspace_id)
+				VALUES ('roadmap_cross_workspace_project', 'workspace_a_only_project', 'Cross Workspace Roadmap', '', 'workspace_b')`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, tc.sql); err == nil {
+				t.Fatalf("expected %s to reject cross-workspace reference", tc.name)
+			}
+		})
+	}
+}
+
+func TestMultiUserAuthFinalizerRejectsBusinessRowsWithoutWorkspace(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_business_ws_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ('user_owner', 'strict-owner@example.com', 'Owner', 'hash', 'admin', 'active');
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ('workspace_owner', 'Owner Workspace', 'user_owner');
+		UPDATE users SET default_workspace_id = 'workspace_owner' WHERE id = 'user_owner';
+		UPDATE folders SET workspace_id = 'workspace_owner';
+		UPDATE task_projects SET workspace_id = 'workspace_owner';
+	`); err != nil {
+		t.Fatalf("seed workspace backfill: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("finalizer: %v", err)
+	}
+	if err := runMultiUserAuthFinalizer(ctx, db); err != nil {
+		t.Fatalf("second finalizer should be idempotent: %v", err)
+	}
+	for _, column := range []struct {
+		table string
+		name  string
+	}{
+		{"users", "default_workspace_id"},
+		{"notes", "workspace_id"},
+		{"tasks", "workspace_id"},
+		{"events", "workspace_id"},
+	} {
+		assertPostgresColumnNullable(t, db, schema, column.table, column.name, "NO")
+	}
+	assertPostgresNoUnvalidatedWorkspaceConstraints(t, db)
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "notes",
+			sql: `INSERT INTO notes (id, title, body, folder_id, tags)
+				VALUES ('note_without_workspace', 'No Workspace', '', '__uncategorized', '{}'::text[])`,
+		},
+		{
+			name: "tasks",
+			sql: `INSERT INTO tasks (id, title, content, project_id)
+				VALUES ('task_without_workspace', 'No Workspace', '', 'personal')`,
+		},
+		{
+			name: "events",
+			sql: `INSERT INTO events (id, title, start_at, end_at, time_range)
+				VALUES ('event_without_workspace', 'No Workspace', now(), now() + interval '1 hour', tstzrange(now(), now() + interval '1 hour'))`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.ExecContext(ctx, tc.sql); err == nil {
+				t.Fatalf("expected %s insert without workspace_id to fail", tc.name)
+			}
+		})
+	}
+}
+
+func TestMultiUserAuthFinalizerScopesConstraintLookupToCurrentSchema(t *testing.T) {
+	ctx := context.Background()
+	schemaA := fmt.Sprintf("fs_test_auth_constraint_a_%d", time.Now().UnixNano())
+	dbA := openPostgresTestDB(t, schemaA)
+	defer dbA.Close()
+	seedFinalizedWorkspace(t, ctx, dbA, "user_owner_a", "workspace_owner_a")
+	if err := runMultiUserAuthFinalizer(ctx, dbA); err != nil {
+		t.Fatalf("finalize schema A: %v", err)
+	}
+
+	schemaB := fmt.Sprintf("fs_test_auth_constraint_b_%d", time.Now().UnixNano())
+	dbB := openPostgresTestDB(t, schemaB)
+	defer dbB.Close()
+	seedFinalizedWorkspace(t, ctx, dbB, "user_owner_b", "workspace_owner_b")
+	if err := runMultiUserAuthFinalizer(ctx, dbB); err != nil {
+		t.Fatalf("finalize schema B: %v", err)
+	}
+
+	assertRowCount(t, dbB, `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = 'users'
+			AND c.conname = 'users_default_owned_workspace_fk'
+	`, 1)
+
+	if _, err := dbB.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ('user_invalid_b', 'invalid-b@example.com', 'Invalid', 'hash', false, 'workspace_owner_b', 'user', 'active')
+	`); err == nil {
+		t.Fatal("expected schema B ownership FK to reject another user's workspace")
+	}
+}
+
+func TestSetPostgresColumnNotNullChecksCurrentNullability(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_auth_not_null_fast_path_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE not_null_probe (
+			id TEXT PRIMARY KEY,
+			already_required TEXT NOT NULL,
+			later_required TEXT
+		)
+	`); err != nil {
+		t.Fatalf("create not null probe: %v", err)
+	}
+
+	nullable, err := postgresColumnIsNullable(ctx, db, "not_null_probe", "already_required")
+	if err != nil {
+		t.Fatalf("check already_required nullability: %v", err)
+	}
+	if nullable {
+		t.Fatal("already_required should start NOT NULL")
+	}
+	if err := setPostgresColumnNotNull(ctx, db, "not_null_probe", "already_required"); err != nil {
+		t.Fatalf("set already_required not null should be a no-op: %v", err)
+	}
+
+	nullable, err = postgresColumnIsNullable(ctx, db, "not_null_probe", "later_required")
+	if err != nil {
+		t.Fatalf("check later_required nullability: %v", err)
+	}
+	if !nullable {
+		t.Fatal("later_required should start nullable")
+	}
+	if err := setPostgresColumnNotNull(ctx, db, "not_null_probe", "later_required"); err != nil {
+		t.Fatalf("set later_required not null: %v", err)
+	}
+	nullable, err = postgresColumnIsNullable(ctx, db, "not_null_probe", "later_required")
+	if err != nil {
+		t.Fatalf("recheck later_required nullability: %v", err)
+	}
+	if nullable {
+		t.Fatal("later_required should be NOT NULL after helper")
+	}
+	if err := setPostgresColumnNotNull(ctx, db, "not_null_probe", "later_required"); err != nil {
+		t.Fatalf("second set later_required not null should be a no-op: %v", err)
+	}
+}
+
 func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	err := wrapPostgresMigrationError("0001_init_postgres.sql", []byte(`CREATE EXTENSION IF NOT EXISTS pg_trgm`), fmt.Errorf(`permission denied to create extension "pg_trgm"`))
 	if err == nil {
@@ -279,6 +702,186 @@ func TestWrapPostgresMigrationErrorMentionsPgTrgmBootstrap(t *testing.T) {
 	if !strings.Contains(err.Error(), "pg_trgm extension privilege/bootstrap failed") {
 		t.Fatalf("expected pg_trgm bootstrap guidance, got %v", err)
 	}
+}
+
+func seedFinalizedWorkspace(t *testing.T, ctx context.Context, db *sql.DB, userID, workspaceID string) {
+	t.Helper()
+
+	if err := RunPostgresMigrationsContext(ctx, db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, role, status)
+		VALUES ($1, $2, 'Owner', 'hash', 'admin', 'active')
+	`, userID, userID+"@example.com"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ($1, 'Owner Workspace', $2)
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE users SET default_workspace_id = $1 WHERE id = $2
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("backfill user default workspace: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE folders SET workspace_id = $1`, workspaceID); err != nil {
+		t.Fatalf("backfill folders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE task_projects SET workspace_id = $1`, workspaceID); err != nil {
+		t.Fatalf("backfill task projects: %v", err)
+	}
+}
+
+func insertPostgresWorkspace(t *testing.T, ctx context.Context, db *sql.DB, userID, workspaceID string) {
+	t.Helper()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin workspace insert: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users (id, email, display_name, password_hash, must_change_password, default_workspace_id, role, status)
+		VALUES ($1, $2, 'Workspace User', 'hash', false, $3, 'user', 'active')
+	`, userID, userID+"@example.com", workspaceID); err != nil {
+		t.Fatalf("insert user %s: %v", userID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspaces (id, name, owner_user_id)
+		VALUES ($1, 'Workspace', $2)
+	`, workspaceID, userID); err != nil {
+		t.Fatalf("insert workspace %s: %v", workspaceID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit workspace insert: %v", err)
+	}
+}
+
+func assertPostgresColumnExists(t *testing.T, db *sql.DB, schema, table, column string) {
+	t.Helper()
+
+	var exists bool
+	if err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+		)
+	`, schema, table, column).Scan(&exists); err != nil {
+		t.Fatalf("check column %s.%s: %v", table, column, err)
+	}
+	if !exists {
+		t.Fatalf("expected column %s.%s to exist", table, column)
+	}
+}
+
+func assertPostgresColumnMissing(t *testing.T, db *sql.DB, schema, table, column string) {
+	t.Helper()
+
+	var exists bool
+	if err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+		)
+	`, schema, table, column).Scan(&exists); err != nil {
+		t.Fatalf("check column %s.%s: %v", table, column, err)
+	}
+	if exists {
+		t.Fatalf("expected column %s.%s to be absent", table, column)
+	}
+}
+
+func assertPostgresColumnDefault(t *testing.T, db *sql.DB, schema, table, column, want string) {
+	t.Helper()
+
+	var got sql.NullString
+	if err := db.QueryRow(`
+		SELECT column_default
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+	`, schema, table, column).Scan(&got); err != nil {
+		t.Fatalf("check default %s.%s: %v", table, column, err)
+	}
+	if !got.Valid || got.String != want {
+		t.Fatalf("default %s.%s = %q, want %q", table, column, got.String, want)
+	}
+}
+
+func assertPostgresColumnNullable(t *testing.T, db *sql.DB, schema, table, column, want string) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRow(`
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+	`, schema, table, column).Scan(&got); err != nil {
+		t.Fatalf("check nullability %s.%s: %v", table, column, err)
+	}
+	if got != want {
+		t.Fatalf("nullability %s.%s = %q, want %q", table, column, got, want)
+	}
+}
+
+func assertPostgresNoUnvalidatedWorkspaceConstraints(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE convalidated = false
+			AND (
+				conname = 'users_default_workspace_id_not_null'
+				OR conname LIKE '%_workspace_id_not_null'
+			)
+	`).Scan(&count); err != nil {
+		t.Fatalf("check unvalidated workspace constraints: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("found %d unvalidated workspace constraints, want 0", count)
+	}
+}
+
+func postgresConstraintOID(t *testing.T, db *sql.DB, table, constraint string) string {
+	t.Helper()
+
+	var oid string
+	if err := db.QueryRow(`
+		SELECT c.oid::text
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = $1
+			AND c.conname = $2
+	`, table, constraint).Scan(&oid); err != nil {
+		t.Fatalf("read constraint OID %s.%s: %v", table, constraint, err)
+	}
+	return oid
+}
+
+func postgresOriginalTasksProjectFKCountSQL() string {
+	return `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class child ON child.oid = c.conrelid
+		JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+		JOIN pg_class parent ON parent.oid = c.confrelid
+		JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+		WHERE child_ns.nspname = current_schema()
+			AND parent_ns.nspname = current_schema()
+			AND child.relname = 'tasks'
+			AND parent.relname = 'task_projects'
+			AND c.contype = 'f'
+			AND array_length(c.conkey, 1) = 1
+			AND pg_get_constraintdef(c.oid) LIKE '%ON DELETE SET DEFAULT%'
+	`
 }
 
 func assertColumnType(t *testing.T, db *sql.DB, schema, table, column, want string) {

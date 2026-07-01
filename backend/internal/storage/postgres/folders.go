@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -13,13 +14,18 @@ type folderRepository struct {
 }
 
 func (r folderRepository) List(ctx context.Context) ([]model.Folder, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT f.id, f.name, f.sort_order, COUNT(n.id) as note_count, f.created_at
 		FROM folders f
-		LEFT JOIN notes n ON n.folder_id = f.id
-		GROUP BY f.id
+		LEFT JOIN notes n ON n.workspace_id = f.workspace_id AND n.folder_id = f.id
+		WHERE f.workspace_id = $1
+		GROUP BY f.workspace_id, f.id
 		ORDER BY f.sort_order ASC
-	`)
+	`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -39,6 +45,10 @@ func (r folderRepository) List(ctx context.Context) ([]model.Folder, error) {
 }
 
 func (r folderRepository) Exists(ctx context.Context, id string) (bool, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return false, err
+	}
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return false, nil
@@ -46,8 +56,8 @@ func (r folderRepository) Exists(ctx context.Context, id string) (bool, error) {
 
 	var exists bool
 	if err := r.db.QueryRowContext(ctx, `
-		SELECT EXISTS(SELECT 1 FROM folders WHERE id = $1)
-	`, id).Scan(&exists); err != nil {
+		SELECT EXISTS(SELECT 1 FROM folders WHERE workspace_id = $1 AND id = $2)
+	`, workspaceID, id).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

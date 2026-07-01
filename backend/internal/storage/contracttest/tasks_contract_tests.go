@@ -1,7 +1,6 @@
 package contracttest
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Writing", Type: "regular"})
 		if err != nil {
 			t.Fatalf("create project: %v", err)
@@ -57,7 +56,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Roadmap Context", Type: "learning"})
 		if err != nil {
 			t.Fatalf("create project: %v", err)
@@ -73,7 +72,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 				{
 					ID:         nodeID,
 					Type:       "task",
-					Title:      "检索索引",
+					Title:      "search index",
 					PathType:   "required",
 					Status:     "active",
 					OrderIndex: 1,
@@ -81,7 +80,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 				{
 					ID:         otherNodeID,
 					Type:       "task",
-					Title:      "其他任务",
+					Title:      "unrelated search context",
 					PathType:   "optional",
 					Status:     "active",
 					OrderIndex: 2,
@@ -91,8 +90,8 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("create roadmap: %v", err)
 		}
 		matching := &model.Task{
-			Title:         "调研向量检索索引",
-			Content:       "比较 HNSW、IVF 和 rerank 的系统设计取舍",
+			Title:         "research vector search index",
+			Content:       "compare HNSW IVF and rerank system design tradeoffs",
 			Status:        "open",
 			Horizon:       "week",
 			Scope:         "daily",
@@ -133,7 +132,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		if _, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{Name: "Alpha", Type: "regular"}); err != nil {
 			t.Fatalf("create alpha: %v", err)
 		}
@@ -163,7 +162,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "old searchable task",
 			Content: "stable task body",
@@ -218,7 +217,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{Title: "status compatibility task", Content: "history", Status: "open", Horizon: "week", Scope: "daily"}
 		if err := store.Tasks().Create(ctx, task); err != nil {
 			t.Fatalf("create task: %v", err)
@@ -238,7 +237,7 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		localDay := time.Date(2026, 6, 16, 0, 0, 0, 0, time.Local)
 		todayStart := localDay.Unix()
 		todayEnd := localDay.Add(24 * time.Hour).Unix()

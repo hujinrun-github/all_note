@@ -14,28 +14,28 @@ import (
 )
 
 func TestPostUnifiedNoteSyncRequiresBinding(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	note := insertHandlerNoteForTest(t, "Unbound Sync", "Body\n")
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notes/"+note.ID, nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notes/"+note.ID, nil)
 
-	SyncNote(c)
+	SyncNote(store)(c)
 
 	assertSyncDispatchError(t, recorder, http.StatusConflict, "binding_required")
 }
 
 func TestPostTargetPushReturnsTargetNotFound(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: "missing-target"}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets/missing-target/push", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/targets/missing-target/push", nil)
 
-	SyncTargetPush(c)
+	SyncTargetPush(store)(c)
 
 	assertSyncDispatchError(t, recorder, http.StatusNotFound, "sync_target_not_found")
 }
@@ -62,15 +62,15 @@ func TestPostTargetPullReturnsConflictForForeignBinding(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: targetB.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets/"+targetB.ID+"/pull", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/targets/"+targetB.ID+"/pull", nil)
 
-	SyncTargetPull(c)
+	SyncTargetPull(store)(c)
 
 	assertSyncDispatchError(t, recorder, http.StatusConflict, "binding_mismatch")
 }
 
 func TestGetTargetDeletionsUsesTargetID(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	targetA := saveHandlerObsidianTargetNamed(t, "Handler Delete A", t.TempDir())
 	targetB := saveHandlerObsidianTargetNamed(t, "Handler Delete B", t.TempDir())
 	noteA := insertHandlerNoteForTest(t, "Handler Deleted A", "Body\n")
@@ -81,9 +81,9 @@ func TestGetTargetDeletionsUsesTargetID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: targetB.ID}}
-	c.Request = httptest.NewRequest(http.MethodGet, "/sync/targets/"+targetB.ID+"/deletions", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodGet, "/sync/targets/"+targetB.ID+"/deletions", nil)
 
-	ListTargetDeletions(c)
+	ListTargetDeletions(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -115,9 +115,9 @@ func TestPostTargetDeletionConfirmUsesTargetID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: target.ID}, {Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/confirm", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/confirm", nil)
 
-	ConfirmTargetDeletion(c)
+	ConfirmTargetDeletion(store)(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
@@ -138,9 +138,9 @@ func TestPostTargetDeletionRestoreUsesTargetID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: target.ID}, {Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/restore", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/restore", nil)
 
-	RestoreTargetDeletion(c)
+	RestoreTargetDeletion(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -151,7 +151,7 @@ func TestPostTargetDeletionRestoreUsesTargetID(t *testing.T) {
 }
 
 func TestGetTargetNotionDeletionsUsesTargetID(t *testing.T) {
-	openHandlerSyncStoreTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	targetA := saveHandlerNotionTargetNamed(t, "Handler Notion Delete A", `{"data_source_id":"ds-a"}`)
 	targetB := saveHandlerNotionTargetNamed(t, "Handler Notion Delete B", `{"data_source_id":"ds-b"}`)
 	noteA := insertHandlerNoteForTest(t, "Handler Notion Deleted A", "Body\n")
@@ -162,9 +162,9 @@ func TestGetTargetNotionDeletionsUsesTargetID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: targetB.ID}}
-	c.Request = httptest.NewRequest(http.MethodGet, "/sync/targets/"+targetB.ID+"/deletions", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodGet, "/sync/targets/"+targetB.ID+"/deletions", nil)
 
-	ListTargetDeletions(c)
+	ListTargetDeletions(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -192,9 +192,9 @@ func TestPostTargetNotionDeletionConfirmUsesTargetID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: target.ID}, {Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/confirm", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/confirm", nil)
 
-	ConfirmTargetDeletion(c)
+	ConfirmTargetDeletion(store)(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
@@ -215,9 +215,9 @@ func TestPostTargetNotionDeletionRestoreUsesTargetID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "target_id", Value: target.ID}, {Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/restore", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/targets/"+target.ID+"/deletions/"+note.ID+"/restore", nil)
 
-	RestoreTargetDeletion(c)
+	RestoreTargetDeletion(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())

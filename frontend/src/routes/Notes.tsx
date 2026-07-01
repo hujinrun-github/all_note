@@ -11,6 +11,7 @@ export default function Notes() {
   const navigate = useNavigate()
   const [sort, setSort] = useState('recent')
   const [syncOpen, setSyncOpen] = useState(false)
+  const [syncMounted, setSyncMounted] = useState(false)
   const [projectID, setProjectID] = useState('')
   const [unassigned, setUnassigned] = useState(false)
   const { data: allProjects = [] } = useQuery({
@@ -37,6 +38,11 @@ export default function Notes() {
       project_ids: projectID ? [projectID] : undefined,
     })
     navigate(`/editor/${note.id}`)
+  }
+
+  function handleOpenSyncSettings() {
+    setSyncMounted(true)
+    setSyncOpen(true)
   }
 
   if (notesQ.isLoading) return <Skeleton />
@@ -88,7 +94,7 @@ export default function Notes() {
             <h2>笔记库</h2>
           </div>
           <div className="toolbar-actions">
-            <button onClick={() => setSyncOpen(true)} className="secondary-action">
+            <button onClick={handleOpenSyncSettings} className="secondary-action">
               同步
             </button>
             <button onClick={() => setSort(sort === 'recent' ? 'az' : 'recent')} className="secondary-action">
@@ -135,7 +141,7 @@ export default function Notes() {
         {(notesQ.data?.notes ?? []).length === 0 && <p className="empty-copy">暂无笔记</p>}
       </section>
 
-      {syncOpen && <SyncSettingsPanel onClose={() => setSyncOpen(false)} />}
+      {syncMounted && <SyncSettingsPanel open={syncOpen} onClose={() => setSyncOpen(false)} />}
     </div>
   )
 }

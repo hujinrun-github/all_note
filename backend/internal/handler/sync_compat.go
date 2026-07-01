@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
@@ -59,7 +58,7 @@ func buildNoteSyncStateCompatibilityResponse(ctx context.Context, syncRepo stora
 	}
 	return model.NoteSyncStateCompatibilityResponse{
 		State:  state,
-		Target: target,
+		Target: sanitizeSyncTargetPtr(target),
 	}, nil
 }
 
@@ -77,7 +76,7 @@ func noteSyncStateForBinding(ctx context.Context, syncRepo storage.SyncRepositor
 			},
 		}
 		if requestedTarget, err := syncRepo.GetDefaultTarget(ctx, requestedType); err == nil {
-			response.Target = requestedTarget
+			response.Target = sanitizeSyncTargetPtr(requestedTarget)
 		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return model.NoteSyncStateCompatibilityResponse{}, err
 		}
@@ -91,15 +90,11 @@ func noteSyncStateForBinding(ctx context.Context, syncRepo storage.SyncRepositor
 	}
 	return model.NoteSyncStateCompatibilityResponse{
 		State:  state,
-		Target: target,
+		Target: sanitizeSyncTargetPtr(target),
 	}, nil
 }
 
-func ensureLegacyNoteSyncCompatible(c *gin.Context, noteID string, targetType string) bool {
-	store, ok := optionalStorageStore()
-	if !ok {
-		return true
-	}
+func ensureLegacyNoteSyncCompatible(c *gin.Context, store storage.Store, noteID string, targetType string) bool {
 	syncRepo := store.Sync()
 	binding, err := syncRepo.GetBinding(c.Request.Context(), noteID)
 	if err == nil {
@@ -141,11 +136,7 @@ func ensureLegacyNoteSyncCompatible(c *gin.Context, noteID string, targetType st
 	return true
 }
 
-func ensureLegacyBatchSyncCompatible(c *gin.Context, targetType string) bool {
-	store, ok := optionalStorageStore()
-	if !ok {
-		return true
-	}
+func ensureLegacyBatchSyncCompatible(c *gin.Context, store storage.Store, targetType string) bool {
 	syncRepo := store.Sync()
 	defaultTarget, err := syncRepo.GetDefaultTarget(c.Request.Context(), targetType)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -186,11 +177,6 @@ func syncCompatibilityConflict(c *gin.Context, code string) {
 		message = "note is bound to another sync target"
 	}
 	errorResponse(c, http.StatusConflict, code, message)
-}
-
-func optionalStorageStore() (storage.Store, bool) {
-	store := repository.CurrentStore()
-	return store, store != nil
 }
 
 func requestedSyncTargetType(c *gin.Context) string {

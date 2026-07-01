@@ -1,7 +1,6 @@
 package contracttest
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -15,7 +14,7 @@ func RunEventInboxSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		localDay := time.Date(2026, 6, 16, 0, 0, 0, 0, time.Local)
 		dayStart := localDay.Unix()
 		dayEnd := localDay.Add(24 * time.Hour).Unix()
@@ -95,7 +94,7 @@ func RunEventInboxSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		first := &model.InboxItem{Kind: "note", Title: "first"}
 		second := &model.InboxItem{Kind: "task", Title: "second"}
 		third := &model.InboxItem{Kind: "note", Title: "third"}

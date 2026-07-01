@@ -56,6 +56,35 @@ func TestProviderOpenConnectsMigratesHealthAndReportsCapabilities(t *testing.T) 
 	assertRowCount(t, dbStore.db, `SELECT COUNT(*) FROM schema_migrations WHERE version = '0001_init_postgres.sql'`, 1)
 }
 
+func TestProviderOpenExposesAuthFinalizerWithoutRunningIt(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_provider_finalizer_%d", time.Now().UnixNano())
+	databaseURL := createPostgresTestSchema(t, schema)
+
+	openedStore, err := (Provider{}).Open(context.Background(), storage.Config{
+		Env:    "test",
+		Driver: storage.DriverPostgres,
+		URL:    databaseURL,
+	})
+	if err != nil {
+		t.Fatalf("open postgres provider: %v", err)
+	}
+	defer openedStore.Close()
+
+	finalizer, ok := openedStore.(interface {
+		FinalizeAuthSchema(context.Context) error
+	})
+	if !ok {
+		t.Fatalf("expected postgres store to expose FinalizeAuthSchema")
+	}
+
+	dbStore := openedStore.(*store)
+	assertPostgresColumnNullable(t, dbStore.db, schema, "folders", "workspace_id", "YES")
+	if err := finalizer.FinalizeAuthSchema(context.Background()); err == nil {
+		t.Fatal("expected direct finalizer before bootstrap/backfill to fail")
+	}
+	assertPostgresColumnNullable(t, dbStore.db, schema, "folders", "workspace_id", "YES")
+}
+
 func TestProviderTransactRejectsNilCallback(t *testing.T) {
 	store := openProviderTestStore(t)
 	defer store.Close()

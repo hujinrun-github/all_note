@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
@@ -19,194 +18,179 @@ var (
 	errSyncBindingTargetDisabled          = errors.New("sync binding target disabled")
 )
 
-func GetNoteSyncBinding(c *gin.Context) {
-	store, ok := requireStorageStore(c)
-	if !ok {
-		return
-	}
-	noteID := strings.TrimSpace(c.Param("id"))
-	if noteID == "" {
-		badRequest(c, "note id is required")
-		return
-	}
+func GetNoteSyncBinding(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		noteID := strings.TrimSpace(c.Param("id"))
+		if noteID == "" {
+			badRequest(c, "note id is required")
+			return
+		}
 
-	response, err := buildNoteSyncBindingResponse(c.Request.Context(), store.Sync(), noteID)
-	if err != nil {
-		internalError(c, "failed to get note sync binding")
-		return
+		response, err := buildNoteSyncBindingResponse(c.Request.Context(), store.Sync(), noteID)
+		if err != nil {
+			internalError(c, "failed to get note sync binding")
+			return
+		}
+		success(c, response)
 	}
-	success(c, response)
 }
 
-func PutNoteSyncBinding(c *gin.Context) {
-	store, ok := requireStorageStore(c)
-	if !ok {
-		return
-	}
-	noteID := strings.TrimSpace(c.Param("id"))
-	if noteID == "" {
-		badRequest(c, "note id is required")
-		return
-	}
-
-	var req model.SaveNoteSyncBindingRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "invalid sync binding")
-		return
-	}
-	req.TargetID = strings.TrimSpace(req.TargetID)
-	if req.TargetID == "" {
-		badRequest(c, "target_id is required")
-		return
-	}
-
-	var savedBinding model.NoteSyncBinding
-	var savedTarget model.SyncTarget
-	changedTarget := false
-	err := store.Transact(c.Request.Context(), func(txStore storage.Store) error {
-		syncRepo := txStore.Sync()
-		if err := syncRepo.LockBindingSlot(c.Request.Context(), noteID); err != nil {
-			return err
-		}
-		target, err := syncRepo.GetTarget(c.Request.Context(), req.TargetID)
-		if err != nil {
-			return err
-		}
-		if !target.Enabled {
-			return errSyncBindingTargetDisabled
+func PutNoteSyncBinding(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		noteID := strings.TrimSpace(c.Param("id"))
+		if noteID == "" {
+			badRequest(c, "note id is required")
+			return
 		}
 
-		existing, err := syncRepo.GetBinding(c.Request.Context(), noteID)
-		switch {
-		case err == nil:
-			if strings.TrimSpace(req.ExpectedTargetID) != "" && req.ExpectedTargetID != existing.TargetID {
-				return errSyncBindingConflict
+		var req model.SaveNoteSyncBindingRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			badRequest(c, "invalid sync binding")
+			return
+		}
+		req.TargetID = strings.TrimSpace(req.TargetID)
+		if req.TargetID == "" {
+			badRequest(c, "target_id is required")
+			return
+		}
+
+		var savedBinding model.NoteSyncBinding
+		var savedTarget model.SyncTarget
+		changedTarget := false
+		err := store.Transact(c.Request.Context(), func(txStore storage.Store) error {
+			syncRepo := txStore.Sync()
+			if err := syncRepo.LockBindingSlot(c.Request.Context(), noteID); err != nil {
+				return err
 			}
-			changedTarget = existing.TargetID != req.TargetID
-			if changedTarget && !req.ConfirmChangedTarget {
-				return errSyncBindingTargetChangeUnconfirmed
+			target, err := syncRepo.GetTarget(c.Request.Context(), req.TargetID)
+			if err != nil {
+				return err
 			}
-			if changedTarget {
-				if err := tombstoneAndReleaseClaim(c.Request.Context(), syncRepo, noteID, "target_changed"); err != nil {
-					return err
+			if !target.Enabled {
+				return errSyncBindingTargetDisabled
+			}
+
+			existing, err := syncRepo.GetBinding(c.Request.Context(), noteID)
+			switch {
+			case err == nil:
+				if strings.TrimSpace(req.ExpectedTargetID) != "" && req.ExpectedTargetID != existing.TargetID {
+					return errSyncBindingConflict
 				}
+				changedTarget = existing.TargetID != req.TargetID
+				if changedTarget && !req.ConfirmChangedTarget {
+					return errSyncBindingTargetChangeUnconfirmed
+				}
+				if changedTarget {
+					if err := tombstoneAndReleaseClaim(c.Request.Context(), syncRepo, noteID, "target_changed"); err != nil {
+						return err
+					}
+				}
+			case errors.Is(err, sql.ErrNoRows):
+				if strings.TrimSpace(req.ExpectedTargetID) != "" {
+					return errSyncBindingConflict
+				}
+			default:
+				return err
 			}
-		case errors.Is(err, sql.ErrNoRows):
-			if strings.TrimSpace(req.ExpectedTargetID) != "" {
+
+			if err := syncRepo.DeleteSuppression(c.Request.Context(), noteID, req.TargetID); err != nil {
+				return err
+			}
+			if err := syncRepo.DeleteImportTombstonesForNoteTarget(c.Request.Context(), noteID, req.TargetID); err != nil {
+				return err
+			}
+			if err := syncRepo.PutBinding(c.Request.Context(), model.NoteSyncBinding{NoteID: noteID, TargetID: req.TargetID}); err != nil {
+				return err
+			}
+			binding, err := syncRepo.GetBinding(c.Request.Context(), noteID)
+			if err != nil {
+				return err
+			}
+			savedBinding = *binding
+			savedTarget = *target
+			return nil
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "sync target not found")
+			return
+		}
+		if errors.Is(err, errSyncBindingTargetDisabled) {
+			badRequest(c, "sync target is disabled")
+			return
+		}
+		if errors.Is(err, errSyncBindingTargetChangeUnconfirmed) {
+			errorResponse(c, http.StatusConflict, "target_change_requires_confirm", "changing sync target requires confirmation")
+			return
+		}
+		if errors.Is(err, errSyncBindingConflict) {
+			errorResponse(c, http.StatusConflict, "sync_binding_conflict", "sync binding was changed by another request")
+			return
+		}
+		if err != nil {
+			internalError(c, "failed to save note sync binding")
+			return
+		}
+
+		success(c, model.SaveNoteSyncBindingResponse{
+			Binding:       savedBinding,
+			Target:        sanitizeSyncTarget(savedTarget),
+			ChangedTarget: changedTarget,
+		})
+	}
+}
+
+func DeleteNoteSyncBinding(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		noteID := strings.TrimSpace(c.Param("id"))
+		if noteID == "" {
+			badRequest(c, "note id is required")
+			return
+		}
+
+		var req model.DeleteNoteSyncBindingRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			badRequest(c, "invalid sync binding delete request")
+			return
+		}
+
+		err := store.Transact(c.Request.Context(), func(txStore storage.Store) error {
+			syncRepo := txStore.Sync()
+			if err := syncRepo.LockBindingSlot(c.Request.Context(), noteID); err != nil {
+				return err
+			}
+			existing, err := syncRepo.GetBinding(c.Request.Context(), noteID)
+			if err != nil {
+				return err
+			}
+			if existing.TargetID != req.ExpectedTargetID || existing.UpdatedAt != req.ExpectedUpdatedAt {
 				return errSyncBindingConflict
 			}
-		default:
-			return err
+			if err := tombstoneAndReleaseClaim(c.Request.Context(), syncRepo, noteID, "user_unbound"); err != nil {
+				return err
+			}
+			if err := syncRepo.PutSuppression(c.Request.Context(), model.NoteSyncSuppression{
+				NoteID:   noteID,
+				TargetID: existing.TargetID,
+				Reason:   "user_unbound",
+			}); err != nil {
+				return err
+			}
+			return syncRepo.DeleteBinding(c.Request.Context(), noteID)
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "sync binding not found")
+			return
 		}
-
-		if err := syncRepo.DeleteSuppression(c.Request.Context(), noteID, req.TargetID); err != nil {
-			return err
+		if errors.Is(err, errSyncBindingConflict) {
+			errorResponse(c, http.StatusConflict, "sync_binding_conflict", "sync binding was changed by another request")
+			return
 		}
-		if err := syncRepo.DeleteImportTombstonesForNoteTarget(c.Request.Context(), noteID, req.TargetID); err != nil {
-			return err
-		}
-		if err := syncRepo.PutBinding(c.Request.Context(), model.NoteSyncBinding{NoteID: noteID, TargetID: req.TargetID}); err != nil {
-			return err
-		}
-		binding, err := syncRepo.GetBinding(c.Request.Context(), noteID)
 		if err != nil {
-			return err
+			internalError(c, "failed to delete note sync binding")
+			return
 		}
-		savedBinding = *binding
-		savedTarget = *target
-		return nil
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		notFound(c, "sync target not found")
-		return
+		noContent(c)
 	}
-	if errors.Is(err, errSyncBindingTargetDisabled) {
-		badRequest(c, "sync target is disabled")
-		return
-	}
-	if errors.Is(err, errSyncBindingTargetChangeUnconfirmed) {
-		errorResponse(c, http.StatusConflict, "target_change_requires_confirm", "changing sync target requires confirmation")
-		return
-	}
-	if errors.Is(err, errSyncBindingConflict) {
-		errorResponse(c, http.StatusConflict, "sync_binding_conflict", "sync binding was changed by another request")
-		return
-	}
-	if err != nil {
-		internalError(c, "failed to save note sync binding")
-		return
-	}
-
-	success(c, model.SaveNoteSyncBindingResponse{
-		Binding:       savedBinding,
-		Target:        savedTarget,
-		ChangedTarget: changedTarget,
-	})
-}
-
-func DeleteNoteSyncBinding(c *gin.Context) {
-	store, ok := requireStorageStore(c)
-	if !ok {
-		return
-	}
-	noteID := strings.TrimSpace(c.Param("id"))
-	if noteID == "" {
-		badRequest(c, "note id is required")
-		return
-	}
-
-	var req model.DeleteNoteSyncBindingRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "invalid sync binding delete request")
-		return
-	}
-
-	err := store.Transact(c.Request.Context(), func(txStore storage.Store) error {
-		syncRepo := txStore.Sync()
-		if err := syncRepo.LockBindingSlot(c.Request.Context(), noteID); err != nil {
-			return err
-		}
-		existing, err := syncRepo.GetBinding(c.Request.Context(), noteID)
-		if err != nil {
-			return err
-		}
-		if existing.TargetID != req.ExpectedTargetID || existing.UpdatedAt != req.ExpectedUpdatedAt {
-			return errSyncBindingConflict
-		}
-		if err := tombstoneAndReleaseClaim(c.Request.Context(), syncRepo, noteID, "user_unbound"); err != nil {
-			return err
-		}
-		if err := syncRepo.PutSuppression(c.Request.Context(), model.NoteSyncSuppression{
-			NoteID:   noteID,
-			TargetID: existing.TargetID,
-			Reason:   "user_unbound",
-		}); err != nil {
-			return err
-		}
-		return syncRepo.DeleteBinding(c.Request.Context(), noteID)
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		notFound(c, "sync binding not found")
-		return
-	}
-	if errors.Is(err, errSyncBindingConflict) {
-		errorResponse(c, http.StatusConflict, "sync_binding_conflict", "sync binding was changed by another request")
-		return
-	}
-	if err != nil {
-		internalError(c, "failed to delete note sync binding")
-		return
-	}
-	noContent(c)
-}
-
-func requireStorageStore(c *gin.Context) (storage.Store, bool) {
-	store := repository.CurrentStore()
-	if store == nil {
-		internalError(c, "storage provider is not initialized")
-		return nil, false
-	}
-	return store, true
 }
 
 func buildNoteSyncBindingResponse(ctx context.Context, syncRepo storage.SyncRepository, noteID string) (model.NoteSyncBindingResponse, error) {
@@ -236,7 +220,7 @@ func buildNoteSyncBindingResponse(ctx context.Context, syncRepo storage.SyncRepo
 
 	return model.NoteSyncBindingResponse{
 		Binding:    binding,
-		Target:     target,
+		Target:     sanitizeSyncTargetPtr(target),
 		State:      state,
 		Candidates: candidates,
 	}, nil
@@ -262,7 +246,7 @@ func buildNoteSyncBindingCandidates(ctx context.Context, syncRepo storage.SyncRe
 			state = existingState
 		}
 		candidates = append(candidates, model.NoteSyncBindingCandidate{
-			Target: target,
+			Target: sanitizeSyncTarget(target),
 			State:  state,
 		})
 	}

@@ -1,7 +1,11 @@
 import { type FormEvent, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { APIError } from '../api/client'
+import { login } from '../api/auth'
 
 export default function Login() {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(true)
@@ -9,7 +13,7 @@ export default function Login() {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
 
@@ -18,13 +22,24 @@ export default function Login() {
       return
     }
 
-    if (password.trim().length < 6) {
-      setError('密码至少需要 6 位')
+    if (!isStrongEnough(password)) {
+      setError('密码至少 8 位，并且需要同时包含字母和数字')
       return
     }
 
     setSubmitting(true)
-    window.setTimeout(() => setSubmitting(false), 1400)
+    try {
+      await login({
+        email: email.trim(),
+        password,
+        remember_me: remember,
+      })
+      navigate(safeNext(searchParams.get('next')), { replace: true })
+    } catch (caught) {
+      setError(errorMessage(caught, '登录失败，请稍后重试'))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -151,12 +166,26 @@ export default function Login() {
           </button>
 
           <p className="auth-register">
-            没有账号？ <Link to="/">创建工作区</Link>
+            需要账号？请联系管理员创建账号
           </p>
         </form>
       </section>
     </main>
   )
+}
+
+function isStrongEnough(password: string) {
+  return password.length >= 8 && /[A-Za-z]/.test(password) && /\d/.test(password)
+}
+
+function safeNext(value: string | null) {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/'
+  return value
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof APIError) return error.message
+  return fallback
 }
 
 function PreviewTask({ title, done = false }: { title: string; done?: boolean }) {

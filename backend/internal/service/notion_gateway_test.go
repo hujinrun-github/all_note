@@ -134,6 +134,91 @@ func TestNotionRealGatewayCreateRemoteNoteSendsPagePayload(t *testing.T) {
 	assertStringAt(t, payload, "Created body", "children", "0", "paragraph", "rich_text", "0", "text", "content")
 }
 
+func TestNotionRealGatewayCreateRemoteNoteOmitsDefaultFlowSpaceIDProperty(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/pages" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":               "page-created",
+			"url":              "https://www.notion.so/page-created",
+			"last_edited_time": "2026-06-13T02:00:00.000Z",
+		})
+	}))
+	defer server.Close()
+
+	note := &model.Note{ID: "note-create", Title: "Created Title", Body: "Created body\n", Tags: `["sync"]`}
+	config := testNotionGatewayConfig()
+	config.FlowSpaceIDProperty = ""
+	_, err := newTestRealNotionGateway(server.URL).CreateRemoteNote(config, note)
+	if err != nil {
+		t.Fatalf("create remote note: %v", err)
+	}
+
+	properties, ok := payload["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %#v", payload["properties"])
+	}
+	if _, ok := properties["FlowSpace ID"]; ok {
+		t.Fatalf("unexpected FlowSpace ID property in payload: %#v", properties)
+	}
+	assertStringAt(t, payload, "Created Title", "properties", "Name", "title", "0", "text", "content")
+	assertStringAt(t, payload, "sync", "properties", "Tags", "multi_select", "0", "name")
+}
+
+func TestNotionRealGatewayCreateRemoteNoteResolvesDatabaseIDForParent(t *testing.T) {
+	requests := make([]string, 0)
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/pages":
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if parent, ok := payload["parent"].(map[string]any); ok && parent["data_source_id"] == "database-123" {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "Could not find database with ID: database-123"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":               "page-created",
+				"url":              "https://www.notion.so/page-created",
+				"last_edited_time": "2026-06-13T02:00:00.000Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/databases/database-123":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data_sources": []map[string]any{{"id": "data-source-456", "name": "Default"}},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	config := testNotionGatewayConfig()
+	config.DataSourceID = "database-123"
+	note := &model.Note{ID: "note-create", Title: "Created Title", Body: "Created body\n", Tags: `["sync"]`}
+	remote, err := newTestRealNotionGateway(server.URL).CreateRemoteNote(config, note)
+	if err != nil {
+		t.Fatalf("create remote note: %v", err)
+	}
+
+	if remote.PageID != "page-created" {
+		t.Fatalf("remote = %+v", remote)
+	}
+	if strings.Join(requests, ",") != "POST /v1/pages,GET /v1/databases/database-123,POST /v1/pages" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	assertStringAt(t, payload, "data-source-456", "parent", "data_source_id")
+}
+
 func TestNotionRealGatewayUpdateRemoteNoteReplacesChildren(t *testing.T) {
 	requests := make([]string, 0)
 	archived := make([]string, 0)

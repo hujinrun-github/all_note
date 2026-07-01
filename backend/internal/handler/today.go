@@ -2,17 +2,18 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/service"
+	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetToday(c *gin.Context) {
-	store := repository.ActiveStore()
-	recurrenceSvc := service.NewRecurrenceService()
-	data, err := service.GetToday(c.Request.Context(), store, recurrenceSvc)
-	if err != nil {
-		internalError(c, "failed to get today data")
-		return
+func GetToday(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		recurrenceSvc := service.NewRecurrenceService()
+		data, err := service.GetToday(c.Request.Context(), store, recurrenceSvc)
+		if err != nil {
+			internalError(c, "failed to get today data")
+			return
+		}
+		success(c, data)
 	}
-	success(c, data)
 }

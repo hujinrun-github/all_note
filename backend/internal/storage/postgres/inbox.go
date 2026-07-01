@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -14,10 +15,14 @@ type inboxRepository struct {
 }
 
 func (r inboxRepository) List(ctx context.Context, kind string, page, pageSize int) ([]model.InboxItem, int, error) {
-	where := "archived = false AND converted_to IS NULL"
-	args := []interface{}{}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	where := "workspace_id = $1 AND archived = false AND converted_to IS NULL"
+	args := []interface{}{workspaceID}
 	if kind != "" && kind != "all" {
-		where += " AND kind = $1"
+		where += " AND kind = $2"
 		args = append(args, kind)
 	}
 	var total int
@@ -49,6 +54,10 @@ func (r inboxRepository) List(ctx context.Context, kind string, page, pageSize i
 }
 
 func (r inboxRepository) Create(ctx context.Context, item *model.InboxItem) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	item.ID = newID()
 	now := nowUnix()
 	item.CreatedAt = now
@@ -56,31 +65,77 @@ func (r inboxRepository) Create(ctx context.Context, item *model.InboxItem) erro
 	if item.Source == "" {
 		item.Source = "quick-capture"
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO inbox (id, kind, title, body, source, archived, converted_to, payload, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, $8, $9)
-	`, item.ID, item.Kind, item.Title, item.Body, item.Source, item.Archived == 1, item.ConvertedTo, unixToTime(item.CreatedAt), unixToTime(item.UpdatedAt))
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO inbox (id, kind, title, body, source, archived, converted_to, payload, created_at, updated_at, workspace_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, $8, $9, $10)
+	`, item.ID, item.Kind, item.Title, item.Body, item.Source, item.Archived == 1, item.ConvertedTo, unixToTime(item.CreatedAt), unixToTime(item.UpdatedAt), workspaceID)
 	return err
 }
 
 func (r inboxRepository) GetByID(ctx context.Context, id string) (*model.InboxItem, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanPostgresInboxItem(r.db.QueryRowContext(ctx, `
 		SELECT id, kind, title, body, source, archived, converted_to, created_at, updated_at
-		FROM inbox WHERE id = $1
-	`, id))
+		FROM inbox WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, id))
 }
 
 func (r inboxRepository) MarkConverted(ctx context.Context, id, convertedTo string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE inbox SET converted_to = $1, updated_at = $2 WHERE id = $3`, convertedTo, time.Now().UTC(), id)
-	return err
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE inbox SET converted_to = $1, updated_at = $2 WHERE workspace_id = $3 AND id = $4 AND converted_to IS NULL`, convertedTo, time.Now().UTC(), workspaceID, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r inboxRepository) Delete(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM inbox WHERE id = $1`, id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `DELETE FROM inbox WHERE workspace_id = $1 AND id = $2`, workspaceID, id)
 	return err
 }
 
 func (r inboxRepository) BatchArchive(ctx context.Context, ids []string) (int64, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	clause, err := pgInClause("id", 3, len(ids))
+	if err != nil {
+		return 0, err
+	}
+	args := make([]interface{}, 0, len(ids)+2)
+	args = append(args, time.Now().UTC(), workspaceID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET archived = true, updated_at = $1 WHERE workspace_id = $2 AND %s", clause), args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
 	if len(ids) == 0 {
 		return 0, nil
 	}
@@ -89,30 +144,11 @@ func (r inboxRepository) BatchArchive(ctx context.Context, ids []string) (int64,
 		return 0, err
 	}
 	args := make([]interface{}, 0, len(ids)+1)
-	args = append(args, time.Now().UTC())
+	args = append(args, workspaceID)
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET archived = true, updated_at = $1 WHERE %s", clause), args...)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, error) {
-	if len(ids) == 0 {
-		return 0, nil
-	}
-	clause, err := pgInClause("id", 1, len(ids))
-	if err != nil {
-		return 0, err
-	}
-	args := make([]interface{}, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM inbox WHERE %s", clause), args...)
+	result, err := r.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM inbox WHERE workspace_id = $1 AND %s", clause), args...)
 	if err != nil {
 		return 0, err
 	}

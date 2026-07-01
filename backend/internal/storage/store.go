@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
 )
@@ -41,6 +42,7 @@ type Store interface {
 	Roadmaps() RoadmapRepository
 	Sync() SyncRepository
 	Search() SearchRepository
+	Auth() AuthRepository
 }
 
 type FolderRepository interface {
@@ -56,6 +58,34 @@ type NoteFilter struct {
 	Sort       string // "recent" | "az"
 	Page       int
 	PageSize   int
+}
+
+type UserListFilter struct {
+	Page     int
+	PageSize int
+	Query    string
+}
+
+type AuthRepository interface {
+	CreateUser(context.Context, *model.User) error
+	SetDefaultWorkspace(context.Context, string, string) error
+	GetUserByEmail(context.Context, string) (*model.User, error)
+	GetUserByID(context.Context, string) (*model.User, error)
+	ListUsers(context.Context, UserListFilter) ([]model.User, int, error)
+	UpdateUser(context.Context, string, *model.UpdateUserRequest) (*model.User, error)
+	UpdateUserStatus(context.Context, string, string) (*model.User, error)
+	UpdateUserLastLogin(context.Context, string, time.Time) error
+	UpdateUserPassword(context.Context, string, string, bool) error
+	CreateWorkspace(context.Context, *model.Workspace) error
+	AddWorkspaceMember(context.Context, string, string, string) error
+	CreateSession(context.Context, *model.Session) error
+	GetSessionByTokenHash(context.Context, string) (*model.Session, error)
+	GetWorkspaceMembership(context.Context, string, string) (*model.WorkspaceMember, error)
+	RevokeSession(context.Context, string) error
+	RevokeUserSessions(context.Context, string) error
+	RevokeUserSessionsExcept(context.Context, string, string) error
+	RecordAuditEvent(context.Context, *model.AuditEvent) error
+	LockActiveAdmins(context.Context) ([]model.User, error)
 }
 
 type NoteRepository interface {
@@ -84,7 +114,7 @@ type TaskFilter struct {
 }
 
 // ExecutionTypeFilter returns the WHERE clause and args for execution_type filtering.
-// emptyStr means "single" (default for backward compat).
+// Empty and NULL execution_type values mean "single" for backward compatibility.
 func ExecutionTypeFilter(execType string) (string, []any) {
 	switch execType {
 	case "recurring":
@@ -92,7 +122,7 @@ func ExecutionTypeFilter(execType string) (string, []any) {
 	case "all":
 		return "", nil // no filter
 	default: // "" or "single"
-		return "(t.execution_type IS NULL OR t.execution_type = 'single')", nil
+		return "(t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single')", nil
 	}
 }
 

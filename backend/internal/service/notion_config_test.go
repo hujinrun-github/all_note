@@ -28,11 +28,30 @@ func TestParseNotionTargetConfigUsesDefaults(t *testing.T) {
 	if config.TitleProperty != "Name" {
 		t.Fatalf("title property = %q", config.TitleProperty)
 	}
-	if config.FlowSpaceIDProperty != "FlowSpace ID" {
+	if config.FlowSpaceIDProperty != "" {
 		t.Fatalf("flowspace id property = %q", config.FlowSpaceIDProperty)
 	}
 	if config.TagsProperty != "Tags" {
 		t.Fatalf("tags property = %q", config.TagsProperty)
+	}
+}
+
+func TestParseNotionTargetConfigExtractsIDFromNotionLink(t *testing.T) {
+	target := &model.SyncTarget{
+		Type: "notion",
+		Name: "Personal Notion",
+		ConfigJSON: `{
+			"data_source_id":"https://www.notion.so/workspace/AI-Infra-38fd2ee309c480aab4bedb93d1479505?v=abc&pvs=4"
+		}`,
+		Enabled: true,
+	}
+
+	config, err := parseNotionTargetConfig(target)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if config.DataSourceID != "38fd2ee3-09c4-80aa-b4be-db93d1479505" {
+		t.Fatalf("data source id = %q", config.DataSourceID)
 	}
 }
 
@@ -73,6 +92,22 @@ func TestLoadNotionTokenFromConfiguredEnv(t *testing.T) {
 		t.Fatalf("load token: %v", err)
 	}
 	if token != "secret-token" {
+		t.Fatalf("token = %q", token)
+	}
+}
+
+func TestLoadNotionTokenPrefersRawToken(t *testing.T) {
+	t.Setenv("FLOWSPACE_TEST_NOTION_TOKEN", "env-token")
+
+	config := notionTargetConfig{
+		Token:    " ntn_unit_test_raw_token ",
+		TokenEnv: "FLOWSPACE_TEST_NOTION_TOKEN",
+	}
+	token, err := notionToken(config)
+	if err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if token != "ntn_unit_test_raw_token" {
 		t.Fatalf("token = %q", token)
 	}
 }

@@ -21,11 +21,14 @@ func ensureSQLiteSyncSchema(db *sql.DB) error {
 	if err := sqliteAddColumnIfMissing(db, "sync_targets", "is_default", `ALTER TABLE sync_targets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
+	if err := ensureSQLiteSyncStateColumns(db); err != nil {
+		return err
+	}
+	workspaceScoped, err := sqliteColumnExists(db, "sync_targets", "workspace_id")
+	if err != nil {
+		return err
+	}
 	statements := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_type_name_idx
-			ON sync_targets (type, name)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_type_idx
-			ON sync_targets (type) WHERE is_default = 1`,
 		`CREATE TABLE IF NOT EXISTS note_sync_bindings (
 			note_id TEXT PRIMARY KEY,
 			target_id TEXT NOT NULL,
@@ -79,15 +82,76 @@ func ensureSQLiteSyncSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS sync_import_tombstones_note_type_idx
 			ON sync_import_tombstones (former_note_id, external_type, updated_at DESC, created_at DESC)`,
 	}
+	if !workspaceScoped {
+		statements = append([]string{
+			`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_type_name_idx
+				ON sync_targets (type, name)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_type_idx
+				ON sync_targets (type) WHERE is_default = 1`,
+		}, statements...)
+	}
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
 	}
-	return backfillSingleDefaultSyncTargets(db)
+	return backfillSingleDefaultSyncTargets(db, workspaceScoped)
 }
 
-func backfillSingleDefaultSyncTargets(db *sql.DB) error {
+func ensureSQLiteSyncStateColumns(db *sql.DB) error {
+	exists, err := sqliteTableExists(db, "note_sync_state")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	columns := []struct {
+		name      string
+		statement string
+	}{
+		{name: "external_id", statement: `ALTER TABLE note_sync_state ADD COLUMN external_id TEXT`},
+		{name: "external_url", statement: `ALTER TABLE note_sync_state ADD COLUMN external_url TEXT`},
+		{name: "external_hash", statement: `ALTER TABLE note_sync_state ADD COLUMN external_hash TEXT`},
+		{name: "external_mtime", statement: `ALTER TABLE note_sync_state ADD COLUMN external_mtime INTEGER`},
+		{name: "last_direction", statement: `ALTER TABLE note_sync_state ADD COLUMN last_direction TEXT`},
+		{name: "last_synced_at", statement: `ALTER TABLE note_sync_state ADD COLUMN last_synced_at INTEGER`},
+	}
+	for _, column := range columns {
+		if err := sqliteAddColumnIfMissing(db, "note_sync_state", column.name, column.statement); err != nil {
+			return fmt.Errorf("ensure SQLite note_sync_state.%s: %w", column.name, err)
+		}
+	}
+	return nil
+}
+
+func backfillSingleDefaultSyncTargets(db *sql.DB, workspaceScoped bool) error {
+	if workspaceScoped {
+		_, err := db.Exec(`
+			UPDATE sync_targets
+			SET is_default = 1
+			WHERE enabled = 1
+				AND is_default = 0
+				AND NOT EXISTS (
+					SELECT 1
+					FROM sync_targets existing_default
+					WHERE existing_default.workspace_id IS sync_targets.workspace_id
+						AND existing_default.type = sync_targets.type
+						AND existing_default.is_default = 1
+				)
+				AND (
+					SELECT COUNT(*)
+					FROM sync_targets enabled_target
+					WHERE enabled_target.workspace_id IS sync_targets.workspace_id
+						AND enabled_target.type = sync_targets.type
+						AND enabled_target.enabled = 1
+				) = 1
+		`)
+		if err != nil {
+			return fmt.Errorf("backfill workspace single default sync target: %w", err)
+		}
+		return nil
+	}
 	_, err := db.Exec(`
 		UPDATE sync_targets
 		SET is_default = 1

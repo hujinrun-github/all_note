@@ -73,6 +73,10 @@ func (s *store) Health(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
+func (s *store) FinalizeAuthSchema(ctx context.Context) error {
+	return runMultiUserAuthFinalizer(ctx, s.db)
+}
+
 func (s *store) Capabilities() storage.Capabilities {
 	return storage.Capabilities{
 		FullTextSearch: true,
@@ -118,6 +122,18 @@ func (s *store) Transact(ctx context.Context, fn func(storage.Store) error) erro
 	return nil
 }
 
+func (s *store) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+func (s *store) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, query, args...)
+}
+
+func (s *store) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
+}
+
 func (s *store) Folders() storage.FolderRepository {
 	return folderRepository{db: s.db}
 }
@@ -152,6 +168,10 @@ func (s *store) Sync() storage.SyncRepository {
 
 func (s *store) Search() storage.SearchRepository {
 	return searchRepository{db: s.db}
+}
+
+func (s *store) Auth() storage.AuthRepository {
+	return authRepository{db: s.db}
 }
 
 type storeTx struct {
@@ -193,4 +213,20 @@ func (s *storeTx) Roadmaps() storage.RoadmapRepository {
 
 func (s *storeTx) Sync() storage.SyncRepository {
 	return syncRepository{db: s.tx}
+}
+
+func (s *storeTx) Auth() storage.AuthRepository {
+	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.tx.ExecContext(ctx, query, args...)
+}
+
+func (s *storeTx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.tx.QueryContext(ctx, query, args...)
+}
+
+func (s *storeTx) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.tx.QueryRowContext(ctx, query, args...)
 }

@@ -91,6 +91,44 @@ func SyncNoteToObsidian(noteID string) (*model.SyncResultItem, error) {
 	return writeNoteToTarget(note, target)
 }
 
+func SyncNoteToObsidianScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	var item *model.SyncResultItem
+	var err error
+	withScopedRepositoryStore(ctx, store, func() {
+		item, err = syncNoteToObsidianScoped(ctx, store, noteID)
+	})
+	return item, err
+}
+
+func syncNoteToObsidianScoped(ctx context.Context, store storage.Store, noteID string) (*model.SyncResultItem, error) {
+	if strings.TrimSpace(noteID) == "" {
+		return nil, errors.New("note id is required")
+	}
+
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		return nil, fmt.Errorf("load obsidian sync target: %w", err)
+	}
+	if err := TestObsidianTarget(target); err != nil {
+		return nil, err
+	}
+
+	note, err := repository.GetNoteByID(noteID)
+	if err != nil {
+		return nil, fmt.Errorf("load note: %w", err)
+	}
+	if !noteMatchesRequiredSyncTags(*note, requiredSyncTagsFromTarget(target)) {
+		return &model.SyncResultItem{
+			NoteID: note.ID,
+			Status: "skipped",
+		}, nil
+	}
+	if err := bindLegacyDefaultSyncTarget(ctx, store, note.ID, target.ID); err != nil {
+		return nil, err
+	}
+	return writeNoteToTarget(note, target)
+}
+
 func SyncNotesToObsidian(notes []model.Note) model.SyncBatchResult {
 	target, err := repository.GetDefaultSyncTarget("obsidian")
 	if err != nil {
@@ -122,6 +160,83 @@ func SyncNotesToObsidian(notes []model.Note) model.SyncBatchResult {
 		result.Items = append(result.Items, *item)
 	}
 	return result
+}
+
+func SyncNotesToObsidianScoped(ctx context.Context, store storage.Store, notes []model.Note) model.SyncBatchResult {
+	var result model.SyncBatchResult
+	withScopedRepositoryStore(ctx, store, func() {
+		result = syncNotesToObsidianScoped(ctx, store, notes)
+	})
+	return result
+}
+
+func syncNotesToObsidianScoped(ctx context.Context, store storage.Store, notes []model.Note) model.SyncBatchResult {
+	target, err := repository.GetDefaultSyncTarget("obsidian")
+	if err != nil {
+		return failedBatch(notes, fmt.Errorf("load obsidian sync target: %w", err))
+	}
+	if err := TestObsidianTarget(target); err != nil {
+		return failedBatch(notes, err)
+	}
+
+	result := model.SyncBatchResult{
+		Items: make([]model.SyncResultItem, 0, len(notes)),
+	}
+	requiredTags := requiredSyncTagsFromTarget(target)
+	for i := range notes {
+		if !noteMatchesRequiredSyncTags(notes[i], requiredTags) {
+			continue
+		}
+		if err := bindLegacyDefaultSyncTarget(ctx, store, notes[i].ID, target.ID); err != nil {
+			result.Failed++
+			result.Items = append(result.Items, model.SyncResultItem{
+				NoteID:       notes[i].ID,
+				Status:       "failed",
+				ErrorMessage: err.Error(),
+			})
+			continue
+		}
+		item, err := writeNoteToTarget(&notes[i], target)
+		if err != nil {
+			result.Failed++
+			result.Items = append(result.Items, model.SyncResultItem{
+				NoteID:       notes[i].ID,
+				Status:       "failed",
+				ErrorMessage: err.Error(),
+			})
+			continue
+		}
+		result.Synced++
+		result.Items = append(result.Items, *item)
+	}
+	return result
+}
+
+func bindLegacyDefaultSyncTarget(ctx context.Context, store storage.Store, noteID string, targetID string) error {
+	if store == nil {
+		return nil
+	}
+	if err := bindImportedNoteToSyncTargetInStore(ctx, store, noteID, targetID); err != nil {
+		return fmt.Errorf("bind default sync target: %w", err)
+	}
+	return nil
+}
+
+func validateLegacyDefaultSyncTargetBinding(ctx context.Context, store storage.Store, noteID string, targetID string) error {
+	if store == nil {
+		return nil
+	}
+	binding, err := store.Sync().GetBinding(ctx, noteID)
+	if err == nil {
+		if binding.TargetID != targetID {
+			return ErrSyncBindingConflict
+		}
+		return nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	return fmt.Errorf("load sync binding: %w", err)
 }
 
 func writeNoteToTarget(note *model.Note, target *model.SyncTarget) (*model.SyncResultItem, error) {
@@ -245,7 +360,7 @@ func reserveObsidianFileClaim(note *model.Note, target *model.SyncTarget, extern
 	if store == nil {
 		return nil
 	}
-	ctx := context.Background()
+	ctx := repositoryStoreContext(store, context.Background())
 	return store.Transact(ctx, func(txStore storage.Store) error {
 		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
 			return err
@@ -253,8 +368,14 @@ func reserveObsidianFileClaim(note *model.Note, target *model.SyncTarget, extern
 		if err := txStore.Sync().LockBindingSlot(ctx, "external_claim:"+externalKey); err != nil {
 			return err
 		}
-		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
-			return err
+		if legacyDefaultSyncBindingEnabled(ctx) {
+			if err := bindLegacyDefaultSyncTarget(ctx, txStore, note.ID, target.ID); err != nil {
+				return err
+			}
+		} else {
+			if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+				return err
+			}
 		}
 		existing, err := txStore.Sync().GetExternalClaim(ctx, externalKey)
 		if err == nil && (existing.NoteID != note.ID || existing.TargetID != target.ID) {
@@ -290,13 +411,19 @@ func recordObsidianFilePushSuccess(note *model.Note, target *model.SyncTarget, o
 	if store == nil {
 		return repository.UpsertSyncState(state)
 	}
-	ctx := context.Background()
+	ctx := repositoryStoreContext(store, context.Background())
 	return store.Transact(ctx, func(txStore storage.Store) error {
 		if err := txStore.Sync().LockBindingSlot(ctx, note.ID); err != nil {
 			return err
 		}
-		if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
-			return err
+		if legacyDefaultSyncBindingEnabled(ctx) {
+			if err := bindLegacyDefaultSyncTarget(ctx, txStore, note.ID, target.ID); err != nil {
+				return err
+			}
+		} else {
+			if err := ensureNoteBoundToSyncTargetInStore(ctx, txStore, note.ID, target.ID); err != nil {
+				return err
+			}
 		}
 		return txStore.Sync().UpsertState(ctx, state)
 	})

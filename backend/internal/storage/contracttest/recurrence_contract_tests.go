@@ -1,7 +1,6 @@
 package contracttest
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"testing"
@@ -18,7 +17,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "recurring daily review",
 			Content: "review PRs",
@@ -115,7 +114,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "upsert occurrence test",
 			Content: "test complete/reopen/skip",
@@ -166,7 +165,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected completed_at nil for skipped, got %v", skip.CompletedAt)
 		}
 
-		// Complete again (upsert done over skipped) — verify we can go back to done
+		// Complete again (upsert done over skipped) 閳?verify we can go back to done
 		completedAt2 := time.Date(2026, 6, 21, 14, 0, 0, 0, time.Local).Unix()
 		completeAgain, err := store.Recurrence().CompleteOccurrence(ctx, task.ID, date, completedAt2)
 		if err != nil {
@@ -180,11 +179,103 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	t.Run("RecurrenceDataDoesNotCrossWorkspaces", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctxA := seedWorkspaceDefaults(t, store, "workspace_recurrence_a")
+		finalizeAuthSchemaIfSupported(t, store, ctxA)
+		ctxB := seedWorkspaceDefaults(t, store, "workspace_recurrence_b")
+
+		task := &model.Task{
+			Title:   "workspace A recurring task",
+			Content: "private recurrence",
+			Status:  "open",
+			Horizon: "week",
+			Scope:   "daily",
+		}
+		if err := store.Tasks().Create(ctxA, task); err != nil {
+			t.Fatalf("create workspace A task: %v", err)
+		}
+		if err := store.Recurrence().UpsertRule(ctxA, &model.RecurrenceRule{
+			TaskID:    task.ID,
+			StartDate: "2026-06-21",
+			Frequency: "daily",
+			Interval:  1,
+			Timezone:  "UTC",
+			Enabled:   true,
+		}); err != nil {
+			t.Fatalf("upsert workspace A rule: %v", err)
+		}
+		completedAt := time.Date(2026, 6, 21, 9, 0, 0, 0, time.UTC).Unix()
+		if _, err := store.Recurrence().CompleteOccurrence(ctxA, task.ID, "2026-06-21", completedAt); err != nil {
+			t.Fatalf("complete workspace A occurrence: %v", err)
+		}
+
+		if _, err := store.Recurrence().GetRule(ctxB, task.ID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B rule lookup err=%v, want sql.ErrNoRows", err)
+		}
+		rulesB, err := store.Recurrence().ListActiveRules(ctxB, "2026-06-20", "2026-06-22")
+		if err != nil {
+			t.Fatalf("list workspace B active rules: %v", err)
+		}
+		for _, rule := range rulesB {
+			if rule.TaskID == task.ID {
+				t.Fatalf("workspace B saw workspace A rule: %+v", rule)
+			}
+		}
+		occurrencesB, err := store.Recurrence().ListOccurrences(ctxB, "2026-06-20", "2026-06-22")
+		if err != nil {
+			t.Fatalf("list workspace B occurrences: %v", err)
+		}
+		for _, occurrence := range occurrencesB {
+			if occurrence.TaskID == task.ID {
+				t.Fatalf("workspace B saw workspace A occurrence: %+v", occurrence)
+			}
+		}
+		countB, err := store.Recurrence().CountOccurrencesByTask(ctxB, task.ID)
+		if err != nil {
+			t.Fatalf("count workspace B occurrences: %v", err)
+		}
+		if countB != 0 {
+			t.Fatalf("workspace B occurrence count = %d, want 0", countB)
+		}
+		if _, err := store.Recurrence().ReopenOccurrence(ctxB, task.ID, "2026-06-21"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("workspace B reopen err=%v, want sql.ErrNoRows", err)
+		}
+
+		from := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC).Unix()
+		to := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC).Unix()
+		summariesB, err := store.Recurrence().GetCompletedOccurrencesByRange(ctxB, from, to)
+		if err != nil {
+			t.Fatalf("get workspace B completed occurrences: %v", err)
+		}
+		for _, summary := range summariesB {
+			if summary.ID == task.ID {
+				t.Fatalf("workspace B saw workspace A completed summary: %+v", summary)
+			}
+		}
+		summariesA, err := store.Recurrence().GetCompletedOccurrencesByRange(ctxA, from, to)
+		if err != nil {
+			t.Fatalf("get workspace A completed occurrences: %v", err)
+		}
+		foundA := false
+		for _, summary := range summariesA {
+			if summary.ID == task.ID {
+				foundA = true
+				break
+			}
+		}
+		if !foundA {
+			t.Fatalf("workspace A completed occurrence disappeared after workspace B reopen attempt: %+v", summariesA)
+		}
+	})
+
 	t.Run("ListOccurrencesMergesTaskProjectMetadata", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Health Project",
 			Type: "regular",
@@ -254,7 +345,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "task to delete",
 			Content: "will be cascaded",
@@ -323,7 +414,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Summary Project",
 			Type: "learning",
@@ -402,7 +493,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		if summaries[0].OccurrenceDate == "2026-06-22" && summaries[1].OccurrenceDate == "2026-06-21" {
 			// correct order (descending by completed_at)
 		} else if summaries[0].OccurrenceDate == "2026-06-21" && summaries[1].OccurrenceDate == "2026-06-22" {
-			// Also acceptable — just verify the timestamps are decreasing
+			// Also acceptable 閳?just verify the timestamps are decreasing
 			if summaries[0].CompletedAt != nil && summaries[1].CompletedAt != nil {
 				if *summaries[0].CompletedAt < *summaries[1].CompletedAt {
 					t.Fatalf("expected summaries ordered by completed_at DESC, got %+v", summaries)
@@ -415,7 +506,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "count test task",
 			Content: "testing count",
@@ -452,7 +543,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected 3 occurrences, got %d", count)
 		}
 
-		// Skip one — count should remain the same (upsert, not insert)
+		// Skip one 閳?count should remain the same (upsert, not insert)
 		if _, err := store.Recurrence().SkipOccurrence(ctx, task.ID, dates[0]); err != nil {
 			t.Fatalf("skip occurrence: %v", err)
 		}
@@ -464,7 +555,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected 3 occurrences after skip (upsert, not new), got %d", count)
 		}
 
-		// Reopen one — count still the same
+		// Reopen one 閳?count still the same
 		if _, err := store.Recurrence().ReopenOccurrence(ctx, task.ID, dates[1]); err != nil {
 			t.Fatalf("reopen occurrence: %v", err)
 		}
@@ -500,7 +591,7 @@ func RunRecurrenceSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		task := &model.Task{
 			Title:   "upsert rule test",
 			Content: "rule upsert",

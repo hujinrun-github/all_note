@@ -27,11 +27,11 @@ func TestDeleteNoteWritesTombstoneBeforeDeletingBoundNote(t *testing.T) {
 		t.Fatalf("put claim: %v", err)
 	}
 
-	if err := DeleteNote(note.ID); err != nil {
+	if err := DeleteNote(serviceSyncTestContext(t), store, note.ID); err != nil {
 		t.Fatalf("delete note: %v", err)
 	}
 
-	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 	tombstone, err := store.Sync().FindImportTombstone(t.Context(), target.ID, "notion:page-delete", note.ID, "notion_page")
@@ -44,14 +44,14 @@ func TestDeleteNoteWritesTombstoneBeforeDeletingBoundNote(t *testing.T) {
 }
 
 func TestDeleteNoteWithoutClaimDeletesNormally(t *testing.T) {
-	openServiceSyncStoreTestDB(t)
+	store := openServiceSyncStoreTestDB(t)
 	note := createServiceStoreNote(t, "Plain Delete", "Body\n", "[]")
 
-	if err := DeleteNote(note.ID); err != nil {
+	if err := DeleteNote(serviceSyncTestContext(t), store, note.ID); err != nil {
 		t.Fatalf("delete note: %v", err)
 	}
 
-	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("note lookup error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -78,12 +78,12 @@ func TestDeleteNoteRollsBackWhenTombstoneWriteFails(t *testing.T) {
 		remaining: &remainingFailures,
 	})
 
-	err := DeleteNote(note.ID)
+	err := DeleteNote(serviceSyncTestContext(t), repository.CurrentStore(), note.ID)
 
 	if err == nil {
 		t.Fatal("expected tombstone write failure")
 	}
-	if _, err := repository.GetNoteByID(note.ID); err != nil {
+	if _, err := store.Notes().GetByID(serviceSyncTestContext(t), note.ID); err != nil {
 		t.Fatalf("note should remain after rollback: %v", err)
 	}
 	claim, err := store.Sync().GetExternalClaimByNote(t.Context(), note.ID)

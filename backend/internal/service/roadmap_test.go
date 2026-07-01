@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 	_ "modernc.org/sqlite"
 )
 
@@ -37,12 +39,102 @@ func openRoadmapServiceTestDB(t *testing.T) {
 	})
 }
 
+func roadmapTestContext(t *testing.T) context.Context {
+	t.Helper()
+	return t.Context()
+}
+
+func roadmapTestStore(t *testing.T) storage.Store {
+	t.Helper()
+	return roadmapLegacyStore{}
+}
+
+type roadmapLegacyStore struct {
+	storage.Store
+}
+
+func (roadmapLegacyStore) Tasks() storage.TaskRepository {
+	return roadmapLegacyTasks{}
+}
+
+func (roadmapLegacyStore) Roadmaps() storage.RoadmapRepository {
+	return roadmapLegacyRoadmaps{}
+}
+
+type roadmapLegacyTasks struct {
+	storage.TaskRepository
+}
+
+func (roadmapLegacyTasks) GetProjectByID(ctx context.Context, id string) (*model.TaskProject, error) {
+	return repository.GetTaskProjectByID(id)
+}
+
+func (roadmapLegacyTasks) List(ctx context.Context, filter storage.TaskFilter) ([]model.Task, int, error) {
+	if filter.RoadmapNodeID == "" {
+		return nil, 0, nil
+	}
+	tasks, err := repository.GetTasksByRoadmapNodeID(filter.RoadmapNodeID)
+	return tasks, len(tasks), err
+}
+
+type roadmapLegacyRoadmaps struct {
+	storage.RoadmapRepository
+}
+
+func (roadmapLegacyRoadmaps) ReplaceLearningRoadmap(ctx context.Context, roadmap *model.LearningRoadmap) (*model.LearningRoadmap, error) {
+	return repository.ReplaceLearningRoadmap(roadmap)
+}
+
+func (roadmapLegacyRoadmaps) SaveFailedLearningRoadmap(ctx context.Context, projectID, title, goal string) (*model.LearningRoadmap, error) {
+	return repository.SaveFailedLearningRoadmap(projectID, title, goal)
+}
+
+func (roadmapLegacyRoadmaps) GetLearningRoadmap(ctx context.Context, projectID string) (*model.LearningRoadmap, error) {
+	return repository.GetLearningRoadmap(projectID)
+}
+
+func (roadmapLegacyRoadmaps) GetLearningRoadmapByID(ctx context.Context, roadmapID string) (*model.LearningRoadmap, error) {
+	return repository.GetLearningRoadmapByID(roadmapID)
+}
+
+func (roadmapLegacyRoadmaps) GetRoadmapNode(ctx context.Context, nodeID string) (*model.RoadmapNode, error) {
+	return repository.GetRoadmapNode(nodeID)
+}
+
+func (roadmapLegacyRoadmaps) CreateRoadmapNode(ctx context.Context, node *model.RoadmapNode, edge *model.RoadmapEdge) (*model.RoadmapNode, error) {
+	return repository.CreateRoadmapNode(node, edge)
+}
+
+func (roadmapLegacyRoadmaps) UpdateRoadmapNode(ctx context.Context, id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	return repository.UpdateRoadmapNode(id, req)
+}
+
+func (roadmapLegacyRoadmaps) DeleteRoadmapNode(ctx context.Context, id string) error {
+	return repository.DeleteRoadmapNode(id)
+}
+
+func (roadmapLegacyRoadmaps) UpdateRoadmapNodeStatus(ctx context.Context, id, status string) error {
+	return repository.UpdateRoadmapNodeStatus(id, status)
+}
+
+func (roadmapLegacyRoadmaps) UpdateRoadmapLayout(ctx context.Context, roadmapID string, nodes []model.RoadmapLayoutNode) error {
+	return repository.UpdateRoadmapLayout(roadmapID, nodes)
+}
+
+func (roadmapLegacyRoadmaps) AddRoadmapResource(ctx context.Context, resource *model.RoadmapResource) error {
+	return repository.AddRoadmapResource(resource)
+}
+
+func (roadmapLegacyRoadmaps) DeleteRoadmapResource(ctx context.Context, id string) error {
+	return repository.DeleteRoadmapResource(id)
+}
+
 func TestGenerateLearningRoadmapWithMockAI(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("AI_PROVIDER", "mock")
 
-	project := createLearningProjectForTest(t, "Go 后端实战")
-	roadmap, err := GenerateLearningRoadmap(project.ID)
+	project := createLearningProjectForTest(t, "Go 鍚庣瀹炴垬")
+	roadmap, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("generate learning roadmap: %v", err)
 	}
@@ -81,8 +173,8 @@ func TestGenerateLearningRoadmapAutomaticallyAttachesArticleResources(t *testing
 	t.Setenv("AI_PROVIDER", "mock")
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "mock")
 
-	project := createLearningProjectForTest(t, "前端工程化")
-	roadmap, err := GenerateLearningRoadmap(project.ID)
+	project := createLearningProjectForTest(t, "frontend engineering")
+	roadmap, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("generate learning roadmap: %v", err)
 	}
@@ -97,13 +189,13 @@ func TestGenerateLearningRoadmapAutomaticallyAttachesArticleResources(t *testing
 }
 
 func TestEnsureRoadmapBranchingAddsChoiceBranchesToLinearDraft(t *testing.T) {
-	project := model.TaskProject{Name: "后端实战"}
+	project := model.TaskProject{Name: "鍚庣瀹炴垬"}
 	draft := &roadmapDraft{
-		Title: "后端实战学习路线",
-		Goal:  "通过项目实战掌握后端开发",
+		Title: "鍚庣瀹炴垬瀛︿範璺嚎",
+		Goal:  "learn backend development through project practice",
 		Nodes: []model.RoadmapNode{
-			{ID: "start", Type: "phase", Title: "基础准备", PathType: "required", X: 0, Y: 0},
-			{ID: "build", Type: "task", Title: "实现 MVP", PathType: "required", X: 0, Y: 160},
+			{ID: "start", Type: "phase", Title: "鍩虹鍑嗗", PathType: "required", X: 0, Y: 0},
+			{ID: "build", Type: "task", Title: "瀹炵幇 MVP", PathType: "required", X: 0, Y: 160},
 		},
 		Edges: []model.RoadmapEdge{
 			{ID: "edge-1", SourceNodeID: "start", TargetNodeID: "build", Style: "solid"},
@@ -138,8 +230,8 @@ func TestEnsureRoadmapBranchingAddsChoiceBranchesToLinearDraft(t *testing.T) {
 
 func TestNormalizeGeneratedRoadmapLayoutSeparatesOverlappingNodes(t *testing.T) {
 	draft := &roadmapDraft{
-		Title: "重叠路线",
-		Goal:  "验证布局避让",
+		Title: "閲嶅彔璺嚎",
+		Goal:  "楠岃瘉甯冨眬閬胯",
 		Nodes: []model.RoadmapNode{
 			{ID: "a", Type: "phase", Title: "A", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
 			{ID: "b", Type: "module", Title: "B", PathType: "required", X: 20, Y: 10, OrderIndex: 1},
@@ -248,11 +340,11 @@ func roadmapTestNodeByID(t *testing.T, nodes []model.RoadmapNode, id string) mod
 
 func TestGetLearningRoadmapNormalizesPersistedOverlappingNodesForDisplay(t *testing.T) {
 	openRoadmapServiceTestDB(t)
-	project := createLearningProjectForTest(t, "重叠展示")
+	project := createLearningProjectForTest(t, "閲嶅彔灞曠ず")
 	_, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
 		ProjectID: project.ID,
-		Title:     "重叠展示路线",
-		Goal:      "验证历史布局展示避让",
+		Title:     "閲嶅彔灞曠ず璺嚎",
+		Goal:      "楠岃瘉鍘嗗彶甯冨眬灞曠ず閬胯",
 		Status:    "ready",
 		Nodes: []model.RoadmapNode{
 			{ID: "node-a", Type: "phase", Title: "A", PathType: "required", X: 0, Y: 0, OrderIndex: 0},
@@ -266,7 +358,7 @@ func TestGetLearningRoadmapNormalizesPersistedOverlappingNodesForDisplay(t *test
 		t.Fatalf("save overlapping roadmap: %v", err)
 	}
 
-	roadmap, err := GetLearningRoadmap(project.ID)
+	roadmap, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("get roadmap: %v", err)
 	}
@@ -304,7 +396,7 @@ func TestOptimizeRoadmapLayoutPersistsImprovedCoordinates(t *testing.T) {
 		t.Fatalf("save roadmap: %v", err)
 	}
 
-	optimized, err := OptimizeRoadmapLayout(saved.ID)
+	optimized, err := OptimizeRoadmapLayout(roadmapTestContext(t), roadmapTestStore(t), saved.ID)
 	if err != nil {
 		t.Fatalf("optimize roadmap layout: %v", err)
 	}
@@ -348,7 +440,7 @@ func TestCreateAndDeleteRoadmapNodeMutatesRoadmapGraph(t *testing.T) {
 		t.Fatalf("save roadmap: %v", err)
 	}
 
-	created, err := CreateRoadmapNode(saved.ID, &model.CreateRoadmapNodeRequest{
+	created, err := CreateRoadmapNode(roadmapTestContext(t), roadmapTestStore(t), saved.ID, &model.CreateRoadmapNodeRequest{
 		ParentID:  &rootID,
 		Title:     "Manual practice branch",
 		Type:      "task",
@@ -382,7 +474,7 @@ func TestCreateAndDeleteRoadmapNodeMutatesRoadmapGraph(t *testing.T) {
 		t.Fatalf("expected dotted edge from root to created node, got %+v", roadmap.Edges)
 	}
 
-	if err := DeleteRoadmapNode(created.ID); err != nil {
+	if err := DeleteRoadmapNode(roadmapTestContext(t), roadmapTestStore(t), created.ID); err != nil {
 		t.Fatalf("delete roadmap node: %v", err)
 	}
 	updated, err := repository.GetLearningRoadmapByID(saved.ID)
@@ -415,12 +507,12 @@ func TestGenerateLearningRoadmapInvalidAIJSONStoresFailedRoadmap(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("AI_PROVIDER", "invalid-json")
 
-	project := createLearningProjectForTest(t, "Rust 项目实战")
-	if _, err := GenerateLearningRoadmap(project.ID); err == nil {
+	project := createLearningProjectForTest(t, "Rust 椤圭洰瀹炴垬")
+	if _, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID); err == nil {
 		t.Fatal("expected invalid AI response to fail")
 	}
 
-	roadmap, err := GetLearningRoadmap(project.ID)
+	roadmap, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("get failed roadmap: %v", err)
 	}
@@ -437,8 +529,8 @@ func TestGenerateLearningRoadmapDefaultsToRealProviderWhenUnset(t *testing.T) {
 	t.Setenv("AI_PROVIDER", "")
 	t.Setenv("AI_API_KEY", "")
 
-	project := createLearningProjectForTest(t, "默认 DeepSeek")
-	if _, err := GenerateLearningRoadmap(project.ID); err == nil || !strings.Contains(err.Error(), "AI_API_KEY is required") {
+	project := createLearningProjectForTest(t, "榛樿 DeepSeek")
+	if _, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID); err == nil || !strings.Contains(err.Error(), "AI_API_KEY is required") {
 		t.Fatalf("expected missing API key error from real provider default, got %v", err)
 	}
 }
@@ -448,15 +540,15 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 	t.Setenv("AI_PROVIDER", "mock")
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "none")
 
-	project := createLearningProjectForTest(t, "TypeScript 全栈")
-	roadmap, err := GenerateLearningRoadmap(project.ID)
+	project := createLearningProjectForTest(t, "TypeScript 鍏ㄦ爤")
+	roadmap, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("generate roadmap: %v", err)
 	}
 	node := roadmap.Nodes[0]
 
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "mock")
-	resources, err := SearchRoadmapNodeResources(node.ID, &model.SearchRoadmapResourcesRequest{
+	resources, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{
 		Sources: []string{"medium", "reddit"},
 	})
 	if err != nil {
@@ -474,7 +566,7 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 		}
 	}
 
-	unchanged, err := GetLearningRoadmap(project.ID)
+	unchanged, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("get unchanged roadmap: %v", err)
 	}
@@ -484,7 +576,7 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 		}
 	}
 
-	manual, err := AddRoadmapNodeResource(node.ID, &model.CreateRoadmapResourceRequest{
+	manual, err := AddRoadmapNodeResource(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.CreateRoadmapResourceRequest{
 		Title:   resources[0].Title,
 		URL:     resources[0].URL,
 		Summary: resources[0].Summary,
@@ -496,7 +588,7 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 		t.Fatalf("unexpected selected resource metadata: %+v", manual)
 	}
 
-	withSelected, err := GetLearningRoadmap(project.ID)
+	withSelected, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("get roadmap with selected resource: %v", err)
 	}
@@ -512,10 +604,10 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 		t.Fatalf("selected resource was not saved to target node: %+v", manual)
 	}
 
-	if err := DeleteRoadmapResource(manual.ID); err != nil {
+	if err := DeleteRoadmapResource(roadmapTestContext(t), roadmapTestStore(t), manual.ID); err != nil {
 		t.Fatalf("delete resource: %v", err)
 	}
-	updated, err := GetLearningRoadmap(project.ID)
+	updated, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
 	if err != nil {
 		t.Fatalf("get roadmap: %v", err)
 	}
@@ -529,7 +621,7 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 }
 
 func TestArticleSearchDoesNotInventSearchEntryCandidates(t *testing.T) {
-	node := model.RoadmapNode{Title: "Go API 项目", Deliverable: "REST API"}
+	node := model.RoadmapNode{Title: "Go API 椤圭洰", Deliverable: "REST API"}
 	sources := selectedArticleSearchSources([]string{"medium", "reddit"})
 
 	resources := ensureArticleResourceChoices(node, sources, nil, 10)
@@ -540,14 +632,14 @@ func TestArticleSearchDoesNotInventSearchEntryCandidates(t *testing.T) {
 }
 
 func TestArticleSearchKeepsArticleTitlesAndFiltersSearchEntryURLs(t *testing.T) {
-	node := model.RoadmapNode{Title: "Go API 项目", Deliverable: "REST API"}
+	node := model.RoadmapNode{Title: "Go API 椤圭洰", Deliverable: "REST API"}
 	sources := selectedArticleSearchSources([]string{"medium", "reddit"})
 
 	resources := ensureArticleResourceChoices(node, sources, []model.RoadmapResource{
 		{
-			Title:   "Go API 项目 Medium 搜索入口 1",
+			Title:   "Go API 椤圭洰 Medium 鎼滅储鍏ュ彛 1",
 			URL:     "https://medium.com/search?q=go+api",
-			Summary: "Medium 源内搜索入口",
+			Summary: "Medium 婧愬唴鎼滅储鍏ュ彛",
 		},
 		{
 			Title:   "How to design high throughput Go APIs",
@@ -555,9 +647,9 @@ func TestArticleSearchKeepsArticleTitlesAndFiltersSearchEntryURLs(t *testing.T) 
 			Summary: "A popular technical article.",
 		},
 		{
-			Title:   "Go API 项目 Reddit 搜索入口 2",
+			Title:   "Go API 椤圭洰 Reddit 鎼滅储鍏ュ彛 2",
 			URL:     "https://www.reddit.com/search/?q=go+api",
-			Summary: "Reddit 源内搜索入口",
+			Summary: "Reddit 婧愬唴鎼滅储鍏ュ彛",
 		},
 	}, 10)
 
@@ -571,7 +663,7 @@ func TestArticleSearchKeepsArticleTitlesAndFiltersSearchEntryURLs(t *testing.T) 
 
 func TestArticleSearchQueryTargetsPopularHighSignalArticles(t *testing.T) {
 	node := model.RoadmapNode{
-		Title:                "Go API 项目",
+		Title:                "Go API 椤圭洰",
 		Deliverable:          "REST API",
 		ArticleSearchQueries: []string{"go api performance tutorial"},
 	}
@@ -586,7 +678,7 @@ func TestArticleSearchQueryTargetsPopularHighSignalArticles(t *testing.T) {
 
 func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
 	node := model.RoadmapNode{
-		Title:                "Go API 项目",
+		Title:                "Go API 椤圭洰",
 		Deliverable:          "REST API",
 		ArticleSearchQueries: []string{"go api performance tutorial"},
 	}
@@ -599,14 +691,14 @@ func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
 
 func TestArticleSearchQueryIncludesNodeDescription(t *testing.T) {
 	node := model.RoadmapNode{
-		Title:                "向量检索基础",
-		Description:          "重点比较 HNSW 冷启动召回策略和增量索引维护",
-		Deliverable:          "调研笔记",
+		Title:                "vector search basics",
+		Description:          "compare HNSW cold start recall strategy and incremental index maintenance",
+		Deliverable:          "research notes",
 		ArticleSearchQueries: []string{"generic vector database overview"},
 	}
 	query := buildArticleSearchQuery(node, nil, selectedArticleSearchSources([]string{"technical"}))
 
-	for _, term := range []string{"HNSW", "冷启动", "增量索引"} {
+	for _, term := range []string{"HNSW", "cold start", "incremental index"} {
 		if !strings.Contains(query, term) {
 			t.Fatalf("expected node description term %q in article query %q", term, query)
 		}
@@ -617,22 +709,22 @@ func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "")
 
-	project := createLearningProjectForTest(t, "向量检索系统")
+	project := createLearningProjectForTest(t, "vector search system")
 	roadmap, err := repository.ReplaceLearningRoadmap(&model.LearningRoadmap{
 		ProjectID: project.ID,
-		Title:     "向量检索 Roadmap",
-		Goal:      "完成向量检索系统设计",
+		Title:     "vector search roadmap",
+		Goal:      "complete vector search system design",
 		Status:    "ready",
 		Nodes: []model.RoadmapNode{
 			{
 				ID:                   "node-vector-index",
 				Type:                 "task",
-				Title:                "检索架构概述",
-				Description:          "理解系统总体结构",
+				Title:                "search architecture overview",
+				Description:          "understand overall system architecture",
 				PathType:             "required",
 				Status:               "active",
-				Deliverable:          "架构说明",
-				AcceptanceCriteria:   "能解释核心链路",
+				Deliverable:          "architecture notes",
+				AcceptanceCriteria:   "explain the core path",
 				ArticleSearchQueries: []string{"generic vector database overview"},
 			},
 		},
@@ -642,8 +734,8 @@ func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
 	}
 	node := roadmap.Nodes[0]
 	linkedTask := &model.Task{
-		Title:         "调研 HNSW 索引调参",
-		Content:       "比较 efConstruction、M 参数和 rerank 对召回率的影响",
+		Title:         "research HNSW index tuning",
+		Content:       "compare efConstruction, M parameters, and rerank impact on recall",
 		Status:        "open",
 		Horizon:       "week",
 		Scope:         "daily",
@@ -678,7 +770,7 @@ func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
 	stackExchangeSearchURL = server.URL + "/search/advanced"
 	t.Cleanup(func() { stackExchangeSearchURL = oldStackExchangeURL })
 
-	resources, err := SearchRoadmapNodeResources(node.ID, &model.SearchRoadmapResourcesRequest{Sources: []string{"stackoverflow"}})
+	resources, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{Sources: []string{"stackoverflow"}})
 	if err != nil {
 		t.Fatalf("search resources: %v", err)
 	}
@@ -715,7 +807,7 @@ func TestPublicSourceArticleSearchReturnsRealArticlesOnRepeatedCalls(t *testing.
 	t.Cleanup(func() { devToArticlesURL = originalDevToURL })
 
 	node := model.RoadmapNode{
-		Title:                "Go API 项目",
+		Title:                "Go API 椤圭洰",
 		Deliverable:          "REST API",
 		ArticleSearchQueries: []string{"go api performance tutorial"},
 	}

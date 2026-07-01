@@ -16,7 +16,7 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		note := &model.Note{
 			ID:       "contract-imported-note",
 			Title:    "Imported Notion Note",
@@ -52,7 +52,7 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		note := &model.Note{
 			ID:       "contract-search-lifecycle-note",
 			Title:    "old searchable note",
@@ -110,7 +110,7 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		note := &model.Note{
 			ID:       "contract-prefix-note",
 			Title:    "PostgreSQL migration plan",
@@ -135,7 +135,7 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		note := &model.Note{
 			ID:       "contract-search-total-note",
 			Title:    "unique pagination query",
@@ -160,7 +160,7 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 		store := factory(t)
 		defer store.Close()
 
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 		note := &model.Note{
 			ID:       "contract-tag-search-note",
 			Title:    "Tag search note",
@@ -178,6 +178,31 @@ func RunNoteSearchSuite(t *testing.T, factory StoreFactory) {
 		}
 		if total != 1 || !hasSearchResult(results, "note", note.ID) {
 			t.Fatalf("expected tag query to find note, total=%d results=%+v", total, results)
+		}
+	})
+
+	t.Run("SearchDoesNotReturnOtherWorkspaceResults", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctxA := seedWorkspaceDefaults(t, store, "workspace_search_a")
+		finalizeAuthSchemaIfSupported(t, store, ctxA)
+		ctxB := seedWorkspaceDefaults(t, store, "workspace_search_b")
+
+		if _, err := store.Notes().Create(ctxA, &model.CreateNoteRequest{
+			Title:    "private phrase alpha",
+			Body:     "workspace A only",
+			FolderID: "__uncategorized",
+		}); err != nil {
+			t.Fatalf("create note: %v", err)
+		}
+
+		results, total, err := searchStore(ctxB, store, "private phrase alpha", 1, 20)
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if total != 0 || len(results) != 0 {
+			t.Fatalf("workspace B saw workspace A search results: total=%d results=%+v", total, results)
 		}
 	})
 }
@@ -206,7 +231,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("CreateNoteWithProjects", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		// Create a test project first
 		proj, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
@@ -237,7 +262,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("GetByIDReturnsProjects", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "GetByID Project", Type: "regular",
@@ -261,7 +286,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("UpdatePreservesProjectsWhenNil", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Preserve Project", Type: "regular",
@@ -286,7 +311,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("UpdateClearsProjectsWithEmptySlice", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Clear Project", Type: "regular",
@@ -310,7 +335,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("UpdateReplacesProjects", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		projA, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Replace Project A", Type: "regular",
@@ -337,7 +362,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("ListByProjectID", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "List Project", Type: "regular",
@@ -370,7 +395,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("ListUnassigned", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		// Create note WITHOUT project
 		note, _ := store.Notes().Create(ctx, &model.CreateNoteRequest{
@@ -411,7 +436,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteNoteCleansLinks", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Delete Project", Type: "regular",
@@ -434,7 +459,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteProjectPreservesNote", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "To Delete Project", Type: "regular",
@@ -460,9 +485,9 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("InvalidProjectIDRejected", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
-		// Create note with non-existent project ID — should fail with constraint error
+		// Create note with non-existent project ID 閳?should fail with constraint error
 		_, err := store.Notes().Create(ctx, &model.CreateNoteRequest{
 			Title:      "Invalid Project Note",
 			ProjectIDs: []string{"nonexistent-project-id"},
@@ -475,7 +500,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("DuplicateProjectIDsHandled", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Dedup Project", Type: "regular",
@@ -495,7 +520,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("RecentReturnsProjects", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "Recent Project", Type: "regular",
@@ -523,7 +548,7 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 	t.Run("ListAllDoesNotRequireProjects", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
-		ctx := context.Background()
+		ctx := scopedContractContext(t, store)
 
 		proj, _ := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
 			Name: "ListAll Project", Type: "regular",
@@ -539,6 +564,6 @@ func RunNoteProjectLinksSuite(t *testing.T, factory StoreFactory) {
 		if len(notes) == 0 {
 			t.Fatal("expected at least one note from ListAll")
 		}
-		// Projects may or may not be populated — that's fine for ListAll
+		// Projects may or may not be populated 閳?that's fine for ListAll
 	})
 }

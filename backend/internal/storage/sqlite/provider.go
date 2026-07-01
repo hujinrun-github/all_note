@@ -61,6 +61,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteAuthSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return newStore(db), nil
 }
 
@@ -149,6 +153,18 @@ func (s *store) Transact(ctx context.Context, fn func(storage.Store) error) erro
 	return nil
 }
 
+func (s *store) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+func (s *store) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, query, args...)
+}
+
+func (s *store) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
+}
+
 func (s *store) Folders() storage.FolderRepository {
 	return folderRepository{db: s.db}
 }
@@ -183,6 +199,10 @@ func (s *store) Search() storage.SearchRepository {
 
 func (s *store) Recurrence() storage.RecurrenceRepository {
 	return recurrenceRepository{db: s.db}
+}
+
+func (s *store) Auth() storage.AuthRepository {
+	return authRepository{db: s.db}
 }
 
 type storeTx struct {
@@ -226,3 +246,18 @@ func (s *storeTx) Sync() storage.SyncRepository {
 	return syncRepository{db: s.tx}
 }
 
+func (s *storeTx) Auth() storage.AuthRepository {
+	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.tx.ExecContext(ctx, query, args...)
+}
+
+func (s *storeTx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.tx.QueryContext(ctx, query, args...)
+}
+
+func (s *storeTx) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.tx.QueryRowContext(ctx, query, args...)
+}

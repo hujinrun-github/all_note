@@ -17,7 +17,7 @@ func TestNotionRoutesAreRegistered(t *testing.T) {
 		"POST /api/sync/notion/deletions/:note_id/restore",
 	}
 
-	router := Setup()
+	router := Setup(testRouterConfig(nil, testRouterAuthConfig(false)))
 	registered := map[string]bool{}
 	for _, route := range router.Routes() {
 		registered[route.Method+" "+route.Path] = true
@@ -38,7 +38,7 @@ func TestSyncTargetRoutesAreRegistered(t *testing.T) {
 		"DELETE /api/sync/targets/:id",
 	}
 
-	router := Setup()
+	router := Setup(testRouterConfig(nil, testRouterAuthConfig(false)))
 	registered := map[string]bool{}
 	for _, route := range router.Routes() {
 		registered[route.Method+" "+route.Path] = true

@@ -1633,13 +1633,8 @@ func createNoteForSyncTest(t *testing.T, title, body string) model.Note {
 
 func createTaggedNoteForSyncTest(t *testing.T, title, body, tags string) model.Note {
 	t.Helper()
-	note, err := CreateNote(&model.CreateNoteRequest{
-		Title:    title,
-		Body:     body,
-		FolderID: "__uncategorized",
-		Tags:     tags,
-	})
-	if err != nil {
+	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: tags}
+	if err := repository.CreateNote(note); err != nil {
 		t.Fatalf("create note: %v", err)
 	}
 	return *note

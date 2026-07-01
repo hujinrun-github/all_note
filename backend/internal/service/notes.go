@@ -7,43 +7,45 @@ import (
 	"fmt"
 
 	"github.com/hujinrun/flowspace/internal/model"
-	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
-func GetNotes(folderID, projectID, sort string, unassigned bool, page, pageSize int) ([]model.Note, int, error) {
-	return repository.GetNotes(folderID, projectID, sort, unassigned, page, pageSize)
+func GetNotes(ctx context.Context, store storage.Store, folderID, projectID, sort string, unassigned bool, page, pageSize int) ([]model.Note, int, error) {
+	return store.Notes().List(ctx, storage.NoteFilter{
+		FolderID:   folderID,
+		ProjectID:  projectID,
+		Sort:       sort,
+		Unassigned: unassigned,
+		Page:       page,
+		PageSize:   pageSize,
+	})
 }
 
-func GetNote(id string) (*model.Note, error) {
-	return repository.GetNoteByID(id)
+func GetNote(ctx context.Context, store storage.Store, id string) (*model.Note, error) {
+	return store.Notes().GetByID(ctx, id)
 }
 
-func CreateNote(req *model.CreateNoteRequest) (*model.Note, error) {
+func CreateNote(ctx context.Context, store storage.Store, req *model.CreateNoteRequest) (*model.Note, error) {
 	if req.Tags == "" {
 		req.Tags = "[]"
 	}
-	return repository.CreateNoteWithProjectIDs(req)
+	return store.Notes().Create(ctx, req)
 }
 
-func UpdateNote(id string, req *model.UpdateNoteRequest) (*model.Note, error) {
-	existing, err := repository.GetNoteByID(id)
+func UpdateNote(ctx context.Context, store storage.Store, id string, req *model.UpdateNoteRequest) (*model.Note, error) {
+	existing, err := store.Notes().GetByID(ctx, id)
 	if err != nil {
 		return nil, errors.New("note not found")
 	}
 	_ = existing
-	return repository.UpdateNote(id, req)
+	return store.Notes().Update(ctx, id, req)
 }
 
-func DeleteNote(id string) error {
-	if store := repository.CurrentStore(); store != nil {
-		return deleteNoteWithStore(store, id)
-	}
-	return repository.DeleteNote(id)
+func DeleteNote(ctx context.Context, store storage.Store, id string) error {
+	return deleteNoteWithStore(ctx, store, id)
 }
 
-func deleteNoteWithStore(store storage.Store, id string) error {
-	ctx := context.Background()
+func deleteNoteWithStore(ctx context.Context, store storage.Store, id string) error {
 	return store.Transact(ctx, func(txStore storage.Store) error {
 		if err := txStore.Sync().LockBindingSlot(ctx, id); err != nil {
 			return err

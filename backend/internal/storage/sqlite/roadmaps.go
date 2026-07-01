@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -18,21 +19,25 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 	if roadmap == nil {
 		return nil, fmt.Errorf("roadmap is nil")
 	}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r.applyRoadmapDefaults(roadmap)
 	if err := r.withTx(ctx, func(tx sqliteRunner) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM learning_roadmaps WHERE project_id = ?`, roadmap.ProjectID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM learning_roadmaps WHERE workspace_id = ? AND project_id = ?`, workspaceID, roadmap.ProjectID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO learning_roadmaps (id, project_id, title, goal, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, roadmap.ID, roadmap.ProjectID, roadmap.Title, roadmap.Goal, roadmap.Status, roadmap.CreatedAt, roadmap.UpdatedAt); err != nil {
+			INSERT INTO learning_roadmaps (id, project_id, workspace_id, title, goal, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, roadmap.ID, roadmap.ProjectID, workspaceID, roadmap.Title, roadmap.Goal, roadmap.Status, roadmap.CreatedAt, roadmap.UpdatedAt); err != nil {
 			return err
 		}
 		for index := range roadmap.Nodes {
 			node := &roadmap.Nodes[index]
 			r.applyNodeDefaults(roadmap.ID, node, index)
-			if err := insertSQLiteRoadmapNode(ctx, tx, node, nil); err != nil {
+			if err := insertSQLiteRoadmapNode(ctx, tx, workspaceID, node, nil); err != nil {
 				return err
 			}
 		}
@@ -42,8 +47,8 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 				continue
 			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE roadmap_nodes SET parent_id = ?, updated_at = ? WHERE id = ? AND roadmap_id = ?
-			`, *node.ParentID, node.UpdatedAt, node.ID, roadmap.ID); err != nil {
+				UPDATE roadmap_nodes SET parent_id = ?, updated_at = ? WHERE workspace_id = ? AND id = ? AND roadmap_id = ?
+			`, *node.ParentID, node.UpdatedAt, workspaceID, node.ID, roadmap.ID); err != nil {
 				return err
 			}
 		}
@@ -51,9 +56,9 @@ func (r roadmapRepository) ReplaceLearningRoadmap(ctx context.Context, roadmap *
 			edge := &roadmap.Edges[index]
 			r.applyEdgeDefaults(roadmap.ID, edge)
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at)
-				VALUES (?, ?, ?, ?, ?, ?)
-			`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, edge.CreatedAt); err != nil {
+				INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at, workspace_id)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, edge.CreatedAt, workspaceID); err != nil {
 				return err
 			}
 		}
@@ -82,19 +87,27 @@ func (r roadmapRepository) SaveFailedLearningRoadmap(ctx context.Context, projec
 }
 
 func (r roadmapRepository) GetLearningRoadmap(ctx context.Context, projectID string) (*model.LearningRoadmap, error) {
-	return r.loadLearningRoadmap(ctx, `WHERE project_id = ?`, projectID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadLearningRoadmap(ctx, `WHERE workspace_id = ? AND project_id = ?`, workspaceID, projectID)
 }
 
 func (r roadmapRepository) GetLearningRoadmapByID(ctx context.Context, roadmapID string) (*model.LearningRoadmap, error) {
-	return r.loadLearningRoadmap(ctx, `WHERE id = ?`, roadmapID)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadLearningRoadmap(ctx, `WHERE workspace_id = ? AND id = ?`, workspaceID, roadmapID)
 }
 
-func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string, arg interface{}) (*model.LearningRoadmap, error) {
+func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string, args ...interface{}) (*model.LearningRoadmap, error) {
 	var roadmap model.LearningRoadmap
 	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT id, project_id, title, goal, status, created_at, updated_at
 		FROM learning_roadmaps %s
-	`, where), arg).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &roadmap.CreatedAt, &roadmap.UpdatedAt)
+	`, where), args...).Scan(&roadmap.ID, &roadmap.ProjectID, &roadmap.Title, &roadmap.Goal, &roadmap.Status, &roadmap.CreatedAt, &roadmap.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -112,13 +125,17 @@ func (r roadmapRepository) loadLearningRoadmap(ctx context.Context, where string
 }
 
 func (r roadmapRepository) ListRoadmapNodes(ctx context.Context, roadmapID string) ([]model.RoadmapNode, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, roadmap_id, parent_id, type, title, description, path_type, status,
 			deliverable, acceptance_criteria, x, y, order_index, article_search_queries, created_at, updated_at
 		FROM roadmap_nodes
-		WHERE roadmap_id = ?
+		WHERE workspace_id = ? AND roadmap_id = ?
 		ORDER BY order_index ASC, created_at ASC
-	`, roadmapID)
+	`, workspaceID, roadmapID)
 	if err != nil {
 		return nil, err
 	}
@@ -139,12 +156,16 @@ func (r roadmapRepository) ListRoadmapNodes(ctx context.Context, roadmapID strin
 }
 
 func (r roadmapRepository) ListRoadmapEdges(ctx context.Context, roadmapID string) ([]model.RoadmapEdge, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, roadmap_id, source_node_id, target_node_id, style, created_at
 		FROM roadmap_edges
-		WHERE roadmap_id = ?
+		WHERE workspace_id = ? AND roadmap_id = ?
 		ORDER BY created_at ASC
-	`, roadmapID)
+	`, workspaceID, roadmapID)
 	if err != nil {
 		return nil, err
 	}
@@ -162,11 +183,15 @@ func (r roadmapRepository) ListRoadmapEdges(ctx context.Context, roadmapID strin
 }
 
 func (r roadmapRepository) GetRoadmapNode(ctx context.Context, id string) (*model.RoadmapNode, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	node, err := scanSQLiteRoadmapNode(r.db.QueryRowContext(ctx, `
 		SELECT id, roadmap_id, parent_id, type, title, description, path_type, status,
 			deliverable, acceptance_criteria, x, y, order_index, article_search_queries, created_at, updated_at
-		FROM roadmap_nodes WHERE id = ?
-	`, id))
+		FROM roadmap_nodes WHERE workspace_id = ? AND id = ?
+	`, workspaceID, id))
 	if err != nil {
 		return nil, err
 	}
@@ -182,9 +207,13 @@ func (r roadmapRepository) CreateRoadmapNode(ctx context.Context, node *model.Ro
 	if node == nil {
 		return nil, fmt.Errorf("roadmap node is nil")
 	}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r.applyNodeDefaults(node.RoadmapID, node, 0)
 	if err := r.withTx(ctx, func(tx sqliteRunner) error {
-		if err := insertSQLiteRoadmapNode(ctx, tx, node, node.ParentID); err != nil {
+		if err := insertSQLiteRoadmapNode(ctx, tx, workspaceID, node, node.ParentID); err != nil {
 			return err
 		}
 		if edge == nil {
@@ -195,9 +224,9 @@ func (r roadmapRepository) CreateRoadmapNode(ctx context.Context, node *model.Ro
 			edge.TargetNodeID = node.ID
 		}
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, edge.CreatedAt)
+			INSERT INTO roadmap_edges (id, roadmap_id, source_node_id, target_node_id, style, created_at, workspace_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, edge.ID, edge.RoadmapID, edge.SourceNodeID, edge.TargetNodeID, edge.Style, edge.CreatedAt, workspaceID)
 		return err
 	}); err != nil {
 		return nil, err
@@ -206,6 +235,10 @@ func (r roadmapRepository) CreateRoadmapNode(ctx context.Context, node *model.Ro
 }
 
 func (r roadmapRepository) UpdateRoadmapNode(ctx context.Context, id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{nowUnix()}
 	if req.Title != nil {
@@ -240,8 +273,8 @@ func (r roadmapRepository) UpdateRoadmapNode(ctx context.Context, id string, req
 		sets = append(sets, "y = ?")
 		args = append(args, *req.Y)
 	}
-	args = append(args, id)
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE roadmap_nodes SET %s WHERE id = ?", strings.Join(sets, ", ")), args...)
+	args = append(args, workspaceID, id)
+	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE roadmap_nodes SET %s WHERE workspace_id = ? AND id = ?", strings.Join(sets, ", ")), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +285,11 @@ func (r roadmapRepository) UpdateRoadmapNode(ctx context.Context, id string, req
 }
 
 func (r roadmapRepository) DeleteRoadmapNode(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_nodes WHERE id = ?`, id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_nodes WHERE workspace_id = ? AND id = ?`, workspaceID, id)
 	if err != nil {
 		return err
 	}
@@ -263,18 +300,32 @@ func (r roadmapRepository) DeleteRoadmapNode(ctx context.Context, id string) err
 }
 
 func (r roadmapRepository) UpdateRoadmapNodeStatus(ctx context.Context, id, status string) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE roadmap_nodes SET status = ?, updated_at = ? WHERE id = ?
-	`, normalizeNodeStatus(status), nowUnix(), id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE roadmap_nodes SET status = ?, updated_at = ? WHERE workspace_id = ? AND id = ?
+	`, normalizeNodeStatus(status), nowUnix(), workspaceID, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
 	return err
 }
 
 func (r roadmapRepository) UpdateRoadmapLayout(ctx context.Context, roadmapID string, nodes []model.RoadmapLayoutNode) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx sqliteRunner) error {
 		for _, node := range nodes {
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE roadmap_nodes SET x = ?, y = ?, updated_at = ? WHERE id = ? AND roadmap_id = ?
-			`, node.X, node.Y, nowUnix(), node.ID, roadmapID); err != nil {
+				UPDATE roadmap_nodes SET x = ?, y = ?, updated_at = ? WHERE workspace_id = ? AND id = ? AND roadmap_id = ?
+			`, node.X, node.Y, nowUnix(), workspaceID, node.ID, roadmapID); err != nil {
 				return err
 			}
 		}
@@ -283,12 +334,16 @@ func (r roadmapRepository) UpdateRoadmapLayout(ctx context.Context, roadmapID st
 }
 
 func (r roadmapRepository) ListRoadmapResources(ctx context.Context, nodeID string) ([]model.RoadmapResource, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, node_id, title, url, summary, source_type, added_by, created_at, updated_at
 		FROM roadmap_resources
-		WHERE node_id = ?
+		WHERE workspace_id = ? AND node_id = ?
 		ORDER BY created_at DESC
-	`, nodeID)
+	`, workspaceID, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -310,15 +365,23 @@ func (r roadmapRepository) AddRoadmapResource(ctx context.Context, resource *mod
 	if resource.AddedBy == "" {
 		resource.AddedBy = "user"
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO roadmap_resources (id, node_id, title, url, summary, source_type, added_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, resource.ID, resource.NodeID, resource.Title, resource.URL, resource.Summary, resource.SourceType, resource.AddedBy, now, now)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO roadmap_resources (id, node_id, title, url, summary, source_type, added_by, created_at, updated_at, workspace_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, resource.ID, resource.NodeID, resource.Title, resource.URL, resource.Summary, resource.SourceType, resource.AddedBy, now, now, workspaceID)
 	return err
 }
 
 func (r roadmapRepository) DeleteRoadmapResource(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_resources WHERE id = ?`, id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM roadmap_resources WHERE workspace_id = ? AND id = ?`, workspaceID, id)
 	if err != nil {
 		return err
 	}
@@ -411,7 +474,7 @@ func (r roadmapRepository) withTx(ctx context.Context, fn func(sqliteRunner) err
 	return nil
 }
 
-func insertSQLiteRoadmapNode(ctx context.Context, db sqliteRunner, node *model.RoadmapNode, parentID *string) error {
+func insertSQLiteRoadmapNode(ctx context.Context, db sqliteRunner, workspaceID string, node *model.RoadmapNode, parentID *string) error {
 	queries, err := roadmapQueriesToJSON(node.ArticleSearchQueries)
 	if err != nil {
 		return err
@@ -419,12 +482,12 @@ func insertSQLiteRoadmapNode(ctx context.Context, db sqliteRunner, node *model.R
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO roadmap_nodes (
 			id, roadmap_id, parent_id, type, title, description, path_type, status,
-			deliverable, acceptance_criteria, x, y, order_index, article_search_queries, created_at, updated_at
+			deliverable, acceptance_criteria, x, y, order_index, article_search_queries, created_at, updated_at, workspace_id
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, node.ID, node.RoadmapID, parentID, node.Type, strings.TrimSpace(node.Title), strings.TrimSpace(node.Description),
 		node.PathType, node.Status, strings.TrimSpace(node.Deliverable), strings.TrimSpace(node.AcceptanceCriteria),
-		node.X, node.Y, node.OrderIndex, queries, node.CreatedAt, node.UpdatedAt)
+		node.X, node.Y, node.OrderIndex, queries, node.CreatedAt, node.UpdatedAt, workspaceID)
 	return err
 }
 

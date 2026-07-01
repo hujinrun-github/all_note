@@ -1,0 +1,765 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var workspaceScopedTables = []string{
+	"folders",
+	"notes",
+	"task_projects",
+	"tasks",
+	"learning_roadmaps",
+	"roadmap_nodes",
+	"roadmap_edges",
+	"roadmap_resources",
+	"events",
+	"inbox",
+	"sync_targets",
+	"note_sync_state",
+	"note_project_links",
+	"task_recurrence_rules",
+	"task_occurrences",
+	"note_sync_bindings",
+	"sync_external_claims",
+	"note_sync_suppressions",
+	"sync_import_tombstones",
+	"search_index",
+}
+
+func runMultiUserAuthFinalizer(ctx context.Context, db *sql.DB) error {
+	if err := validateWorkspaceBackfill(ctx, db); err != nil {
+		return err
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin multi-user auth finalizer transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := applyWorkspaceNotNullConstraints(ctx, tx); err != nil {
+		return err
+	}
+	if err := applyWorkspaceCompositeKeys(ctx, tx); err != nil {
+		return err
+	}
+	if err := applyWorkspaceCompositeForeignKeys(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit multi-user auth finalizer transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func validateWorkspaceBackfill(ctx context.Context, db *sql.DB) error {
+	if err := validateUsersDefaultWorkspace(ctx, db); err != nil {
+		return err
+	}
+	for _, table := range workspaceScopedTables {
+		if err := validateWorkspaceIDBackfill(ctx, db, table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateUsersDefaultWorkspace(ctx context.Context, db *sql.DB) error {
+	exists, err := postgresTableExists(ctx, db, "users")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE default_workspace_id IS NULL`).Scan(&count); err != nil {
+		return fmt.Errorf("validate users default workspace backfill: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("multi-user auth finalizer: users.default_workspace_id is missing for %d user(s); run workspace backfill before final constraints", count)
+	}
+	return nil
+}
+
+func validateWorkspaceIDBackfill(ctx context.Context, db *sql.DB, table string) error {
+	exists, err := postgresTableExists(ctx, db, table)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	hasColumn, err := postgresColumnExists(ctx, db, table, "workspace_id")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		return fmt.Errorf("multi-user auth finalizer: %s.workspace_id column is missing", table)
+	}
+
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE workspace_id IS NULL`, postgresIdent(table))
+	var count int
+	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return fmt.Errorf("validate %s.workspace_id backfill: %w", table, err)
+	}
+	if count > 0 {
+		return fmt.Errorf("multi-user auth finalizer: %s.workspace_id is missing for %d row(s); run workspace backfill before final constraints", table, count)
+	}
+	return nil
+}
+
+func applyWorkspaceNotNullConstraints(ctx context.Context, db postgresRunner) error {
+	if err := setPostgresColumnNotNull(ctx, db, "users", "default_workspace_id"); err != nil {
+		return err
+	}
+	for _, table := range workspaceScopedTables {
+		if err := setPostgresColumnNotNull(ctx, db, table, "workspace_id"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyWorkspaceCompositeKeys(ctx context.Context, db postgresRunner) error {
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_idx ON workspaces (owner_user_id, id)`); err != nil {
+		return fmt.Errorf("ensure workspaces(owner_user_id,id) key: %w", err)
+	}
+	if err := applyWorkspaceScopedDefaultParentKeys(ctx, db); err != nil {
+		return err
+	}
+	if err := applyWorkspaceScopedLearningRoadmapProjectKey(ctx, db); err != nil {
+		return err
+	}
+	if err := applyWorkspaceScopedSyncKeys(ctx, db); err != nil {
+		return err
+	}
+	for _, table := range workspaceScopedTables {
+		if table == "folders" || table == "task_projects" {
+			continue
+		}
+		if err := addWorkspaceCompositeKey(ctx, db, table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyWorkspaceCompositeForeignKeys(ctx context.Context, db postgresRunner) error {
+	if err := addWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
+		return err
+	}
+
+	exists, err := postgresConstraintExists(ctx, db, "users", "users_default_owned_workspace_fk")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `
+		ALTER TABLE users
+		  ADD CONSTRAINT users_default_owned_workspace_fk
+		  FOREIGN KEY (id, default_workspace_id)
+		  REFERENCES workspaces(owner_user_id, id)
+		  DEFERRABLE INITIALLY DEFERRED
+	`); err != nil {
+		return fmt.Errorf("add users default owned workspace foreign key: %w", err)
+	}
+	return nil
+}
+
+func applyWorkspaceScopedDefaultParentKeys(ctx context.Context, db postgresRunner) error {
+	foldersReady, err := postgresPrimaryKeyMatches(ctx, db, "folders", []string{"workspace_id", "id"})
+	if err != nil {
+		return err
+	}
+	projectsReady, err := postgresPrimaryKeyMatches(ctx, db, "task_projects", []string{"workspace_id", "id"})
+	if err != nil {
+		return err
+	}
+	if !foldersReady || !projectsReady {
+		if err := dropWorkspaceScopedDefaultChildForeignKeys(ctx, db); err != nil {
+			return err
+		}
+		if err := replacePostgresPrimaryKey(ctx, db, "folders", []string{"workspace_id", "id"}); err != nil {
+			return err
+		}
+		if err := replacePostgresPrimaryKey(ctx, db, "task_projects", []string{"workspace_id", "id"}); err != nil {
+			return err
+		}
+	}
+	if err := dropPostgresConstraintIfExists(ctx, db, "folders", "folders_name_key"); err != nil {
+		return err
+	}
+	if err := dropPostgresConstraintIfExists(ctx, db, "task_projects", "task_projects_name_key"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS folders_workspace_id_name_idx ON folders (workspace_id, name)`); err != nil {
+		return fmt.Errorf("ensure folders(workspace_id,name) key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS task_projects_workspace_id_name_idx ON task_projects (workspace_id, name)`); err != nil {
+		return fmt.Errorf("ensure task_projects(workspace_id,name) key: %w", err)
+	}
+	return nil
+}
+
+func applyWorkspaceScopedLearningRoadmapProjectKey(ctx context.Context, db postgresRunner) error {
+	if err := dropPostgresConstraintIfExists(ctx, db, "learning_roadmaps", "learning_roadmaps_project_id_key"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS learning_roadmaps_workspace_id_project_id_idx
+		ON learning_roadmaps (workspace_id, project_id)
+	`); err != nil {
+		return fmt.Errorf("ensure learning_roadmaps(workspace_id,project_id) key: %w", err)
+	}
+	return nil
+}
+
+func applyWorkspaceScopedSyncKeys(ctx context.Context, db postgresRunner) error {
+	for _, table := range []string{"notes", "sync_targets"} {
+		if err := addWorkspaceCompositeKey(ctx, db, table); err != nil {
+			return err
+		}
+	}
+	if err := dropPostgresConstraintIfExists(ctx, db, "sync_targets", "sync_targets_type_name_key"); err != nil {
+		return err
+	}
+	for _, index := range []string{
+		"sync_targets_type_name_idx",
+		"sync_targets_one_default_per_type_idx",
+	} {
+		stmt := fmt.Sprintf("DROP INDEX IF EXISTS %s", postgresIdent(index))
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("drop %s: %w", index, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_workspace_type_name_idx
+		ON sync_targets (workspace_id, type, name)
+	`); err != nil {
+		return fmt.Errorf("ensure sync_targets(workspace_id,type,name) key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_targets_one_default_per_workspace_type_idx
+		ON sync_targets (workspace_id, type)
+		WHERE is_default = true
+	`); err != nil {
+		return fmt.Errorf("ensure sync_targets workspace default key: %w", err)
+	}
+	if err := dropPostgresForeignKeysToTable(ctx, db, "sync_external_claims", "note_sync_bindings"); err != nil {
+		return err
+	}
+	for _, fk := range []struct {
+		child  string
+		parent string
+	}{
+		{child: "note_sync_state", parent: "notes"},
+		{child: "note_sync_state", parent: "sync_targets"},
+		{child: "note_sync_bindings", parent: "notes"},
+		{child: "note_sync_bindings", parent: "sync_targets"},
+		{child: "note_sync_suppressions", parent: "notes"},
+		{child: "note_sync_suppressions", parent: "sync_targets"},
+		{child: "sync_import_tombstones", parent: "sync_targets"},
+	} {
+		if err := dropPostgresForeignKeysToTable(ctx, db, fk.child, fk.parent); err != nil {
+			return err
+		}
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_state", []string{"workspace_id", "note_id", "target_id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_bindings", []string{"workspace_id", "note_id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "sync_external_claims", []string{"workspace_id", "external_key"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "note_sync_suppressions", []string{"workspace_id", "note_id", "target_id"}); err != nil {
+		return err
+	}
+	if err := replacePostgresPrimaryKey(ctx, db, "sync_import_tombstones", []string{"workspace_id", "external_key"}); err != nil {
+		return err
+	}
+	for _, constraint := range []struct {
+		table string
+		name  string
+	}{
+		{table: "note_sync_bindings", name: "note_sync_bindings_note_id_target_id_key"},
+		{table: "sync_external_claims", name: "sync_external_claims_note_id_key"},
+		{table: "sync_import_tombstones", name: "sync_import_tombstones_target_id_former_note_id_external_type_key"},
+	} {
+		if err := dropPostgresConstraintIfExists(ctx, db, constraint.table, constraint.name); err != nil {
+			return err
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS note_sync_bindings_workspace_note_target_idx
+		ON note_sync_bindings (workspace_id, note_id, target_id)
+	`); err != nil {
+		return fmt.Errorf("ensure note_sync_bindings workspace note target key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_external_claims_workspace_note_idx
+		ON sync_external_claims (workspace_id, note_id)
+	`); err != nil {
+		return fmt.Errorf("ensure sync_external_claims workspace note key: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS sync_import_tombstones_workspace_target_note_type_idx
+		ON sync_import_tombstones (workspace_id, target_id, former_note_id, external_type)
+	`); err != nil {
+		return fmt.Errorf("ensure sync_import_tombstones workspace target note type key: %w", err)
+	}
+	exists, err := postgresConstraintExists(ctx, db, "sync_external_claims", "sync_external_claims_workspace_binding_fk")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := db.ExecContext(ctx, `
+			ALTER TABLE sync_external_claims
+			  ADD CONSTRAINT sync_external_claims_workspace_binding_fk
+			  FOREIGN KEY (workspace_id, note_id, target_id)
+			  REFERENCES note_sync_bindings(workspace_id, note_id, target_id)
+			  ON DELETE CASCADE
+			  DEFERRABLE INITIALLY DEFERRED
+		`); err != nil {
+			return fmt.Errorf("add sync_external_claims workspace binding foreign key: %w", err)
+		}
+	}
+	if err := addPostgresWorkspaceScopedSyncForeignKeys(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func addPostgresWorkspaceScopedSyncForeignKeys(ctx context.Context, db postgresRunner) error {
+	for _, fk := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{
+			table: "note_sync_state",
+			name:  "note_sync_state_workspace_note_fk",
+			definition: `
+				ALTER TABLE note_sync_state
+				  ADD CONSTRAINT note_sync_state_workspace_note_fk
+				  FOREIGN KEY (workspace_id, note_id)
+				  REFERENCES notes(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_state",
+			name:  "note_sync_state_workspace_target_fk",
+			definition: `
+				ALTER TABLE note_sync_state
+				  ADD CONSTRAINT note_sync_state_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_bindings",
+			name:  "note_sync_bindings_workspace_note_fk",
+			definition: `
+				ALTER TABLE note_sync_bindings
+				  ADD CONSTRAINT note_sync_bindings_workspace_note_fk
+				  FOREIGN KEY (workspace_id, note_id)
+				  REFERENCES notes(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_bindings",
+			name:  "note_sync_bindings_workspace_target_fk",
+			definition: `
+				ALTER TABLE note_sync_bindings
+				  ADD CONSTRAINT note_sync_bindings_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE RESTRICT
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_suppressions",
+			name:  "note_sync_suppressions_workspace_note_fk",
+			definition: `
+				ALTER TABLE note_sync_suppressions
+				  ADD CONSTRAINT note_sync_suppressions_workspace_note_fk
+				  FOREIGN KEY (workspace_id, note_id)
+				  REFERENCES notes(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "note_sync_suppressions",
+			name:  "note_sync_suppressions_workspace_target_fk",
+			definition: `
+				ALTER TABLE note_sync_suppressions
+				  ADD CONSTRAINT note_sync_suppressions_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+		{
+			table: "sync_import_tombstones",
+			name:  "sync_import_tombstones_workspace_target_fk",
+			definition: `
+				ALTER TABLE sync_import_tombstones
+				  ADD CONSTRAINT sync_import_tombstones_workspace_target_fk
+				  FOREIGN KEY (workspace_id, target_id)
+				  REFERENCES sync_targets(workspace_id, id)
+				  ON DELETE CASCADE
+				  DEFERRABLE INITIALLY DEFERRED
+			`,
+		},
+	} {
+		exists, err := postgresConstraintExists(ctx, db, fk.table, fk.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fk.definition); err != nil {
+			return fmt.Errorf("add %s: %w", fk.name, err)
+		}
+	}
+	return nil
+}
+
+func dropWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db postgresRunner) error {
+	for _, fk := range []struct {
+		child  string
+		parent string
+	}{
+		{child: "notes", parent: "folders"},
+		{child: "tasks", parent: "task_projects"},
+		{child: "note_project_links", parent: "task_projects"},
+		{child: "learning_roadmaps", parent: "task_projects"},
+	} {
+		if err := dropPostgresForeignKeysToTable(ctx, db, fk.child, fk.parent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addWorkspaceScopedDefaultChildForeignKeys(ctx context.Context, db postgresRunner) error {
+	for _, fk := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{
+			table: "notes",
+			name:  "notes_workspace_folder_fk",
+			definition: `
+				ALTER TABLE notes
+				  ADD CONSTRAINT notes_workspace_folder_fk
+				  FOREIGN KEY (workspace_id, folder_id)
+				  REFERENCES folders(workspace_id, id)
+			`,
+		},
+		{
+			table: "tasks",
+			name:  "tasks_workspace_project_fk",
+			definition: `
+				ALTER TABLE tasks
+				  ADD CONSTRAINT tasks_workspace_project_fk
+				  FOREIGN KEY (workspace_id, project_id)
+				  REFERENCES task_projects(workspace_id, id)
+				  ON DELETE RESTRICT
+			`,
+		},
+		{
+			table: "note_project_links",
+			name:  "note_project_links_workspace_project_fk",
+			definition: `
+				ALTER TABLE note_project_links
+				  ADD CONSTRAINT note_project_links_workspace_project_fk
+				  FOREIGN KEY (workspace_id, project_id)
+				  REFERENCES task_projects(workspace_id, id)
+				  ON DELETE CASCADE
+			`,
+		},
+		{
+			table: "learning_roadmaps",
+			name:  "learning_roadmaps_workspace_project_fk",
+			definition: `
+				ALTER TABLE learning_roadmaps
+				  ADD CONSTRAINT learning_roadmaps_workspace_project_fk
+				  FOREIGN KEY (workspace_id, project_id)
+				  REFERENCES task_projects(workspace_id, id)
+				  ON DELETE CASCADE
+			`,
+		},
+	} {
+		exists, err := postgresConstraintExists(ctx, db, fk.table, fk.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, fk.definition); err != nil {
+			return fmt.Errorf("add %s: %w", fk.name, err)
+		}
+	}
+	return nil
+}
+
+func replacePostgresPrimaryKey(ctx context.Context, db postgresRunner, table string, columns []string) error {
+	constraintName, existingColumns, err := postgresPrimaryKeyColumns(ctx, db, table)
+	if err != nil {
+		return err
+	}
+	if sameStringSlice(existingColumns, columns) {
+		return nil
+	}
+	if constraintName != "" {
+		if err := dropPostgresConstraintIfExists(ctx, db, table, constraintName); err != nil {
+			return err
+		}
+	}
+	columnList := make([]string, 0, len(columns))
+	for _, column := range columns {
+		columnList = append(columnList, postgresIdent(column))
+	}
+	stmt := fmt.Sprintf(
+		"ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)",
+		postgresIdent(table),
+		postgresIdent(table+"_pkey"),
+		strings.Join(columnList, ", "),
+	)
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("replace %s primary key: %w", table, err)
+	}
+	return nil
+}
+
+func dropPostgresForeignKeysToTable(ctx context.Context, db postgresRunner, childTable, parentTable string) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.conname
+		FROM pg_constraint c
+		JOIN pg_class child ON child.oid = c.conrelid
+		JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+		JOIN pg_class parent ON parent.oid = c.confrelid
+		JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+		WHERE child_ns.nspname = current_schema()
+			AND parent_ns.nspname = current_schema()
+			AND child.relname = $1
+			AND parent.relname = $2
+			AND c.contype = 'f'
+	`, childTable, parentTable)
+	if err != nil {
+		return fmt.Errorf("inspect foreign keys from %s to %s: %w", childTable, parentTable, err)
+	}
+	defer rows.Close()
+
+	var constraints []string
+	for rows.Next() {
+		var constraint string
+		if err := rows.Scan(&constraint); err != nil {
+			return err
+		}
+		constraints = append(constraints, constraint)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, constraint := range constraints {
+		if err := dropPostgresConstraintIfExists(ctx, db, childTable, constraint); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dropPostgresConstraintIfExists(ctx context.Context, db postgresRunner, table, constraint string) error {
+	stmt := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", postgresIdent(table), postgresIdent(constraint))
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("drop %s.%s constraint: %w", table, constraint, err)
+	}
+	return nil
+}
+
+func postgresPrimaryKeyColumns(ctx context.Context, db postgresRunner, table string) (string, []string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.conname, a.attname
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		JOIN unnest(c.conkey) WITH ORDINALITY AS cols(attnum, ord) ON true
+		JOIN pg_attribute a ON a.attrelid = rel.oid AND a.attnum = cols.attnum
+		WHERE n.nspname = current_schema()
+			AND rel.relname = $1
+			AND c.contype = 'p'
+		ORDER BY cols.ord
+	`, table)
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect %s primary key: %w", table, err)
+	}
+	defer rows.Close()
+
+	var constraintName string
+	var columns []string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&constraintName, &column); err != nil {
+			return "", nil, err
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	return constraintName, columns, nil
+}
+
+func postgresPrimaryKeyMatches(ctx context.Context, db postgresRunner, table string, want []string) (bool, error) {
+	_, columns, err := postgresPrimaryKeyColumns(ctx, db, table)
+	if err != nil {
+		return false, err
+	}
+	return sameStringSlice(columns, want), nil
+}
+
+func setPostgresColumnNotNull(ctx context.Context, db postgresRunner, table, column string) error {
+	nullable, err := postgresColumnIsNullable(ctx, db, table, column)
+	if err != nil {
+		return err
+	}
+	if !nullable {
+		return nil
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL", postgresIdent(table), postgresIdent(column))
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("set %s.%s not null: %w", table, column, err)
+	}
+	return nil
+}
+
+func addWorkspaceCompositeKey(ctx context.Context, db postgresRunner, table string) error {
+	hasID, err := postgresColumnExists(ctx, db, table, "id")
+	if err != nil {
+		return err
+	}
+	if !hasID {
+		return nil
+	}
+	indexName := table + "_workspace_id_id_idx"
+	stmt := fmt.Sprintf(
+		"CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (workspace_id, id)",
+		postgresIdent(indexName),
+		postgresIdent(table),
+	)
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("ensure %s(workspace_id,id) key: %w", table, err)
+	}
+	return nil
+}
+
+func postgresTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.tables
+			WHERE table_schema = current_schema()
+				AND table_name = $1
+		)
+	`, table).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect postgres table %s: %w", table, err)
+	}
+	return exists, nil
+}
+
+func postgresColumnExists(ctx context.Context, db postgresRunner, table, column string) (bool, error) {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_schema = current_schema()
+				AND table_name = $1
+				AND column_name = $2
+		)
+	`, table, column).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect postgres column %s.%s: %w", table, column, err)
+	}
+	return exists, nil
+}
+
+func postgresColumnIsNullable(ctx context.Context, db postgresRunner, table, column string) (bool, error) {
+	var isNullable string
+	if err := db.QueryRowContext(ctx, `
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+			AND table_name = $1
+			AND column_name = $2
+	`, table, column).Scan(&isNullable); err != nil {
+		return false, fmt.Errorf("inspect postgres column nullability %s.%s: %w", table, column, err)
+	}
+	return isNullable == "YES", nil
+}
+
+func postgresConstraintExists(ctx context.Context, db postgresRunner, table, constraint string) (bool, error) {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_constraint c
+			JOIN pg_class rel ON rel.oid = c.conrelid
+			JOIN pg_namespace n ON n.oid = rel.relnamespace
+			WHERE n.nspname = current_schema()
+				AND rel.relname = $1
+				AND c.conname = $2
+		)
+	`, table, constraint).Scan(&exists); err != nil {
+		return false, fmt.Errorf("inspect postgres constraint %s.%s: %w", table, constraint, err)
+	}
+	return exists, nil
+}
+
+func postgresIdent(name string) string {
+	if strings.ContainsAny(name, "\x00\"") {
+		panic(errors.New("invalid postgres identifier"))
+	}
+	return `"` + name + `"`
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

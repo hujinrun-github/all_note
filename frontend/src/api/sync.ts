@@ -28,7 +28,11 @@ export interface SaveSyncTargetInput {
   is_default?: boolean
 }
 
-export type SyncStateStatus = 'synced' | 'pending' | 'failed' | 'external_deleted'
+export type SyncStateStatus =
+  | 'synced'
+  | 'pending'
+  | 'failed'
+  | 'external_deleted'
 
 export interface SyncState {
   note_id: string
@@ -156,12 +160,19 @@ export async function getSyncTargets(): Promise<SyncTarget[]> {
   return res.data.targets
 }
 
-export async function listLocalDirectories(path?: string): Promise<LocalDirectoryList> {
-  const res = await api.get<{ directory: LocalDirectoryList }>('/api/system/directories', path ? { path } : undefined)
+export async function listLocalDirectories(
+  path?: string
+): Promise<LocalDirectoryList> {
+  const res = await api.get<{ directory: LocalDirectoryList }>(
+    '/api/system/directories',
+    path ? { path } : undefined
+  )
   return res.data.directory
 }
 
-export async function saveSyncTarget(input: SaveSyncTargetInput): Promise<SyncTarget> {
+export async function saveSyncTarget(
+  input: SaveSyncTargetInput
+): Promise<SyncTarget> {
   const { id } = input
   const body = syncTargetPayload(input)
   const res = id
@@ -174,7 +185,9 @@ export async function deleteSyncTarget(targetID: string): Promise<void> {
   await api.del(`/api/sync/targets/${encodeURIComponent(targetID)}`)
 }
 
-export async function testObsidianTarget(input: SaveSyncTargetInput): Promise<void> {
+export async function testObsidianTarget(
+  input: SaveSyncTargetInput
+): Promise<void> {
   const body = {
     name: input.name,
     vault_path: input.vault_path,
@@ -185,130 +198,212 @@ export async function testObsidianTarget(input: SaveSyncTargetInput): Promise<vo
   await api.post<{ ok: boolean }>('/api/sync/obsidian/test', body)
 }
 
-export async function testNotionTarget(input: SaveSyncTargetInput): Promise<void> {
-  await api.post<{ ok: boolean }>('/api/sync/notion/test', syncTargetPayload(input))
+export async function testNotionTarget(
+  input: SaveSyncTargetInput
+): Promise<void> {
+  const body = syncTargetPayload(input) as ReturnType<
+    typeof syncTargetPayload
+  > & { id?: string }
+  if (input.id) {
+    body.id = input.id
+  }
+  await api.post<{ ok: boolean }>('/api/sync/notion/test', body)
 }
 
 export async function syncObsidianNote(id: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/notes/${encodeURIComponent(id)}`)
+  const res = await api.post<{ item: SyncResultItem }>(
+    `/api/sync/obsidian/notes/${encodeURIComponent(id)}`
+  )
   return res.data.item
 }
 
-export async function getNoteSyncBinding(id: string): Promise<NoteSyncBindingResponse> {
-  const res = await api.get<NoteSyncBindingResponse>(`/api/notes/${encodeURIComponent(id)}/sync-binding`)
+export async function getNoteSyncBinding(
+  id: string
+): Promise<NoteSyncBindingResponse> {
+  const res = await api.get<NoteSyncBindingResponse>(
+    `/api/notes/${encodeURIComponent(id)}/sync-binding`
+  )
   return res.data
 }
 
-export async function putNoteSyncBinding(id: string, payload: SaveNoteSyncBindingRequest): Promise<SaveNoteSyncBindingResponse> {
-  const res = await api.put<SaveNoteSyncBindingResponse>(`/api/notes/${encodeURIComponent(id)}/sync-binding`, payload)
+export async function putNoteSyncBinding(
+  id: string,
+  payload: SaveNoteSyncBindingRequest
+): Promise<SaveNoteSyncBindingResponse> {
+  const res = await api.put<SaveNoteSyncBindingResponse>(
+    `/api/notes/${encodeURIComponent(id)}/sync-binding`,
+    payload
+  )
   return res.data
 }
 
-export async function deleteNoteSyncBinding(id: string, payload: DeleteNoteSyncBindingRequest): Promise<void> {
+export async function deleteNoteSyncBinding(
+  id: string,
+  payload: DeleteNoteSyncBindingRequest
+): Promise<void> {
   await api.del(`/api/notes/${encodeURIComponent(id)}/sync-binding`, payload)
 }
 
 export async function syncNote(id: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/notes/${encodeURIComponent(id)}`)
+  const res = await api.post<{ item: SyncResultItem }>(
+    `/api/sync/notes/${encodeURIComponent(id)}`
+  )
   return res.data.item
 }
 
 export async function pushTarget(targetID: string): Promise<SyncBatchResult> {
-  const res = await api.post<{ result: SyncBatchResult }>(`/api/sync/targets/${encodeURIComponent(targetID)}/push`)
+  const res = await api.post<{ result: SyncBatchResult }>(
+    `/api/sync/targets/${encodeURIComponent(targetID)}/push`
+  )
   return res.data.result
 }
 
 export async function pullTarget(targetID: string): Promise<TargetSyncResult> {
-  const res = await api.post<{ result: TargetSyncResult }>(`/api/sync/targets/${encodeURIComponent(targetID)}/pull`)
+  const res = await api.post<{ result: TargetSyncResult }>(
+    `/api/sync/targets/${encodeURIComponent(targetID)}/pull`
+  )
   return res.data.result
 }
 
-export async function bidirectionalTarget(targetID: string): Promise<TargetSyncResult> {
-  const res = await api.post<{ result: TargetSyncResult }>(`/api/sync/targets/${encodeURIComponent(targetID)}/bidirectional`)
+export async function bidirectionalTarget(
+  targetID: string
+): Promise<TargetSyncResult> {
+  const res = await api.post<{ result: TargetSyncResult }>(
+    `/api/sync/targets/${encodeURIComponent(targetID)}/bidirectional`
+  )
   return res.data.result
 }
 
-export async function syncObsidianFolder(folderID: string): Promise<SyncBatchResult> {
-  const res = await api.post<{ result: SyncBatchResult }>(`/api/sync/obsidian/folders/${encodeURIComponent(folderID)}`)
+export async function syncObsidianFolder(
+  folderID: string
+): Promise<SyncBatchResult> {
+  const res = await api.post<{ result: SyncBatchResult }>(
+    `/api/sync/obsidian/folders/${encodeURIComponent(folderID)}`
+  )
   return res.data.result
 }
 
 export async function syncObsidianAll(): Promise<SyncBatchResult> {
-  const res = await api.post<{ result: SyncBatchResult }>('/api/sync/obsidian/all')
+  const res = await api.post<{ result: SyncBatchResult }>(
+    '/api/sync/obsidian/all'
+  )
   return res.data.result
 }
 
 export async function syncObsidianPull(): Promise<ObsidianBidirectionalResult> {
-  const res = await api.post<{ result: ObsidianBidirectionalResult }>('/api/sync/obsidian/pull')
+  const res = await api.post<{ result: ObsidianBidirectionalResult }>(
+    '/api/sync/obsidian/pull'
+  )
   return res.data.result
 }
 
 export async function syncObsidianBidirectional(): Promise<ObsidianBidirectionalResult> {
-  const res = await api.post<{ result: ObsidianBidirectionalResult }>('/api/sync/obsidian/bidirectional')
+  const res = await api.post<{ result: ObsidianBidirectionalResult }>(
+    '/api/sync/obsidian/bidirectional'
+  )
   return res.data.result
 }
 
 export async function syncNotionAll(): Promise<SyncBatchResult> {
-  const res = await api.post<{ result: SyncBatchResult }>('/api/sync/notion/all')
+  const res = await api.post<{ result: SyncBatchResult }>(
+    '/api/sync/notion/all'
+  )
   return res.data.result
 }
 
 export async function syncNotionPull(): Promise<NotionBidirectionalResult> {
-  const res = await api.post<{ result: NotionBidirectionalResult }>('/api/sync/notion/pull')
+  const res = await api.post<{ result: NotionBidirectionalResult }>(
+    '/api/sync/notion/pull'
+  )
   return res.data.result
 }
 
 export async function syncNotionBidirectional(): Promise<NotionBidirectionalResult> {
-  const res = await api.post<{ result: NotionBidirectionalResult }>('/api/sync/notion/bidirectional')
+  const res = await api.post<{ result: NotionBidirectionalResult }>(
+    '/api/sync/notion/bidirectional'
+  )
   return res.data.result
 }
 
 export async function getObsidianDeletions(): Promise<ExternalDeletedNote[]> {
-  const res = await api.get<{ items: ExternalDeletedNote[] }>('/api/sync/obsidian/deletions')
+  const res = await api.get<{ items: ExternalDeletedNote[] }>(
+    '/api/sync/obsidian/deletions'
+  )
   return res.data.items
 }
 
 export async function getNotionDeletions(): Promise<ExternalDeletedNote[]> {
-  const res = await api.get<{ items: ExternalDeletedNote[] }>('/api/sync/notion/deletions')
+  const res = await api.get<{ items: ExternalDeletedNote[] }>(
+    '/api/sync/notion/deletions'
+  )
   return res.data.items
 }
 
-export async function getTargetDeletions(targetID: string): Promise<ExternalDeletedNote[]> {
-  const res = await api.get<{ items: ExternalDeletedNote[] }>(`/api/sync/targets/${encodeURIComponent(targetID)}/deletions`)
+export async function getTargetDeletions(
+  targetID: string
+): Promise<ExternalDeletedNote[]> {
+  const res = await api.get<{ items: ExternalDeletedNote[] }>(
+    `/api/sync/targets/${encodeURIComponent(targetID)}/deletions`
+  )
   return res.data.items
 }
 
 export async function confirmObsidianDeletion(noteID: string): Promise<void> {
-  await api.post(`/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/confirm`)
+  await api.post(
+    `/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/confirm`
+  )
 }
 
 export async function confirmNotionDeletion(noteID: string): Promise<void> {
-  await api.post(`/api/sync/notion/deletions/${encodeURIComponent(noteID)}/confirm`)
+  await api.post(
+    `/api/sync/notion/deletions/${encodeURIComponent(noteID)}/confirm`
+  )
 }
 
-export async function confirmTargetDeletion(targetID: string, noteID: string): Promise<void> {
-  await api.post(`/api/sync/targets/${encodeURIComponent(targetID)}/deletions/${encodeURIComponent(noteID)}/confirm`)
+export async function confirmTargetDeletion(
+  targetID: string,
+  noteID: string
+): Promise<void> {
+  await api.post(
+    `/api/sync/targets/${encodeURIComponent(targetID)}/deletions/${encodeURIComponent(noteID)}/confirm`
+  )
 }
 
-export async function restoreObsidianDeletion(noteID: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/restore`)
+export async function restoreObsidianDeletion(
+  noteID: string
+): Promise<SyncResultItem> {
+  const res = await api.post<{ item: SyncResultItem }>(
+    `/api/sync/obsidian/deletions/${encodeURIComponent(noteID)}/restore`
+  )
   return res.data.item
 }
 
-export async function restoreNotionDeletion(noteID: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/notion/deletions/${encodeURIComponent(noteID)}/restore`)
+export async function restoreNotionDeletion(
+  noteID: string
+): Promise<SyncResultItem> {
+  const res = await api.post<{ item: SyncResultItem }>(
+    `/api/sync/notion/deletions/${encodeURIComponent(noteID)}/restore`
+  )
   return res.data.item
 }
 
-export async function restoreTargetDeletion(targetID: string, noteID: string): Promise<SyncResultItem> {
-  const res = await api.post<{ item: SyncResultItem }>(`/api/sync/targets/${encodeURIComponent(targetID)}/deletions/${encodeURIComponent(noteID)}/restore`)
+export async function restoreTargetDeletion(
+  targetID: string,
+  noteID: string
+): Promise<SyncResultItem> {
+  const res = await api.post<{ item: SyncResultItem }>(
+    `/api/sync/targets/${encodeURIComponent(targetID)}/deletions/${encodeURIComponent(noteID)}/restore`
+  )
   return res.data.item
 }
 
-export async function getNoteSyncState(id: string, target?: SyncTargetType): Promise<SyncState | null> {
+export async function getNoteSyncState(
+  id: string,
+  target?: SyncTargetType
+): Promise<SyncState | null> {
   const res = await api.get<{ state: SyncState | null }>(
     `/api/notes/${encodeURIComponent(id)}/sync-state`,
-    target ? { target } : undefined,
+    target ? { target } : undefined
   )
   return res.data.state
 }

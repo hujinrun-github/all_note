@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
@@ -14,8 +15,12 @@ type inboxRepository struct {
 }
 
 func (r inboxRepository) List(ctx context.Context, kind string, page, pageSize int) ([]model.InboxItem, int, error) {
-	where := "archived = 0 AND converted_to IS NULL"
-	args := []interface{}{}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	where := "workspace_id = ? AND archived = 0 AND converted_to IS NULL"
+	args := []interface{}{workspaceID}
 	if kind != "" && kind != "all" {
 		where += " AND kind = ?"
 		args = append(args, kind)
@@ -47,6 +52,10 @@ func (r inboxRepository) List(ctx context.Context, kind string, page, pageSize i
 }
 
 func (r inboxRepository) Create(ctx context.Context, item *model.InboxItem) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	item.ID = newID()
 	now := nowUnix()
 	item.CreatedAt = now
@@ -54,42 +63,65 @@ func (r inboxRepository) Create(ctx context.Context, item *model.InboxItem) erro
 	if item.Source == "" {
 		item.Source = "quick-capture"
 	}
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO inbox (id, kind, title, body, source, archived, converted_to, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, item.ID, item.Kind, item.Title, item.Body, item.Source, item.Archived, item.ConvertedTo, item.CreatedAt, item.UpdatedAt)
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO inbox (id, kind, title, body, source, archived, converted_to, created_at, updated_at, workspace_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, item.ID, item.Kind, item.Title, item.Body, item.Source, item.Archived, item.ConvertedTo, item.CreatedAt, item.UpdatedAt, workspaceID)
 	return err
 }
 
 func (r inboxRepository) GetByID(ctx context.Context, id string) (*model.InboxItem, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return scanSQLiteInboxItem(r.db.QueryRowContext(ctx, `
 		SELECT id, kind, title, body, source, archived, converted_to, created_at, updated_at
-		FROM inbox WHERE id = ?
-	`, id))
+		FROM inbox WHERE workspace_id = ? AND id = ?
+	`, workspaceID, id))
 }
 
 func (r inboxRepository) MarkConverted(ctx context.Context, id, convertedTo string) error {
-	_, err := r.db.ExecContext(ctx, "UPDATE inbox SET converted_to = ?, updated_at = ? WHERE id = ?", convertedTo, nowUnix(), id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, "UPDATE inbox SET converted_to = ?, updated_at = ? WHERE workspace_id = ? AND id = ? AND converted_to IS NULL", convertedTo, nowUnix(), workspaceID, id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected != 1 {
+		return sql.ErrNoRows
+	}
 	return err
 }
 
 func (r inboxRepository) Delete(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM inbox WHERE id = ?", id)
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, "DELETE FROM inbox WHERE workspace_id = ? AND id = ?", workspaceID, id)
 	return err
 }
 
 func (r inboxRepository) BatchArchive(ctx context.Context, ids []string) (int64, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
 	if len(ids) == 0 {
 		return 0, nil
 	}
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]interface{}, len(ids)+1)
+	args := make([]interface{}, len(ids)+2)
 	args[0] = nowUnix()
+	args[1] = workspaceID
 	for i, id := range ids {
-		args[i+1] = id
+		args[i+2] = id
 	}
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET archived = 1, updated_at = ? WHERE id IN (%s)", placeholders), args...)
+	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET archived = 1, updated_at = ? WHERE workspace_id = ? AND id IN (%s)", placeholders), args...)
 	if err != nil {
 		return 0, err
 	}
@@ -97,16 +129,22 @@ func (r inboxRepository) BatchArchive(ctx context.Context, ids []string) (int64,
 }
 
 func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return 0, err
+	}
 	if len(ids) == 0 {
 		return 0, nil
 	}
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]interface{}, len(ids))
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, workspaceID)
 	for i, id := range ids {
-		args[i] = id
+		_ = i
+		args = append(args, id)
 	}
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM inbox WHERE id IN (%s)", placeholders), args...)
+	result, err := r.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM inbox WHERE workspace_id = ? AND id IN (%s)", placeholders), args...)
 	if err != nil {
 		return 0, err
 	}

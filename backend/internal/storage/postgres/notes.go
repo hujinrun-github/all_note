@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/lib/pq"
@@ -24,21 +25,25 @@ type noteRepository struct {
 }
 
 func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]model.Note, int, error) {
-	var where []string
-	args := []interface{}{}
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	where := []string{"n.workspace_id = $1"}
+	args := []interface{}{workspaceID}
 
 	if strings.TrimSpace(filter.FolderID) != "" {
-		where = append(where, "n.folder_id = $1")
+		where = append(where, fmt.Sprintf("n.folder_id = %s", pgPlaceholder(len(args)+1)))
 		args = append(args, filter.FolderID)
 	}
 	if filter.ProjectID != "" {
 		where = append(where,
-			`EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id AND npl.project_id = $`+strconv.Itoa(len(args)+1)+`)`)
+			`EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.workspace_id = n.workspace_id AND npl.note_id = n.id AND npl.project_id = $`+strconv.Itoa(len(args)+1)+`)`)
 		args = append(args, filter.ProjectID)
 	}
 	if filter.Unassigned {
 		where = append(where,
-			`NOT EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.note_id = n.id)`)
+			`NOT EXISTS (SELECT 1 FROM note_project_links npl WHERE npl.workspace_id = n.workspace_id AND npl.note_id = n.id)`)
 	}
 
 	whereClause := "1=1"
@@ -92,7 +97,7 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 	for i, n := range notes {
 		noteIDs[i] = n.ID
 	}
-	projectsMap, err := getNotesProjects(ctx, r.db, noteIDs)
+	projectsMap, err := getNotesProjects(ctx, r.db, workspaceID, noteIDs)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -104,17 +109,21 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 }
 
 func (r noteRepository) GetByID(ctx context.Context, id string) (*model.Note, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
-		FROM notes WHERE id = $1
-	`, id)
+		FROM notes WHERE workspace_id = $1 AND id = $2
+	`, workspaceID, id)
 	note, err := scanPostgresNote(row)
 	if err != nil {
 		return nil, err
 	}
 
 	// Load projects for this note.
-	projectsMap, err := getNotesProjects(ctx, r.db, []string{note.ID})
+	projectsMap, err := getNotesProjects(ctx, r.db, workspaceID, []string{note.ID})
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +133,10 @@ func (r noteRepository) GetByID(ctx context.Context, id string) (*model.Note, er
 }
 
 func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest) (*model.Note, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	note := &model.Note{
 		ID:       newID(),
 		Title:    req.Title,
@@ -133,11 +146,11 @@ func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest
 	}
 	// Use a single transaction for note insert + search index + project links
 	if err := r.withTx(ctx, func(tx *sql.Tx) error {
-		if err := createNoteInTx(ctx, tx, note); err != nil {
+		if err := createNoteInTx(ctx, tx, workspaceID, note); err != nil {
 			return err
 		}
 		if len(req.ProjectIDs) > 0 {
-			if err := setNoteProjectLinks(ctx, tx, note.ID, req.ProjectIDs); err != nil {
+			if err := setNoteProjectLinks(ctx, tx, workspaceID, note.ID, req.ProjectIDs); err != nil {
 				return fmt.Errorf("insert project links: %w", err)
 			}
 		}
@@ -149,7 +162,7 @@ func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest
 }
 
 // createNoteInTx inserts a note and its search_index entry within a transaction.
-func createNoteInTx(ctx context.Context, tx *sql.Tx, note *model.Note) error {
+func createNoteInTx(ctx context.Context, tx *sql.Tx, workspaceID string, note *model.Note) error {
 	if note == nil {
 		return fmt.Errorf("note is nil")
 	}
@@ -171,17 +184,21 @@ func createNoteInTx(ctx context.Context, tx *sql.Tx, note *model.Note) error {
 	}
 	note.Tags = tagsArrayToJSONString(tags)
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5::text[], $6, $7)`,
+		`INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at, workspace_id)
+         VALUES ($1, $2, $3, $4, $5::text[], $6, $7, $8)`,
 		note.ID, note.Title, note.Body, note.FolderID,
-		pq.Array(tags), unixToTime(note.CreatedAt), unixToTime(note.UpdatedAt))
+		pq.Array(tags), unixToTime(note.CreatedAt), unixToTime(note.UpdatedAt), workspaceID)
 	if err != nil {
 		return fmt.Errorf("insert note: %w", err)
 	}
-	return upsertNoteSearchIndex(ctx, tx, note, tags)
+	return upsertNoteSearchIndex(ctx, tx, workspaceID, note, tags)
 }
 
 func (r noteRepository) CreateWithID(ctx context.Context, note *model.Note) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	if note == nil {
 		return fmt.Errorf("note is nil")
 	}
@@ -198,11 +215,15 @@ func (r noteRepository) CreateWithID(ctx context.Context, note *model.Note) erro
 		note.UpdatedAt = nowUnix()
 	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		return createNoteInTx(ctx, tx, note)
+		return createNoteInTx(ctx, tx, workspaceID, note)
 	})
 }
 
 func (r noteRepository) Update(ctx context.Context, id string, req *model.UpdateNoteRequest) (*model.Note, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	updatedAt := time.Now().UTC()
 	builder := newPgSetBuilder(1)
 	builder.Add("updated_at", updatedAt)
@@ -225,17 +246,18 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 	}
 
 	clause, args := builder.ClauseAndArgs()
-	args = append(args, id)
-	idPlaceholder := pgPlaceholder(len(args))
+	args = append(args, id, workspaceID)
+	idPlaceholder := pgPlaceholder(len(args) - 1)
+	workspacePlaceholder := pgPlaceholder(len(args))
 
-	err := r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE notes SET %s WHERE id = %s", clause, idPlaceholder), args...); err != nil {
+	err = r.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE notes SET %s WHERE id = %s AND workspace_id = %s", clause, idPlaceholder, workspacePlaceholder), args...); err != nil {
 			return err
 		}
 		note, err := scanPostgresNote(tx.QueryRowContext(ctx, `
 			SELECT id, title, body, folder_id, tags, created_at, updated_at
-			FROM notes WHERE id = $1
-		`, id))
+			FROM notes WHERE workspace_id = $1 AND id = $2
+		`, workspaceID, id))
 		if err != nil {
 			return err
 		}
@@ -243,12 +265,12 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 		if err != nil {
 			return err
 		}
-		if err := upsertNoteSearchIndex(ctx, tx, note, tags); err != nil {
+		if err := upsertNoteSearchIndex(ctx, tx, workspaceID, note, tags); err != nil {
 			return err
 		}
 		// Merge project links if provided.
 		if req.ProjectIDs != nil {
-			if err := setNoteProjectLinks(ctx, tx, id, *req.ProjectIDs); err != nil {
+			if err := setNoteProjectLinks(ctx, tx, workspaceID, id, *req.ProjectIDs); err != nil {
 				return fmt.Errorf("update project links: %w", err)
 			}
 		}
@@ -261,20 +283,28 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 }
 
 func (r noteRepository) Delete(ctx context.Context, id string) error {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM notes WHERE id = $1`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM notes WHERE workspace_id = $1 AND id = $2`, workspaceID, id); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE entity_type = 'note' AND entity_id = $1`, id)
+		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'note' AND entity_id = $2`, workspaceID, id)
 		return err
 	})
 }
 
 func (r noteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
-		FROM notes ORDER BY updated_at DESC
-	`)
+		FROM notes WHERE workspace_id = $1 ORDER BY updated_at DESC
+	`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -283,10 +313,14 @@ func (r noteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
 }
 
 func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
-		FROM notes ORDER BY updated_at DESC LIMIT $1
-	`, limit)
+		FROM notes WHERE workspace_id = $1 ORDER BY updated_at DESC LIMIT $2
+	`, workspaceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +336,7 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 	for i, n := range notes {
 		noteIDs[i] = n.ID
 	}
-	projectsMap, err := getNotesProjects(ctx, r.db, noteIDs)
+	projectsMap, err := getNotesProjects(ctx, r.db, workspaceID, noteIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -314,15 +348,19 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 }
 
 func (r noteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []string) (map[string][]model.NoteRef, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(projectIDs) == 0 {
 		return map[string][]model.NoteRef{}, nil
 	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT n.id, n.title, npl.project_id
 		 FROM notes n
-		 JOIN note_project_links npl ON n.id = npl.note_id
-		 WHERE npl.project_id = ANY($1::text[])
-		 ORDER BY n.updated_at DESC`, pq.Array(projectIDs))
+		 JOIN note_project_links npl ON n.workspace_id = npl.workspace_id AND n.id = npl.note_id
+		 WHERE n.workspace_id = $1 AND npl.project_id = ANY($2::text[])
+		 ORDER BY n.updated_at DESC`, workspaceID, pq.Array(projectIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -397,51 +435,53 @@ func scanPostgresNotes(rows *sql.Rows) ([]model.Note, error) {
 	return notes, rows.Err()
 }
 
-func upsertNoteSearchIndex(ctx context.Context, tx *sql.Tx, note *model.Note, tags []string) error {
+func upsertNoteSearchIndex(ctx context.Context, tx *sql.Tx, workspaceID string, note *model.Note, tags []string) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO search_index (entity_type, entity_id, title, content, tags, updated_at, search_vector)
+		INSERT INTO search_index (workspace_id, entity_type, entity_id, title, content, tags, updated_at, search_vector)
 		VALUES (
-			'note',
 			$1,
+			'note',
 			$2,
 			$3,
-			$4::text[],
-			$5,
-			to_tsvector('simple', coalesce($2, '') || ' ' || coalesce($3, '') || ' ' || coalesce(array_to_string($4::text[], ' '), ''))
+			$4,
+			$5::text[],
+			$6,
+			to_tsvector('simple', coalesce($3, '') || ' ' || coalesce($4, '') || ' ' || coalesce(array_to_string($5::text[], ' '), ''))
 		)
 		ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+			workspace_id = excluded.workspace_id,
 			title = excluded.title,
 			content = excluded.content,
 			tags = excluded.tags,
 			updated_at = excluded.updated_at,
 			search_vector = excluded.search_vector
-	`, note.ID, note.Title, note.Body, pq.Array(tags), unixToTime(note.UpdatedAt))
+	`, workspaceID, note.ID, note.Title, note.Body, pq.Array(tags), unixToTime(note.UpdatedAt))
 	return err
 }
 
 // setNoteProjectLinks merges project links for a note using merge strategy.
 // nil projectIDs = no-op, empty = delete all, non-empty = merge.
-func setNoteProjectLinks(ctx context.Context, runner postgresRunner, noteID string, projectIDs []string) error {
+func setNoteProjectLinks(ctx context.Context, runner postgresRunner, workspaceID string, noteID string, projectIDs []string) error {
 	if projectIDs == nil {
 		return nil
 	}
 	if len(projectIDs) == 0 {
 		_, err := runner.ExecContext(ctx,
-			`DELETE FROM note_project_links WHERE note_id = $1`, noteID)
+			`DELETE FROM note_project_links WHERE workspace_id = $1 AND note_id = $2`, workspaceID, noteID)
 		return err
 	}
 	// Delete links not in the new set
 	_, err := runner.ExecContext(ctx,
-		`DELETE FROM note_project_links WHERE note_id = $1 AND project_id != ALL($2::text[])`,
-		noteID, pq.Array(projectIDs))
+		`DELETE FROM note_project_links WHERE workspace_id = $1 AND note_id = $2 AND project_id != ALL($3::text[])`,
+		workspaceID, noteID, pq.Array(projectIDs))
 	if err != nil {
 		return err
 	}
 	// Insert new links (ON CONFLICT DO NOTHING keeps original created_at)
 	for _, pid := range projectIDs {
 		_, err := runner.ExecContext(ctx,
-			`INSERT INTO note_project_links (note_id, project_id)
-			 VALUES ($1, $2) ON CONFLICT DO NOTHING`, noteID, pid)
+			`INSERT INTO note_project_links (workspace_id, note_id, project_id)
+			 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, workspaceID, noteID, pid)
 		if err != nil {
 			return err
 		}
@@ -450,16 +490,16 @@ func setNoteProjectLinks(ctx context.Context, runner postgresRunner, noteID stri
 }
 
 // getNotesProjects fetches project info for a batch of note IDs.
-func getNotesProjects(ctx context.Context, runner postgresRunner, noteIDs []string) (map[string][]model.NoteProject, error) {
+func getNotesProjects(ctx context.Context, runner postgresRunner, workspaceID string, noteIDs []string) (map[string][]model.NoteProject, error) {
 	if len(noteIDs) == 0 {
 		return nil, nil
 	}
 	rows, err := runner.QueryContext(ctx,
 		`SELECT npl.note_id, tp.id, tp.name, tp.type
 		 FROM note_project_links npl
-		 JOIN task_projects tp ON tp.id = npl.project_id
-		 WHERE npl.note_id = ANY($1::text[])
-		 ORDER BY tp.name ASC`, pq.Array(noteIDs))
+		 JOIN task_projects tp ON tp.workspace_id = npl.workspace_id AND tp.id = npl.project_id
+		 WHERE npl.workspace_id = $1 AND npl.note_id = ANY($2::text[])
+		 ORDER BY tp.name ASC`, workspaceID, pq.Array(noteIDs))
 	if err != nil {
 		return nil, err
 	}

@@ -69,6 +69,71 @@ func TestNotionClientQueryDataSourceSendsHeadersAndPaginates(t *testing.T) {
 	}
 }
 
+func TestNotionClientQueryDataSourceResolvesDatabaseID(t *testing.T) {
+	requests := make([]string, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/data_sources/database-123/query":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Could not find database with ID: database-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/databases/database-123":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data_sources": []map[string]any{{"id": "data-source-456", "name": "Default"}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/data_sources/data-source-456/query":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results":  []map[string]any{{"id": "page-1", "url": "https://notion.so/page-1"}},
+				"has_more": false,
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := newNotionHTTPClient("secret-token", server.URL)
+	pages, err := client.QueryDataSource("database-123")
+	if err != nil {
+		t.Fatalf("query data source: %v", err)
+	}
+	if len(pages) != 1 || pages[0].ID != "page-1" {
+		t.Fatalf("pages = %#v", pages)
+	}
+	if strings.Join(requests, ",") != "POST /v1/data_sources/database-123/query,GET /v1/databases/database-123,POST /v1/data_sources/data-source-456/query" {
+		t.Fatalf("requests = %#v", requests)
+	}
+}
+
+func TestNotionClientQueryDataSourceReportsPageIDInsteadOfDatabaseID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/data_sources/page-123/query":
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Could not find database with ID: page-123"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/databases/page-123":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"message": "Provided database_id page-123 is a page, not a database. Use the pages API instead, or pass the ID of the database itself.",
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := newNotionHTTPClient("secret-token", server.URL)
+	_, err := client.QueryDataSource("page-123")
+	if err == nil {
+		t.Fatal("expected page id error")
+	}
+	if !strings.Contains(err.Error(), "is a page, not a database") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestNotionClientRetriesRateLimitedRequests(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

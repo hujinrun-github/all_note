@@ -11,6 +11,8 @@ const Calendar = lazy(() => import('./routes/Calendar'))
 const Inbox = lazy(() => import('./routes/Inbox'))
 const Search = lazy(() => import('./routes/Search'))
 const DailySummary = lazy(() => import('./routes/DailySummary'))
+const AccountAdmin = lazy(() => import('./routes/AccountAdmin'))
+const ChangePassword = lazy(() => import('./routes/ChangePassword'))
 
 export const router = createBrowserRouter(
   [
@@ -27,6 +29,8 @@ export const router = createBrowserRouter(
         { path: 'inbox', element: <Inbox /> },
         { path: 'search', element: <Search /> },
         { path: 'summary', element: <DailySummary /> },
+        { path: 'admin/users', element: <AccountAdmin /> },
+        { path: 'change-password', element: <ChangePassword /> },
       ],
     },
   ],

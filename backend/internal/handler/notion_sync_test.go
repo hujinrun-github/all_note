@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
+	"github.com/hujinrun/flowspace/internal/storage"
 	_ "modernc.org/sqlite"
 )
 
@@ -94,7 +96,7 @@ func TestValidateSyncTargetRequestRejectsSaveObsidianWithoutPaths(t *testing.T) 
 	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets", bytes.NewBufferString(`{"name":"Local Vault"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	SaveSyncTarget(c)
+	SaveSyncTarget(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -117,7 +119,7 @@ func TestSaveSyncTargetDefaultsNewTargetToDefaultWhenOmitted(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	SaveSyncTarget(c)
+	SaveSyncTarget(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -131,6 +133,156 @@ func TestSaveSyncTargetDefaultsNewTargetToDefaultWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestSaveNotionTargetRedactsRawTokenInResponse(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	const rawToken = "ntn_unit_test_raw_token"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/sync/targets", bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\",\"token\":\"`+rawToken+`\",\"required_tags\":[\"sync\"]}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	SaveSyncTarget(handlerSyncTestStore{})(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), rawToken) {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Target model.SyncTarget `json:"target"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var responseConfig map[string]any
+	if err := json.Unmarshal([]byte(body.Data.Target.ConfigJSON), &responseConfig); err != nil {
+		t.Fatalf("decode response config: %v", err)
+	}
+	if _, ok := responseConfig["token"]; ok {
+		t.Fatalf("response config includes raw token: %v", responseConfig)
+	}
+	if responseConfig["token_set"] != true {
+		t.Fatalf("token_set = %v, want true", responseConfig["token_set"])
+	}
+	stored, err := repository.GetSyncTarget(body.Data.Target.ID)
+	if err != nil {
+		t.Fatalf("get stored target: %v", err)
+	}
+	if !strings.Contains(stored.ConfigJSON, rawToken) {
+		t.Fatalf("stored config did not keep raw token: %s", stored.ConfigJSON)
+	}
+}
+
+func TestPatchNotionTargetPreservesRawTokenWhenOmitted(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	const rawToken = "ntn_unit_test_existing_token"
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"` + rawToken + `","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\",\"title_property\":\"Title\",\"required_tags\":[\"sync\"]}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), rawToken) {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+	updated, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get updated target: %v", err)
+	}
+	var storedConfig map[string]any
+	if err := json.Unmarshal([]byte(updated.ConfigJSON), &storedConfig); err != nil {
+		t.Fatalf("decode stored config: %v", err)
+	}
+	if storedConfig["token"] != rawToken {
+		t.Fatalf("token = %v, want existing token", storedConfig["token"])
+	}
+	if storedConfig["title_property"] != "Title" {
+		t.Fatalf("title_property = %v", storedConfig["title_property"])
+	}
+	var body struct {
+		Data struct {
+			Target model.SyncTarget `json:"target"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var responseConfig map[string]any
+	if err := json.Unmarshal([]byte(body.Data.Target.ConfigJSON), &responseConfig); err != nil {
+		t.Fatalf("decode response config: %v", err)
+	}
+	if responseConfig["token_set"] != true {
+		t.Fatalf("token_set = %v, want true", responseConfig["token_set"])
+	}
+}
+
+func TestPatchNotionTargetOverwritesRawTokenWhenProvided(t *testing.T) {
+	openHandlerSyncTestDB(t)
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"ntn_unit_test_old_token","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: target.ID}}
+	c.Request = httptest.NewRequest(http.MethodPatch, "/sync/targets/"+target.ID, bytes.NewBufferString(`{
+		"type":"notion",
+		"name":"Personal Notion",
+		"config_json":"{\"data_source_id\":\"ds-123\",\"token\":\"ntn_unit_test_new_token\",\"required_tags\":[\"sync\"]}",
+		"enabled":true,
+		"auto_sync":false
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	updated, err := repository.GetSyncTarget(target.ID)
+	if err != nil {
+		t.Fatalf("get updated target: %v", err)
+	}
+	var storedConfig map[string]any
+	if err := json.Unmarshal([]byte(updated.ConfigJSON), &storedConfig); err != nil {
+		t.Fatalf("decode stored config: %v", err)
+	}
+	if storedConfig["token"] != "ntn_unit_test_new_token" {
+		t.Fatalf("token = %v, want new token", storedConfig["token"])
+	}
+	if strings.Contains(recorder.Body.String(), "ntn_unit_test_new_token") {
+		t.Fatalf("response leaked raw token: %s", recorder.Body.String())
+	}
+}
+
 func TestValidateSyncTargetRequestRejectsUpdateObsidianWithoutPaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -139,7 +291,7 @@ func TestValidateSyncTargetRequestRejectsUpdateObsidianWithoutPaths(t *testing.T
 	c.Request = httptest.NewRequest(http.MethodPut, "/sync/targets/target-1", bytes.NewBufferString(`{"name":"Local Vault"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	UpdateSyncTarget(c)
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -169,7 +321,7 @@ func TestPatchSyncTargetAllowsDisplayFieldsWhenUsed(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	UpdateSyncTarget(c)
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -205,7 +357,7 @@ func TestPatchSyncTargetRejectsObsidianIdentityChangeWhenUsed(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	UpdateSyncTarget(c)
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
 
 	assertTargetIdentityLocked(t, recorder)
 	unchanged, err := repository.GetSyncTarget(target.ID)
@@ -235,7 +387,7 @@ func TestPatchSyncTargetRejectsNotionDataSourceChangeWhenUsed(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	UpdateSyncTarget(c)
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
 
 	assertTargetIdentityLocked(t, recorder)
 	unchanged, err := repository.GetSyncTarget(target.ID)
@@ -264,7 +416,7 @@ func TestPatchSyncTargetRejectsIdentityChangeWhenUsedByState(t *testing.T) {
 	}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	UpdateSyncTarget(c)
+	UpdateSyncTarget(handlerSyncTestStore{})(c)
 
 	assertTargetIdentityLocked(t, recorder)
 }
@@ -280,7 +432,7 @@ func TestDeleteSyncTargetRejectsBoundTarget(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: target.ID}}
 	c.Request = httptest.NewRequest(http.MethodDelete, "/sync/targets/"+target.ID, nil)
 
-	DeleteSyncTarget(c)
+	DeleteSyncTarget(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusConflict, recorder.Body.String())
@@ -299,7 +451,7 @@ func TestDeleteSyncTargetDeletesUnusedTarget(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: target.ID}}
 	c.Request = httptest.NewRequest(http.MethodDelete, "/sync/targets/"+target.ID, nil)
 
-	DeleteSyncTarget(c)
+	DeleteSyncTarget(handlerSyncTestStore{})(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
@@ -340,8 +492,37 @@ func TestNotionTargetWithMockProviderForcesNotionEnabled(t *testing.T) {
 	}
 }
 
+func TestMergeTestNotionTargetConfigUsesSavedRawToken(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	const rawToken = "ntn_unit_test_saved_test_token"
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","token":"` + rawToken + `","required_tags":["sync"]}`
+	if err := store.Sync().SaveTarget(handlerSyncStoreTestContext(t), &target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	proposed := &model.SyncTarget{
+		ID:         target.ID,
+		Type:       "notion",
+		Name:       "Personal Notion",
+		ConfigJSON: `{"data_source_id":"ds-123","required_tags":["sync"]}`,
+		Enabled:    true,
+	}
+
+	if err := mergeTestNotionTargetConfig(handlerSyncStoreTestContext(t), store, proposed); err != nil {
+		t.Fatalf("merge test config: %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal([]byte(proposed.ConfigJSON), &config); err != nil {
+		t.Fatalf("decode proposed config: %v", err)
+	}
+	if config["token"] != rawToken {
+		t.Fatalf("token = %v, want saved raw token", config["token"])
+	}
+}
+
 func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	target := saveHandlerNotionTarget(t)
 	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
@@ -353,9 +534,9 @@ func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
 
-	SyncNotionNote(c)
+	SyncNotionNote(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -381,19 +562,62 @@ func TestSyncNotionNoteWithMockProviderPushesSingleLocalNote(t *testing.T) {
 	if state.Status != "synced" || state.ExternalID != "mock-created-"+note.ID {
 		t.Fatalf("state = %+v", state)
 	}
+	binding, err := store.Sync().GetBinding(handlerSyncStoreTestContext(t), note.ID)
+	if err != nil {
+		t.Fatalf("get sync binding: %v", err)
+	}
+	if binding.TargetID != target.ID {
+		t.Fatalf("binding target = %q, want %q", binding.TargetID, target.ID)
+	}
+}
+
+func TestSyncNotionNoteWithMockProviderDoesNotBindSkippedNote(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	t.Setenv("NOTION_PROVIDER", "mock")
+	target := saveHandlerNotionTarget(t)
+	target.ConfigJSON = `{"data_source_id":"ds-123","required_tags":["sync"]}`
+	if err := repository.SaveSyncTarget(&target); err != nil {
+		t.Fatalf("save target config: %v", err)
+	}
+	note := insertHandlerTaggedNoteForTest(t, "Skipped Notion", "Local body\n", `["later"]`)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: note.ID}}
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/notes/"+note.ID, nil)
+
+	SyncNotionNote(store)(c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Item model.SyncResultItem `json:"item"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.Item.Status != "skipped" {
+		t.Fatalf("item = %+v", body.Data.Item)
+	}
+	if _, err := store.Sync().GetBinding(handlerSyncStoreTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
+	}
 }
 
 func TestSyncNotionNoteMissingNoteReturnsNotFound(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	saveHandlerNotionTarget(t)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "id", Value: "missing-note"}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/missing-note", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/notes/missing-note", nil)
 
-	SyncNotionNote(c)
+	SyncNotionNote(store)(c)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
@@ -407,7 +631,7 @@ func TestSyncNotionNoteEmptyIDReturnsBadRequest(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: ""}}
 	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/notes/", nil)
 
-	SyncNotionNote(c)
+	SyncNotionNote(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -415,16 +639,16 @@ func TestSyncNotionNoteEmptyIDReturnsBadRequest(t *testing.T) {
 }
 
 func TestListNotionDeletionsReturnsExternalDeletedStates(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Deleted In Notion", "Body\n")
 	insertHandlerNotionExternalDeletedState(t, note.ID, target.ID)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/sync/notion/deletions", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodGet, "/sync/notion/deletions", nil)
 
-	ListNotionDeletions(c)
+	ListNotionDeletions(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -443,13 +667,13 @@ func TestListNotionDeletionsReturnsExternalDeletedStates(t *testing.T) {
 }
 
 func TestListNotionDeletionsWithoutTargetReturnsNotFound(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/sync/notion/deletions", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodGet, "/sync/notion/deletions", nil)
 
-	ListNotionDeletions(c)
+	ListNotionDeletions(store)(c)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
@@ -457,7 +681,7 @@ func TestListNotionDeletionsWithoutTargetReturnsNotFound(t *testing.T) {
 }
 
 func TestConfirmNotionDeletionDeletesFlowSpaceNoteAndState(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Confirm Notion Delete", "Body\n")
 	insertHandlerNotionExternalDeletedState(t, note.ID, target.ID)
@@ -465,23 +689,23 @@ func TestConfirmNotionDeletionDeletesFlowSpaceNoteAndState(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
 
-	ConfirmNotionDeletion(c)
+	ConfirmNotionDeletion(store)(c)
 
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d; body = %s", c.Writer.Status(), http.StatusNoContent, recorder.Body.String())
 	}
-	if _, err := repository.GetNoteByID(note.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Notes().GetByID(handlerSyncStoreTestContext(t), note.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("get note error = %v, want sql.ErrNoRows", err)
 	}
-	if _, err := repository.GetSyncState(note.ID, target.ID); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.Sync().GetState(t.Context(), note.ID, target.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("get sync state error = %v, want sql.ErrNoRows", err)
 	}
 }
 
 func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	t.Setenv("NOTION_PROVIDER", "mock")
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Restore Notion Delete", "Body\n")
@@ -490,9 +714,9 @@ func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/deletions/"+note.ID+"/restore", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/restore", nil)
 
-	RestoreNotionDeletion(c)
+	RestoreNotionDeletion(store)(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -508,7 +732,7 @@ func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
 	if body.Data.Item.Status != "synced" || body.Data.Item.ExternalID != "page-deleted" {
 		t.Fatalf("item = %+v", body.Data.Item)
 	}
-	state, err := repository.GetSyncState(note.ID, target.ID)
+	state, err := store.Sync().GetState(t.Context(), note.ID, target.ID)
 	if err != nil {
 		t.Fatalf("get sync state: %v", err)
 	}
@@ -517,8 +741,44 @@ func TestRestoreNotionDeletionWithMockProviderMarksStateSynced(t *testing.T) {
 	}
 }
 
+func TestRestoreNotionDeletionRejectsNonDeletedStateWithoutBinding(t *testing.T) {
+	store := openHandlerSyncStoreTestDB(t)
+	target := saveHandlerNotionTarget(t)
+	note := insertHandlerNoteForTest(t, "Restore Not Deleted", "Body\n")
+	now := int64(1700000000)
+	if err := repository.UpsertSyncState(&model.SyncState{
+		NoteID:        note.ID,
+		TargetID:      target.ID,
+		ExternalPath:  "notion:page-live",
+		ExternalID:    "page-live",
+		ExternalURL:   "https://www.notion.so/page-live",
+		ContentHash:   "content",
+		ExternalHash:  "external",
+		ExternalMTime: &now,
+		LastSyncedAt:  &now,
+		LastDirection: "push",
+		Status:        "synced",
+	}); err != nil {
+		t.Fatalf("upsert state: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/restore", nil)
+
+	RestoreNotionDeletion(store)(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if _, err := store.Sync().GetBinding(t.Context(), note.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("binding error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestConfirmNotionDeletionRejectsNonDeletedState(t *testing.T) {
-	openHandlerSyncTestDB(t)
+	store := openHandlerSyncStoreTestDB(t)
 	target := saveHandlerNotionTarget(t)
 	note := insertHandlerNoteForTest(t, "Not Deleted", "Body\n")
 	now := int64(1700000000)
@@ -541,9 +801,9 @@ func TestConfirmNotionDeletionRejectsNonDeletedState(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Params = gin.Params{{Key: "note_id", Value: note.ID}}
-	c.Request = httptest.NewRequest(http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
+	c.Request = handlerSyncStoreTestRequest(t, http.MethodPost, "/sync/notion/deletions/"+note.ID+"/confirm", nil)
 
-	ConfirmNotionDeletion(c)
+	ConfirmNotionDeletion(store)(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -591,7 +851,7 @@ func TestGetNoteSyncStateDefaultsToObsidianTarget(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-state", nil)
 
-	GetNoteSyncState(c)
+	GetNoteSyncState(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -653,7 +913,7 @@ func TestGetNoteSyncStateHonorsNotionTargetQuery(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: note.ID}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/notes/"+note.ID+"/sync-state?target=notion", nil)
 
-	GetNoteSyncState(c)
+	GetNoteSyncState(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
@@ -682,7 +942,7 @@ func TestGetNoteSyncStateRejectsUnsupportedTarget(t *testing.T) {
 	c.Params = gin.Params{{Key: "id", Value: "note-1"}}
 	c.Request = httptest.NewRequest(http.MethodGet, "/notes/note-1/sync-state?target=dropbox", nil)
 
-	GetNoteSyncState(c)
+	GetNoteSyncState(handlerSyncTestStore{})(c)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -802,8 +1062,8 @@ func assertTargetIdentityLocked(t *testing.T, recorder *httptest.ResponseRecorde
 	if body.Error.Code != "target_identity_locked" {
 		t.Fatalf("error code = %q, want target_identity_locked; body = %s", body.Error.Code, recorder.Body.String())
 	}
-	if !strings.Contains(body.Error.Message, "同步目标") {
-		t.Fatalf("message should be Chinese, got %q", body.Error.Message)
+	if !strings.Contains(body.Error.Message, "sync target identity is locked") {
+		t.Fatalf("message = %q, want identity locked", body.Error.Message)
 	}
 }
 
@@ -815,10 +1075,26 @@ func insertHandlerNoteForTest(t *testing.T, title, body string) model.Note {
 func insertHandlerTaggedNoteForTest(t *testing.T, title, body, tags string) model.Note {
 	t.Helper()
 	note := &model.Note{Title: title, Body: body, FolderID: "__uncategorized", Tags: tags}
-	if err := repository.CreateNote(note); err != nil {
+	if repository.DB != nil {
+		if err := repository.CreateNote(note); err != nil {
+			t.Fatalf("create note: %v", err)
+		}
+		return *note
+	}
+	store := repository.CurrentStore()
+	if store == nil {
+		t.Fatal("no handler test store is configured")
+	}
+	created, err := store.Notes().Create(handlerSyncStoreTestContext(t), &model.CreateNoteRequest{
+		Title:    title,
+		Body:     body,
+		FolderID: "__uncategorized",
+		Tags:     tags,
+	})
+	if err != nil {
 		t.Fatalf("create note: %v", err)
 	}
-	return *note
+	return *created
 }
 
 func insertHandlerNotionExternalDeletedState(t *testing.T, noteID, targetID string) {
@@ -839,4 +1115,73 @@ func insertHandlerNotionExternalDeletedState(t *testing.T, noteID, targetID stri
 	}); err != nil {
 		t.Fatalf("upsert external deleted state: %v", err)
 	}
+}
+
+type handlerSyncTestStore struct {
+	storage.Store
+}
+
+func (handlerSyncTestStore) Transact(ctx context.Context, fn func(storage.Store) error) error {
+	return fn(handlerSyncTestStore{})
+}
+
+func (handlerSyncTestStore) Sync() storage.SyncRepository {
+	return handlerSyncTestRepository{}
+}
+
+type handlerSyncTestRepository struct {
+	storage.SyncRepository
+}
+
+func (handlerSyncTestRepository) SaveTarget(ctx context.Context, target *model.SyncTarget) error {
+	return repository.SaveSyncTarget(target)
+}
+
+func (handlerSyncTestRepository) GetTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return repository.GetSyncTarget(targetID)
+}
+
+func (handlerSyncTestRepository) LockTarget(ctx context.Context, targetID string) (*model.SyncTarget, error) {
+	return repository.GetSyncTarget(targetID)
+}
+
+func (handlerSyncTestRepository) GetDefaultTarget(ctx context.Context, targetType string) (*model.SyncTarget, error) {
+	return repository.GetDefaultSyncTarget(targetType)
+}
+
+func (handlerSyncTestRepository) ListTargets(ctx context.Context) ([]model.SyncTarget, error) {
+	return repository.ListSyncTargets()
+}
+
+func (handlerSyncTestRepository) DeleteTarget(ctx context.Context, targetID string) error {
+	return repository.DeleteSyncTarget(targetID)
+}
+
+func (handlerSyncTestRepository) CountBindingsByTarget(ctx context.Context, targetID string) (int, error) {
+	return repository.CountSyncBindingsByTarget(targetID)
+}
+
+func (handlerSyncTestRepository) CountClaimsByTarget(ctx context.Context, targetID string) (int, error) {
+	return repository.CountSyncClaimsByTarget(targetID)
+}
+
+func (handlerSyncTestRepository) CountStatesByTarget(ctx context.Context, targetID string) (int, error) {
+	return repository.CountSyncStatesByTarget(targetID)
+}
+
+func (handlerSyncTestRepository) GetBinding(ctx context.Context, noteID string) (*model.NoteSyncBinding, error) {
+	var binding model.NoteSyncBinding
+	err := repository.DB.QueryRowContext(ctx, `
+		SELECT note_id, target_id, created_at, updated_at
+		FROM note_sync_bindings
+		WHERE note_id = ?
+	`, noteID).Scan(&binding.NoteID, &binding.TargetID, &binding.CreatedAt, &binding.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &binding, nil
+}
+
+func (handlerSyncTestRepository) GetState(ctx context.Context, noteID string, targetID string) (*model.SyncState, error) {
+	return repository.GetSyncState(noteID, targetID)
 }
