@@ -21,6 +21,12 @@ services:
       AI_API_KEY: ${AI_API_KEY:-}
       ARTICLE_SEARCH_API_KEY: ${ARTICLE_SEARCH_API_KEY:-}
       FLOWSPACE_NOTION_TOKEN: ${FLOWSPACE_NOTION_TOKEN:-}
+      FLOWSPACE_SESSION_SECRET: ${FLOWSPACE_SESSION_SECRET:-}
+      FLOWSPACE_ALLOWED_ORIGINS: ${FLOWSPACE_ALLOWED_ORIGINS:-}
+      FLOWSPACE_COOKIE_SECURE: ${FLOWSPACE_COOKIE_SECURE:-true}
+      FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL: ${FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL:-}
+      FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD: ${FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD:-}
+      FLOWSPACE_BOOTSTRAP_ADMIN_NAME: ${FLOWSPACE_BOOTSTRAP_ADMIN_NAME:-}
       TZ: ${TZ:-Asia/Shanghai}
     ports:
       - "${BACKEND_PORT:-4201}:4201"
@@ -35,6 +41,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.29-alpine}
         VITE_APP_BASE: ${VITE_APP_BASE:-/}
     image: flowspace-frontend:latest
     container_name: flowspace-frontend
