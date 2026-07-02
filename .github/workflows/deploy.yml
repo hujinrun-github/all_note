@@ -53,6 +53,10 @@ jobs:
             fi
           done
 
+          if printf '%s' "${FLOWSPACE_ALLOWED_ORIGINS:-}" | grep -Eq '(^|,)[[:space:]]*https?://[^/?#[:space:],]+/[[:space:]]*(,|$)'; then
+            echo "::notice title=Auth origin normalization::FLOWSPACE_ALLOWED_ORIGINS may include a root trailing slash; deploy will normalize it before writing .env."
+          fi
+
           exit "$missing"
 
       - name: Deploy via SSH
@@ -127,6 +131,20 @@ jobs:
             FRONTEND_PORT="${FRONTEND_PORT:-4200}"
             BACKEND_PORT="${BACKEND_PORT:-4201}"
             VITE_APP_BASE="${VITE_APP_BASE:-/}"
+
+            normalize_allowed_origins() {
+              printf '%s' "$1" | awk -F, 'BEGIN { OFS="," } {
+                for (i = 1; i <= NF; i++) {
+                  gsub(/^[[:space:]]+|[[:space:]]+$/, "", $i)
+                  if ($i ~ /^https?:\/\/[^\/?#[:space:],]+\/$/) {
+                    sub(/\/$/, "", $i)
+                  }
+                }
+                print
+              }'
+            }
+
+            FLOWSPACE_ALLOWED_ORIGINS="$(normalize_allowed_origins "${FLOWSPACE_ALLOWED_ORIGINS:-}")"
 
             {
               printf 'FLOWSPACE_DATABASE_URL=%s\n' "$FLOWSPACE_DATABASE_URL"

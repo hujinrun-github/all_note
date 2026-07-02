@@ -18,7 +18,7 @@ func Setup(cfg Config) *gin.Engine {
 	repository.SetStore(cfg.Store)
 
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS())
+	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(cfg.Auth.AllowedOrigins))
 
 	api := r.Group("/api")
 	{

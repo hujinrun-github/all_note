@@ -221,7 +221,6 @@ func TestLoadAuthConfigRejectsInvalidAllowedOrigins(t *testing.T) {
 		{name: "empty port", value: "https://flowspace.example.com:"},
 		{name: "port out of range", value: "https://flowspace.example.com:65536"},
 		{name: "path", value: "https://flowspace.example.com/path"},
-		{name: "trailing slash", value: "https://flowspace.example.com/"},
 		{name: "query", value: "https://flowspace.example.com?x=1"},
 		{name: "fragment", value: "https://flowspace.example.com#frag"},
 		{name: "userinfo", value: "https://user@flowspace.example.com"},
@@ -240,6 +239,28 @@ func TestLoadAuthConfigRejectsInvalidAllowedOrigins(t *testing.T) {
 				t.Fatalf("error = %q, want env var name", err.Error())
 			}
 		})
+	}
+}
+
+func TestLoadAuthConfigNormalizesRootSlashAllowedOrigins(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("FLOWSPACE_ALLOWED_ORIGINS", "http://all-note.jirunlab.site/,https://flowspace.example.com:443/")
+
+	cfg, err := LoadAuthConfig(EnvironmentTest)
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+	want := []string{
+		"http://all-note.jirunlab.site",
+		"https://flowspace.example.com:443",
+	}
+	if len(cfg.AllowedOrigins) != len(want) {
+		t.Fatalf("allowed origins = %#v, want %#v", cfg.AllowedOrigins, want)
+	}
+	for i := range want {
+		if cfg.AllowedOrigins[i] != want[i] {
+			t.Fatalf("allowed origins = %#v, want %#v", cfg.AllowedOrigins, want)
+		}
 	}
 }
 

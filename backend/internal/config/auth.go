@@ -153,10 +153,12 @@ func envAllowedOrigins(name string) ([]string, error) {
 	if len(origins) == 0 {
 		return nil, fmt.Errorf("%s must include at least one origin", name)
 	}
-	for _, origin := range origins {
-		if err := validateAllowedOrigin(origin); err != nil {
+	for i, origin := range origins {
+		normalized, err := normalizeAllowedOrigin(origin)
+		if err != nil {
 			return nil, fmt.Errorf("%s contains invalid origin %q: %w", name, origin, err)
 		}
+		origins[i] = normalized
 	}
 	return origins, nil
 }
@@ -175,29 +177,34 @@ func splitStrictCSV(name, value string) ([]string, error) {
 }
 
 func validateAllowedOrigin(origin string) error {
+	_, err := normalizeAllowedOrigin(origin)
+	return err
+}
+
+func normalizeAllowedOrigin(origin string) (string, error) {
 	if strings.Contains(origin, "*") {
-		return errors.New("wildcard origins are not allowed")
+		return "", errors.New("wildcard origins are not allowed")
 	}
 	parsed, err := url.Parse(origin)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !parsed.IsAbs() || parsed.Host == "" || parsed.Hostname() == "" {
-		return errors.New("origin must be an absolute URL with scheme and host")
+		return "", errors.New("origin must be an absolute URL with scheme and host")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("origin scheme must be http or https")
+		return "", errors.New("origin scheme must be http or https")
 	}
 	if !isValidOriginHost(parsed.Hostname()) {
-		return errors.New("origin host is malformed")
+		return "", errors.New("origin host is malformed")
 	}
-	if parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("origin must not include userinfo, path, query, or fragment")
+	if parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("origin must not include userinfo, path, query, or fragment")
 	}
 	if err := validateOriginPort(parsed.Host, parsed.Port()); err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	return parsed.Scheme + "://" + parsed.Host, nil
 }
 
 func isValidOriginHost(hostname string) bool {
