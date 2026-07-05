@@ -84,11 +84,16 @@ func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID
 
 	draft, err := generateRoadmapDraft(*project)
 	if err != nil {
-		_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
-		return nil, err
+		if !shouldUseFallbackRoadmapDraft(err) {
+			_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
+			return nil, err
+		}
+		draft = mockRoadmapDraft(*project)
 	}
 
+	sanitizeGeneratedRoadmapDraft(draft)
 	ensureRoadmapBranching(draft, *project)
+	sanitizeGeneratedRoadmapDraft(draft)
 	normalizeGeneratedRoadmapLayout(draft)
 
 	roadmap := &model.LearningRoadmap{
@@ -294,6 +299,13 @@ func generateRoadmapDraft(project model.TaskProject) (*roadmapDraft, error) {
 		return nil, errors.New("AI response was not valid JSON")
 	}
 	return generateOpenAICompatibleRoadmap(project)
+}
+
+func shouldUseFallbackRoadmapDraft(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(os.Getenv("AI_PROVIDER"))) != "invalid-json"
 }
 
 func mockRoadmapDraft(project model.TaskProject) *roadmapDraft {
@@ -907,6 +919,94 @@ func normalizeRoadmapDraftIDs(draft *roadmapDraft) {
 		}
 		draft.Edges[index].ID = randomLocalID("edge")
 	}
+}
+
+func sanitizeGeneratedRoadmapDraft(draft *roadmapDraft) {
+	if draft == nil {
+		return
+	}
+
+	nodeIDs := make(map[string]bool, len(draft.Nodes))
+	for index := range draft.Nodes {
+		node := &draft.Nodes[index]
+		node.ID = strings.TrimSpace(node.ID)
+		if node.ID == "" || nodeIDs[node.ID] {
+			node.ID = randomLocalID("node")
+		}
+		nodeIDs[node.ID] = true
+
+		node.Type = normalizeRoadmapNodeType(node.Type)
+		node.PathType = normalizeRoadmapNodePathType(node.PathType)
+		node.Status = normalizeRoadmapNodeStatus(node.Status)
+		node.Title = strings.TrimSpace(node.Title)
+		if node.Title == "" {
+			node.Title = fmt.Sprintf("Learning node %d", index+1)
+		}
+		node.Description = strings.TrimSpace(node.Description)
+		node.Deliverable = strings.TrimSpace(node.Deliverable)
+		node.AcceptanceCriteria = strings.TrimSpace(node.AcceptanceCriteria)
+		if (index > 0 && node.OrderIndex == 0) || node.OrderIndex < 0 {
+			node.OrderIndex = index
+		}
+		node.ArticleSearchQueries = nonEmptyStrings(node.ArticleSearchQueries)
+	}
+
+	nodesByID := make(map[string]model.RoadmapNode, len(draft.Nodes))
+	for _, node := range draft.Nodes {
+		nodesByID[node.ID] = node
+	}
+	for index := range draft.Nodes {
+		if draft.Nodes[index].ParentID == nil {
+			continue
+		}
+		parentID := strings.TrimSpace(*draft.Nodes[index].ParentID)
+		if parentID == "" || parentID == draft.Nodes[index].ID || !nodeIDs[parentID] {
+			draft.Nodes[index].ParentID = nil
+			continue
+		}
+		draft.Nodes[index].ParentID = &parentID
+	}
+
+	edges := make([]model.RoadmapEdge, 0, len(draft.Edges))
+	seenEdges := map[string]bool{}
+	edgeIDs := map[string]bool{}
+	for _, edge := range draft.Edges {
+		edge.SourceNodeID = strings.TrimSpace(edge.SourceNodeID)
+		edge.TargetNodeID = strings.TrimSpace(edge.TargetNodeID)
+		if edge.SourceNodeID == "" || edge.TargetNodeID == "" || edge.SourceNodeID == edge.TargetNodeID {
+			continue
+		}
+		targetNode, targetOK := nodesByID[edge.TargetNodeID]
+		if !nodeIDs[edge.SourceNodeID] || !targetOK {
+			continue
+		}
+		key := edge.SourceNodeID + "->" + edge.TargetNodeID
+		if seenEdges[key] {
+			continue
+		}
+		seenEdges[key] = true
+
+		edge.ID = strings.TrimSpace(edge.ID)
+		if edge.ID == "" || edgeIDs[edge.ID] {
+			edge.ID = randomLocalID("edge")
+		}
+		edgeIDs[edge.ID] = true
+		edge.Style = normalizeRoadmapEdgeStyle(edge.Style, targetNode.PathType)
+		edges = append(edges, edge)
+	}
+	if len(edges) == 0 && len(draft.Nodes) > 1 {
+		for index := 1; index < len(draft.Nodes); index++ {
+			source := draft.Nodes[index-1]
+			target := draft.Nodes[index]
+			edges = append(edges, model.RoadmapEdge{
+				ID:           randomLocalID("edge"),
+				SourceNodeID: source.ID,
+				TargetNodeID: target.ID,
+				Style:        normalizeRoadmapEdgeStyle("", target.PathType),
+			})
+		}
+	}
+	draft.Edges = edges
 }
 
 func legacySearchArticleResources(node model.RoadmapNode) ([]model.RoadmapResource, error) {

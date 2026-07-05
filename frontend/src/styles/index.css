@@ -2665,9 +2665,13 @@ body {
 .inspector-section {
   display: grid;
   gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .linked-note {
+  min-width: 0;
+  max-width: 100%;
   min-height: 34px;
   border: 1px solid var(--color-fs-border);
   border-radius: 8px;
@@ -2680,10 +2684,14 @@ body {
 }
 
 .editor-workspace {
-  grid-template-columns: minmax(0, 1fr) 270px;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 270px);
 }
 
 .editor-inspector {
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 0.9rem;
   border: 1px solid var(--color-fs-border);
@@ -2691,12 +2699,29 @@ body {
   background: rgba(254, 253, 248, 0.86);
   padding: 1rem;
   box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.editor-inspector > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chip-list {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+.project-select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chip-list em {
@@ -3404,6 +3429,7 @@ body {
 
 /* ---- Editor page layout ---- */
 .editor-page {
+  min-width: 0;
   width: 100%;
   max-width: 960px;
   justify-self: center;
@@ -3461,7 +3487,9 @@ body {
 
 /* ---- Title input ---- */
 .editor-title-input {
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
   border: none;
   background: transparent;
   font-family: var(--editor-font-heading);
@@ -3485,6 +3513,8 @@ body {
 
 /* ---- Paper surface (wraps toolbar + editor) ---- */
 .editor-paper {
+  min-width: 0;
+  max-width: 100%;
   background: var(--editor-paper);
   border-radius: 14px;
   box-shadow: var(--editor-paper-shadow);
@@ -3497,6 +3527,8 @@ body {
 
 /* ---- Fixed formatting toolbar ---- */
 .editor-toolbar {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -3561,6 +3593,8 @@ body {
 
 /* ---- Tiptap / ProseMirror editor area ---- */
 .ProseMirror {
+  min-width: 0;
+  max-width: 100%;
   outline: none;
   min-height: 520px;
   font-size: 17px;
@@ -3784,6 +3818,8 @@ body {
 
 /* ---- Editor footer ---- */
 .editor-footer {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -3791,6 +3827,7 @@ body {
 }
 
 .editor-footer-hint {
+  min-width: 0;
   font-size: 12px;
   color: var(--editor-ink-muted);
 }
@@ -3993,6 +4030,8 @@ body {
 .sync-field {
   display: grid;
   gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .sync-target-editor {
@@ -4069,6 +4108,9 @@ body {
 
 .sync-field input,
 .sync-field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 40px;
   border: 1px solid var(--color-fs-border);
   border-radius: var(--radius-md);
@@ -4080,6 +4122,9 @@ body {
 
 .sync-field select {
   cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sync-field input:focus,
@@ -4559,6 +4604,8 @@ body {
 }
 
 .sync-card {
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 0.55rem;
   border: 1px solid var(--color-fs-border);
@@ -4568,6 +4615,7 @@ body {
 }
 
 .sync-card-header {
+  min-width: 0;
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
@@ -4581,6 +4629,7 @@ body {
 }
 
 .sync-card-header strong {
+  flex: 0 0 auto;
   font-size: 0.78rem;
 }
 
@@ -4604,6 +4653,8 @@ body {
 .sync-card p,
 .sync-card em,
 .sync-card code {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   color: var(--color-fs-text-muted);
   font-size: 0.76rem;
