@@ -524,14 +524,58 @@ func TestGenerateLearningRoadmapInvalidAIJSONStoresFailedRoadmap(t *testing.T) {
 	}
 }
 
-func TestGenerateLearningRoadmapDefaultsToRealProviderWhenUnset(t *testing.T) {
+func TestGenerateLearningRoadmapFallsBackToLocalDraftWhenAIUnavailable(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("AI_PROVIDER", "")
 	t.Setenv("AI_API_KEY", "")
+	t.Setenv("ARTICLE_SEARCH_PROVIDER", "none")
 
 	project := createLearningProjectForTest(t, "榛樿 DeepSeek")
-	if _, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID); err == nil || !strings.Contains(err.Error(), "AI_API_KEY is required") {
-		t.Fatalf("expected missing API key error from real provider default, got %v", err)
+	roadmap, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
+	if err != nil {
+		t.Fatalf("generate roadmap should fall back when AI is unavailable: %v", err)
+	}
+	if roadmap.Status != "ready" || len(roadmap.Nodes) == 0 {
+		t.Fatalf("expected ready fallback roadmap with nodes, got %+v", roadmap)
+	}
+}
+
+func TestGenerateLearningRoadmapPrunesInvalidAIEdges(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	t.Setenv("AI_PROVIDER", "deepseek")
+	t.Setenv("AI_API_KEY", "test-key")
+	t.Setenv("ARTICLE_SEARCH_PROVIDER", "none")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected AI path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"title\":\"AI Roadmap\",\"goal\":\"goal\",\"nodes\":[{\"id\":\"start\",\"title\":\"Start\"},{\"id\":\"next\",\"title\":\"Next\"}],\"edges\":[{\"source_node_id\":\"start\",\"target_node_id\":\"next\",\"style\":\"solid\"},{\"source_node_id\":\"start\",\"target_node_id\":\"missing\",\"style\":\"solid\"},{\"source_node_id\":\"start\",\"target_node_id\":\"next\",\"style\":\"solid\"}]}"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AI_BASE_URL", server.URL)
+
+	project := createLearningProjectForTest(t, "AI edge cleanup")
+	roadmap, err := GenerateLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
+	if err != nil {
+		t.Fatalf("generate roadmap with dirty AI edges: %v", err)
+	}
+
+	nodeIDs := make(map[string]bool, len(roadmap.Nodes))
+	for _, node := range roadmap.Nodes {
+		nodeIDs[node.ID] = true
+	}
+	seenEdges := map[string]bool{}
+	for _, edge := range roadmap.Edges {
+		if !nodeIDs[edge.SourceNodeID] || !nodeIDs[edge.TargetNodeID] {
+			t.Fatalf("edge references missing node after generation: %+v nodes=%+v", edge, roadmap.Nodes)
+		}
+		key := edge.SourceNodeID + "->" + edge.TargetNodeID
+		if seenEdges[key] {
+			t.Fatalf("duplicate edge after generation: %+v", edge)
+		}
+		seenEdges[key] = true
 	}
 }
 

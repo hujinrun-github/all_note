@@ -8,7 +8,7 @@ import { Markdown } from 'tiptap-markdown'
 import { useQuery } from '@tanstack/react-query'
 import { NoteSyncCard } from '../components/sync/NoteSyncCard'
 import { useNote, useUpdateNote } from '../hooks/useNotes'
-import { useSyncObsidianNote, useSyncTargets } from '../hooks/useSync'
+import { useNoteSyncBinding, useSyncNote, useSyncTargets } from '../hooks/useSync'
 import { listTaskProjects } from '../api/tasks'
 import { formatTaskProjectOption } from '../utils/taskProjects'
 
@@ -32,9 +32,14 @@ export default function EditorPage() {
   const { data: note, isLoading, error } = useNote(id!)
   const updateNote = useUpdateNote()
   const syncTargetsQ = useSyncTargets()
-  const { mutate: syncCurrentNote, isPending: isAutoSyncPending } = useSyncObsidianNote(id)
+  const syncBindingQ = useNoteSyncBinding(id)
+  const { mutate: syncCurrentNote, isPending: isAutoSyncPending } = useSyncNote(id)
+  const boundSyncTargetID = syncBindingQ.data?.binding?.target_id
+  const boundSyncTarget =
+    syncBindingQ.data?.target ??
+    syncTargetsQ.data?.find((target) => target.id === boundSyncTargetID)
   const autoSyncEnabled = Boolean(
-    syncTargetsQ.data?.some((target) => target.type === 'obsidian' && target.enabled && target.auto_sync),
+    boundSyncTarget?.enabled && boundSyncTarget.auto_sync,
   )
 
   const [title, setTitle] = useState('')
