@@ -91,6 +91,7 @@ func CreateUser(store storage.Store) gin.HandlerFunc {
 			Email:              email,
 			DisplayName:        displayName,
 			PasswordHash:       passwordHash,
+			PasswordSet:        true,
 			MustChangePassword: true,
 			Role:               role,
 			Status:             "active",

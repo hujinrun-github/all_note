@@ -62,6 +62,9 @@ func TestAdminCreateUserProvisionsWorkspaceDefaultsAndRequiresPasswordChange(t *
 	if !user.MustChangePassword {
 		t.Fatal("created user must_change_password = false, want true")
 	}
+	if !user.PasswordSet {
+		t.Fatal("created user password_set = false, want true")
+	}
 	if user.DefaultWorkspaceID == "" {
 		t.Fatal("created user default workspace is empty")
 	}
