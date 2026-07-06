@@ -39,13 +39,18 @@ func (r authRepository) CreateUser(ctx context.Context, user *model.User) error 
 	if user.UpdatedAt == 0 {
 		user.UpdatedAt = now
 	}
+	passwordSet := user.PasswordSet
+	if !passwordSet && strings.TrimSpace(user.PasswordHash) != "" {
+		passwordSet = true
+		user.PasswordSet = true
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO users (
-			id, email, display_name, password_hash, must_change_password, default_workspace_id,
+			id, email, display_name, password_hash, password_set, must_change_password, default_workspace_id,
 			role, status, created_at, updated_at, last_login_at, password_changed_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, user.MustChangePassword, nullableString(user.DefaultWorkspaceID),
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, passwordSet, user.MustChangePassword, nullableString(user.DefaultWorkspaceID),
 		user.Role, user.Status, unixToTime(user.CreatedAt), unixToTime(user.UpdatedAt), unixPtrToTime(user.LastLoginAt), unixPtrToTime(user.PasswordChangedAt))
 	if isPostgresEmailAlreadyExists(err) {
 		return auth.ErrEmailAlreadyExists
@@ -181,12 +186,91 @@ func (r authRepository) UpdateUserPassword(ctx context.Context, userID, password
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE users
 		SET password_hash = $2,
+			password_set = true,
 			must_change_password = $3,
 			password_changed_at = now(),
 			updated_at = now()
 		WHERE id = $1
 	`, userID, passwordHash, mustChangePassword)
 	return err
+}
+
+func (r authRepository) GetAuthIdentity(ctx context.Context, provider, providerUserID string) (*model.AuthIdentity, error) {
+	return scanPostgresAuthIdentity(r.db.QueryRowContext(ctx, postgresAuthIdentitySelectSQL()+`
+		WHERE provider = $1 AND provider_user_id = $2
+	`, provider, providerUserID))
+}
+
+func (r authRepository) CreateAuthIdentity(ctx context.Context, identity *model.AuthIdentity) error {
+	if identity == nil {
+		return fmt.Errorf("auth identity is nil")
+	}
+	now := nowUnix()
+	if strings.TrimSpace(identity.ID) == "" {
+		identity.ID = newID()
+	}
+	if identity.CreatedAt == 0 {
+		identity.CreatedAt = now
+	}
+	if identity.UpdatedAt == 0 {
+		identity.UpdatedAt = identity.CreatedAt
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO auth_identities (
+			id, user_id, provider, provider_user_id, provider_login, email,
+			avatar_url, created_at, updated_at, last_login_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, identity.ID, identity.UserID, identity.Provider, identity.ProviderUserID, identity.ProviderLogin, identity.Email,
+		nullableStringPtr(identity.AvatarURL), unixToTime(identity.CreatedAt), unixToTime(identity.UpdatedAt), unixPtrToTime(identity.LastLoginAt))
+	return err
+}
+
+func (r authRepository) UpdateAuthIdentityFromProvider(ctx context.Context, identity *model.AuthIdentity, at time.Time) error {
+	if identity == nil {
+		return fmt.Errorf("auth identity is nil")
+	}
+	loginAt := at.UTC()
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE auth_identities
+		SET provider_login = $1,
+			email = $2,
+			avatar_url = $3,
+			updated_at = $4,
+			last_login_at = $4
+		WHERE provider = $5 AND provider_user_id = $6
+	`, identity.ProviderLogin, identity.Email, nullableStringPtr(identity.AvatarURL), loginAt, identity.Provider, identity.ProviderUserID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	loginAtUnix := timeToUnix(loginAt)
+	identity.UpdatedAt = loginAtUnix
+	identity.LastLoginAt = &loginAtUnix
+	return nil
+}
+
+func (r authRepository) ListAuthIdentitiesByUser(ctx context.Context, userID string) ([]model.AuthIdentity, error) {
+	rows, err := r.db.QueryContext(ctx, postgresAuthIdentitySelectSQL()+`
+		WHERE user_id = $1
+		ORDER BY provider ASC, provider_user_id ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	identities := make([]model.AuthIdentity, 0)
+	for rows.Next() {
+		identity, err := scanPostgresAuthIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		identities = append(identities, *identity)
+	}
+	return identities, rows.Err()
 }
 
 func (r authRepository) CreateWorkspace(ctx context.Context, workspace *model.Workspace) error {
@@ -353,7 +437,7 @@ func (r authRepository) LockActiveAdmins(ctx context.Context) ([]model.User, err
 
 func postgresAuthUserSelectSQL() string {
 	return `
-		SELECT id, email, display_name, password_hash, must_change_password, default_workspace_id,
+		SELECT id, email, display_name, password_hash, password_set, must_change_password, default_workspace_id,
 			role, status, created_at, updated_at, last_login_at, password_changed_at
 		FROM users
 	`
@@ -371,6 +455,7 @@ func scanPostgresAuthUser(row rowScanner) (*model.User, error) {
 		&user.Email,
 		&user.DisplayName,
 		&user.PasswordHash,
+		&user.PasswordSet,
 		&user.MustChangePassword,
 		&defaultWorkspaceID,
 		&user.Role,
@@ -388,6 +473,41 @@ func scanPostgresAuthUser(row rowScanner) (*model.User, error) {
 	user.LastLoginAt = nullTimeToUnixPtr(lastLoginAt)
 	user.PasswordChangedAt = nullTimeToUnixPtr(passwordChangedAt)
 	return &user, nil
+}
+
+func postgresAuthIdentitySelectSQL() string {
+	return `
+		SELECT id, user_id, provider, provider_user_id, provider_login, email,
+			avatar_url, created_at, updated_at, last_login_at
+		FROM auth_identities
+	`
+}
+
+func scanPostgresAuthIdentity(row rowScanner) (*model.AuthIdentity, error) {
+	var identity model.AuthIdentity
+	var avatarURL sql.NullString
+	var createdAt time.Time
+	var updatedAt time.Time
+	var lastLoginAt sql.NullTime
+	if err := row.Scan(
+		&identity.ID,
+		&identity.UserID,
+		&identity.Provider,
+		&identity.ProviderUserID,
+		&identity.ProviderLogin,
+		&identity.Email,
+		&avatarURL,
+		&createdAt,
+		&updatedAt,
+		&lastLoginAt,
+	); err != nil {
+		return nil, err
+	}
+	identity.AvatarURL = nullStringPtr(avatarURL)
+	identity.CreatedAt = timeToUnix(createdAt)
+	identity.UpdatedAt = timeToUnix(updatedAt)
+	identity.LastLoginAt = nullTimeToUnixPtr(lastLoginAt)
+	return &identity, nil
 }
 
 func scanPostgresAuthSession(row rowScanner) (*model.Session, error) {
@@ -429,6 +549,13 @@ func nullableStringPtr(value *string) interface{} {
 		return nil
 	}
 	return *value
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
 }
 
 func nullTimeToTimePtr(value sql.NullTime) *time.Time {

@@ -59,6 +59,105 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	t.Run("CreateUserPersistsPasswordSet", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := scopedContractContext(t, store)
+		user := contractUser("auth_user_password_set", "password-set@example.com", "Password Set", "user")
+		user.PasswordHash = ""
+		user.PasswordSet = false
+		workspace := contractWorkspace("auth_workspace_password_set", user.ID, "Password Set Workspace")
+
+		err := store.Transact(ctx, func(tx storage.Store) error {
+			if err := tx.Auth().CreateUser(ctx, user); err != nil {
+				return err
+			}
+			if err := tx.Auth().CreateWorkspace(ctx, workspace); err != nil {
+				return err
+			}
+			if err := tx.Auth().SetDefaultWorkspace(ctx, user.ID, workspace.ID); err != nil {
+				return err
+			}
+			return tx.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner")
+		})
+		if err != nil {
+			t.Fatalf("create user with password_set=false: %v", err)
+		}
+
+		loaded, err := store.Auth().GetUserByEmail(ctx, "password-set@example.com")
+		if err != nil {
+			t.Fatalf("get user by email: %v", err)
+		}
+		if loaded.PasswordSet {
+			t.Fatalf("password_set = true, want false: %+v", loaded)
+		}
+	})
+
+	t.Run("AuthIdentityCreateGetUpdateAndList", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := scopedContractContext(t, store)
+		seedAuthUserWorkspace(t, ctx, store, "auth_user_identity", "auth_workspace_identity", "identity@example.com")
+
+		createdAt := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC).Unix()
+		avatarURL := "https://avatars.githubusercontent.com/u/12345"
+		identity := &model.AuthIdentity{
+			ID:             "auth_identity_github",
+			UserID:         "auth_user_identity",
+			Provider:       "github",
+			ProviderUserID: "12345",
+			ProviderLogin:  "octocat",
+			Email:          "Octo@Example.com",
+			AvatarURL:      &avatarURL,
+			CreatedAt:      createdAt,
+			UpdatedAt:      createdAt,
+		}
+		if err := store.Auth().CreateAuthIdentity(ctx, identity); err != nil {
+			t.Fatalf("create auth identity: %v", err)
+		}
+
+		loaded, err := store.Auth().GetAuthIdentity(ctx, "github", "12345")
+		if err != nil {
+			t.Fatalf("get auth identity: %v", err)
+		}
+		assertAuthIdentityMatches(t, loaded, identity)
+		if loaded.LastLoginAt != nil {
+			t.Fatalf("last_login_at = %v, want nil", *loaded.LastLoginAt)
+		}
+
+		updatedAvatarURL := "https://avatars.githubusercontent.com/u/12345?v=2"
+		loginAt := time.Date(2026, 7, 6, 11, 30, 0, 0, time.UTC)
+		identity.ProviderLogin = "octocat-renamed"
+		identity.Email = "octo.renamed@example.com"
+		identity.AvatarURL = &updatedAvatarURL
+		if err := store.Auth().UpdateAuthIdentityFromProvider(ctx, identity, loginAt); err != nil {
+			t.Fatalf("update auth identity from provider: %v", err)
+		}
+
+		updated, err := store.Auth().GetAuthIdentity(ctx, "github", "12345")
+		if err != nil {
+			t.Fatalf("get updated auth identity: %v", err)
+		}
+		assertAuthIdentityMatches(t, updated, identity)
+		if updated.LastLoginAt == nil || *updated.LastLoginAt != loginAt.Unix() {
+			t.Fatalf("last_login_at = %v, want %d", updated.LastLoginAt, loginAt.Unix())
+		}
+		if updated.UpdatedAt != loginAt.Unix() {
+			t.Fatalf("updated_at = %d, want %d", updated.UpdatedAt, loginAt.Unix())
+		}
+
+		identities, err := store.Auth().ListAuthIdentitiesByUser(ctx, "auth_user_identity")
+		if err != nil {
+			t.Fatalf("list auth identities by user: %v", err)
+		}
+		if len(identities) != 1 {
+			t.Fatalf("listed %d auth identities, want 1: %+v", len(identities), identities)
+		}
+		assertAuthIdentityMatches(t, &identities[0], identity)
+	})
+
 	t.Run("CreateSessionAndGetSessionByTokenHashOnlyReturnActiveSessions", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
@@ -391,6 +490,7 @@ func contractUser(id, email, displayName, role string) *model.User {
 		DisplayName:        displayName,
 		PasswordHash:       "hash",
 		MustChangePassword: true,
+		PasswordSet:        true,
 		Role:               role,
 		Status:             "active",
 	}
@@ -453,4 +553,24 @@ func marshalContractAuditMetadata(t *testing.T, metadata map[string]any) string 
 		t.Fatalf("marshal audit metadata: %v", err)
 	}
 	return strings.ToLower(string(raw))
+}
+
+func assertAuthIdentityMatches(t *testing.T, got *model.AuthIdentity, want *model.AuthIdentity) {
+	t.Helper()
+
+	if got.ID != want.ID ||
+		got.UserID != want.UserID ||
+		got.Provider != want.Provider ||
+		got.ProviderUserID != want.ProviderUserID ||
+		got.ProviderLogin != want.ProviderLogin ||
+		got.Email != want.Email ||
+		got.CreatedAt != want.CreatedAt {
+		t.Fatalf("auth identity = %+v, want %+v", got, want)
+	}
+	if (got.AvatarURL == nil) != (want.AvatarURL == nil) {
+		t.Fatalf("avatar_url = %v, want %v", got.AvatarURL, want.AvatarURL)
+	}
+	if got.AvatarURL != nil && *got.AvatarURL != *want.AvatarURL {
+		t.Fatalf("avatar_url = %q, want %q", *got.AvatarURL, *want.AvatarURL)
+	}
 }

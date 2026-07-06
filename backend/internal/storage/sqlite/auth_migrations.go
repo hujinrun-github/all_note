@@ -33,6 +33,9 @@ func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
 	if err := createSQLiteAuthTables(ctx, db); err != nil {
 		return err
 	}
+	if err := ensureSQLiteAuthColumns(db); err != nil {
+		return err
+	}
 	workspaceColumnsChanged, err := ensureSQLiteWorkspaceColumns(ctx, db)
 	if err != nil {
 		return err
@@ -57,6 +60,7 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 			email TEXT NOT NULL,
 			display_name TEXT NOT NULL DEFAULT '',
 			password_hash TEXT NOT NULL,
+			password_set INTEGER NOT NULL DEFAULT 1,
 			must_change_password INTEGER NOT NULL DEFAULT 0,
 			default_workspace_id TEXT,
 			last_login_at INTEGER,
@@ -71,6 +75,23 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx
 			ON users (lower(email))`,
+		`CREATE TABLE IF NOT EXISTS auth_identities (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			provider TEXT NOT NULL,
+			provider_user_id TEXT NOT NULL,
+			provider_login TEXT NOT NULL,
+			email TEXT NOT NULL,
+			avatar_url TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			last_login_at INTEGER,
+			UNIQUE (provider, provider_user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_identities_user_id
+			ON auth_identities (user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_identities_email_lower
+			ON auth_identities (lower(email))`,
 		`CREATE TABLE IF NOT EXISTS workspaces (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -124,6 +145,13 @@ func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("ensure SQLite auth schema: %w", err)
 		}
+	}
+	return nil
+}
+
+func ensureSQLiteAuthColumns(db *sql.DB) error {
+	if err := sqliteAddColumnIfMissing(db, "users", "password_set", `ALTER TABLE users ADD COLUMN password_set INTEGER NOT NULL DEFAULT 1`); err != nil {
+		return fmt.Errorf("ensure SQLite users.password_set: %w", err)
 	}
 	return nil
 }

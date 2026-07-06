@@ -7,6 +7,7 @@ type User struct {
 	Email              string `json:"email"`
 	DisplayName        string `json:"display_name"`
 	PasswordHash       string `json:"-"`
+	PasswordSet        bool   `json:"password_set"`
 	MustChangePassword bool   `json:"must_change_password"`
 	DefaultWorkspaceID string `json:"default_workspace_id"`
 	Role               string `json:"role"`
@@ -15,6 +16,19 @@ type User struct {
 	UpdatedAt          int64  `json:"updated_at"`
 	LastLoginAt        *int64 `json:"last_login_at,omitempty"`
 	PasswordChangedAt  *int64 `json:"password_changed_at,omitempty"`
+}
+
+type AuthIdentity struct {
+	ID             string  `json:"id"`
+	UserID         string  `json:"user_id"`
+	Provider       string  `json:"provider"`
+	ProviderUserID string  `json:"provider_user_id"`
+	ProviderLogin  string  `json:"provider_login"`
+	Email          string  `json:"email"`
+	AvatarURL      *string `json:"avatar_url,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
+	LastLoginAt    *int64  `json:"last_login_at,omitempty"`
 }
 
 type Workspace struct {
