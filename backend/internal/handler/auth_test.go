@@ -303,6 +303,25 @@ func TestChangePasswordVerifiesCurrentPassword(t *testing.T) {
 	}
 }
 
+func TestChangePasswordRejectsUsersWithoutPasswordSet(t *testing.T) {
+	env := setupAuthTestEnv(t, func(user *model.User) {
+		user.PasswordSet = false
+	})
+	token := "oauth-only-password-token"
+	createAuthTestSession(t, env, authTestUserID, "session_oauth_only_password", token, time.Now().UTC().Add(time.Hour), false)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"anything123","new_password":"newpass123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(authTestCookie(env, token))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w.Body.String(), "PASSWORD_NOT_SET")
+}
+
 func TestChangePasswordRevokesOtherSessionsUsingCurrentSessionID(t *testing.T) {
 	env := setupAuthTestEnv(t, withMustChangePassword(true))
 	keptToken := "kept-session-token"
@@ -425,6 +444,7 @@ func seedAuthHandlerUser(t *testing.T, store storage.Store, opts ...authTestOpti
 		Email:              "admin@example.com",
 		DisplayName:        "Admin",
 		PasswordHash:       passwordHash,
+		PasswordSet:        true,
 		MustChangePassword: false,
 		DefaultWorkspaceID: authTestWorkspaceID,
 		Role:               "admin",

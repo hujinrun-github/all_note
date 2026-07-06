@@ -170,6 +170,10 @@ func ChangePassword(store storage.Store) gin.HandlerFunc {
 			errorResponse(c, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
 			return
 		}
+		if !user.PasswordSet {
+			errorResponse(c, http.StatusBadRequest, "PASSWORD_NOT_SET", "password has not been set for this account")
+			return
+		}
 		if err := auth.VerifyPassword(user.PasswordHash, req.CurrentPassword); err != nil {
 			errorResponse(c, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid current password")
 			return
