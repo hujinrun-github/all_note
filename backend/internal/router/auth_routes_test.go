@@ -42,6 +42,60 @@ func TestAuthRoutesAreRegistered(t *testing.T) {
 	}
 }
 
+func TestGitHubOAuthRoutesAreRegisteredAsPublicAuthRoutes(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	env.auth.GitHub = config.GitHubOAuthConfig{
+		Enabled:         true,
+		ClientID:        "client-id",
+		ClientSecret:    "client-secret",
+		RedirectURL:     "https://example.com/api/auth/github/callback",
+		AutoCreateUsers: true,
+		StateTTL:        time.Minute,
+	}
+	env.config.Auth = env.auth
+	env.config.OAuthStateStore = authpkg.NewMemoryOAuthStateStore()
+
+	registered := registeredRoutes(Setup(env.config))
+
+	for _, route := range []string{
+		"GET /api/auth/providers",
+		"GET /api/auth/github/start",
+		"GET /api/auth/github/callback",
+	} {
+		if !registered[route] {
+			t.Fatalf("route %s is not registered", route)
+		}
+	}
+}
+
+func TestGitHubOAuthStartDoesNotRequirePasswordSettled(t *testing.T) {
+	env := setupRouterAuthEnv(t, false, withRouterMustChangePassword(true))
+	env.auth.GitHub = config.GitHubOAuthConfig{
+		Enabled:         true,
+		ClientID:        "client-id",
+		ClientSecret:    "client-secret",
+		RedirectURL:     "https://example.com/api/auth/github/callback",
+		AutoCreateUsers: true,
+		StateTTL:        time.Minute,
+	}
+	env.config.Auth = env.auth
+	env.config.OAuthStateStore = authpkg.NewMemoryOAuthStateStore()
+	token := "github-start-must-change-token"
+	createRouterSession(t, env, token)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/github/start?next=/tasks", nil)
+	req.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: token})
+	w := httptest.NewRecorder()
+	Setup(env.config).ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("github start went through protected middleware: body = %s", w.Body.String())
+	}
+	if got := w.Header().Get("Location"); got != "/tasks" {
+		t.Fatalf("Location = %q, want /tasks", got)
+	}
+}
+
 func TestProtectedBusinessRouteRequiresAuth(t *testing.T) {
 	env := setupRouterAuthEnv(t, false)
 	req := httptest.NewRequest(http.MethodGet, "/api/notes", nil)
