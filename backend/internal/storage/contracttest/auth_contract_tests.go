@@ -65,7 +65,7 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 
 		ctx := scopedContractContext(t, store)
 		user := contractUser("auth_user_password_set", "password-set@example.com", "Password Set", "user")
-		user.PasswordHash = ""
+		user.PasswordHash = "oauth-random-bcrypt-hash"
 		user.PasswordSet = false
 		workspace := contractWorkspace("auth_workspace_password_set", user.ID, "Password Set Workspace")
 
@@ -146,6 +146,22 @@ func RunAuthContractTests(t *testing.T, factory StoreFactory) {
 		}
 		if updated.UpdatedAt != loginAt.Unix() {
 			t.Fatalf("updated_at = %d, want %d", updated.UpdatedAt, loginAt.Unix())
+		}
+		providerUpdatedAt := updated.UpdatedAt
+
+		secondLoginAt := loginAt.Add(45 * time.Minute)
+		if err := store.Auth().UpdateAuthIdentityFromProvider(ctx, identity, secondLoginAt); err != nil {
+			t.Fatalf("update auth identity login timestamp only: %v", err)
+		}
+		loginOnlyUpdated, err := store.Auth().GetAuthIdentity(ctx, "github", "12345")
+		if err != nil {
+			t.Fatalf("get login-only updated auth identity: %v", err)
+		}
+		if loginOnlyUpdated.LastLoginAt == nil || *loginOnlyUpdated.LastLoginAt != secondLoginAt.Unix() {
+			t.Fatalf("last_login_at after login-only update = %v, want %d", loginOnlyUpdated.LastLoginAt, secondLoginAt.Unix())
+		}
+		if loginOnlyUpdated.UpdatedAt != providerUpdatedAt {
+			t.Fatalf("updated_at after login-only update = %d, want unchanged %d", loginOnlyUpdated.UpdatedAt, providerUpdatedAt)
 		}
 
 		identities, err := store.Auth().ListAuthIdentitiesByUser(ctx, "auth_user_identity")

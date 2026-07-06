@@ -37,18 +37,13 @@ func (r authRepository) CreateUser(ctx context.Context, user *model.User) error 
 	if user.UpdatedAt == 0 {
 		user.UpdatedAt = now
 	}
-	passwordSet := user.PasswordSet
-	if !passwordSet && strings.TrimSpace(user.PasswordHash) != "" {
-		passwordSet = true
-		user.PasswordSet = true
-	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO users (
 			id, email, display_name, password_hash, password_set, must_change_password, default_workspace_id,
 			role, status, created_at, updated_at, last_login_at, password_changed_at
 		)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, boolToSQLiteInt(passwordSet), boolToSQLiteInt(user.MustChangePassword), nullableString(user.DefaultWorkspaceID),
+	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, boolToSQLiteInt(user.PasswordSet), boolToSQLiteInt(user.MustChangePassword), nullableString(user.DefaultWorkspaceID),
 		user.Role, user.Status, user.CreatedAt, user.UpdatedAt, nullableUnixPtr(user.LastLoginAt), nullableUnixPtr(user.PasswordChangedAt))
 	if isSQLiteEmailAlreadyExists(err) {
 		return auth.ErrEmailAlreadyExists
@@ -227,7 +222,15 @@ func (r authRepository) UpdateAuthIdentityFromProvider(ctx context.Context, iden
 	if identity == nil {
 		return fmt.Errorf("auth identity is nil")
 	}
+	current, err := r.GetAuthIdentity(ctx, identity.Provider, identity.ProviderUserID)
+	if err != nil {
+		return err
+	}
 	loginAt := at.UTC().Unix()
+	updatedAt := current.UpdatedAt
+	if authIdentityProviderFieldsChanged(current, identity) {
+		updatedAt = loginAt
+	}
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE auth_identities
 		SET provider_login = ?,
@@ -236,14 +239,14 @@ func (r authRepository) UpdateAuthIdentityFromProvider(ctx context.Context, iden
 			updated_at = ?,
 			last_login_at = ?
 		WHERE provider = ? AND provider_user_id = ?
-	`, identity.ProviderLogin, identity.Email, nullableStringPtr(identity.AvatarURL), loginAt, loginAt, identity.Provider, identity.ProviderUserID)
+	`, identity.ProviderLogin, identity.Email, nullableStringPtr(identity.AvatarURL), updatedAt, loginAt, identity.Provider, identity.ProviderUserID)
 	if err != nil {
 		return err
 	}
 	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 		return sql.ErrNoRows
 	}
-	identity.UpdatedAt = loginAt
+	identity.UpdatedAt = updatedAt
 	identity.LastLoginAt = &loginAt
 	return nil
 }
@@ -581,6 +584,19 @@ func nullStringPtr(value sql.NullString) *string {
 		return nil
 	}
 	return &value.String
+}
+
+func authIdentityProviderFieldsChanged(current *model.AuthIdentity, next *model.AuthIdentity) bool {
+	return current.ProviderLogin != next.ProviderLogin ||
+		current.Email != next.Email ||
+		!stringPtrEqual(current.AvatarURL, next.AvatarURL)
+}
+
+func stringPtrEqual(left *string, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func isSQLiteEmailAlreadyExists(err error) bool {

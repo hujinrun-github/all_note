@@ -39,18 +39,13 @@ func (r authRepository) CreateUser(ctx context.Context, user *model.User) error 
 	if user.UpdatedAt == 0 {
 		user.UpdatedAt = now
 	}
-	passwordSet := user.PasswordSet
-	if !passwordSet && strings.TrimSpace(user.PasswordHash) != "" {
-		passwordSet = true
-		user.PasswordSet = true
-	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO users (
 			id, email, display_name, password_hash, password_set, must_change_password, default_workspace_id,
 			role, status, created_at, updated_at, last_login_at, password_changed_at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, passwordSet, user.MustChangePassword, nullableString(user.DefaultWorkspaceID),
+	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, user.PasswordSet, user.MustChangePassword, nullableString(user.DefaultWorkspaceID),
 		user.Role, user.Status, unixToTime(user.CreatedAt), unixToTime(user.UpdatedAt), unixPtrToTime(user.LastLoginAt), unixPtrToTime(user.PasswordChangedAt))
 	if isPostgresEmailAlreadyExists(err) {
 		return auth.ErrEmailAlreadyExists
@@ -230,24 +225,32 @@ func (r authRepository) UpdateAuthIdentityFromProvider(ctx context.Context, iden
 	if identity == nil {
 		return fmt.Errorf("auth identity is nil")
 	}
+	current, err := r.GetAuthIdentity(ctx, identity.Provider, identity.ProviderUserID)
+	if err != nil {
+		return err
+	}
 	loginAt := at.UTC()
+	loginAtUnix := timeToUnix(loginAt)
+	updatedAt := current.UpdatedAt
+	if authIdentityProviderFieldsChanged(current, identity) {
+		updatedAt = loginAtUnix
+	}
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE auth_identities
 		SET provider_login = $1,
 			email = $2,
 			avatar_url = $3,
 			updated_at = $4,
-			last_login_at = $4
-		WHERE provider = $5 AND provider_user_id = $6
-	`, identity.ProviderLogin, identity.Email, nullableStringPtr(identity.AvatarURL), loginAt, identity.Provider, identity.ProviderUserID)
+			last_login_at = $5
+		WHERE provider = $6 AND provider_user_id = $7
+	`, identity.ProviderLogin, identity.Email, nullableStringPtr(identity.AvatarURL), unixToTime(updatedAt), loginAt, identity.Provider, identity.ProviderUserID)
 	if err != nil {
 		return err
 	}
 	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 		return sql.ErrNoRows
 	}
-	loginAtUnix := timeToUnix(loginAt)
-	identity.UpdatedAt = loginAtUnix
+	identity.UpdatedAt = updatedAt
 	identity.LastLoginAt = &loginAtUnix
 	return nil
 }
@@ -556,6 +559,19 @@ func nullStringPtr(value sql.NullString) *string {
 		return nil
 	}
 	return &value.String
+}
+
+func authIdentityProviderFieldsChanged(current *model.AuthIdentity, next *model.AuthIdentity) bool {
+	return current.ProviderLogin != next.ProviderLogin ||
+		current.Email != next.Email ||
+		!stringPtrEqual(current.AvatarURL, next.AvatarURL)
+}
+
+func stringPtrEqual(left *string, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func nullTimeToTimePtr(value sql.NullTime) *time.Time {
