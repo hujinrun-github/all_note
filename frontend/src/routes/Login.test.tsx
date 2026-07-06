@@ -93,6 +93,20 @@ describe('Login', () => {
     })
   })
 
+  it('does not render GitHub login when providers request fails', async () => {
+    vi.mocked(listAuthProviders).mockRejectedValue(new Error('offline'))
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <Login />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: /GitHub/ })).not.toBeInTheDocument()
+    })
+  })
+
   it('shows oauth_error message from the query string', async () => {
     render(
       <MemoryRouter initialEntries={['/login?oauth_error=github_no_verified_email']}>

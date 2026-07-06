@@ -350,6 +350,42 @@ func TestGitHubOAuthCallbackRejectsDisabledMatchedUser(t *testing.T) {
 	}
 }
 
+func TestGitHubOAuthCallbackRejectsExternalNextFromState(t *testing.T) {
+	env := setupGitHubOAuthHandlerEnv(t)
+	if err := env.stateStore.Save(t.Context(), "state-external", "//evil.com", time.Minute); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	env.github.profile = GitHubProfile{ID: 999, Login: "safe"}
+	env.github.emails = []GitHubEmail{{Email: "safe@example.com", Primary: true, Verified: true}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/github/callback?code=ok&state=state-external", nil)
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Location"); got != "/" {
+		t.Fatalf("Location = %q, want /", got)
+	}
+}
+
+func TestGitHubOAuthCallbackDoesNotPersistAccessTokenInAuditMetadata(t *testing.T) {
+	env := setupGitHubOAuthHandlerEnv(t)
+	if err := env.stateStore.Save(t.Context(), "state-token", "/", time.Minute); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	env.github.accessToken = "github-access-token-secret"
+	env.github.profile = GitHubProfile{ID: 1000, Login: "audit-safe"}
+	env.github.emails = []GitHubEmail{{Email: "audit-safe@example.com", Primary: true, Verified: true}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/github/callback?code=ok&state=state-token", nil)
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, req)
+
+	metadataJSON := allGitHubOAuthAuditMetadataJSON(t, env.dbPath)
+	if strings.Contains(metadataJSON, "github-access-token-secret") {
+		t.Fatalf("audit metadata contains access token: %s", metadataJSON)
+	}
+}
+
 func TestGitHubOAuthCallbackUpdatesIdentityProviderFieldsOnLogin(t *testing.T) {
 	env := setupGitHubOAuthHandlerEnv(t)
 	seedGitHubOAuthSession(t, env)
@@ -646,4 +682,31 @@ func mustQueryParam(t *testing.T, rawURL string, name string) string {
 		t.Fatalf("query param %q missing from %q", name, rawURL)
 	}
 	return value
+}
+
+func allGitHubOAuthAuditMetadataJSON(t *testing.T, dbPath string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath+"?_foreign_keys=ON")
+	if err != nil {
+		t.Fatalf("open sqlite side connection: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT metadata FROM audit_events ORDER BY created_at ASC`)
+	if err != nil {
+		t.Fatalf("query audit metadata: %v", err)
+	}
+	defer rows.Close()
+	var builder strings.Builder
+	for rows.Next() {
+		var metadata string
+		if err := rows.Scan(&metadata); err != nil {
+			t.Fatalf("scan audit metadata: %v", err)
+		}
+		builder.WriteString(metadata)
+		builder.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate audit metadata: %v", err)
+	}
+	return builder.String()
 }
