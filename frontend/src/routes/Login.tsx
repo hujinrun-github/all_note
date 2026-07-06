@@ -1,7 +1,7 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { APIError } from '../api/client'
-import { login } from '../api/auth'
+import { listAuthProviders, login } from '../api/auth'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -12,6 +12,29 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [providers, setProviders] = useState<string[]>([])
+  const oauthError = searchParams.get('oauth_error')
+  const githubLoginHref = useMemo(() => {
+    return `/api/auth/github/start?next=${encodeURIComponent(safeNext(searchParams.get('next')))}`
+  }, [searchParams])
+
+  useEffect(() => {
+    let cancelled = false
+    listAuthProviders()
+      .then((items) => {
+        if (!cancelled) setProviders(items)
+      })
+      .catch(() => {
+        if (!cancelled) setProviders([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (oauthError) setError(oauthErrorMessage(oauthError))
+  }, [oauthError])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -103,10 +126,12 @@ export default function Login() {
             <p>继续整理今天的想法与安排</p>
           </div>
 
-          <button className="auth-oauth-btn" type="button">
-            <GithubIcon />
-            使用 GitHub 登录
-          </button>
+          {providers.includes('github') && (
+            <a className="auth-oauth-btn" href={githubLoginHref}>
+              <GithubIcon />
+              使用 GitHub 登录
+            </a>
+          )}
 
           <div className="auth-divider">
             <span>或使用邮箱登录</span>
@@ -186,6 +211,19 @@ function safeNext(value: string | null) {
 function errorMessage(error: unknown, fallback: string) {
   if (error instanceof APIError) return error.message
   return fallback
+}
+
+function oauthErrorMessage(code: string) {
+  const messages: Record<string, string> = {
+    github_disabled: 'GitHub 登录暂未启用',
+    github_state_invalid: '登录状态已过期，请重新尝试',
+    github_exchange_failed: 'GitHub 授权失败，请稍后重试',
+    github_profile_failed: '无法读取 GitHub 用户信息',
+    github_no_verified_email: 'GitHub 账号没有已验证邮箱',
+    github_auto_create_disabled: '当前暂不允许 GitHub 新账号自动注册',
+    github_create_user_failed: '创建账号失败，请稍后重试',
+  }
+  return messages[code] ?? 'GitHub 登录失败，请重新尝试'
 }
 
 function PreviewTask({ title, done = false }: { title: string; done?: boolean }) {
