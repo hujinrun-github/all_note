@@ -39,6 +39,23 @@ type SessionCleanupConfig struct {
 	Interval time.Duration
 }
 
+type GitHubOAuthConfig struct {
+	Enabled              bool
+	ClientID             string
+	ClientSecret         string
+	RedirectURL          string
+	AutoCreateUsers      bool
+	StateTTL             time.Duration
+	AllowedRedirectHosts []string
+}
+
+func (cfg GitHubOAuthConfig) Available() bool {
+	return cfg.Enabled &&
+		strings.TrimSpace(cfg.ClientID) != "" &&
+		strings.TrimSpace(cfg.ClientSecret) != "" &&
+		(strings.TrimSpace(cfg.RedirectURL) != "" || len(cfg.AllowedRedirectHosts) > 0)
+}
+
 type AuthConfig struct {
 	Bootstrap                   BootstrapAdminConfig
 	Cookie                      CookieConfig
@@ -49,6 +66,7 @@ type AuthConfig struct {
 	SessionCleanup              SessionCleanupConfig
 	EnableLocalDirectoryBrowser bool
 	AllowedLocalRoots           []string
+	GitHub                      GitHubOAuthConfig
 }
 
 func LoadAuthConfig(environment string) (AuthConfig, error) {
@@ -81,6 +99,22 @@ func LoadAuthConfig(environment string) (AuthConfig, error) {
 	if err != nil {
 		return AuthConfig{}, err
 	}
+	githubEnabled, err := envBool("AUTH_GITHUB_ENABLED", false)
+	if err != nil {
+		return AuthConfig{}, err
+	}
+	githubAutoCreateUsers, err := envBool("AUTH_GITHUB_AUTO_CREATE_USERS", false)
+	if err != nil {
+		return AuthConfig{}, err
+	}
+	githubStateTTL, err := envDuration("AUTH_GITHUB_STATE_TTL", 10*time.Minute)
+	if err != nil {
+		return AuthConfig{}, err
+	}
+	githubAllowedRedirectHosts, err := splitStrictCSVAllowEmpty("AUTH_GITHUB_ALLOWED_REDIRECT_HOSTS", os.Getenv("AUTH_GITHUB_ALLOWED_REDIRECT_HOSTS"))
+	if err != nil {
+		return AuthConfig{}, err
+	}
 	allowedOrigins, err := envAllowedOrigins("FLOWSPACE_ALLOWED_ORIGINS")
 	if err != nil {
 		return AuthConfig{}, err
@@ -107,6 +141,15 @@ func LoadAuthConfig(environment string) (AuthConfig, error) {
 		SessionCleanup:              SessionCleanupConfig{Interval: sessionCleanupInterval},
 		EnableLocalDirectoryBrowser: enableLocalDirectoryBrowser,
 		AllowedLocalRoots:           splitCSV(os.Getenv("FLOWSPACE_ALLOWED_LOCAL_ROOTS")),
+		GitHub: GitHubOAuthConfig{
+			Enabled:              githubEnabled,
+			ClientID:             strings.TrimSpace(os.Getenv("AUTH_GITHUB_CLIENT_ID")),
+			ClientSecret:         strings.TrimSpace(os.Getenv("AUTH_GITHUB_CLIENT_SECRET")),
+			RedirectURL:          strings.TrimSpace(os.Getenv("AUTH_GITHUB_REDIRECT_URL")),
+			AutoCreateUsers:      githubAutoCreateUsers,
+			StateTTL:             githubStateTTL,
+			AllowedRedirectHosts: githubAllowedRedirectHosts,
+		},
 	}
 	if environment == EnvironmentProduction && cfg.SessionSecret == "" {
 		return AuthConfig{}, errors.New("FLOWSPACE_SESSION_SECRET is required in prod")
@@ -174,6 +217,14 @@ func splitStrictCSV(name, value string) ([]string, error) {
 		out = append(out, part)
 	}
 	return out, nil
+}
+
+func splitStrictCSVAllowEmpty(name, value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	return splitStrictCSV(name, value)
 }
 
 func validateAllowedOrigin(origin string) error {

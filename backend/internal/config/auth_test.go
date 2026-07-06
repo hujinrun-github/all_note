@@ -20,6 +20,13 @@ var authEnvVars = []string{
 	"FLOWSPACE_SESSION_CLEANUP_INTERVAL",
 	"FLOWSPACE_ENABLE_LOCAL_DIRECTORY_BROWSER",
 	"FLOWSPACE_ALLOWED_LOCAL_ROOTS",
+	"AUTH_GITHUB_ENABLED",
+	"AUTH_GITHUB_CLIENT_ID",
+	"AUTH_GITHUB_CLIENT_SECRET",
+	"AUTH_GITHUB_REDIRECT_URL",
+	"AUTH_GITHUB_AUTO_CREATE_USERS",
+	"AUTH_GITHUB_STATE_TTL",
+	"AUTH_GITHUB_ALLOWED_REDIRECT_HOSTS",
 }
 
 func clearAuthEnv(t *testing.T) {
@@ -170,6 +177,56 @@ func TestLoadAuthConfigRejectsMalformedConfiguredValues(t *testing.T) {
 				t.Fatalf("error = %q, want env var name %s", err.Error(), tt.envVar)
 			}
 		})
+	}
+}
+
+func TestLoadAuthConfigParsesGitHubOAuth(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("AUTH_GITHUB_ENABLED", "true")
+	t.Setenv("AUTH_GITHUB_CLIENT_ID", "client-id")
+	t.Setenv("AUTH_GITHUB_CLIENT_SECRET", "client-secret")
+	t.Setenv("AUTH_GITHUB_REDIRECT_URL", "https://all-note.jinrunlab.site/api/auth/github/callback")
+	t.Setenv("AUTH_GITHUB_AUTO_CREATE_USERS", "true")
+	t.Setenv("AUTH_GITHUB_STATE_TTL", "7m")
+	t.Setenv("AUTH_GITHUB_ALLOWED_REDIRECT_HOSTS", "all-note.jinrunlab.site,localhost:4100")
+
+	cfg, err := LoadAuthConfig(EnvironmentTest)
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+
+	if !cfg.GitHub.Enabled {
+		t.Fatal("GitHub.Enabled = false, want true")
+	}
+	if cfg.GitHub.ClientID != "client-id" || cfg.GitHub.ClientSecret != "client-secret" {
+		t.Fatalf("unexpected GitHub client config: %#v", cfg.GitHub)
+	}
+	if cfg.GitHub.RedirectURL != "https://all-note.jinrunlab.site/api/auth/github/callback" {
+		t.Fatalf("redirect URL = %q", cfg.GitHub.RedirectURL)
+	}
+	if !cfg.GitHub.AutoCreateUsers {
+		t.Fatal("AutoCreateUsers = false, want true")
+	}
+	if cfg.GitHub.StateTTL != 7*time.Minute {
+		t.Fatalf("StateTTL = %s, want 7m", cfg.GitHub.StateTTL)
+	}
+	if got := strings.Join(cfg.GitHub.AllowedRedirectHosts, ","); got != "all-note.jinrunlab.site,localhost:4100" {
+		t.Fatalf("AllowedRedirectHosts = %q", got)
+	}
+}
+
+func TestLoadAuthConfigKeepsGitHubDisabledWhenIncomplete(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("AUTH_GITHUB_ENABLED", "true")
+	t.Setenv("AUTH_GITHUB_CLIENT_ID", "client-id")
+	t.Setenv("AUTH_GITHUB_CLIENT_SECRET", "")
+
+	cfg, err := LoadAuthConfig(EnvironmentTest)
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+	if cfg.GitHub.Available() {
+		t.Fatal("GitHub provider should not be available without complete config")
 	}
 }
 
