@@ -230,6 +230,22 @@ func TestLoadAuthConfigKeepsGitHubDisabledWhenIncomplete(t *testing.T) {
 	}
 }
 
+func TestLoadAuthConfigRequiresGitHubRedirectURL(t *testing.T) {
+	clearAuthEnv(t)
+	t.Setenv("AUTH_GITHUB_ENABLED", "true")
+	t.Setenv("AUTH_GITHUB_CLIENT_ID", "client-id")
+	t.Setenv("AUTH_GITHUB_CLIENT_SECRET", "client-secret")
+	t.Setenv("AUTH_GITHUB_ALLOWED_REDIRECT_HOSTS", "all-note.jinrunlab.site")
+
+	cfg, err := LoadAuthConfig(EnvironmentTest)
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+	if cfg.GitHub.Available() {
+		t.Fatal("GitHub provider should not be available without explicit redirect URL")
+	}
+}
+
 func TestLoadAuthConfigDefaultsAllowedOriginsOutsideProd(t *testing.T) {
 	tests := []struct {
 		name        string

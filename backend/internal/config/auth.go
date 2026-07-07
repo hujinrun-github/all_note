@@ -53,7 +53,7 @@ func (cfg GitHubOAuthConfig) Available() bool {
 	return cfg.Enabled &&
 		strings.TrimSpace(cfg.ClientID) != "" &&
 		strings.TrimSpace(cfg.ClientSecret) != "" &&
-		(strings.TrimSpace(cfg.RedirectURL) != "" || len(cfg.AllowedRedirectHosts) > 0)
+		strings.TrimSpace(cfg.RedirectURL) != ""
 }
 
 type AuthConfig struct {
