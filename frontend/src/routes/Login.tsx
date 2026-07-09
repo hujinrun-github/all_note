@@ -52,11 +52,15 @@ export default function Login() {
 
     setSubmitting(true)
     try {
-      await login({
+      const result = await login({
         email: email.trim(),
         password,
         remember_me: remember,
       })
+      if (result.user.must_change_password) {
+        navigate('/change-password', { replace: true })
+        return
+      }
       navigate(safeNext(searchParams.get('next')), { replace: true })
     } catch (caught) {
       setError(errorMessage(caught, '登录失败，请稍后重试'))

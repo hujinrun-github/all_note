@@ -1,141 +1,122 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useSearch } from '../hooks/useSearch'
 import type { SearchResult } from '../api/search'
 
-const typeLabels: Record<string, string> = { note: '笔记', task: '任务', event: '日程' }
-const typeIcons: Record<string, string> = { note: '📄', task: '✅', event: '📅' }
+const typeLabels: Record<string, string> = { note: '笔记', task: '任务', event: '日程', project: '项目' }
+
+const recommendations = [
+  { icon: '!', title: '逾期任务', hint: '你有 1 个逾期任务', q: 'kapathy' },
+  { icon: '◇', title: '本周日程', hint: '本周暂无日程', q: '本周日程' },
+  { icon: '▣', title: '最近更新笔记', hint: '最近更新 1 篇', q: '第一篇笔记' },
+  { icon: 'N', title: '日语N2相关内容', hint: '查找学习任务', q: 'N2 语法' },
+]
 
 export default function Search() {
   const [params, setParams] = useSearchParams()
   const q = params.get('q') || ''
   const [input, setInput] = useState(q)
 
-  // Sync input when URL param changes externally (e.g., browser back/forward)
   useEffect(() => {
     setInput(q)
   }, [q])
 
-  // Debounced URL update on input change
   useEffect(() => {
-    if (input.trim() === q) return // already in sync, skip
-    const timer = setTimeout(() => {
+    if (input.trim() === q) return
+    const timer = window.setTimeout(() => {
       if (input.trim()) {
         setParams({ q: input.trim() })
       } else {
         setParams({})
       }
     }, 300)
-    return () => clearTimeout(timer)
-  }, [input])
+    return () => window.clearTimeout(timer)
+  }, [input, q, setParams])
 
   const { data, isLoading, isFetching } = useSearch(q)
-
   const grouped: Record<string, SearchResult[]> = {}
   data?.items?.forEach((item) => {
-    if (!grouped[item.type]) grouped[item.type] = []
-    grouped[item.type].push(item)
+    grouped[item.type] = [...(grouped[item.type] ?? []), item]
   })
 
   const totalResults = data?.items?.length ?? 0
-  const isTyping = input.trim() && !q.trim() // user has typed but debounce hasn't fired yet
   const isSearching = isLoading || isFetching
-  const hasResults = data && q.trim() && totalResults > 0
-  const hasNoResults = data && q.trim() && totalResults === 0
+  const hasResults = Boolean(data && q.trim() && totalResults > 0)
 
   return (
-    <div className="search-workspace">
-      <aside className="filter-rail">
-        <div className="filter-title">搜索范围</div>
-        <button className="is-active">全部</button>
-        <button>笔记</button>
-        <button>任务</button>
-        <button>日程</button>
-        <div className="rail-summary">
-          <span>匹配结果</span>
-          <strong>{totalResults}</strong>
-          <p>按最近更新时间排序</p>
-        </div>
-      </aside>
-
-      <section className="surface-panel list-panel">
+    <div className="search-canvas">
+      <section className="surface-panel search-command-panel">
         <div className="search-command">
           <input
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="搜索笔记、任务、日程..."
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="搜索笔记、任务、日程、项目..."
             autoFocus
           />
+          <kbd>⌘K</kbd>
           {isSearching && <div className="search-spinner" />}
         </div>
 
-      {/* Debounce pending — user typing, waiting for URL update */}
-      {isTyping && (
-        <div className="text-center py-12">
-          <p className="text-fs-text-muted text-sm animate-pulse">...</p>
+        <div className="segmented-tabs search-tabs">
+          <button className="is-active">全部</button>
+          <button>笔记</button>
+          <button>任务</button>
+          <button>日程</button>
+          <button>项目</button>
         </div>
-      )}
 
-      {/* Initial empty state — nothing typed */}
-      {!input.trim() && !q.trim() && (
-        <div className="empty-state">
-          <strong>输入关键词开始搜索</strong>
-          <p>可以搜索笔记正文、任务标题和日程地点。</p>
-        </div>
-      )}
-
-      {/* Loading skeleton */}
-      {isSearching && q.trim() && (
-        <div className="list-rows">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-14 bg-fs-hover rounded-lg animate-pulse" />
-          ))}
-        </div>
-      )}
-
-      {/* No results */}
-      {hasNoResults && !isSearching && (
-        <div className="empty-state">
-          <strong>未找到「{q}」相关结果</strong>
-          <p>换一个关键词，或者检查是否已经归档。</p>
-        </div>
-      )}
-
-      {/* Results */}
-      {hasResults && Object.entries(grouped).map(([type, items]) => (
-        <div key={type} className="result-group">
-          <div className="group-label">
-            <span>{typeIcons[type] || '•'}</span>
-            <strong>
-              {typeLabels[type] || type}
-            </strong>
-            <em>{items.length}</em>
-          </div>
-          <div className="list-rows">
-            {items.map((item) => (
-              <div
-                key={item.id}
-                className="rich-row"
-              >
-                <strong className="text-sm font-medium text-fs-text" dangerouslySetInnerHTML={{ __html: item.highlight || item.title }} />
-                <div className="text-fs-text-muted text-xs mt-1.5 flex gap-2 items-center">
-                  <span>{typeLabels[item.type] || item.type}</span>
-                  {item.folder_id && item.folder_id !== '__uncategorized' && <span>· {item.folder_id.replace('__', '')}</span>}
-                  {item.done !== undefined && <span>· {item.done ? '已完成' : '未完成'}</span>}
-                  <span>· {new Date(item.updated_at * 1000).toLocaleDateString('zh-CN')}</span>
-                </div>
-              </div>
+        <section className="search-section">
+          <h2>推荐搜索</h2>
+          <div className="recommend-grid">
+            {recommendations.map((item) => (
+              <button key={item.title} type="button" onClick={() => setInput(item.q)}>
+                <span>{item.icon}</span>
+                <strong>{item.title}</strong>
+                <em>{item.hint}</em>
+              </button>
             ))}
           </div>
-        </div>
-      ))}
+        </section>
 
-      {/* Results summary */}
-      {hasResults && (
-        <p className="text-fs-text-muted text-xs text-center pt-2">
-          共找到 {totalResults} 条结果
-        </p>
-      )}
+        <section className="search-section">
+          <div className="section-line-heading">
+            <h2>最近搜索</h2>
+            <button type="button">清除历史</button>
+          </div>
+          <article className="recent-search-card">
+            <strong>kapathy</strong>
+            <p>任务 <em>1 个结果</em></p>
+          </article>
+          <article className="recent-search-card">
+            <strong>N2 语法</strong>
+            <p>项目 日语N2考级</p>
+          </article>
+        </section>
+
+        <section className="search-section search-results-preview">
+          <h2>搜索结果预览</h2>
+          {!q.trim() && <p className="empty-copy">输入关键词开始搜索，可以搜索笔记正文、任务标题和日程地点。</p>}
+          {q.trim() && totalResults === 0 && !isSearching && <p className="empty-copy">未找到「{q}」相关结果。</p>}
+          {hasResults &&
+            Object.entries(grouped).map(([type, items]) => (
+              <div key={type} className="result-group">
+                {items.map((item) => (
+                  <article key={item.id} className="search-result-row">
+                    <span>{type === 'task' ? '✓' : type === 'event' ? '◇' : '▣'}</span>
+                    <div>
+                      <strong dangerouslySetInnerHTML={{ __html: item.highlight || item.title }} />
+                      <p>
+                        {typeLabels[item.type] || item.type}
+                        {item.folder_id && item.folder_id !== '__uncategorized' && ` · ${item.folder_id.replace('__', '')}`}
+                        {item.done !== undefined && ` · ${item.done ? '已完成' : '未完成'}`}
+                        {` · ${new Date(item.updated_at * 1000).toLocaleDateString('zh-CN')}`}
+                      </p>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ))}
+        </section>
       </section>
     </div>
   )

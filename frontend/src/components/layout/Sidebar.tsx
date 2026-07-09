@@ -1,104 +1,195 @@
 import { NavLink } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 import { useInboxList } from '../../hooks/useInbox'
 
-const navItems = [
-  { to: '/', label: '今日', icon: CalendarIcon },
-  { to: '/tasks', label: '任务', icon: CheckIcon },
-  { to: '/notes', label: '笔记', icon: FileIcon },
-  { to: '/calendar', label: '日历', icon: CalendarDaysIcon },
-  { to: '/inbox', label: '收件箱', icon: InboxIcon },
-  { to: '/search', label: '搜索', icon: SearchIcon },
-  { to: '/summary', label: '每日总结', icon: SummaryIcon },
-  { to: '/admin/users', label: '账号', icon: AdminIcon },
+const navGroups = [
+  {
+    title: '工作台',
+    items: [
+      { to: '/', label: '今日', icon: TodayIcon },
+      { to: '/tasks', label: '任务', icon: CheckIcon },
+      { to: '/calendar', label: '日历', icon: CalendarIcon },
+      { to: '/inbox', label: '收件箱', icon: InboxIcon },
+    ],
+  },
+  {
+    title: '知识',
+    items: [
+      { to: '/notes', label: '笔记', icon: NoteIcon },
+      { to: '/search', label: '搜索', icon: SearchIcon },
+    ],
+  },
+  {
+    title: '复盘',
+    items: [{ to: '/summary', label: '每日总结', icon: SummaryIcon }],
+  },
+  {
+    title: '系统',
+    items: [{ to: '/admin/users', label: '账号管理', icon: AdminIcon }],
+  },
 ]
 
-export function Sidebar() {
+type SidebarProps = {
+  collapsed?: boolean
+  onToggleCollapsed?: () => void
+}
+
+export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) {
   const queryClient = useQueryClient()
   const inboxQ = useInboxList({ page_size: 1 })
   const inboxCount = inboxQ.data?.pagination.total ?? 0
+  const toggleLabel = collapsed ? '展开侧边栏' : '收起侧边栏'
 
   return (
-    <aside className="workspace-sidebar">
+    <aside className={`workspace-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
       <div className="sidebar-brand">
-        <div className="sidebar-logo">F</div>
-        <div>
-          <strong>FlowSpace</strong>
-          <span>轻量效率中枢</span>
+        <div className="sidebar-brand-main">
+          <div className="sidebar-logo">F</div>
+          <div className="sidebar-brand-copy">
+            <strong>FlowSpace</strong>
+            <span>轻量效率中枢</span>
+          </div>
         </div>
+        <button
+          type="button"
+          className="sidebar-collapse-button"
+          aria-label={toggleLabel}
+          aria-expanded={!collapsed}
+          title={toggleLabel}
+          onClick={onToggleCollapsed}
+        >
+          <SidebarCollapseIcon collapsed={collapsed} />
+        </button>
       </div>
 
-      <nav className="sidebar-nav">
-        {navItems.map(({ to, label, icon: Icon }) => {
-          const showInboxBadge = to === '/inbox' && inboxCount > 0
+      <nav className="sidebar-nav" aria-label="主导航">
+        {navGroups.map((group) => (
+          <div className="sidebar-group" key={group.title}>
+            <span className="sidebar-group-title">{group.title}</span>
+            {group.items.map(({ to, label, icon: Icon }) => {
+              const showInboxBadge = to === '/inbox' && inboxCount > 0
 
-          return (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === '/'}
-            onClick={() => {
-              void queryClient.invalidateQueries()
-            }}
-            className={({ isActive }) =>
-              `sidebar-link ${isActive ? 'is-active' : ''}`
-            }
-          >
-            <Icon />
-            <span>{label}</span>
-            {showInboxBadge && (
-              <span className="sidebar-badge" aria-label={`${inboxCount} 条未整理`}>
-                {inboxCount > 99 ? '99+' : inboxCount}
-              </span>
-            )}
-          </NavLink>
-          )
-        })}
+              return (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === '/'}
+                  onClick={() => {
+                    void queryClient.invalidateQueries()
+                  }}
+                  className={({ isActive }) => `sidebar-link ${isActive ? 'is-active' : ''}`}
+                  aria-label={label}
+                  title={collapsed ? label : undefined}
+                >
+                  <Icon />
+                  <span className="sidebar-link-label">{label}</span>
+                  {showInboxBadge && (
+                    <span className="sidebar-badge" aria-label={`${inboxCount} 条未整理`}>
+                      {inboxCount > 99 ? '99+' : inboxCount}
+                    </span>
+                  )}
+                </NavLink>
+              )
+            })}
+          </div>
+        ))}
       </nav>
 
       <div className="sidebar-status">
         <span>本地优先</span>
-        <strong>FlowSpace v0.1</strong>
+        <strong>FlowSpace v0.2</strong>
+        <em>快速捕获 · 任务 · 知识</em>
       </div>
     </aside>
   )
 }
 
-function CalendarIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+function SidebarCollapseIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg viewBox="0 0 18 18" aria-hidden="true">
+      <path d={collapsed ? 'M7 4.5 11.5 9 7 13.5' : 'M11 4.5 6.5 9 11 13.5'} />
+      <path d="M4.5 3.8v10.4" />
+    </svg>
+  )
 }
+
+function IconFrame({ children }: { children: ReactNode }) {
+  return (
+    <svg viewBox="0 0 18 18" aria-hidden="true">
+      {children}
+    </svg>
+  )
+}
+
+function TodayIcon() {
+  return (
+    <IconFrame>
+      <rect x="4.5" y="4.5" width="9" height="9" rx="1.2" />
+      <path d="M7 2.7v2.2M11 2.7v2.2M6.4 8.1h5.2" />
+    </IconFrame>
+  )
+}
+
 function CheckIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+  return (
+    <IconFrame>
+      <path d="M4.2 9.2 7.4 12.4 14.2 5.6" />
+    </IconFrame>
+  )
 }
-function FileIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+
+function CalendarIcon() {
+  return (
+    <IconFrame>
+      <path d="M9 3.2 14.8 9 9 14.8 3.2 9 9 3.2Z" />
+      <path d="M6.6 9h4.8M9 6.6v4.8" />
+    </IconFrame>
+  )
 }
-function CalendarDaysIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14.01"/><line x1="12" y1="14" x2="12" y2="14.01"/><line x1="16" y1="14" x2="16" y2="14.01"/></svg>
-}
+
 function InboxIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+  return (
+    <IconFrame>
+      <path d="M3.4 10.2h3.3l1.1 1.8h2.4l1.1-1.8h3.3" />
+      <path d="M4.8 6.2h8.4l1.4 4v3.2c0 .8-.5 1.3-1.3 1.3H4.7c-.8 0-1.3-.5-1.3-1.3v-3.2l1.4-4Z" />
+    </IconFrame>
+  )
 }
+
+function NoteIcon() {
+  return (
+    <IconFrame>
+      <path d="M5 3.8h8v10.4H5z" />
+      <path d="M7.2 6.4h3.6M7.2 8.8h3.6M7.2 11.2h2.1" />
+    </IconFrame>
+  )
+}
+
 function SearchIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+  return (
+    <IconFrame>
+      <circle cx="8" cy="8" r="3.5" />
+      <path d="m10.7 10.7 3.5 3.5" />
+    </IconFrame>
+  )
 }
+
 function SummaryIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 5h12M3 9h12M3 13h8" />
-      <circle cx="14" cy="13" r="2" />
-      <path d="M15.5 14.5L17 16" />
-    </svg>
+    <IconFrame>
+      <path d="M4 5.1h10M4 9h10M4 12.9h6.6" />
+      <path d="M12.1 11.6 13.3 13l2-2.6" />
+    </IconFrame>
   )
 }
 
 function AdminIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-    </svg>
+    <IconFrame>
+      <circle cx="9" cy="7" r="3.2" />
+      <path d="M4.2 14.2c.8-2 2.3-3.1 4.8-3.1s4 1.1 4.8 3.1" />
+      <circle cx="9" cy="9" r="6.7" />
+    </IconFrame>
   )
 }

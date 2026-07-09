@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { listAuthProviders, login } from '../api/auth'
 import Login from './Login'
@@ -56,6 +56,47 @@ describe('Login', () => {
         remember_me: true,
       })
     })
+  })
+
+  it('routes temporary-password accounts to the password change page', async () => {
+    const user = userEvent.setup()
+    vi.mocked(login).mockResolvedValue({
+      user: {
+        id: 'user_regular',
+        email: 'regular@example.com',
+        display_name: 'Regular User',
+        must_change_password: true,
+        default_workspace_id: 'workspace_regular',
+        role: 'user',
+        status: 'active',
+        created_at: 0,
+        updated_at: 0,
+      },
+      workspace: {
+        id: 'workspace_regular',
+        name: 'Regular Workspace',
+        owner_user_id: 'user_regular',
+        created_at: 0,
+        updated_at: 0,
+      },
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/login?next=/tasks']}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/change-password" element={<span>修改密码页</span>} />
+          <Route path="/tasks" element={<span>任务页</span>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await user.type(screen.getByLabelText('邮箱'), 'regular@example.com')
+    await user.type(screen.getByLabelText('密码'), 'tempPass123')
+    await user.click(screen.getByRole('button', { name: '登录' }))
+
+    expect(await screen.findByText('修改密码页')).toBeVisible()
+    expect(screen.queryByText('任务页')).not.toBeInTheDocument()
   })
 
   it('does not expose a public create-workspace shortcut to the protected app', () => {

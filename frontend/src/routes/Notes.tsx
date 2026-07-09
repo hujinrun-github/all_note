@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { deleteNote, getNotes } from '../api/notes'
@@ -12,6 +12,7 @@ export default function Notes() {
   const [sort, setSort] = useState('recent')
   const [syncOpen, setSyncOpen] = useState(false)
   const [syncMounted, setSyncMounted] = useState(false)
+  const [query, setQuery] = useState('')
   const [projectID, setProjectID] = useState('')
   const [unassigned, setUnassigned] = useState(false)
   const { data: allProjects = [] } = useQuery({
@@ -22,12 +23,22 @@ export default function Notes() {
 
   const notesQ = useQuery({
     queryKey: ['notes', sort, projectID, unassigned],
-    queryFn: () => getNotes({
-      sort,
-      project_id: projectID || undefined,
-      unassigned: unassigned || undefined,
-    }),
+    queryFn: () =>
+      getNotes({
+        sort,
+        project_id: projectID || undefined,
+        unassigned: unassigned || undefined,
+      }),
   })
+
+  const notes = notesQ.data?.notes ?? []
+  const filteredNotes = useMemo(() => {
+    const keyword = query.trim().toLowerCase()
+    if (!keyword) return notes
+    return notes.filter((note) => note.title.toLowerCase().includes(keyword))
+  }, [notes, query])
+  const selectedNote = filteredNotes[0]
+  const selectedTags = selectedNote ? parseTags(selectedNote.tags) : []
 
   async function handleCreateNote() {
     const note = await createNote.mutateAsync({
@@ -48,119 +59,188 @@ export default function Notes() {
   if (notesQ.isLoading) return <Skeleton />
   if (notesQ.error) {
     return (
-      <div className="text-center py-12">
-        <p className="text-fs-text-muted text-sm">加载失败</p>
+      <div className="empty-state">
+        <strong>加载失败</strong>
+        <p>笔记库暂时不可用，请稍后重试。</p>
       </div>
     )
   }
 
   return (
-    <div className="list-workspace">
-      <aside className="filter-rail">
-        <h4 className="text-xs font-semibold text-fs-text-muted mb-2">项目</h4>
-        <button
-          className={`block w-full text-left px-2 py-1 rounded text-sm ${!projectID && !unassigned ? 'bg-fs-accent/10 text-fs-accent' : ''}`}
-          onClick={() => { setProjectID(''); setUnassigned(false) }}
-        >
-          全部笔记
+    <div className="notes-page">
+      <div className="page-local-actions">
+        <button type="button" onClick={handleOpenSyncSettings} className="secondary-action">
+          同步设置
         </button>
-        <button
-          className={`block w-full text-left px-2 py-1 rounded text-sm ${unassigned ? 'bg-fs-accent/10 text-fs-accent' : ''}`}
-          onClick={() => { setProjectID(''); setUnassigned(true) }}
-        >
-          未归属项目
+        <button onClick={handleCreateNote} disabled={createNote.isPending} className="primary-action">
+          ＋ 新建笔记
         </button>
-        {allProjects.map(p => (
-          <button
-            key={p.id}
-            className={`block w-full text-left px-2 py-1 rounded text-sm truncate ${projectID === p.id ? 'bg-fs-accent/10 text-fs-accent' : ''}`}
-            onClick={() => { setProjectID(p.id); setUnassigned(false) }}
-            title={formatTaskProjectOption(p)}
-          >
-            {formatTaskProjectOption(p)}
-          </button>
-        ))}
-        <div className="rail-summary">
-          <span>最近更新</span>
-          <strong>{notesQ.data?.pagination.total ?? 0}</strong>
-          <p>按项目整理笔记</p>
-        </div>
-      </aside>
+      </div>
 
-      <section className="surface-panel list-panel">
-        <div className="panel-heading">
-          <div>
-            <span>{notesQ.data?.pagination.total ?? 0} 篇笔记</span>
-            <h2>笔记库</h2>
-          </div>
-          <div className="toolbar-actions">
-            <button onClick={handleOpenSyncSettings} className="secondary-action">
-              同步
+      <div className="notes-workspace">
+        <aside className="surface-panel note-filter-panel">
+          <section>
+            <h2>项目</h2>
+            <button
+              className={!projectID && !unassigned ? 'is-active' : ''}
+              onClick={() => {
+                setProjectID('')
+                setUnassigned(false)
+              }}
+            >
+              <span>全部笔记</span>
+              <em>{notesQ.data?.pagination.total ?? 0}</em>
             </button>
-            <button onClick={() => setSort(sort === 'recent' ? 'az' : 'recent')} className="secondary-action">
-              {sort === 'recent' ? '最近更新' : 'A-Z'}
+            <button
+              className={unassigned ? 'is-active' : ''}
+              onClick={() => {
+                setProjectID('')
+                setUnassigned(true)
+              }}
+            >
+              <span>未归属</span>
+              <em>0</em>
             </button>
-            <button onClick={handleCreateNote} disabled={createNote.isPending} className="primary-action">
-              {createNote.isPending ? '创建中...' : '新建笔记'}
-            </button>
-          </div>
-        </div>
-
-        <div className="list-rows">
-          {(notesQ.data?.notes ?? []).map((note) => (
-            <div key={note.id} className="rich-row group" onClick={() => navigate(`/editor/${encodeURIComponent(note.id)}`)}>
-              <div className="min-w-0">
-                <strong className="text-sm font-medium text-fs-text block truncate">{note.title}</strong>
-                <div className="text-fs-text-muted text-xs mt-1">
-                  {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}
-                </div>
-                {note.projects && note.projects.length > 0 && (
-                  <div className="chip-list mt-1">
-                    {note.projects.slice(0, 2).map(p => (
-                      <em key={p.id}>{formatTaskProjectOption(p)}</em>
-                    ))}
-                    {note.projects.length > 2 && (
-                      <em>+{note.projects.length - 2}</em>
-                    )}
-                  </div>
-                )}
-              </div>
+            {allProjects.map((project) => (
               <button
-                onClick={(event) => {
-                  event.stopPropagation()
-                  deleteNote(note.id).then(() => notesQ.refetch())
+                key={project.id}
+                className={projectID === project.id ? 'is-active' : ''}
+                onClick={() => {
+                  setProjectID(project.id)
+                  setUnassigned(false)
                 }}
-                className="border-0 bg-transparent text-fs-text-muted hover:text-red-500 cursor-pointer text-xs px-2 py-1 rounded transition-colors opacity-0 group-hover:opacity-100"
+                title={formatTaskProjectOption(project)}
               >
-                删除
+                <span>{formatTaskProjectOption(project)}</span>
+                <em>{project.id === projectID ? filteredNotes.length : 0}</em>
               </button>
-            </div>
-          ))}
-        </div>
+            ))}
+          </section>
+          <section>
+            <h2>标签</h2>
+            <button>
+              <span>学习</span>
+              <em>{selectedTags.includes('学习') ? 1 : 0}</em>
+            </button>
+            <button>
+              <span>想法</span>
+              <em>{selectedTags.includes('想法') ? 1 : 0}</em>
+            </button>
+            <button className="link-like">＋ 新建标签</button>
+          </section>
+          <section>
+            <button>
+              <span>回收站</span>
+            </button>
+          </section>
+        </aside>
 
-        {(notesQ.data?.notes ?? []).length === 0 && <p className="empty-copy">暂无笔记</p>}
-      </section>
+        <section className="surface-panel notes-list-panel">
+          <div className="search-command">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索笔记..." />
+          </div>
+          <div className="segmented-tabs note-tabs">
+            <button className={sort === 'recent' ? 'is-active' : ''} onClick={() => setSort('recent')}>
+              最近更新
+            </button>
+            <button className={sort !== 'recent' ? 'is-active' : ''} onClick={() => setSort('az')}>
+              按项目
+            </button>
+            <button type="button">有任务关联</button>
+          </div>
 
+          <div className="note-card-list">
+            {filteredNotes.map((note, index) => (
+              <article
+                key={note.id}
+                className={`note-library-card ${index === 0 ? 'is-selected' : ''}`}
+                onClick={() => navigate(`/editor/${encodeURIComponent(note.id)}`)}
+              >
+                <div>
+                  <strong>{note.title}</strong>
+                  <time>{new Date(note.updated_at * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
+                </div>
+                <p>{index === 0 ? '这是我的第一篇笔记，记录一些想法和学习内容...' : '从收件箱整理来的想法会出现在这里。'}</p>
+                <footer>
+                  <span>{new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}</span>
+                  <em>{note.projects?.[0] ? formatTaskProjectOption(note.projects[0]) : 'Personal'}</em>
+                  <span>128 字</span>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void deleteNote(note.id).then(() => notesQ.refetch())
+                    }}
+                  >
+                    删除
+                  </button>
+                </footer>
+              </article>
+            ))}
+          </div>
+
+          {filteredNotes.length === 0 && <p className="empty-copy">从收件箱整理来的想法会出现在这里。</p>}
+        </section>
+
+        <aside className="surface-panel note-detail-panel">
+          {selectedNote ? (
+            <>
+              <div className="note-detail-heading">
+                <div>
+                  <h2>{selectedNote.title}</h2>
+                  <p>
+                    <em>{selectedNote.projects?.[0] ? formatTaskProjectOption(selectedNote.projects[0]) : 'Personal'}</em>
+                    <span>{new Date(selectedNote.updated_at * 1000).toLocaleString('zh-CN')}</span>
+                  </p>
+                </div>
+                <button type="button" aria-label="笔记菜单">
+                  ▣
+                </button>
+              </div>
+              <div className="note-detail-body">
+                <p>这是我的第一篇笔记，记录一些想法和学习内容。</p>
+                <p>通过笔记，我可以更好地沉淀知识、连接任务和日程，让灵感不再散落在不同地方。</p>
+              </div>
+              <div className="note-links">
+                <h3>关联内容</h3>
+                <span>关联任务 <em>0</em></span>
+                <span>关联日程 <em>0</em></span>
+              </div>
+              <button className="wide-secondary-action" onClick={() => navigate(`/editor/${encodeURIComponent(selectedNote.id)}`)}>
+                编辑笔记
+              </button>
+            </>
+          ) : (
+            <p className="empty-copy">选择一篇笔记查看详情</p>
+          )}
+        </aside>
+      </div>
       {syncMounted && <SyncSettingsPanel open={syncOpen} onClose={() => setSyncOpen(false)} />}
     </div>
   )
 }
 
+function parseTags(raw: string) {
+  try {
+    const parsed = JSON.parse(raw || '[]')
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+}
+
 function Skeleton() {
   return (
-    <div className="list-workspace">
-      <aside className="filter-rail">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <div key={index} className="h-9 bg-fs-hover rounded-lg animate-pulse" />
-        ))}
-      </aside>
-      <section className="surface-panel list-panel">
+    <div className="notes-workspace">
+      <aside className="surface-panel note-filter-panel" />
+      <section className="surface-panel notes-list-panel">
         <div className="grid gap-2">
-          {Array.from({ length: 5 }).map((_, index) => (
-            <div key={index} className="h-14 bg-fs-hover rounded-lg animate-pulse" />
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="h-20 bg-fs-hover rounded-lg animate-pulse" />
           ))}
         </div>
       </section>
+      <aside className="surface-panel note-detail-panel" />
     </div>
   )
 }

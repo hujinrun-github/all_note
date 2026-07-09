@@ -14,8 +14,17 @@ export interface LoginResponse {
   workspace: AuthWorkspace
 }
 
+export interface CurrentUserResponse extends LoginResponse {
+  must_change_password: boolean
+}
+
 export async function login(body: { email: string; password: string; remember_me: boolean }) {
   const res = await api.post<LoginResponse>('/api/auth/login', body)
+  return res.data
+}
+
+export async function getCurrentUser() {
+  const res = await api.get<CurrentUserResponse>('/api/auth/me')
   return res.data
 }
 
@@ -28,4 +37,8 @@ export async function listAuthProviders() {
 
 export async function changePassword(body: { current_password: string; new_password: string }) {
   await api.post<void>('/api/auth/change-password', body)
+}
+
+export async function logout() {
+  await api.post<void>('/api/auth/logout')
 }

@@ -15,7 +15,7 @@ class APIClient {
     const res = await fetch(url.toString(), { credentials: 'include' })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
-      this.redirectToLoginOnUnauthorized(path, res.status)
+      this.redirectAfterAuthError(path, res.status, body?.error?.code)
       throw new APIError(res.status, body?.error?.code ?? 'UNKNOWN', body?.error?.message ?? 'Request failed')
     }
     if (res.status === 204) return { data: undefined as T }
@@ -31,7 +31,7 @@ class APIClient {
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
-      this.redirectToLoginOnUnauthorized(path, res.status)
+      this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
       throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
     }
     if (res.status === 204) return { data: undefined as T }
@@ -47,7 +47,7 @@ class APIClient {
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
-      this.redirectToLoginOnUnauthorized(path, res.status)
+      this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
       throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
     }
     if (res.status === 204) return { data: undefined as T }
@@ -63,7 +63,7 @@ class APIClient {
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
-      this.redirectToLoginOnUnauthorized(path, res.status)
+      this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
       throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
     }
     return res.json()
@@ -78,9 +78,14 @@ class APIClient {
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
-      this.redirectToLoginOnUnauthorized(path, res.status)
+      this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
       throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Delete failed')
     }
+  }
+
+  private redirectAfterAuthError(path: string, status: number, code?: string) {
+    this.redirectToLoginOnUnauthorized(path, status)
+    this.redirectToPasswordChangeOnRequired(path, status, code)
   }
 
   private redirectToLoginOnUnauthorized(path: string, status: number) {
@@ -88,6 +93,16 @@ class APIClient {
 
     const next = `${window.location.pathname}${window.location.search}${window.location.hash}`
     window.location.assign(`${this.basePath}/login?next=${encodeURIComponent(next)}`)
+  }
+
+  private redirectToPasswordChangeOnRequired(path: string, status: number, code?: string) {
+    if (status !== 403 || code !== 'PASSWORD_CHANGE_REQUIRED') return
+    if (path.startsWith('/api/auth/')) return
+
+    const changePasswordPath = `${this.basePath}/change-password`
+    if (window.location.pathname === changePasswordPath) return
+
+    window.location.assign(changePasswordPath)
   }
 }
 
