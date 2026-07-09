@@ -306,40 +306,70 @@ export function ObsidianSyncPanel({
         </header>
       )}
 
-      <label className="sync-field">
-        <span>目标名称</span>
-        <input required value={name} onChange={(event) => setName(event.target.value)} />
-      </label>
-      <div className="sync-field">
-        <span>Vault 路径</span>
-        <div className="sync-path-picker-row">
-          <input
-            required
-            value={vaultPath}
-            readOnly
-            placeholder="请选择 Obsidian Vault"
-            aria-label="Vault 路径"
-          />
-          <button
-            type="button"
-            className="secondary-action"
-            onClick={handleOpenDirectoryPicker}
-            disabled={isBusy}
-          >
-            选择
-          </button>
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>连接信息</span>
+            <h3>本地 Vault</h3>
+          </div>
+          <p>选择 Obsidian Vault，并指定 FlowSpace 写入的目录。</p>
+        </header>
+        <div className="sync-form-grid">
+          <label className="sync-field">
+            <span>目标名称</span>
+            <input required value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <div className="sync-field">
+            <span>Vault 路径</span>
+            <div className="sync-path-picker-row">
+              <input
+                required
+                value={vaultPath}
+                readOnly
+                placeholder="请选择 Obsidian Vault"
+                aria-label="Vault 路径"
+              />
+              <button
+                type="button"
+                className="secondary-action"
+                onClick={handleOpenDirectoryPicker}
+                disabled={isBusy}
+              >
+                选择
+              </button>
+            </div>
+          </div>
+          <label className="sync-field">
+            <span>同步目录</span>
+            <input
+              required
+              value={baseFolder}
+              onChange={(event) => setBaseFolder(event.target.value)}
+            />
+          </label>
         </div>
-      </div>
-      <label className="sync-field">
-        <span>同步目录</span>
-        <input
-          required
-          value={baseFolder}
-          onChange={(event) => setBaseFolder(event.target.value)}
-        />
-      </label>
-      <SyncTagsField value={syncTags} onChange={setSyncTags} />
-      <label className="sync-toggle">
+      </section>
+
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>同步范围</span>
+            <h3>标签过滤</h3>
+          </div>
+          <p>只同步带有这些标签的笔记，避免把整库内容全部推送出去。</p>
+        </header>
+        <SyncTagsField value={syncTags} onChange={setSyncTags} />
+      </section>
+
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>同步行为</span>
+            <h3>保存与手动同步</h3>
+          </div>
+          <p>自动同步只在笔记保存后触发，远端拉取仍需手动执行。</p>
+        </header>
+        <label className="sync-toggle sync-toggle-card">
         <input
           type="checkbox"
           checked={autoSync}
@@ -574,8 +604,9 @@ export function ObsidianSyncPanel({
           ))}
         </div>
       )}
+      </section>
 
-      <footer className="sync-actions">
+      <footer className="sync-actions sync-sticky-actions">
         <button
           type="button"
           className="secondary-action"

@@ -2,6 +2,7 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/middleware"
@@ -10,8 +11,10 @@ import (
 )
 
 type Config struct {
-	Store storage.Store
-	Auth  config.AuthConfig
+	Store           storage.Store
+	Auth            config.AuthConfig
+	OAuthStateStore auth.OAuthStateStore
+	GitHubClient    handler.GitHubClient
 }
 
 func Setup(cfg Config) *gin.Engine {
@@ -30,6 +33,9 @@ func Setup(cfg Config) *gin.Engine {
 		authRoutes.POST("/logout", authMiddleware.Optional(), handler.Logout(cfg.Store, cfg.Auth.Cookie))
 		authRoutes.GET("/me", authMiddleware.Required(), handler.Me(cfg.Store))
 		authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(cfg.Store))
+		authRoutes.GET("/providers", handler.AuthProviders(cfg.Auth))
+		authRoutes.GET("/github/start", handler.GitHubOAuthStart(cfg.Store, cfg.Auth, cfg.OAuthStateStore))
+		authRoutes.GET("/github/callback", handler.GitHubOAuthCallback(cfg.Store, cfg.Auth, cfg.OAuthStateStore, cfg.GitHubClient))
 
 		protected := api.Group("")
 		protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())

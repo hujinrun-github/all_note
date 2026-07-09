@@ -76,6 +76,10 @@ type AuthRepository interface {
 	UpdateUserStatus(context.Context, string, string) (*model.User, error)
 	UpdateUserLastLogin(context.Context, string, time.Time) error
 	UpdateUserPassword(context.Context, string, string, bool) error
+	GetAuthIdentity(context.Context, string, string) (*model.AuthIdentity, error)
+	CreateAuthIdentity(context.Context, *model.AuthIdentity) error
+	UpdateAuthIdentityFromProvider(context.Context, *model.AuthIdentity, time.Time) error
+	ListAuthIdentitiesByUser(context.Context, string) ([]model.AuthIdentity, error)
 	CreateWorkspace(context.Context, *model.Workspace) error
 	AddWorkspaceMember(context.Context, string, string, string) error
 	CreateSession(context.Context, *model.Session) error

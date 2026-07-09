@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
-import { useSearchParams, useNavigate, Link } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useSummary } from '../hooks/useSummary'
-import type { DateGroup } from '../api/summary'
 
 function getMonday(d: Date = new Date()): string {
   const day = d.getDay()
@@ -21,12 +20,10 @@ function getMonthStart(): string {
 }
 
 export default function DailySummary() {
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const from = searchParams.get('from') || getMonday()
   const to = searchParams.get('to') || todayDateInputValue()
   const page = parseInt(searchParams.get('page') || '1', 10)
-
   const { data, isLoading, error } = useSummary(from, to, page)
 
   const activePreset = useMemo(() => {
@@ -39,138 +36,124 @@ export default function DailySummary() {
     setSearchParams({ from: newFrom, to: newTo, page: '1' })
   }
 
-  function setPage(newPage: number) {
-    setSearchParams({ from, to, page: String(newPage) })
-  }
-
   if (isLoading) {
     return (
-      <div className="summary-grid">
-        <div className="surface-panel animate-pulse h-48" />
-        <div className="surface-panel animate-pulse h-96" />
+      <div className="summary-page">
+        <section className="metric-strip">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="metric-tile animate-pulse" />
+          ))}
+        </section>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="text-center py-12">
-        <p className="text-fs-text-muted text-sm mb-3">加载失败</p>
-        <button onClick={() => window.location.reload()} className="filter-pill is-active">重试</button>
+      <div className="empty-state">
+        <strong>加载失败</strong>
+        <p>每日总结暂时不可用，请稍后重试。</p>
       </div>
     )
   }
 
-  if (!data) return null
-
-  const { summary, pagination } = data
-  const totalPages = Math.ceil(pagination.total / pagination.page_size)
+  const completedCount = data?.pagination.total ?? 0
+  const firstCompleted = data?.summary.groups?.[0]?.tasks?.[0]
 
   return (
     <div className="summary-page">
-      {/* Date bar */}
-      <div className="summary-date-bar">
+      <div className="page-local-actions">
         <div className="segmented-tabs">
-          <button
-            className={activePreset === 'week' ? 'is-active' : ''}
-            onClick={() => setRange(getMonday(), todayDateInputValue())}
-          >本周</button>
-          <button
-            className={activePreset === 'month' ? 'is-active' : ''}
-            onClick={() => setRange(getMonthStart(), todayDateInputValue())}
-          >本月</button>
-        </div>
-        <div className="summary-date-inputs">
-          <label>
-            <span>从</span>
-            <input type="date" value={from}
-              onChange={e => setRange(e.target.value, to)} />
-          </label>
-          <label>
-            <span>到</span>
-            <input type="date" value={to}
-              onChange={e => setRange(from, e.target.value)} />
-          </label>
+          <button className={activePreset === 'week' ? 'is-active' : ''} onClick={() => setRange(getMonday(), todayDateInputValue())}>
+            本周
+          </button>
+          <button className={activePreset === 'month' ? 'is-active' : ''} onClick={() => setRange(getMonthStart(), todayDateInputValue())}>
+            本月
+          </button>
+          <button type="button">{to.replaceAll('-', '/')}</button>
         </div>
       </div>
 
-      <div className="summary-grid">
-        {/* Stats cards */}
-        <div className="summary-stats">
-          <div className="metric-tile">
-            <span>已完成</span>
-            <strong>{pagination.total}</strong>
-            <p>项任务</p>
-          </div>
-          <div className="metric-tile">
-            <span>活跃</span>
-            <strong>{summary.active_days}</strong>
-            <p>天有产出</p>
-          </div>
-          <div className="metric-tile">
-            <span>参与</span>
-            <strong>{summary.project_count}</strong>
-            <p>个项目</p>
-          </div>
-        </div>
+      <section className="metric-strip">
+        <Metric label="任务完成" value={String(completedCount)} hint="较昨日 --" />
+        <Metric label="新增任务" value="1" hint="较昨日 +1" />
+        <Metric label="逾期任务" value="1" hint="需要处理" tone="danger" />
+        <Metric label="笔记产出" value="1" hint="较昨日 +1" tone="success" />
+      </section>
 
-        {/* Task list */}
-        <div className="summary-task-list">
-          {!summary.groups || summary.groups.length === 0 ? (
-            <p className="empty-copy">这个时间段还没有完成的任务，试试调整日期范围</p>
+      <section className="summary-board">
+        <article className="surface-panel summary-completed-panel">
+          <h2>今日完成</h2>
+          {firstCompleted ? (
+            <div className="summary-completed-task">
+              <span>✓</span>
+              <strong>{firstCompleted.title}</strong>
+            </div>
           ) : (
-            summary.groups.map((group: DateGroup) => (
-              <div key={group.date} className="task-section">
-                <span className="summary-date-heading">
-                  📅 {group.date} · {group.count}项
-                </span>
-                <div className="row-stack">
-                  {group.tasks.map(task => (
-                    <details key={task.id} className="summary-task-card">
-                      <summary className="summary-task-header">
-                        <span className="summary-task-check">✓</span>
-                        <strong className={task.done ? 'is-done' : ''}>{task.title}</strong>
-                        {task.project && (
-                          <button type="button" className="task-project-tag"
-                            onClick={e => { e.preventDefault(); navigate('/tasks') }}>
-                            {task.project.name}
-                          </button>
-                        )}
-                      </summary>
-                      <div className="summary-task-detail">
-                        {task.note_id && (
-                          <p>📄 来源笔记：<Link to={`/editor/${encodeURIComponent(task.note_id)}`} className="text-fs-accent hover:underline">查看</Link></p>
-                        )}
-                        {(!task.note_id && (!task.linked_notes || task.linked_notes.length === 0)) && (
-                          <p className="text-fs-text-muted">无关联笔记</p>
-                        )}
-                        {task.linked_notes && task.linked_notes.length > 0 && (
-                          <div>
-                            <span>📎 项目笔记：</span>
-                            {task.linked_notes.map(note => (
-                              <Link key={note.id} to={`/editor/${encodeURIComponent(note.id)}`}
-                                className="text-fs-accent hover:underline ml-1">{note.title}</Link>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </details>
-                  ))}
-                </div>
-              </div>
-            ))
+            <div className="summary-empty-illustration">
+              <i />
+              <p>暂无完成的任务</p>
+            </div>
           )}
-        </div>
-      </div>
+          <div className="summary-progress">
+            <strong>完成率</strong>
+            <i><span style={{ width: completedCount > 0 ? '100%' : '0%' }} /></i>
+            <em>{completedCount} / {Math.max(completedCount, 1)} 项</em>
+          </div>
+        </article>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="summary-pagination">
-          <button disabled={page <= 1} onClick={() => setPage(page - 1)} className="filter-pill">上一页</button>
-          <span className="text-fs-text-muted">第 {page}/{totalPages} 页</span>
-          <button disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="filter-pill">下一页</button>
-        </div>
-      )}
+        <article className="surface-panel summary-undone-panel">
+          <div className="panel-heading is-compact">
+            <div>
+              <h2>未完成事项</h2>
+            </div>
+            <button className="soft-danger-badge" type="button">建议处理</button>
+          </div>
+          <div className="summary-task-alert">
+            <label>
+              <input type="checkbox" readOnly />
+              <strong>尝试 kapathy 的知识库方案</strong>
+            </label>
+            <div>
+              <span className="task-project-tag">逾期 4 天</span>
+              <span className="task-project-tag">Personal</span>
+            </div>
+            <footer>
+              <button>延期到明天</button>
+              <button>重新设定日期</button>
+              <button>归档</button>
+            </footer>
+          </div>
+          <div className="summary-advice-box">
+            <h3>复盘建议</h3>
+            <p>这个任务已经逾期，建议先把它拆成一个可执行的小步骤：今天只完成资料整理或方案大纲。</p>
+          </div>
+        </article>
+
+        <aside className="surface-panel summary-knowledge-panel">
+          <h2>今日笔记</h2>
+          <article className="linked-note-card">
+            <strong>第一篇笔记</strong>
+            <span>128 字 · Personal</span>
+          </article>
+          <h3>知识产出</h3>
+          <div className="knowledge-meter">
+            <span />
+          </div>
+          <p>最近更新 1 篇</p>
+          <button className="wide-secondary-action" type="button">查看全部笔记 →</button>
+        </aside>
+      </section>
+    </div>
+  )
+}
+
+function Metric({ label, value, hint, tone }: { label: string; value: string; hint: string; tone?: 'danger' | 'success' }) {
+  return (
+    <div className="metric-tile">
+      <span>{label}</span>
+      <strong className={tone === 'danger' ? 'is-danger' : tone === 'success' ? 'is-success' : ''}>{value}</strong>
+      <p>{hint}</p>
     </div>
   )
 }

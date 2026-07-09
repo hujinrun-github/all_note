@@ -5,8 +5,10 @@ import (
 	"log"
 	"time"
 
+	authpkg "github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/bootstrap"
 	"github.com/hujinrun/flowspace/internal/config"
+	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/router"
 	storagepkg "github.com/hujinrun/flowspace/internal/storage"
@@ -64,10 +66,16 @@ func main() {
 	log.Printf("storage initialized env=%s driver=%s database=%s sqlite_path=%s capabilities=%+v", storageConfig.Env, storageConfig.Driver, storageConfig.Name, storageConfig.SQLitePath, store.Capabilities())
 
 	server := config.LoadServerConfig(runtimeConfig.Environment)
+	oauthStateStore := authpkg.NewMemoryOAuthStateStore()
+	oauthStateCtx, stopOAuthStateCleanup := context.WithCancel(context.Background())
+	defer stopOAuthStateCleanup()
+	go oauthStateStore.RunCleanup(oauthStateCtx, 2*time.Minute, 1000)
 
 	r := router.Setup(router.Config{
-		Store: store,
-		Auth:  authCfg,
+		Store:           store,
+		Auth:            authCfg,
+		OAuthStateStore: oauthStateStore,
+		GitHubClient:    handler.NewGitHubHTTPClient(authCfg.GitHub),
 	})
 	addr := ":" + server.Port
 	log.Printf("server starting on %s", addr)

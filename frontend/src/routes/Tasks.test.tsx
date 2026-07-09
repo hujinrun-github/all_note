@@ -159,6 +159,7 @@ describe('Tasks long task tracking', () => {
     vi.clearAllMocks()
     vi.mocked(tasksApi.listTaskProjects).mockResolvedValue(projects)
     vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(null)
+    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({ tasks: [], pagination })
     vi.mocked(tasksApi.getTasks).mockImplementation(async (params) => {
       if (params.horizon === 'long') {
         return {
@@ -233,8 +234,211 @@ describe('Tasks long task tracking', () => {
 
     await user.click(await screen.findByRole('tab', { name: '长期任务' }))
 
-    expect(await screen.findByRole('option', { name: 'AI Infra' })).toBeVisible()
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'AI Infra' }).length).toBeGreaterThan(0))
     expect(screen.queryByText('先在左侧新增一个任务项目')).not.toBeInTheDocument()
+  })
+
+  it('selects a weekly task from the row content without completing it', async () => {
+    vi.mocked(tasksApi.getTasks).mockImplementation(async (params) => {
+      if (params.horizon === 'long') return { tasks: [], pagination }
+      return {
+        tasks: [
+          task({
+            id: 'week-first',
+            title: '第一条任务',
+            project: '个人',
+            project_id: 'personal',
+            project_type: 'personal',
+            horizon: 'week',
+            scope: 'weekly',
+            planned_date: todayDateInputValue(),
+          }),
+          task({
+            id: 'week-second',
+            title: '第二条任务',
+            project: '个人',
+            project_id: 'personal',
+            project_type: 'personal',
+            horizon: 'week',
+            scope: 'weekly',
+            planned_date: todayDateInputValue(),
+          }),
+        ],
+        pagination,
+      }
+    })
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByText('第二条任务'))
+
+    expect(tasksApi.updateTask).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('任务详情标题')).toHaveValue('第二条任务')
+  })
+
+  it('places completed weekly tasks after active tasks from the same day', async () => {
+    vi.mocked(tasksApi.getTasks).mockImplementation(async (params) => {
+      if (params.horizon === 'long') return { tasks: [], pagination }
+      return {
+        tasks: [
+          task({
+            id: 'week-done',
+            title: '已完成任务',
+            project: '个人',
+            project_id: 'personal',
+            project_type: 'personal',
+            done: 1,
+            status: 'done',
+            horizon: 'week',
+            scope: 'weekly',
+            planned_date: todayDateInputValue(),
+            updated_at: 1800000300,
+          }),
+          task({
+            id: 'week-open',
+            title: '待处理任务',
+            project: '个人',
+            project_id: 'personal',
+            project_type: 'personal',
+            done: 0,
+            status: 'open',
+            horizon: 'week',
+            scope: 'weekly',
+            planned_date: todayDateInputValue(),
+            updated_at: 1800000100,
+          }),
+        ],
+        pagination,
+      }
+    })
+    const { container } = renderTasks()
+
+    await screen.findByText('待处理任务')
+
+    const titles = Array.from(container.querySelectorAll('.task-section .task-row-title')).map((title) =>
+      title.textContent?.trim(),
+    )
+    expect(titles).toEqual(['待处理任务', '已完成任务'])
+  })
+
+  it('groups projects by matching task views and creates typed projects from group controls', async () => {
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([...projects, learningProject])
+    vi.mocked(tasksApi.createTaskProject).mockResolvedValue({
+      id: 'learning-n2',
+      name: 'N2 语法',
+      type: 'learning',
+      description: '',
+      created_at: 1,
+      updated_at: 1,
+    })
+    renderTasks()
+    const user = userEvent.setup()
+
+    const shortGroup = await screen.findByTestId('task-project-group-personal')
+    const longGroup = screen.getByTestId('task-project-group-regular')
+    const learningGroup = screen.getByTestId('task-project-group-learning')
+    expect(within(shortGroup).getByText('个人短期项目')).toBeVisible()
+    expect(await within(shortGroup).findByText('1 个项目')).toBeVisible()
+    expect(await within(shortGroup).findByRole('button', { name: '选择项目 个人' })).toBeVisible()
+    expect(within(longGroup).getByText('长期项目')).toBeVisible()
+    expect(await within(longGroup).findByText('1 个项目')).toBeVisible()
+    expect(await within(longGroup).findByText('AI Infra')).toBeVisible()
+    expect(within(learningGroup).getByRole('heading', { name: '学习项目' })).toBeVisible()
+    expect(await within(learningGroup).findByText('1 个项目')).toBeVisible()
+    expect(await within(learningGroup).findByText('AI Infra工程师')).toBeVisible()
+
+    await user.click(within(learningGroup).getByRole('button', { name: '新建学习项目' }))
+    await user.type(screen.getByLabelText('学习项目名称'), 'N2 语法')
+    await user.click(screen.getByRole('button', { name: '创建学习项目' }))
+
+    await waitFor(() => expect(tasksApi.createTaskProject).toHaveBeenCalled())
+    expect(vi.mocked(tasksApi.createTaskProject).mock.calls[0]?.[0]).toEqual({
+      name: 'N2 语法',
+      type: 'learning',
+      description: '',
+    })
+  })
+
+  it('creates a regular long project before adding long tasks when no long project exists', async () => {
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([projects[0]])
+    vi.mocked(tasksApi.getTasks).mockResolvedValue({ tasks: [], pagination })
+    vi.mocked(tasksApi.createTaskProject).mockResolvedValue({
+      id: 'long-plan',
+      name: '年度计划',
+      type: 'regular',
+      description: '',
+      created_at: 1,
+      updated_at: 1,
+    })
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '长期任务' }))
+
+    expect(screen.queryByLabelText('长期任务内容')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '创建长期项目' }))
+    await user.type(screen.getByLabelText('长期项目名称'), '年度计划')
+    await user.click(screen.getByRole('button', { name: '创建长期项目' }))
+
+    await waitFor(() => expect(tasksApi.createTaskProject).toHaveBeenCalled())
+    expect(vi.mocked(tasksApi.createTaskProject).mock.calls[0]?.[0]).toEqual({
+      name: '年度计划',
+      type: 'regular',
+      description: '',
+    })
+  })
+
+  it('opens the learning project creator from the roadmap empty state', async () => {
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([projects[0]])
+    vi.mocked(tasksApi.getTasks).mockResolvedValue({ tasks: [], pagination })
+    vi.mocked(tasksApi.createTaskProject).mockResolvedValue({
+      id: 'learning-n2',
+      name: 'N2 语法',
+      type: 'learning',
+      description: '',
+      created_at: 1,
+      updated_at: 1,
+    })
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+
+    await user.click(screen.getByRole('button', { name: '创建学习项目' }))
+    await user.type(screen.getByLabelText('学习项目名称'), 'N2 语法')
+    await user.click(screen.getByRole('button', { name: '创建学习项目' }))
+
+    await waitFor(() => expect(tasksApi.createTaskProject).toHaveBeenCalled())
+    expect(vi.mocked(tasksApi.createTaskProject).mock.calls[0]?.[0]).toEqual({
+      name: 'N2 语法',
+      type: 'learning',
+      description: '',
+    })
+  })
+
+  it('saves editable task details from the inspector panel', async () => {
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '长期任务' }))
+
+    const titleInput = await screen.findByLabelText('任务详情标题')
+    await user.clear(titleInput)
+    await user.type(titleInput, '更新后的长期目标')
+    await user.selectOptions(screen.getByLabelText('任务详情项目'), 'personal')
+    await user.click(screen.getByRole('button', { name: '进行中' }))
+    await user.type(screen.getByLabelText('任务详情备注'), '下一步先整理任务边界')
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() =>
+      expect(tasksApi.updateTask).toHaveBeenCalledWith('long-active', {
+        title: '更新后的长期目标',
+        content: '下一步先整理任务边界',
+        project_id: 'personal',
+        status: 'active',
+        planned_date: '',
+      }),
+    )
   })
 })
 

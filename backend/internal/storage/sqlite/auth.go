@@ -39,11 +39,11 @@ func (r authRepository) CreateUser(ctx context.Context, user *model.User) error 
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO users (
-			id, email, display_name, password_hash, must_change_password, default_workspace_id,
+			id, email, display_name, password_hash, password_set, must_change_password, default_workspace_id,
 			role, status, created_at, updated_at, last_login_at, password_changed_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, boolToSQLiteInt(user.MustChangePassword), nullableString(user.DefaultWorkspaceID),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, user.ID, user.Email, user.DisplayName, user.PasswordHash, boolToSQLiteInt(user.PasswordSet), boolToSQLiteInt(user.MustChangePassword), nullableString(user.DefaultWorkspaceID),
 		user.Role, user.Status, user.CreatedAt, user.UpdatedAt, nullableUnixPtr(user.LastLoginAt), nullableUnixPtr(user.PasswordChangedAt))
 	if isSQLiteEmailAlreadyExists(err) {
 		return auth.ErrEmailAlreadyExists
@@ -178,12 +178,98 @@ func (r authRepository) UpdateUserPassword(ctx context.Context, userID, password
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE users
 		SET password_hash = ?,
+			password_set = 1,
 			must_change_password = ?,
 			password_changed_at = ?,
 			updated_at = ?
 		WHERE id = ?
 	`, passwordHash, boolToSQLiteInt(mustChangePassword), now, now, userID)
 	return err
+}
+
+func (r authRepository) GetAuthIdentity(ctx context.Context, provider, providerUserID string) (*model.AuthIdentity, error) {
+	return scanSQLiteAuthIdentity(r.db.QueryRowContext(ctx, sqliteAuthIdentitySelectSQL()+`
+		WHERE provider = ? AND provider_user_id = ?
+	`, provider, providerUserID))
+}
+
+func (r authRepository) CreateAuthIdentity(ctx context.Context, identity *model.AuthIdentity) error {
+	if identity == nil {
+		return fmt.Errorf("auth identity is nil")
+	}
+	now := nowUnix()
+	if strings.TrimSpace(identity.ID) == "" {
+		identity.ID = newID()
+	}
+	if identity.CreatedAt == 0 {
+		identity.CreatedAt = now
+	}
+	if identity.UpdatedAt == 0 {
+		identity.UpdatedAt = identity.CreatedAt
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO auth_identities (
+			id, user_id, provider, provider_user_id, provider_login, email,
+			avatar_url, created_at, updated_at, last_login_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, identity.ID, identity.UserID, identity.Provider, identity.ProviderUserID, identity.ProviderLogin, identity.Email,
+		nullableStringPtr(identity.AvatarURL), identity.CreatedAt, identity.UpdatedAt, nullableUnixPtr(identity.LastLoginAt))
+	return err
+}
+
+func (r authRepository) UpdateAuthIdentityFromProvider(ctx context.Context, identity *model.AuthIdentity, at time.Time) error {
+	if identity == nil {
+		return fmt.Errorf("auth identity is nil")
+	}
+	current, err := r.GetAuthIdentity(ctx, identity.Provider, identity.ProviderUserID)
+	if err != nil {
+		return err
+	}
+	loginAt := at.UTC().Unix()
+	updatedAt := current.UpdatedAt
+	if authIdentityProviderFieldsChanged(current, identity) {
+		updatedAt = loginAt
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE auth_identities
+		SET provider_login = ?,
+			email = ?,
+			avatar_url = ?,
+			updated_at = ?,
+			last_login_at = ?
+		WHERE provider = ? AND provider_user_id = ?
+	`, identity.ProviderLogin, identity.Email, nullableStringPtr(identity.AvatarURL), updatedAt, loginAt, identity.Provider, identity.ProviderUserID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	identity.UpdatedAt = updatedAt
+	identity.LastLoginAt = &loginAt
+	return nil
+}
+
+func (r authRepository) ListAuthIdentitiesByUser(ctx context.Context, userID string) ([]model.AuthIdentity, error) {
+	rows, err := r.db.QueryContext(ctx, sqliteAuthIdentitySelectSQL()+`
+		WHERE user_id = ?
+		ORDER BY provider ASC, provider_user_id ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	identities := make([]model.AuthIdentity, 0)
+	for rows.Next() {
+		identity, err := scanSQLiteAuthIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		identities = append(identities, *identity)
+	}
+	return identities, rows.Err()
 }
 
 func (r authRepository) CreateWorkspace(ctx context.Context, workspace *model.Workspace) error {
@@ -354,7 +440,7 @@ func (r authRepository) LockActiveAdmins(ctx context.Context) ([]model.User, err
 
 func sqliteAuthUserSelectSQL() string {
 	return `
-		SELECT id, email, display_name, password_hash, must_change_password, default_workspace_id,
+		SELECT id, email, display_name, password_hash, password_set, must_change_password, default_workspace_id,
 			role, status, created_at, updated_at, last_login_at, password_changed_at
 		FROM users
 	`
@@ -362,6 +448,7 @@ func sqliteAuthUserSelectSQL() string {
 
 func scanSQLiteAuthUser(row sqliteRowScanner) (*model.User, error) {
 	var user model.User
+	var passwordSet int
 	var mustChangePassword int
 	var defaultWorkspaceID sql.NullString
 	var lastLoginAt sql.NullInt64
@@ -371,6 +458,7 @@ func scanSQLiteAuthUser(row sqliteRowScanner) (*model.User, error) {
 		&user.Email,
 		&user.DisplayName,
 		&user.PasswordHash,
+		&passwordSet,
 		&mustChangePassword,
 		&defaultWorkspaceID,
 		&user.Role,
@@ -382,11 +470,43 @@ func scanSQLiteAuthUser(row sqliteRowScanner) (*model.User, error) {
 	); err != nil {
 		return nil, err
 	}
+	user.PasswordSet = passwordSet == 1
 	user.MustChangePassword = mustChangePassword == 1
 	user.DefaultWorkspaceID = defaultWorkspaceID.String
 	user.LastLoginAt = nullInt64Ptr(lastLoginAt)
 	user.PasswordChangedAt = nullInt64Ptr(passwordChangedAt)
 	return &user, nil
+}
+
+func sqliteAuthIdentitySelectSQL() string {
+	return `
+		SELECT id, user_id, provider, provider_user_id, provider_login, email,
+			avatar_url, created_at, updated_at, last_login_at
+		FROM auth_identities
+	`
+}
+
+func scanSQLiteAuthIdentity(row sqliteRowScanner) (*model.AuthIdentity, error) {
+	var identity model.AuthIdentity
+	var avatarURL sql.NullString
+	var lastLoginAt sql.NullInt64
+	if err := row.Scan(
+		&identity.ID,
+		&identity.UserID,
+		&identity.Provider,
+		&identity.ProviderUserID,
+		&identity.ProviderLogin,
+		&identity.Email,
+		&avatarURL,
+		&identity.CreatedAt,
+		&identity.UpdatedAt,
+		&lastLoginAt,
+	); err != nil {
+		return nil, err
+	}
+	identity.AvatarURL = nullStringPtr(avatarURL)
+	identity.LastLoginAt = nullInt64Ptr(lastLoginAt)
+	return &identity, nil
 }
 
 func scanSQLiteAuthSession(row sqliteRowScanner) (*model.Session, error) {
@@ -457,6 +577,26 @@ func nullableStringPtr(value *string) interface{} {
 		return nil
 	}
 	return *value
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func authIdentityProviderFieldsChanged(current *model.AuthIdentity, next *model.AuthIdentity) bool {
+	return current.ProviderLogin != next.ProviderLogin ||
+		current.Email != next.Email ||
+		!stringPtrEqual(current.AvatarURL, next.AvatarURL)
+}
+
+func stringPtrEqual(left *string, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func isSQLiteEmailAlreadyExists(err error) bool {

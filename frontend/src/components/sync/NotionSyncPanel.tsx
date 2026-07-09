@@ -329,117 +329,154 @@ export function NotionSyncPanel() {
 
   return (
     <>
-      <div className="sync-target-editor">
-        <label className="sync-field">
-          <span>编辑目标</span>
-          <select
-            aria-label="编辑 Notion 目标"
-            value={isCreatingTarget ? '' : (editingTargetID ?? '')}
-            onChange={(event) => handleSelectTarget(event.target.value)}
-            disabled={isBusy || targetsQ.isLoading}
-          >
-            <option value="">新建 Notion 目标</option>
-            {notionTargets.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name || '未命名 Notion 目标'}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          className="secondary-action"
-          onClick={handleCreateTarget}
-          disabled={isBusy}
-        >
-          新增 Notion 目标
-        </button>
-      </div>
-
-      <label className="sync-field">
-        <span>目标名称</span>
-        <input
-          required
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-      </label>
-
-      <div className="sync-field">
-        <div className="sync-field-heading">
-          <label htmlFor="notion-data-source-id">
-            数据库链接或 Data Source ID
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>当前目标</span>
+            <h3>Notion 目标</h3>
+          </div>
+          <p>选择要编辑的 Notion 配置，或创建一个新的同步目标。</p>
+        </header>
+        <div className="sync-target-editor">
+          <label className="sync-field">
+            <span>编辑目标</span>
+            <select
+              aria-label="编辑 Notion 目标"
+              value={isCreatingTarget ? '' : (editingTargetID ?? '')}
+              onChange={(event) => handleSelectTarget(event.target.value)}
+              disabled={isBusy || targetsQ.isLoading}
+            >
+              <option value="">新建 Notion 目标</option>
+              {notionTargets.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name || '未命名 Notion 目标'}
+                </option>
+              ))}
+            </select>
           </label>
-          <a
-            className="sync-help-link"
-            href={`${NOTION_SYNC_DOC_PATH}#data-source-id`}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Data Source ID 说明"
-            onClick={openNotionSyncHelp}
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={handleCreateTarget}
+            disabled={isBusy}
           >
-            说明
-          </a>
+            新增 Notion 目标
+          </button>
         </div>
-        <input
-          required
-          id="notion-data-source-id"
-          aria-label="Data Source ID"
-          placeholder="粘贴 Notion 数据库链接或 Data Source ID"
-          value={dataSourceID}
-          onChange={(event) => setDataSourceID(event.target.value)}
-        />
-      </div>
+      </section>
 
-      <div className="sync-field">
-        <div className="sync-field-heading">
-          <label htmlFor="notion-token">Notion Token（原始令牌）</label>
-          <a
-            className="sync-help-link"
-            href={`${NOTION_SYNC_DOC_PATH}#token`}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Notion Token 说明"
-            onClick={openNotionSyncHelp}
-          >
-            说明
-          </a>
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>连接信息</span>
+            <h3>Notion 数据源</h3>
+          </div>
+          <p>填写数据库来源、访问令牌和标题字段。</p>
+        </header>
+        <div className="sync-form-grid">
+          <label className="sync-field">
+            <span>目标名称</span>
+            <input
+              required
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+
+          <div className="sync-field sync-field-wide">
+            <div className="sync-field-heading">
+              <label htmlFor="notion-data-source-id">
+                数据库链接或 Data Source ID
+              </label>
+              <a
+                className="sync-help-link"
+                href={`${NOTION_SYNC_DOC_PATH}#data-source-id`}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Data Source ID 说明"
+                onClick={openNotionSyncHelp}
+              >
+                说明
+              </a>
+            </div>
+            <input
+              required
+              id="notion-data-source-id"
+              aria-label="Data Source ID"
+              placeholder="粘贴 Notion 数据库链接或 Data Source ID"
+              value={dataSourceID}
+              onChange={(event) => setDataSourceID(event.target.value)}
+            />
+          </div>
+
+          <div className="sync-field sync-field-wide">
+            <div className="sync-field-heading">
+              <label htmlFor="notion-token">Notion Token（原始令牌）</label>
+              <a
+                className="sync-help-link"
+                href={`${NOTION_SYNC_DOC_PATH}#token`}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Notion Token 说明"
+                onClick={openNotionSyncHelp}
+              >
+                说明
+              </a>
+            </div>
+            <input
+              id="notion-token"
+              type="password"
+              autoComplete="off"
+              aria-label="Notion Token"
+              aria-describedby="notion-token-help"
+              placeholder={
+                tokenConfigured
+                  ? '••••••••（已设置，输入新 Token 覆盖）'
+                  : '粘贴 ntn_... 原始 Token'
+              }
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+            />
+            <p
+              id="notion-token-help"
+              className="sync-field-help sync-field-help-muted"
+            >
+              <span className="sync-token-status">{tokenStatus}</span>
+              {tokenHelpText}
+            </p>
+          </div>
+
+          <label className="sync-field">
+            <span>标题属性</span>
+            <input
+              required
+              value={titleProperty}
+              onChange={(event) => setTitleProperty(event.target.value)}
+            />
+          </label>
         </div>
-        <input
-          id="notion-token"
-          type="password"
-          autoComplete="off"
-          aria-label="Notion Token"
-          aria-describedby="notion-token-help"
-          placeholder={
-            tokenConfigured
-              ? '••••••••（已设置，输入新 Token 覆盖）'
-              : '粘贴 ntn_... 原始 Token'
-          }
-          value={token}
-          onChange={(event) => setToken(event.target.value)}
-        />
-        <p
-          id="notion-token-help"
-          className="sync-field-help sync-field-help-muted"
-        >
-          <span className="sync-token-status">{tokenStatus}</span>
-          {tokenHelpText}
-        </p>
-      </div>
+      </section>
 
-      <label className="sync-field">
-        <span>标题属性</span>
-        <input
-          required
-          value={titleProperty}
-          onChange={(event) => setTitleProperty(event.target.value)}
-        />
-      </label>
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>同步范围</span>
+            <h3>标签过滤</h3>
+          </div>
+          <p>只拉取或推送命中标签的页面，保持 Notion 数据源边界清晰。</p>
+        </header>
+        <SyncTagsField value={syncTags} onChange={setSyncTags} />
+      </section>
 
-      <SyncTagsField value={syncTags} onChange={setSyncTags} />
-
-      <label className="sync-toggle">
+      <section className="sync-form-section">
+        <header className="sync-form-section-header">
+          <div>
+            <span>同步行为</span>
+            <h3>保存与手动同步</h3>
+          </div>
+          <p>自动同步只负责本地保存后的推送；Notion 内容进入 FlowSpace 需要手动拉取。</p>
+        </header>
+        <label className="sync-toggle sync-toggle-card">
         <input
           type="checkbox"
           checked={autoSync}
@@ -509,8 +546,9 @@ export function NotionSyncPanel() {
           正在读取 Notion 删除候选
         </p>
       )}
+      </section>
 
-      <footer className="sync-actions">
+      <footer className="sync-actions sync-sticky-actions">
         <button
           type="button"
           className="secondary-action"

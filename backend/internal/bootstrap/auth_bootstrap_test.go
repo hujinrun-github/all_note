@@ -303,15 +303,19 @@ func assertDefaultWorkspaceOwnedByAdmin(t *testing.T, db *sql.DB, cfg Config) {
 	t.Helper()
 
 	var userID, defaultWorkspaceID, passwordHash string
+	var passwordSet bool
 	if err := db.QueryRow(`
-		SELECT id, default_workspace_id, password_hash
+		SELECT id, default_workspace_id, password_hash, password_set
 		FROM users
 		WHERE lower(email) = lower(?)
-	`, cfg.AdminEmail).Scan(&userID, &defaultWorkspaceID, &passwordHash); err != nil {
+	`, cfg.AdminEmail).Scan(&userID, &defaultWorkspaceID, &passwordHash, &passwordSet); err != nil {
 		t.Fatalf("load bootstrap admin: %v", err)
 	}
 	if defaultWorkspaceID == "" {
 		t.Fatal("bootstrap admin default workspace is empty")
+	}
+	if !passwordSet {
+		t.Fatal("bootstrap admin password_set = false, want true")
 	}
 	if passwordHash == cfg.AdminPassword || !strings.HasPrefix(passwordHash, "$2") {
 		t.Fatalf("bootstrap admin password was not stored as bcrypt hash: %q", passwordHash)

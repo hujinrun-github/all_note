@@ -65,6 +65,51 @@ func TestRunPostgresMigrationsCreatesCoreTablesSeedDataAndIsIdempotent(t *testin
 	assertColumnType(t, db, schema, "search_index", "search_vector", "tsvector")
 }
 
+func TestRunPostgresMigrationsAddsGitHubOAuthAuthSchema(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_github_oauth_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+	defer db.Close()
+
+	if err := RunPostgresMigrationsContext(context.Background(), db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	assertPostgresColumnExists(t, db, schema, "users", "password_set")
+	assertColumnType(t, db, schema, "users", "password_set", "bool")
+	assertPostgresColumnDefault(t, db, schema, "users", "password_set", "true")
+	assertPostgresColumnNullable(t, db, schema, "users", "password_set", "NO")
+
+	for _, column := range []struct {
+		name string
+		want string
+	}{
+		{"created_at", "timestamptz"},
+		{"updated_at", "timestamptz"},
+		{"last_login_at", "timestamptz"},
+	} {
+		assertPostgresColumnExists(t, db, schema, "auth_identities", column.name)
+		assertColumnType(t, db, schema, "auth_identities", column.name, column.want)
+	}
+	assertPostgresColumnNullable(t, db, schema, "auth_identities", "created_at", "NO")
+	assertPostgresColumnNullable(t, db, schema, "auth_identities", "updated_at", "NO")
+	assertPostgresColumnNullable(t, db, schema, "auth_identities", "last_login_at", "YES")
+
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_constraint c
+		JOIN pg_class rel ON rel.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = rel.relnamespace
+		WHERE n.nspname = current_schema()
+			AND rel.relname = 'auth_identities'
+			AND c.contype = 'u'
+			AND (
+				SELECT array_agg(att.attname ORDER BY key.ord)::text[]
+				FROM unnest(c.conkey) WITH ORDINALITY AS key(attnum, ord)
+				JOIN pg_attribute att ON att.attrelid = c.conrelid AND att.attnum = key.attnum
+			) = ARRAY['provider', 'provider_user_id']::text[]
+	`, 1)
+}
+
 func TestApplyPostgresMigrationSerializesConcurrentStartup(t *testing.T) {
 	schema := fmt.Sprintf("fs_test_migration_lock_%d", time.Now().UnixNano())
 	db := openPostgresTestDB(t, schema)

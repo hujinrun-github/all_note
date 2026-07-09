@@ -1,13 +1,13 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { completeOccurrence, listTaskProjects, reopenOccurrence } from '../api/tasks'
 import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import { EventChip, type EventData } from '../components/ui/EventChip'
 import { NoteCard, type NoteData } from '../components/ui/NoteCard'
-import { MiniCalendar } from '../components/ui/MiniCalendar'
-import { useCreateTask, useUpdateTask } from '../hooks/useTasks'
-import { dateInputToUnix, todayDateInputValue } from '../utils/taskForm'
+import { useUpdateTask } from '../hooks/useTasks'
+import { todayDateInputValue } from '../utils/taskForm'
 import { formatTaskProjectOption } from '../utils/taskProjects'
 
 interface TodayData {
@@ -17,12 +17,13 @@ interface TodayData {
   recentNotes: NoteData[]
 }
 
+type TaskFlowTab = 'now' | 'next' | 'done'
+
 export default function Dashboard() {
-  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const navigate = useNavigate()
   const [newTaskDate, setNewTaskDate] = useState(() => todayDateInputValue())
   const [newTaskProjectID, setNewTaskProjectID] = useState('personal')
-  const [taskFilter, setTaskFilter] = useState<'all' | 'todo' | 'done'>('all')
-  const createTask = useCreateTask()
+  const [taskFilter, setTaskFilter] = useState<TaskFlowTab>('next')
   const updateTask = useUpdateTask()
   const queryClient = useQueryClient()
 
@@ -48,24 +49,6 @@ export default function Dashboard() {
     }
   }, [newTaskProjectID, taskProjects])
 
-  async function handleAddTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const title = newTaskTitle.trim()
-    if (!title) return
-
-    if (!selectedTaskProject) return
-
-    await createTask.mutateAsync({
-      title,
-      project_id: selectedTaskProject.id,
-      due: dateInputToUnix(newTaskDate),
-      planned_date: newTaskDate,
-      horizon: 'week',
-      scope: 'daily',
-    })
-    setNewTaskTitle('')
-  }
-
   async function handleToggleTask(id: string) {
     const task = [...(data?.todayTasks ?? []), ...(data?.overdueTasks ?? [])].find((item) => item.id === id)
     if (!task) return
@@ -83,162 +66,161 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-[5fr_4fr_3fr] gap-5 max-[1120px]:grid-cols-2 max-[760px]:grid-cols-1">
-        <SkeletonCol rows={4} />
-        <SkeletonCol rows={3} extra />
-        <SkeletonCol rows={3} />
+      <div className="dashboard-grid">
+        <section className="metric-strip">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="metric-tile animate-pulse">
+              <span>加载中</span>
+              <strong>--</strong>
+              <p>同步数据</p>
+            </div>
+          ))}
+        </section>
+        <section className="surface-panel task-command-panel" />
+        <aside className="dashboard-side">
+          <section className="surface-panel agenda-panel" />
+          <section className="surface-panel notes-rail" />
+        </aside>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="text-center py-12">
-        <p className="text-fs-text-muted text-sm mb-3">加载失败</p>
-        <button onClick={() => window.location.reload()} className="filter-pill is-active">重试</button>
+      <div className="empty-state">
+        <strong>加载失败</strong>
+        <p>今日视图暂时不可用，请稍后重试。</p>
+        <button onClick={() => window.location.reload()} className="filter-pill is-active">
+          重试
+        </button>
       </div>
     )
   }
 
   if (!data) return null
 
-  const taskTotal = data.todayTasks.length + data.overdueTasks.length
-
-  const filterTasks = (tasks: TaskData[]) => {
-    if (taskFilter === 'todo') return tasks.filter(t => !t.done)
-    if (taskFilter === 'done') return tasks.filter(t => t.done)
-    return tasks
-  }
-  const filteredOverdue = filterTasks(data.overdueTasks)
-  const filteredToday = filterTasks(data.todayTasks)
+  const isTaskDone = (task: TaskData) => task.done === 1 || task.occurrence_status === 'done'
+  const nowTasks = data.overdueTasks.filter((task) => !isTaskDone(task))
+  const nextTasks = data.todayTasks.filter((task) => !isTaskDone(task))
+  const completedTasks = data.todayTasks.filter(isTaskDone)
+  const activeTasks = taskFilter === 'now' ? nowTasks : taskFilter === 'next' ? nextTasks : completedTasks
+  const doneToday = completedTasks.length
+  const projectLabel = selectedTaskProject ? formatTaskProjectOption(selectedTaskProject) : 'Personal'
+  const emptyCopy =
+    taskFilter === 'now'
+      ? '暂无需要立刻处理的任务'
+      : taskFilter === 'done'
+        ? '暂无已完成任务'
+        : '今天还没有待推进任务'
+  const sectionLabel = taskFilter === 'now' ? '现在做' : taskFilter === 'done' ? '已完成' : '接下来'
 
   return (
     <div className="dashboard-grid">
       <section className="metric-strip">
-        <Metric label="今日概览" value={`${taskTotal}`} hint="待处理任务" />
-        <Metric label="日程" value={`${data.events.length}`} hint="今天安排" />
-        <Metric label="最近笔记" value={`${data.recentNotes.length}`} hint="可继续整理" />
+        <Metric label="逾期任务" value={String(nowTasks.length)} hint="需要处理" tone="danger" />
+        <Metric label="今日任务" value={String(nextTasks.length)} hint="待完成" />
+        <Metric label="今日日程" value={String(data.events.length)} hint="待安排" />
+        <Metric label="最近笔记" value={String(data.recentNotes.length)} hint="可继续整理" />
       </section>
 
       <section className="surface-panel task-command-panel">
         <div className="panel-heading">
           <div>
-            <span>任务流</span>
-            <h2>今天要完成</h2>
+            <h2>任务流</h2>
           </div>
           <div className="segmented-tabs">
-            <button className={taskFilter === 'all' ? 'is-active' : ''} onClick={() => setTaskFilter('all')}>全部</button>
-            <button className={taskFilter === 'todo' ? 'is-active' : ''} onClick={() => setTaskFilter('todo')}>待办</button>
-            <button className={taskFilter === 'done' ? 'is-active' : ''} onClick={() => setTaskFilter('done')}>已完成</button>
+            <button type="button" className={taskFilter === 'now' ? 'is-active' : ''} onClick={() => setTaskFilter('now')}>
+              现在做 {nowTasks.length}
+            </button>
+            <button type="button" className={taskFilter === 'next' ? 'is-active' : ''} onClick={() => setTaskFilter('next')}>
+              接下来 {nextTasks.length}
+            </button>
+            <button type="button" className={taskFilter === 'done' ? 'is-active' : ''} onClick={() => setTaskFilter('done')}>
+              已完成 {doneToday}
+            </button>
           </div>
         </div>
 
-        <form className="inline-create task-create-form" onSubmit={handleAddTask}>
-          <input
-            className="task-title-input"
-            value={newTaskTitle}
-            onChange={(event) => setNewTaskTitle(event.target.value)}
-            placeholder="新增任务"
-          />
-          <select
-            value={selectedTaskProject?.id ?? ''}
-            onChange={(event) => setNewTaskProjectID(event.target.value)}
-            aria-label="任务项目"
-          >
-            {taskProjects.length === 0 && <option value="">项目加载中</option>}
-            {taskProjects.map((project) => (
-              <option key={project.id} value={project.id}>{formatTaskProjectOption(project)}</option>
-            ))}
-          </select>
-          <input
-            type="date"
-            value={newTaskDate}
-            onChange={(event) => setNewTaskDate(event.target.value)}
-            aria-label="任务日期"
-            required
-          />
-          <button type="submit" disabled={!newTaskTitle.trim() || !selectedTaskProject || createTask.isPending}>
-            {createTask.isPending ? '添加中...' : '添加'}
+        <div className="dashboard-task-settings">
+          <span>项目：{projectLabel}</span>
+          <span>日期：{newTaskDate}</span>
+          <button type="button" onClick={() => setNewTaskDate(todayDateInputValue())}>
+            今天
           </button>
-        </form>
+        </div>
 
-        {filteredOverdue.length === 0 && filteredToday.length === 0 ? (
-          <p className="empty-copy">{taskFilter === 'done' ? '没有已完成的任务' : taskFilter === 'todo' ? '没有待办任务' : '今天还没有任务'}</p>
+        {activeTasks.length === 0 ? (
+          <p className="empty-copy">{emptyCopy}</p>
         ) : (
-          <>
-            {filteredOverdue.length > 0 && (
-              <div className="task-section">
-                <span>逾期</span>
-                <div className="row-stack">
-                  {filteredOverdue.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} onOccurrenceToggle={handleOccurrenceToggle} />)}
-                </div>
-              </div>
+          <div className="task-section">
+            <span>{sectionLabel}</span>
+            <div className="row-stack">
+              {activeTasks.map((task) => (
+                <TaskRow
+                  key={`${task.id}-${task.occurrence_date ?? 'task'}`}
+                  task={task}
+                  onToggle={handleToggleTask}
+                  onOccurrenceToggle={handleOccurrenceToggle}
+                />
+              ))}
+            </div>
+            {taskFilter === 'now' && (
+              <p className="dashboard-advice">建议：先重新评估截止日期，或拆分为 30 分钟内可完成的小任务。</p>
             )}
-            {filteredToday.length > 0 && (
-              <div className="task-section">
-                <span>今天</span>
-                <div className="row-stack">
-                  {filteredToday.map((t) => <TaskRow key={t.id} task={t} onToggle={handleToggleTask} onOccurrenceToggle={handleOccurrenceToggle} />)}
-                </div>
-              </div>
-            )}
-          </>
+          </div>
         )}
       </section>
 
       <aside className="dashboard-side">
-        <MiniCalendar />
         <section className="surface-panel agenda-panel">
           <div className="panel-heading is-compact">
             <div>
-              <span>今天安排</span>
-              <h2>日程时间线</h2>
+              <h2>今日安排</h2>
             </div>
+            <button className="soft-badge" type="button">
+              时间线
+            </button>
           </div>
           {data.events.length > 0 ? (
             <div className="timeline-list">
-              {data.events.map((e) => <EventChip key={e.id} event={e} />)}
+              {data.events.map((event) => (
+                <EventChip key={event.id} event={event} />
+              ))}
             </div>
           ) : (
-            <p className="empty-copy">暂无日程</p>
+            <p className="empty-copy">暂无已安排日程</p>
           )}
+          <button className="wide-secondary-action" type="button" onClick={() => navigate('/calendar')}>
+            ＋ 添加日程
+          </button>
+        </section>
+
+        <section className="surface-panel notes-rail">
+          <div className="panel-heading is-compact">
+            <div>
+              <h2>最近笔记</h2>
+            </div>
+            <button className="link-action" type="button" onClick={() => navigate('/notes')}>
+              继续整理
+            </button>
+          </div>
+          <div className="row-stack">
+            {data.recentNotes.map((note) => (
+              <NoteCard key={note.id} note={note} onOpen={(selectedNote) => navigate(`/editor/${encodeURIComponent(selectedNote.id)}`)} />
+            ))}
+          </div>
         </section>
       </aside>
-
-      <section className="surface-panel notes-rail">
-        <div className="panel-heading is-compact">
-          <div>
-            <span>继续整理</span>
-            <h2>最近笔记</h2>
-          </div>
-        </div>
-        <div className="row-stack">
-          {data.recentNotes.map((n) => <NoteCard key={n.id} note={n} />)}
-        </div>
-      </section>
     </div>
   )
 }
 
-function Metric({ label, value, hint }: { label: string; value: string; hint: string }) {
+function Metric({ label, value, hint, tone }: { label: string; value: string; hint: string; tone?: 'danger' }) {
   return (
     <div className="metric-tile">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong className={tone === 'danger' ? 'is-danger' : ''}>{value}</strong>
       <p>{hint}</p>
-    </div>
-  )
-}
-
-function SkeletonCol({ rows, extra }: { rows: number; extra?: boolean }) {
-  return (
-    <div className="grid gap-5">
-      <div className="page-card grid gap-2">
-        {Array.from({ length: rows }).map((_, i) => (
-          <div key={i} className="h-10 bg-fs-hover rounded-md animate-pulse" />
-        ))}
-      </div>
-      {extra && <div className="h-[200px] bg-fs-hover rounded-lg animate-pulse" />}
     </div>
   )
 }

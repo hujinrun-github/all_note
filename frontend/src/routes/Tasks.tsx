@@ -49,6 +49,13 @@ import { taskProjectTypeLabels } from '../utils/taskProjects'
 
 type TaskTab = 'week' | 'long' | 'recurring' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
+type TaskDetailDraft = {
+  title: string
+  projectID: string
+  plannedDate: string
+  status: LongTaskStatus
+  content: string
+}
 type RoadmapLinkedTaskExecutionType = 'single' | 'recurring'
 type RoadmapLinkedTaskInput = {
   title: string
@@ -94,12 +101,66 @@ const nodeStatusLabels: Record<RoadmapNode['status'], string> = {
 }
 
 const longTaskStatusOrder: LongTaskStatus[] = ['active', 'blocked', 'open', 'done']
+const taskDetailStatusOrder: LongTaskStatus[] = ['open', 'active', 'blocked', 'done']
 
 const longTaskStatusLabels: Record<LongTaskStatus, string> = {
   active: '进行中',
   blocked: '阻塞',
   open: '未开始',
   done: '完成',
+}
+
+const emptyTaskDetailDraft: TaskDetailDraft = {
+  title: '',
+  projectID: '',
+  plannedDate: '',
+  status: 'open',
+  content: '',
+}
+
+const taskProjectGroupMeta: Record<
+  TaskProject['type'],
+  {
+    title: string
+    description: string
+    createLabel: string
+    submitLabel: string
+    nameLabel: string
+    descriptionLabel: string
+    placeholder: string
+    emptyCopy: string
+  }
+> = {
+  personal: {
+    title: '个人短期项目',
+    description: '今日 / 本周任务',
+    createLabel: '新建短期项目',
+    submitLabel: '创建短期项目',
+    nameLabel: '个人短期项目名称',
+    descriptionLabel: '个人短期项目说明',
+    placeholder: '例如：本周冲刺',
+    emptyCopy: '暂无短期项目',
+  },
+  regular: {
+    title: '长期项目',
+    description: '长期任务',
+    createLabel: '新建长期项目',
+    submitLabel: '创建长期项目',
+    nameLabel: '长期项目名称',
+    descriptionLabel: '长期项目说明',
+    placeholder: '例如：年度计划',
+    emptyCopy: '暂无长期项目',
+  },
+  learning: {
+    title: '学习项目',
+    description: '学习 Roadmap',
+    createLabel: '新建学习项目',
+    submitLabel: '创建学习项目',
+    nameLabel: '学习项目名称',
+    descriptionLabel: '学习项目说明',
+    placeholder: '例如：N2 语法',
+    emptyCopy: '暂无学习项目',
+  },
 }
 
 const articleSearchSourceOptions = [
@@ -140,6 +201,7 @@ export default function Tasks() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TaskTab>('week')
+  const [creatingProjectType, setCreatingProjectType] = useState<TaskProject['type'] | ''>('')
   const [projectName, setProjectName] = useState('')
   const [projectType, setProjectType] = useState<TaskProject['type']>('regular')
   const [projectDescription, setProjectDescription] = useState('')
@@ -168,6 +230,8 @@ export default function Tasks() {
   const [recurringStartDate, setRecurringStartDate] = useState(() => todayDateInputValue())
   const [recurringEndDate, setRecurringEndDate] = useState('')
   const [recurringProjectID, setRecurringProjectID] = useState('')
+  const [selectedTaskID, setSelectedTaskID] = useState('')
+  const [taskDetailDraft, setTaskDetailDraft] = useState<TaskDetailDraft>(emptyTaskDetailDraft)
 
   const projectsQuery = useQuery({
     queryKey: ['task-projects'],
@@ -175,24 +239,34 @@ export default function Tasks() {
   })
 
   const projects = projectsQuery.data ?? []
-  const personalProject = projects.find((project) => project.type === 'personal') ?? projects[0]
+  const shortProjects = projects.filter((project) => project.type === 'personal')
+  const personalProject = shortProjects.find((project) => project.id === 'personal') ?? shortProjects[0]
   const regularProjects = projects.filter((project) => project.type === 'regular')
+  const longProjects = regularProjects
   const learningProjects = projects.filter((project) => project.type === 'learning')
-  const weekProjects = projects.filter((project) => project.type !== 'learning')
+  const weekProjects = shortProjects
   const selectedLearningProject = learningProjects.find((project) => project.id === selectedLearningProjectID)
   const activeProjectID =
-    activeTab === 'week' ? weekProjectID : activeTab === 'long' ? longProjectID : selectedLearningProjectID
+    activeTab === 'week'
+      ? weekProjectID
+      : activeTab === 'long'
+        ? longProjectID
+        : activeTab === 'recurring'
+          ? recurringProjectID
+          : selectedLearningProjectID
 
   useEffect(() => {
     if (!projects.length) return
-    if (!projects.some((project) => project.id === weekProjectID)) {
-      setWeekProjectID(personalProject?.id ?? projects[0].id)
+    if (!weekProjectID || !weekProjects.some((project) => project.id === weekProjectID)) {
+      setWeekProjectID(personalProject?.id ?? weekProjects[0]?.id ?? '')
     }
-    if (!longProjectID && regularProjects[0]) {
-      setLongProjectID(regularProjects[0].id)
+    if (!longProjectID && longProjects[0]) {
+      setLongProjectID(longProjects[0].id)
+    } else if (longProjectID && !longProjects.some((project) => project.id === longProjectID)) {
+      setLongProjectID(longProjects[0]?.id ?? '')
     }
-    if (!recurringProjectID && personalProject) {
-      setRecurringProjectID(personalProject.id)
+    if (!recurringProjectID && (personalProject || projects[0])) {
+      setRecurringProjectID((personalProject ?? projects[0]).id)
     }
     if (!selectedLearningProjectID && learningProjects[0]) {
       setSelectedLearningProjectID(learningProjects[0].id)
@@ -200,12 +274,13 @@ export default function Tasks() {
   }, [
     learningProjects,
     longProjectID,
+    longProjects,
     personalProject,
     projects,
     recurringProjectID,
-    regularProjects,
     selectedLearningProjectID,
     weekProjectID,
+    weekProjects,
   ])
 
   const weekTasksQuery = useQuery({
@@ -242,12 +317,16 @@ export default function Tasks() {
       queryClient.invalidateQueries({ queryKey: ['task-projects'] })
       setProjectName('')
       setProjectDescription('')
+      setCreatingProjectType('')
       if (project.type === 'learning') {
         setSelectedLearningProjectID(project.id)
         setActiveTab('roadmap')
       } else if (project.type === 'regular') {
         setLongProjectID(project.id)
         setActiveTab('long')
+      } else {
+        setWeekProjectID(project.id)
+        setActiveTab('week')
       }
     },
   })
@@ -282,14 +361,16 @@ export default function Tasks() {
 
   const createTaskMutation = useMutation({
     mutationFn: createTask,
-    onSuccess: () => {
+    onSuccess: (task) => {
+      setSelectedTaskID(task.id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
     },
   })
 
   const updateTaskMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Partial<Task> }) => updateTask(id, body),
-    onSuccess: () => {
+    onSuccess: (task) => {
+      setSelectedTaskID(task.id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
     },
@@ -393,13 +474,47 @@ export default function Tasks() {
     },
   })
 
+  function startProjectCreate(type: TaskProject['type']) {
+    setCreatingProjectType(type)
+    setProjectType(type)
+    setProjectName('')
+    setProjectDescription('')
+    setPendingDeleteProjectID('')
+    if (type === 'learning') {
+      setActiveTab('roadmap')
+    } else if (type === 'regular') {
+      setActiveTab('long')
+    } else {
+      setActiveTab('week')
+    }
+  }
+
+  function cancelProjectCreate() {
+    setCreatingProjectType('')
+    setProjectName('')
+    setProjectDescription('')
+  }
+
+  function selectProject(project: TaskProject) {
+    if (project.type === 'learning') {
+      setSelectedLearningProjectID(project.id)
+      setActiveTab('roadmap')
+    } else if (project.type === 'regular') {
+      setLongProjectID(project.id)
+      setActiveTab('long')
+    } else {
+      setWeekProjectID(project.id)
+      setActiveTab('week')
+    }
+  }
+
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const name = projectName.trim()
     if (!name) return
     await createProjectMutation.mutateAsync({
       name,
-      type: projectType,
+      type: creatingProjectType || projectType,
       description: projectDescription.trim(),
     })
   }
@@ -422,10 +537,11 @@ export default function Tasks() {
   async function handleAddLongTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const title = longTitle.trim()
-    if (!title || !longProjectID) return
+    const projectID = longProjectID || longProjects[0]?.id
+    if (!title || !projectID) return
     await createTaskMutation.mutateAsync({
       title,
-      project_id: longProjectID,
+      project_id: projectID,
       horizon: 'long',
       scope: 'yearly',
     })
@@ -596,96 +712,197 @@ export default function Tasks() {
     return [...taskByID.values()]
   }, [longTasksQuery.data?.tasks, recurringTasksQuery.data?.tasks, selectedNodeID, weekTasksQuery.data?.tasks])
   const resourcePickerNode = roadmap?.nodes.find((node) => node.id === resourcePickerNodeID)
+  const activeTaskCandidates = useMemo(() => {
+    if (activeTab === 'week') return weekTasksQuery.data?.tasks ?? []
+    if (activeTab === 'long') return longTasksQuery.data?.tasks ?? []
+    if (activeTab === 'recurring') return recurringTasksQuery.data?.tasks ?? []
+    return []
+  }, [activeTab, longTasksQuery.data?.tasks, recurringTasksQuery.data?.tasks, weekTasksQuery.data?.tasks])
+  const inspectorTask = activeTaskCandidates.find((task) => task.id === selectedTaskID) ?? activeTaskCandidates[0]
+
+  useEffect(() => {
+    if (activeTaskCandidates.length === 0) {
+      setSelectedTaskID('')
+      return
+    }
+    if (!activeTaskCandidates.some((task) => task.id === selectedTaskID)) {
+      setSelectedTaskID(activeTaskCandidates[0].id)
+    }
+  }, [activeTaskCandidates, selectedTaskID])
+
+  useEffect(() => {
+    if (!inspectorTask) {
+      setTaskDetailDraft(emptyTaskDetailDraft)
+      return
+    }
+    setTaskDetailDraft({
+      title: inspectorTask.title,
+      projectID: inspectorTask.project_id ?? '',
+      plannedDate: getTaskPlannedDate(inspectorTask),
+      status: normalizeLongTaskStatus(inspectorTask),
+      content: inspectorTask.content ?? '',
+    })
+  }, [
+    inspectorTask?.content,
+    inspectorTask?.done,
+    inspectorTask?.due,
+    inspectorTask?.id,
+    inspectorTask?.planned_date,
+    inspectorTask?.project_id,
+    inspectorTask?.status,
+    inspectorTask?.title,
+  ])
+
+  async function handleSaveTaskDetail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!inspectorTask) return
+    const title = taskDetailDraft.title.trim()
+    if (!title) return
+
+    const body: Partial<Task> = {
+      title,
+      content: taskDetailDraft.content.trim(),
+      project_id: taskDetailDraft.projectID || inspectorTask.project_id,
+      status: taskDetailDraft.status,
+    }
+    if (inspectorTask.execution_type !== 'recurring') {
+      body.planned_date = taskDetailDraft.plannedDate
+      if (taskDetailDraft.plannedDate) {
+        body.due = dateInputToUnix(taskDetailDraft.plannedDate)
+      }
+    }
+
+    await updateTaskMutation.mutateAsync({ id: inspectorTask.id, body })
+  }
 
   return (
     <div className="task-workspace">
       <aside className="task-project-panel">
-        <div className="filter-title">项目</div>
-        <form className="project-create-card" onSubmit={handleCreateProject}>
-          <label>
-            <span>项目名称</span>
-            <input
-              aria-label="项目名称"
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              placeholder="新的项目"
-            />
-          </label>
-          <label>
-            <span>项目类型</span>
-            <select
-              aria-label="项目类型"
-              value={projectType}
-              onChange={(event) => setProjectType(event.target.value as TaskProject['type'])}
-            >
-              <option value="regular">任务项目</option>
-              <option value="learning">学习项目</option>
-            </select>
-          </label>
-          <label>
-            <span>说明</span>
-            <textarea
-              value={projectDescription}
-              onChange={(event) => setProjectDescription(event.target.value)}
-              placeholder="目标、背景或交付物"
-            />
-          </label>
-          <button type="submit" disabled={!projectName.trim() || createProjectMutation.isPending}>
-            新增项目
-          </button>
-        </form>
-
-        <div className="task-project-list">
-          {projects.map((project) => (
-            <div className="task-project-item" key={project.id}>
-              <button
-                type="button"
-                className={project.id === activeProjectID ? 'task-project-select is-active' : 'task-project-select'}
-                onClick={() => {
-                  if (project.type === 'learning') {
-                    setSelectedLearningProjectID(project.id)
-                    setActiveTab('roadmap')
-                  } else if (project.type === 'regular') {
-                    setLongProjectID(project.id)
-                    setActiveTab('long')
-                  } else {
-                    setWeekProjectID(project.id)
-                    setActiveTab('week')
-                  }
-                }}
-              >
-                <span>{project.name}</span>
-                <small>{taskProjectTypeLabels[project.type]}</small>
-              </button>
-
-              {project.id !== 'personal' && (
-                pendingDeleteProjectID === project.id ? (
-                  <div className="task-project-delete-confirm">
-                    <button
-                      type="button"
-                      aria-label={`确认删除 ${project.name}`}
-                      disabled={deleteProjectMutation.isPending}
-                      onClick={() => deleteProjectMutation.mutate(project)}
-                    >
-                      确认
-                    </button>
-                    <button type="button" aria-label={`取消删除 ${project.name}`} onClick={() => setPendingDeleteProjectID('')}>
-                      取消
+        <div className="task-project-panel-title">
+          <span>项目</span>
+          <strong>{projects.length}</strong>
+        </div>
+        <div className="task-project-groups">
+          {([
+            { type: 'personal' as const, projects: weekProjects },
+            { type: 'regular' as const, projects: longProjects },
+            { type: 'learning' as const, projects: learningProjects },
+          ]).map(({ type, projects: groupProjects }) => {
+            const meta = taskProjectGroupMeta[type]
+            const isCreating = creatingProjectType === type
+            return (
+              <section className="task-project-group" data-testid={`task-project-group-${type}`} key={type}>
+                <div className="task-project-group-heading">
+                  <div className="task-project-group-title">
+                    <h3>{meta.title}</h3>
+                    <span>{meta.description}</span>
+                  </div>
+                  <div className="task-project-group-tools">
+                    <span className="task-project-count">{groupProjects.length} 个项目</span>
+                    <button type="button" aria-label={meta.createLabel} onClick={() => startProjectCreate(type)}>
+                      +
                     </button>
                   </div>
+                </div>
+
+                {isCreating && (
+                  <form className="project-create-card" onSubmit={handleCreateProject}>
+                    <label>
+                      <span>{meta.nameLabel}</span>
+                      <input
+                        aria-label={meta.nameLabel}
+                        value={projectName}
+                        onChange={(event) => setProjectName(event.target.value)}
+                        placeholder={meta.placeholder}
+                      />
+                    </label>
+                    <label>
+                      <span>{meta.descriptionLabel}</span>
+                      <textarea
+                        aria-label={meta.descriptionLabel}
+                        value={projectDescription}
+                        onChange={(event) => setProjectDescription(event.target.value)}
+                        placeholder="目标、背景或交付物"
+                      />
+                    </label>
+                    <div className="project-create-actions">
+                      <button type="submit" disabled={!projectName.trim() || createProjectMutation.isPending}>
+                        {meta.submitLabel}
+                      </button>
+                      <button type="button" onClick={cancelProjectCreate}>
+                        取消
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {groupProjects.length === 0 ? (
+                  <p className="task-project-empty">{meta.emptyCopy}</p>
                 ) : (
-                  <button
-                    className="task-project-delete"
-                    type="button"
-                    aria-label={`删除项目 ${project.name}`}
-                    title="删除项目"
-                    onClick={() => setPendingDeleteProjectID(project.id)}
-                  >
-                    ×
-                  </button>
-                )
-              )}
-            </div>
+                  <div className="task-project-list">
+                    {groupProjects.map((project) => (
+                      <div className="task-project-item" key={project.id}>
+                        <button
+                          type="button"
+                          aria-label={`选择项目 ${project.name}`}
+                          className={project.id === activeProjectID ? 'task-project-select is-active' : 'task-project-select'}
+                          onClick={() => selectProject(project)}
+                        >
+                          <span className="task-project-name">{project.name}</span>
+                          <small className="task-project-kind">{taskProjectTypeLabels[project.type]}</small>
+                        </button>
+
+                        {project.id !== 'personal' && (
+                          pendingDeleteProjectID === project.id ? (
+                            <div className="task-project-delete-confirm">
+                              <button
+                                type="button"
+                                aria-label={`确认删除 ${project.name}`}
+                                disabled={deleteProjectMutation.isPending}
+                                onClick={() => deleteProjectMutation.mutate(project)}
+                              >
+                                确认
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`取消删除 ${project.name}`}
+                                onClick={() => setPendingDeleteProjectID('')}
+                              >
+                                取消
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              className="task-project-delete"
+                              type="button"
+                              aria-label={`删除项目 ${project.name}`}
+                              title="删除项目"
+                              onClick={() => setPendingDeleteProjectID(project.id)}
+                            >
+                              ×
+                            </button>
+                          )
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )
+          })}
+        </div>
+
+        <div className="task-view-list">
+          <div className="filter-title">视图</div>
+          {(Object.keys(tabLabels) as TaskTab[]).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              className={activeTab === tab ? 'is-active' : ''}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab === 'week' ? '今日任务' : tabLabels[tab]}
+            </button>
           ))}
         </div>
 
@@ -731,8 +948,16 @@ export default function Tasks() {
       <section className="task-main-panel">
         <div className="panel-heading">
           <div>
-            <span>任务工作台</span>
-            <h2>短期推进、长期任务和学习路线</h2>
+            <h2>{activeTab === 'week' ? '今天' : tabLabels[activeTab]}</h2>
+            <p>
+              {activeTab === 'week'
+                ? '把短期行动安排到今天和本周'
+                : activeTab === 'long'
+                  ? '沉淀阶段目标，持续推进长期事项'
+                  : activeTab === 'recurring'
+                    ? '管理会反复出现的节奏任务'
+                    : '从学习项目生成路线图和行动节点'}
+            </p>
           </div>
           <div className="segmented-tabs" role="tablist" aria-label="任务视图">
             {(Object.keys(tabLabels) as TaskTab[]).map((tab) => (
@@ -753,8 +978,9 @@ export default function Tasks() {
         {activeTab === 'week' && (
           <WeekTaskView
             tasks={weekTasksQuery.data?.tasks ?? []}
-            projects={weekProjects.length ? weekProjects : projects}
+            projects={weekProjects}
             selectedProjectID={weekProjectID}
+            selectedTaskID={inspectorTask?.id ?? ''}
             title={weekTitle}
             date={weekDate}
             isPending={createTaskMutation.isPending}
@@ -762,6 +988,7 @@ export default function Tasks() {
             onTitleChange={setWeekTitle}
             onDateChange={setWeekDate}
             onSubmit={handleAddWeekTask}
+            onSelectTask={setSelectedTaskID}
             onToggle={handleToggleTask}
           />
         )}
@@ -769,13 +996,17 @@ export default function Tasks() {
         {activeTab === 'long' && (
           <LongTaskView
             tasks={longTasksQuery.data?.tasks ?? []}
-            projects={regularProjects}
+            projects={longProjects}
             selectedProjectID={longProjectID}
+            selectedTaskID={inspectorTask?.id ?? ''}
             title={longTitle}
             isPending={createTaskMutation.isPending}
             onProjectChange={setLongProjectID}
             onTitleChange={setLongTitle}
             onSubmit={handleAddLongTask}
+            onStartCreateProject={() => startProjectCreate('regular')}
+            isCreatingProject={creatingProjectType === 'regular'}
+            onSelectTask={setSelectedTaskID}
             onToggle={handleToggleTask}
             onStatusChange={handleUpdateLongTaskStatus}
             isUpdating={updateTaskMutation.isPending}
@@ -785,6 +1016,7 @@ export default function Tasks() {
         {activeTab === 'recurring' && (
           <RecurringTaskView
             tasks={recurringTasksQuery.data?.tasks ?? []}
+            selectedTaskID={inspectorTask?.id ?? ''}
             title={recurringTitle}
             frequency={recurringFrequency}
             interval={recurringInterval}
@@ -804,6 +1036,7 @@ export default function Tasks() {
             onEndDateChange={setRecurringEndDate}
             onProjectChange={setRecurringProjectID}
             onSubmit={handleAddRecurringTask}
+            onSelectTask={setSelectedTaskID}
             onToggle={handleToggleOccurrence}
           />
         )}
@@ -833,6 +1066,8 @@ export default function Tasks() {
             }}
             onSelectNode={handleOpenRoadmapNode}
             onGenerate={() => selectedLearningProjectID && generateRoadmapMutation.mutate(selectedLearningProjectID)}
+            onStartCreateProject={() => startProjectCreate('learning')}
+            isCreatingProject={creatingProjectType === 'learning'}
             onOpenCreateNode={handleOpenCreateRoadmapNode}
             onOptimizeLayout={(roadmapID) => optimizeRoadmapLayoutMutation.mutate(roadmapID)}
             onSearchResources={(nodeID) => searchResourcesMutation.mutate({ nodeID, sources: articleSearchSources })}
@@ -846,6 +1081,15 @@ export default function Tasks() {
           />
         )}
       </section>
+
+      <TaskDetailPanel
+        task={inspectorTask}
+        projects={projects}
+        draft={taskDetailDraft}
+        isSaving={updateTaskMutation.isPending}
+        onDraftChange={setTaskDetailDraft}
+        onSubmit={handleSaveTaskDetail}
+      />
 
       <RoadmapResourcePickerDialog
         nodeTitle={resourcePickerNode?.title ?? ''}
@@ -891,6 +1135,7 @@ function WeekTaskView({
   tasks,
   projects,
   selectedProjectID,
+  selectedTaskID,
   title,
   date,
   isPending,
@@ -898,11 +1143,13 @@ function WeekTaskView({
   onTitleChange,
   onDateChange,
   onSubmit,
+  onSelectTask,
   onToggle,
 }: {
   tasks: Task[]
   projects: TaskProject[]
   selectedProjectID: string
+  selectedTaskID: string
   title: string
   date: string
   isPending: boolean
@@ -910,6 +1157,7 @@ function WeekTaskView({
   onTitleChange: (value: string) => void
   onDateChange: (value: string) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  onSelectTask: (id: string) => void
   onToggle: (task: Task) => void
 }) {
   const tasksByDate = useMemo(() => {
@@ -918,7 +1166,9 @@ function WeekTaskView({
       const key = task.planned_date || '未安排'
       grouped.set(key, [...(grouped.get(key) ?? []), task])
     }
-    return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))
+    return [...grouped.entries()]
+      .map(([date, dayTasks]) => [date, [...dayTasks].sort(compareWeekTasks)] as const)
+      .sort(([a], [b]) => a.localeCompare(b))
   }, [tasks])
 
   return (
@@ -952,7 +1202,13 @@ function WeekTaskView({
             <span>{plannedDate}</span>
             <div className="row-stack">
               {dayTasks.map((task) => (
-                <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  isSelected={task.id === selectedTaskID}
+                  onSelect={onSelectTask}
+                  onToggle={() => onToggle(task)}
+                />
               ))}
             </div>
           </div>
@@ -966,11 +1222,15 @@ function LongTaskView({
   tasks,
   projects,
   selectedProjectID,
+  selectedTaskID,
   title,
   isPending,
   onProjectChange,
   onTitleChange,
   onSubmit,
+  onStartCreateProject,
+  isCreatingProject,
+  onSelectTask,
   onToggle,
   onStatusChange,
   isUpdating,
@@ -978,11 +1238,15 @@ function LongTaskView({
   tasks: Task[]
   projects: TaskProject[]
   selectedProjectID: string
+  selectedTaskID: string
   title: string
   isPending: boolean
   onProjectChange: (value: string) => void
   onTitleChange: (value: string) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  onStartCreateProject: () => void
+  isCreatingProject: boolean
+  onSelectTask: (id: string) => void
   onToggle: (task: Task) => void
   onStatusChange: (task: Task, status: LongTaskStatus) => void
   isUpdating: boolean
@@ -1023,7 +1287,13 @@ function LongTaskView({
       )}
 
       {projects.length === 0 ? (
-        <p className="empty-copy">先在左侧新增一个任务项目</p>
+        <div className="task-empty-action">
+          <strong>还没有长期项目</strong>
+          <p>长期任务需要先归到一个长期项目里，创建后就能添加年度或阶段目标。</p>
+          <button type="button" onClick={onStartCreateProject} disabled={isCreatingProject}>
+            {isCreatingProject ? '正在填写长期项目' : '创建长期项目'}
+          </button>
+        </div>
       ) : tasksByStatus.length === 0 ? (
         <p className="empty-copy">还没有长期任务</p>
       ) : (
@@ -1043,7 +1313,9 @@ function LongTaskView({
                   <LongTaskRow
                     key={task.id}
                     task={task}
+                    isSelected={task.id === selectedTaskID}
                     isUpdating={isUpdating}
+                    onSelect={() => onSelectTask(task.id)}
                     onToggle={() => onToggle(task)}
                     onStatusChange={(nextStatus) => onStatusChange(task, nextStatus)}
                   />
@@ -1059,12 +1331,16 @@ function LongTaskView({
 
 function LongTaskRow({
   task,
+  isSelected,
   isUpdating,
+  onSelect,
   onToggle,
   onStatusChange,
 }: {
   task: Task
+  isSelected: boolean
   isUpdating: boolean
+  onSelect: () => void
   onToggle: () => void
   onStatusChange: (status: LongTaskStatus) => void
 }) {
@@ -1072,7 +1348,7 @@ function LongTaskRow({
   const project = task.project || '未命名项目'
 
   return (
-    <div className={`task-row long-task-row long-task-row-${status}`}>
+    <div className={`task-row long-task-row long-task-row-${status} ${isSelected ? 'is-selected' : ''}`}>
       <button
         type="button"
         className="long-task-done-toggle"
@@ -1081,12 +1357,12 @@ function LongTaskRow({
       >
         {status === 'done' ? '✓' : ''}
       </button>
-      <div className="long-task-copy">
+      <button type="button" className="long-task-copy" onClick={onSelect}>
         <strong className={status === 'done' ? 'is-done' : ''}>{task.title}</strong>
         <small>
           {project} · 最近进展 {formatLongTaskUpdatedAt(task.updated_at)}
         </small>
-      </div>
+      </button>
       <select
         className="long-task-status-select"
         aria-label={`更新长期任务状态：${task.title}`}
@@ -1104,11 +1380,137 @@ function LongTaskRow({
   )
 }
 
+function TaskDetailPanel({
+  task,
+  projects,
+  draft,
+  isSaving,
+  onDraftChange,
+  onSubmit,
+}: {
+  task?: Task
+  projects: TaskProject[]
+  draft: TaskDetailDraft
+  isSaving: boolean
+  onDraftChange: (draft: TaskDetailDraft) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+}) {
+  const canEdit = Boolean(task)
+  const isRecurring = task?.execution_type === 'recurring'
+
+  function patchDraft(patch: Partial<TaskDetailDraft>) {
+    onDraftChange({ ...draft, ...patch })
+  }
+
+  return (
+    <aside className="surface-panel task-detail-panel">
+      <div className="panel-heading is-compact task-detail-heading">
+        <div>
+          <h2>任务详情</h2>
+          <p>{canEdit ? '修改任务内容、状态和下一步动作' : '选择或创建一个任务后在这里编辑'}</p>
+        </div>
+        {canEdit && <span className={`task-detail-state task-detail-state-${draft.status}`}>{longTaskStatusLabels[draft.status]}</span>}
+      </div>
+
+      {!canEdit ? (
+        <div className="task-detail-empty">
+          <strong>暂无可编辑任务</strong>
+          <p>当前视图还没有任务。先在中间列表添加一条，再回到这里补充详情。</p>
+        </div>
+      ) : (
+        <form className="task-detail-form" onSubmit={onSubmit}>
+          <div className="task-detail-section">
+            <span className="task-detail-section-title">基本信息</span>
+            <label>
+              <span>标题</span>
+              <input
+                aria-label="任务详情标题"
+                value={draft.title}
+                onChange={(event) => patchDraft({ title: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>项目</span>
+              <select
+                aria-label="任务详情项目"
+                value={draft.projectID}
+                onChange={(event) => patchDraft({ projectID: event.target.value })}
+              >
+                {!draft.projectID && <option value="">未指定项目</option>}
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {!isRecurring && (
+              <label>
+                <span>日期</span>
+                <input
+                  aria-label="任务详情日期"
+                  type="date"
+                  value={draft.plannedDate}
+                  onChange={(event) => patchDraft({ plannedDate: event.target.value })}
+                />
+              </label>
+            )}
+          </div>
+          <div className="task-detail-section">
+            <span className="task-detail-section-title">执行状态</span>
+            <div className="task-detail-status" role="group" aria-label="任务详情状态">
+              {taskDetailStatusOrder.map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  className={draft.status === status ? 'is-active' : ''}
+                  onClick={() => patchDraft({ status })}
+                >
+                  {longTaskStatusLabels[status]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="task-detail-section">
+            <span className="task-detail-section-title">下一步</span>
+            <label>
+              <span>备注</span>
+              <textarea
+                aria-label="任务详情备注"
+                value={draft.content}
+                onChange={(event) => patchDraft({ content: event.target.value })}
+                placeholder="写下下一步动作、阻塞原因或补充说明"
+              />
+            </label>
+          </div>
+          <div className="task-detail-actions">
+            <button type="submit" className="primary-action" disabled={!draft.title.trim() || isSaving}>
+              {isSaving ? '保存中...' : '保存修改'}
+            </button>
+          </div>
+        </form>
+      )}
+    </aside>
+  )
+}
+
 function normalizeLongTaskStatus(task: Task): LongTaskStatus {
   if (task.done === 1 || task.status === 'done') return 'done'
   if (task.status === 'active') return 'active'
   if (task.status === 'blocked') return 'blocked'
   return 'open'
+}
+
+function compareWeekTasks(a: Task, b: Task) {
+  const aDone = a.done === 1 || a.status === 'done'
+  const bDone = b.done === 1 || b.status === 'done'
+  if (aDone !== bDone) return aDone ? 1 : -1
+
+  const aTime = a.updated_at || a.created_at || 0
+  const bTime = b.updated_at || b.created_at || 0
+  if (aTime !== bTime) return bTime - aTime
+
+  return a.title.localeCompare(b.title, 'zh-CN')
 }
 
 function formatLongTaskUpdatedAt(updatedAt: number) {
@@ -1169,6 +1571,8 @@ function RoadmapTaskView({
   onSelectProject,
   onSelectNode,
   onGenerate,
+  onStartCreateProject,
+  isCreatingProject,
   onOpenCreateNode,
   onOptimizeLayout,
   onSearchResources,
@@ -1194,6 +1598,8 @@ function RoadmapTaskView({
   onSelectProject: (value: string) => void
   onSelectNode: (value: string) => void
   onGenerate: () => void
+  onStartCreateProject: () => void
+  isCreatingProject: boolean
   onOpenCreateNode: (nodeID: string) => void
   onOptimizeLayout: (roadmapID: string) => void
   onSearchResources: (nodeID: string) => void
@@ -1232,7 +1638,13 @@ function RoadmapTaskView({
       </div>
 
       {projects.length === 0 ? (
-        <p className="empty-copy">先在左侧新增一个学习项目</p>
+        <div className="task-empty-action">
+          <strong>还没有学习项目</strong>
+          <p>学习 Roadmap 需要先绑定一个学习项目，创建后就能生成路线图。</p>
+          <button type="button" onClick={onStartCreateProject} disabled={isCreatingProject}>
+            {isCreatingProject ? '正在填写学习项目' : '创建学习项目'}
+          </button>
+        </div>
       ) : isLoading ? (
         <p className="empty-copy">正在加载 Roadmap</p>
       ) : roadmap ? (
@@ -1993,6 +2405,7 @@ function RoadmapLinkedTaskRow({
 
 function RecurringTaskView({
   tasks,
+  selectedTaskID,
   title,
   frequency,
   interval: freqInterval,
@@ -2012,9 +2425,11 @@ function RecurringTaskView({
   onEndDateChange,
   onProjectChange,
   onSubmit,
+  onSelectTask,
   onToggle,
 }: {
   tasks: Task[]
+  selectedTaskID: string
   title: string
   frequency: RecurrenceConfig['frequency']
   interval: number
@@ -2034,6 +2449,7 @@ function RecurringTaskView({
   onEndDateChange: (v: string) => void
   onProjectChange: (v: string) => void
   onSubmit: (e: FormEvent<HTMLFormElement>) => void
+  onSelectTask: (id: string) => void
   onToggle: (task: Task) => void
 }) {
   const weekdayLabels = ['一', '二', '三', '四', '五', '六', '日']
@@ -2123,7 +2539,13 @@ function RecurringTaskView({
               <span>进行中</span>
               <div className="row-stack">
                 {enabledTasks.map((task) => (
-                  <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    isSelected={task.id === selectedTaskID}
+                    onSelect={onSelectTask}
+                    onToggle={() => onToggle(task)}
+                  />
                 ))}
               </div>
             </div>
@@ -2133,7 +2555,13 @@ function RecurringTaskView({
               <span>已暂停</span>
               <div className="row-stack">
                 {disabledTasks.map((task) => (
-                  <TaskRow key={task.id} task={task} onToggle={() => onToggle(task)} />
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    isSelected={task.id === selectedTaskID}
+                    onSelect={onSelectTask}
+                    onToggle={() => onToggle(task)}
+                  />
                 ))}
               </div>
             </div>
