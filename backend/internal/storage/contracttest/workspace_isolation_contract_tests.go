@@ -97,6 +97,54 @@ func RunWorkspaceIsolationSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("converted_to=%v, want note:%s", got.ConvertedTo, note.ID)
 		}
 	})
+
+	t.Run("InboxTaskConversionPersistsSelectedProjectAndEditableFields", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := seedWorkspaceDefaults(t, store, "workspace_inbox_task_project")
+		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name: "Inbox Learning",
+			Type: "learning",
+		})
+		if err != nil {
+			t.Fatalf("create task project: %v", err)
+		}
+		originalBody := "captured body"
+		item := &model.InboxItem{Kind: "event", Title: "Captured title", Body: &originalBody}
+		if err := store.Inbox().Create(ctx, item); err != nil {
+			t.Fatalf("create inbox item: %v", err)
+		}
+
+		title := "Refined task title"
+		content := "Refined task content"
+		due := time.Date(2026, 7, 15, 0, 0, 0, 0, time.Local).Unix()
+		priority := 2
+		converted, err := service.ConvertInboxItem(ctx, store, item.ID, &model.ConvertInboxRequest{
+			Kind:      "task",
+			Title:     &title,
+			Content:   &content,
+			ProjectID: &project.ID,
+			Due:       &due,
+			Priority:  &priority,
+		})
+		if err != nil {
+			t.Fatalf("convert inbox item to task: %v", err)
+		}
+		task, ok := converted.(*model.Task)
+		if !ok {
+			t.Fatalf("converted item type = %T, want *model.Task", converted)
+		}
+		if task.ProjectID == nil || *task.ProjectID != project.ID {
+			t.Fatalf("project_id=%v, want %q", task.ProjectID, project.ID)
+		}
+		if task.Title != title || task.Content != content || task.Priority != priority {
+			t.Fatalf("unexpected editable task fields: %+v", task)
+		}
+		if task.Due == nil || *task.Due != due {
+			t.Fatalf("due=%v, want %d", task.Due, due)
+		}
+	})
 }
 
 func seedWorkspaceDefaults(t *testing.T, store storage.Store, workspaceID string) context.Context {

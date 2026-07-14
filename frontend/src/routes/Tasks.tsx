@@ -2,6 +2,15 @@ import { type ComponentType, type FormEvent, useEffect, useMemo, useState } from
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  BookOpen,
+  Maximize2,
+  Minimize2,
+  Plus,
+  Save,
+  Search,
+  WandSparkles,
+} from 'lucide-react'
+import {
   Background,
   Controls,
   Handle,
@@ -67,6 +76,9 @@ type RoadmapLinkedTaskInput = {
 
 interface RoadmapNodeData extends Record<string, unknown> {
   node: RoadmapNode
+  stepNumber: number
+  targetPosition: Position
+  sourcePosition: Position
   onOpen: (id: string) => void
   onCreateAfter: (id: string) => void
   isCreatingNode: boolean
@@ -1609,6 +1621,24 @@ function RoadmapTaskView({
   onAddResource: (nodeID: string) => void
 }) {
   const selectedNode = roadmap?.nodes.find((node) => node.id === selectedNodeID) ?? roadmap?.nodes[0]
+  const selectedStepNumber = selectedNode ? (roadmap?.nodes.findIndex((node) => node.id === selectedNode.id) ?? 0) + 1 : 0
+  const completedNodeCount = roadmap?.nodes.filter((node) => node.status === 'done').length ?? 0
+  const roadmapProgress = roadmap?.nodes.length ? Math.round((completedNodeCount / roadmap.nodes.length) * 100) : 0
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const previousOverflow = document.body.style.overflow
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullscreen(false)
+    }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isFullscreen])
 
   return (
     <div className="roadmap-workspace">
@@ -1631,11 +1661,27 @@ function RoadmapTaskView({
             ))}
           </select>
         </label>
-        <button type="button" onClick={onGenerate} disabled={!selectedProjectID || isGenerating}>
-          {isGenerating ? '生成中...' : '生成 Roadmap'}
+        <button className="roadmap-generate-button" type="button" onClick={onGenerate} disabled={!selectedProjectID || isGenerating}>
+          <WandSparkles aria-hidden="true" />
+          {isGenerating ? '正在生成完整路径...' : roadmap ? '重新生成完整路径' : '生成完整路径'}
         </button>
         {selectedProject && <span className="roadmap-goal">{selectedProject.description || selectedProject.name}</span>}
       </div>
+
+      {roadmap && (
+        <section className="roadmap-overview" aria-label="Roadmap 进度">
+          <div>
+            <span>完整学习路径</span>
+            <strong>{roadmap.title}</strong>
+            <p>{roadmap.goal}</p>
+          </div>
+          <div className="roadmap-overview-progress">
+            <strong>{completedNodeCount} / {roadmap.nodes.length}</strong>
+            <span>已完成 {roadmapProgress}%</span>
+            <div aria-hidden="true"><i style={{ width: `${roadmapProgress}%` }} /></div>
+          </div>
+        </section>
+      )}
 
       {projects.length === 0 ? (
         <div className="task-empty-action">
@@ -1648,18 +1694,21 @@ function RoadmapTaskView({
       ) : isLoading ? (
         <p className="empty-copy">正在加载 Roadmap</p>
       ) : roadmap ? (
-        <div className="roadmap-content">
+        <div className={`roadmap-content${isFullscreen ? ' is-fullscreen' : ''}`}>
           <RoadmapCanvas
             roadmap={roadmap}
             selectedNodeID={selectedNode?.id ?? ''}
+            isFullscreen={isFullscreen}
             isOptimizingLayout={isOptimizingLayout}
             isCreatingNode={isCreatingNode}
             onSelectNode={onSelectNode}
             onOpenCreateNode={onOpenCreateNode}
             onOptimizeLayout={onOptimizeLayout}
+            onToggleFullscreen={() => setIsFullscreen((current) => !current)}
           />
           <RoadmapInspector
             node={selectedNode}
+            stepNumber={selectedStepNumber}
             manualTitle={manualResourceTitle}
             manualURL={manualResourceURL}
             articleSearchSources={articleSearchSources}
@@ -1682,19 +1731,23 @@ function RoadmapTaskView({
 function RoadmapCanvas({
   roadmap,
   selectedNodeID,
+  isFullscreen,
   isOptimizingLayout,
   isCreatingNode,
   onSelectNode,
   onOpenCreateNode,
   onOptimizeLayout,
+  onToggleFullscreen,
 }: {
   roadmap: LearningRoadmap
   selectedNodeID: string
+  isFullscreen: boolean
   isOptimizingLayout: boolean
   isCreatingNode: boolean
   onSelectNode: (id: string) => void
   onOpenCreateNode: (nodeID: string) => void
   onOptimizeLayout: (roadmapID: string) => void
+  onToggleFullscreen: () => void
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<RoadmapNodeData>>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -1703,13 +1756,25 @@ function RoadmapCanvas({
 
   useEffect(() => {
     setNodes(
-      roadmap.nodes.map((node) => ({
-        id: node.id,
-        type: 'roadmapNode',
-        position: { x: node.x, y: node.y },
-        data: { node, onOpen: onSelectNode, onCreateAfter: onOpenCreateNode, isCreatingNode },
-        selected: node.id === selectedNodeID,
-      })),
+      roadmap.nodes.map((node, index) => {
+        const row = Math.floor(index / 3)
+        const indexInRow = index % 3
+        return {
+          id: node.id,
+          type: 'roadmapNode',
+          position: { x: node.x, y: node.y },
+          data: {
+            node,
+            stepNumber: index + 1,
+            targetPosition: indexInRow === 0 ? Position.Top : row % 2 === 0 ? Position.Left : Position.Right,
+            sourcePosition: indexInRow === 2 ? Position.Bottom : row % 2 === 0 ? Position.Right : Position.Left,
+            onOpen: onSelectNode,
+            onCreateAfter: onOpenCreateNode,
+            isCreatingNode,
+          },
+          selected: node.id === selectedNodeID,
+        }
+      }),
     )
     setEdges(
       roadmap.edges.map((edge) => ({
@@ -1717,12 +1782,11 @@ function RoadmapCanvas({
         source: edge.source_node_id,
         target: edge.target_node_id,
         type: 'smoothstep',
-        animated: edge.style === 'dotted',
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#2f80ed' },
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#bf6b23' },
         style: {
-          stroke: '#2f80ed',
-          strokeWidth: 2.4,
-          strokeDasharray: edge.style === 'dotted' ? '3 7' : undefined,
+          stroke: '#bf6b23',
+          strokeWidth: 2.1,
         },
       })),
     )
@@ -1742,64 +1806,83 @@ function RoadmapCanvas({
 
   return (
     <div className="roadmap-canvas-shell" data-testid="roadmap-canvas">
-      <div className="roadmap-legend">
-        <span>
-          <i className="status-dot status-active" /> 当前学习
-        </span>
-        <span>
-          <i className="status-dot status-done" /> 已完成
-        </span>
-        <span>
-          <i className="status-dot status-todo" /> 未开始
-        </span>
+      <div className="roadmap-canvas-toolbar">
+        <div>
+          <strong>{roadmap.nodes.length} 步完整路径</strong>
+          <span>
+            已完成 {roadmap.nodes.filter((node) => node.status === 'done').length}
+            <i aria-hidden="true" />
+            进行中 {roadmap.nodes.filter((node) => node.status === 'active').length}
+          </span>
+        </div>
+        <div className="roadmap-canvas-actions">
+          <button type="button" onClick={handleSaveLayout} disabled={isSaving} aria-label="保存布局" title="保存布局">
+            <Save aria-hidden="true" />
+            <span>{isSaving ? '保存中...' : '保存布局'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onOptimizeLayout(roadmap.id)}
+            disabled={isOptimizingLayout}
+            aria-label="自动排列"
+            title="自动排列"
+          >
+            <WandSparkles aria-hidden="true" />
+            <span>{isOptimizingLayout ? '排列中...' : '自动排列'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleFullscreen}
+            aria-label={isFullscreen ? '退出全屏编辑' : '进入全屏编辑'}
+            title={isFullscreen ? '退出全屏编辑' : '进入全屏编辑'}
+          >
+            {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+            <span>{isFullscreen ? '退出全屏' : '全屏编辑'}</span>
+          </button>
+        </div>
       </div>
-      <button className="roadmap-save-layout" type="button" onClick={handleSaveLayout} disabled={isSaving}>
-        {isSaving ? '保存中' : '保存布局'}
-      </button>
-      <button
-        className="roadmap-optimize-layout"
-        type="button"
-        onClick={() => onOptimizeLayout(roadmap.id)}
-        disabled={isOptimizingLayout}
-      >
-        {isOptimizingLayout ? '优化中...' : '自动优化布局'}
-      </button>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        fitView
-        minZoom={0.35}
-        maxZoom={1.4}
-      >
-        <Background gap={26} color="#d7e4ff" />
-        <MiniMap pannable zoomable />
-        <Controls />
-      </ReactFlow>
+      <div className="roadmap-flow-stage">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          fitView
+          fitViewOptions={{ padding: 0.16 }}
+          minZoom={0.32}
+          maxZoom={1.8}
+        >
+          <Background gap={28} size={1} color="#dfd4c4" />
+          <MiniMap pannable zoomable nodeStrokeWidth={2} />
+          <Controls />
+        </ReactFlow>
+      </div>
     </div>
   )
 }
 
 function RoadmapFlowNode(props: NodeProps) {
-  const { node, onOpen, onCreateAfter, isCreatingNode } = props.data as RoadmapNodeData
+  const { node, stepNumber, targetPosition, sourcePosition, onOpen, onCreateAfter, isCreatingNode } = props.data as RoadmapNodeData
 
   return (
     <div
       role="button"
       tabIndex={0}
       data-testid="roadmap-node"
-      className={`roadmap-node roadmap-node-${node.path_type} roadmap-node-status-${node.status}`}
+      className={`roadmap-node roadmap-node-type-${node.type} roadmap-node-status-${node.status}${props.selected ? ' is-selected' : ''}`}
       onClick={() => onOpen(node.id)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') onOpen(node.id)
       }}
     >
-      <Handle type="target" position={Position.Top} />
-      <Handle type="target" position={Position.Left} />
-      <span className={`status-dot status-${node.status}`} />
+      <Handle type="target" position={targetPosition} />
+      <div className="roadmap-node-meta">
+        <span>第 {stepNumber} 步</span>
+        <small>{nodeTypeLabels[node.type]}</small>
+      </div>
       <strong>{node.title}</strong>
+      <span className={`roadmap-node-status status-${node.status}`}>{nodeStatusLabels[node.status]}</span>
       <button
         className="roadmap-node-add-after nodrag nopan"
         type="button"
@@ -1813,17 +1896,16 @@ function RoadmapFlowNode(props: NodeProps) {
         onPointerDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
-        +
+        <Plus aria-hidden="true" />
       </button>
-      <small>{nodeTypeLabels[node.type]} · {pathTypeLabels[node.path_type]}</small>
-      <Handle type="source" position={Position.Bottom} />
-      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={sourcePosition} />
     </div>
   )
 }
 
 function RoadmapInspector({
   node,
+  stepNumber,
   manualTitle,
   manualURL,
   articleSearchSources,
@@ -1836,6 +1918,7 @@ function RoadmapInspector({
   onAddResource,
 }: {
   node?: RoadmapNode
+  stepNumber: number
   manualTitle: string
   manualURL: string
   articleSearchSources: string[]
@@ -1854,7 +1937,10 @@ function RoadmapInspector({
   return (
     <aside className="roadmap-inspector">
       <div className="roadmap-inspector-heading">
-        <span>{nodeTypeLabels[node.type]} · {pathTypeLabels[node.path_type]}</span>
+        <div>
+          <span>第 {stepNumber} 步 · {nodeTypeLabels[node.type]}</span>
+          <span className={`roadmap-inspector-status status-${node.status}`}>{nodeStatusLabels[node.status]}</span>
+        </div>
         <h2>{node.title}</h2>
         <p>{node.description}</p>
       </div>
@@ -1868,8 +1954,15 @@ function RoadmapInspector({
         <p>{node.acceptance_criteria || '暂无验收标准'}</p>
       </div>
 
+      <div className="roadmap-resource-section-heading">
+        <BookOpen aria-hidden="true" />
+        <strong>学习资料</strong>
+        <span>{node.resources.length}</span>
+      </div>
+
       <div className="roadmap-inspector-actions">
         <button type="button" onClick={() => onSearchResources(node.id)} disabled={isSearching || articleSearchSources.length === 0}>
+          <Search aria-hidden="true" />
           {isSearching ? '搜索中...' : '搜索文章'}
         </button>
       </div>
@@ -1944,7 +2037,6 @@ function RoadmapNodeCreateDialog({
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [nodeType, setNodeType] = useState<RoadmapNode['type']>('task')
-  const [pathType, setPathType] = useState<RoadmapNode['path_type']>('required')
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1955,9 +2047,9 @@ function RoadmapNodeCreateDialog({
       title: trimmedTitle,
       type: nodeType,
       description: description.trim(),
-      path_type: pathType,
+      path_type: 'required',
       status: 'todo',
-      edge_style: pathType === 'required' ? 'solid' : 'dotted',
+      edge_style: 'solid',
     })
   }
 
@@ -1991,23 +2083,9 @@ function RoadmapNodeCreateDialog({
               value={nodeType}
               onChange={(event) => setNodeType(event.target.value as RoadmapNode['type'])}
             >
-              {(Object.keys(nodeTypeLabels) as RoadmapNode['type'][]).map((value) => (
+              {(Object.keys(nodeTypeLabels) as RoadmapNode['type'][]).filter((value) => value !== 'choice').map((value) => (
                 <option key={value} value={value}>
                   {nodeTypeLabels[value]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>路径类型</span>
-            <select
-              aria-label="路径类型"
-              value={pathType}
-              onChange={(event) => setPathType(event.target.value as RoadmapNode['path_type'])}
-            >
-              {(Object.keys(pathTypeLabels) as RoadmapNode['path_type'][]).map((value) => (
-                <option key={value} value={value}>
-                  {pathTypeLabels[value]}
                 </option>
               ))}
             </select>

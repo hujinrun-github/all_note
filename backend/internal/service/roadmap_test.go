@@ -142,22 +142,44 @@ func TestGenerateLearningRoadmapWithMockAI(t *testing.T) {
 	if roadmap.ProjectID != project.ID || roadmap.Status != "ready" {
 		t.Fatalf("unexpected roadmap header: %+v", roadmap)
 	}
-	if len(roadmap.Nodes) < 4 {
-		t.Fatalf("expected generated nodes, got %d", len(roadmap.Nodes))
+	if len(roadmap.Nodes) < 14 {
+		t.Fatalf("expected a complete roadmap with at least 14 nodes, got %d", len(roadmap.Nodes))
 	}
-	if len(roadmap.Edges) == 0 {
-		t.Fatal("expected generated edges")
+	if len(roadmap.Edges) != len(roadmap.Nodes)-1 {
+		t.Fatalf("expected one continuous path with %d edges, got %d", len(roadmap.Nodes)-1, len(roadmap.Edges))
 	}
 
-	var hasDeliverable bool
+	incoming := map[string]int{}
+	outgoing := map[string]int{}
 	for _, node := range roadmap.Nodes {
-		if node.Deliverable != "" {
-			hasDeliverable = true
-			break
+		if node.Type == "choice" {
+			t.Fatalf("generated roadmap must not contain choice branches: %+v", node)
+		}
+		if node.PathType != "required" {
+			t.Fatalf("generated roadmap node path_type = %q, want required", node.PathType)
+		}
+		if strings.TrimSpace(node.Description) == "" || strings.TrimSpace(node.Deliverable) == "" || strings.TrimSpace(node.AcceptanceCriteria) == "" {
+			t.Fatalf("generated roadmap node is missing execution detail: %+v", node)
 		}
 	}
-	if !hasDeliverable {
-		t.Fatal("expected project-practice roadmap nodes to include deliverables")
+	for _, edge := range roadmap.Edges {
+		if edge.Style != "solid" {
+			t.Fatalf("generated roadmap edge style = %q, want solid", edge.Style)
+		}
+		outgoing[edge.SourceNodeID]++
+		incoming[edge.TargetNodeID]++
+	}
+	for index, node := range roadmap.Nodes {
+		wantIncoming, wantOutgoing := 1, 1
+		if index == 0 {
+			wantIncoming = 0
+		}
+		if index == len(roadmap.Nodes)-1 {
+			wantOutgoing = 0
+		}
+		if incoming[node.ID] != wantIncoming || outgoing[node.ID] != wantOutgoing {
+			t.Fatalf("node %d does not form a single linear path: incoming=%d outgoing=%d", index, incoming[node.ID], outgoing[node.ID])
+		}
 	}
 	for index := range roadmap.Nodes {
 		for next := index + 1; next < len(roadmap.Nodes); next++ {
@@ -226,6 +248,71 @@ func TestEnsureRoadmapBranchingAddsChoiceBranchesToLinearDraft(t *testing.T) {
 		_ = sourceID
 	}
 	t.Fatalf("expected one source node to fan out into at least two dotted branch edges, got %+v", branchFanOut)
+}
+
+func TestNormalizeGeneratedRoadmapToLinearPathRemovesBranches(t *testing.T) {
+	draft := &roadmapDraft{
+		Title: "Backend learning path",
+		Goal:  "learn backend development through project practice",
+		Nodes: []model.RoadmapNode{
+			{ID: "start", Type: "phase", Title: "Start", PathType: "required", OrderIndex: 0},
+			{ID: "docs", Type: "choice", Title: "Docs", PathType: "recommended", OrderIndex: 1},
+			{ID: "tutorial", Type: "choice", Title: "Tutorial", PathType: "alternative", OrderIndex: 2},
+			{ID: "build", Type: "task", Title: "Build", PathType: "required", OrderIndex: 3},
+		},
+		Edges: []model.RoadmapEdge{
+			{ID: "edge-1", SourceNodeID: "start", TargetNodeID: "docs", Style: "dotted"},
+			{ID: "edge-2", SourceNodeID: "start", TargetNodeID: "tutorial", Style: "dotted"},
+			{ID: "edge-3", SourceNodeID: "docs", TargetNodeID: "build", Style: "solid"},
+		},
+	}
+
+	normalizeGeneratedRoadmapToLinearPath(draft)
+
+	if len(draft.Edges) != len(draft.Nodes)-1 {
+		t.Fatalf("expected %d edges, got %d", len(draft.Nodes)-1, len(draft.Edges))
+	}
+	for index, node := range draft.Nodes {
+		if node.Type == "choice" || node.PathType != "required" {
+			t.Fatalf("node was not normalized to the required path: %+v", node)
+		}
+		if index == 0 {
+			if node.ParentID != nil {
+				t.Fatalf("first node parent = %v, want nil", *node.ParentID)
+			}
+			continue
+		}
+		if node.ParentID == nil || *node.ParentID != draft.Nodes[index-1].ID {
+			t.Fatalf("node %d parent is not the previous step: %+v", index, node.ParentID)
+		}
+	}
+	for index, edge := range draft.Edges {
+		if edge.Style != "solid" || edge.SourceNodeID != draft.Nodes[index].ID || edge.TargetNodeID != draft.Nodes[index+1].ID {
+			t.Fatalf("edge %d is not the expected sequential connection: %+v", index, edge)
+		}
+	}
+}
+
+func TestEnsureGeneratedRoadmapDepthAndDetailExpandsShortDraft(t *testing.T) {
+	draft := &roadmapDraft{
+		Title: "Short path",
+		Nodes: []model.RoadmapNode{
+			{ID: "one", Type: "phase", Title: "Start", OrderIndex: 0},
+			{ID: "two", Type: "task", Title: "Finish", OrderIndex: 1},
+		},
+	}
+
+	ensureGeneratedRoadmapDepthAndDetail(draft, model.TaskProject{Name: "Test learning project"})
+	normalizeGeneratedRoadmapToLinearPath(draft)
+
+	if len(draft.Nodes) < 14 {
+		t.Fatalf("short AI roadmap was not expanded: got %d nodes", len(draft.Nodes))
+	}
+	for _, node := range draft.Nodes {
+		if strings.TrimSpace(node.Description) == "" || strings.TrimSpace(node.Deliverable) == "" || strings.TrimSpace(node.AcceptanceCriteria) == "" {
+			t.Fatalf("expanded node is missing execution detail: %+v", node)
+		}
+	}
 }
 
 func TestNormalizeGeneratedRoadmapLayoutSeparatesOverlappingNodes(t *testing.T) {
@@ -493,12 +580,17 @@ func TestCreateAndDeleteRoadmapNodeMutatesRoadmapGraph(t *testing.T) {
 	}
 }
 
-func TestRoadmapPromptRequestsBranchingAndOnlineArticles(t *testing.T) {
+func TestRoadmapPromptRequestsCompleteLinearPathAndOnlineArticles(t *testing.T) {
 	prompt := buildRoadmapSystemPrompt()
 
-	for _, required := range []string{"branch", "choice", "recommended", "alternative", "article_search_queries", "online articles"} {
+	for _, required := range []string{"strictly linear", "14 to 20", "no branches", "article_search_queries", "online articles", "deliverable", "acceptance_criteria"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("expected prompt to contain %q, got %s", required, prompt)
+		}
+	}
+	for _, forbidden := range []string{"at least two choice branch nodes", "Prefer 6 to 10 nodes"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt still requests the old branching behavior %q: %s", forbidden, prompt)
 		}
 	}
 }

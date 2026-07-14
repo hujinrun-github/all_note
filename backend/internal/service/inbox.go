@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
@@ -62,8 +63,33 @@ func ConvertInboxItem(ctx context.Context, store storage.Store, id string, req *
 			converted = note
 
 		case "task":
+			title := strings.TrimSpace(inboxItem.Title)
+			if req.Title != nil {
+				title = strings.TrimSpace(*req.Title)
+			}
+			if title == "" {
+				return errors.New("task title is required")
+			}
+			content := ""
+			if inboxItem.Body != nil {
+				content = *inboxItem.Body
+			}
+			if req.Content != nil {
+				content = *req.Content
+			}
+			priority := 1
+			if req.Priority != nil {
+				priority = *req.Priority
+			}
+			if priority < 0 || priority > 2 {
+				return errors.New("priority must be between 0 and 2")
+			}
 			task := &model.Task{
-				Title:         inboxItem.Title,
+				Title:         title,
+				Content:       content,
+				ProjectID:     req.ProjectID,
+				Due:           req.Due,
+				Priority:      priority,
 				Status:        "open",
 				ExecutionType: "single",
 			}

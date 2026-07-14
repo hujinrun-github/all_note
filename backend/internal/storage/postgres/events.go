@@ -15,6 +15,13 @@ type eventRepository struct {
 	db postgresRunner
 }
 
+const postgresEventSelect = `
+	SELECT e.id, e.title, e.start_at, e.end_at, e.location, e.kind, e.note_id,
+	       e.project_id, p.name, p.type, e.created_at, e.updated_at
+	FROM events e
+	LEFT JOIN task_projects p ON p.workspace_id = e.workspace_id AND p.id = e.project_id
+`
+
 func (r eventRepository) List(ctx context.Context, start, end int64, page, pageSize int) ([]model.Event, int, error) {
 	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 	if err != nil {
@@ -35,10 +42,9 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	}
 	offset := (page - 1) * pageSize
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
-		FROM events
-		WHERE workspace_id = $1 AND time_range && tstzrange($2, $3, '[)')
-		ORDER BY start_at ASC LIMIT $4 OFFSET $5
+		`+postgresEventSelect+`
+		WHERE e.workspace_id = $1 AND e.time_range && tstzrange($2, $3, '[)')
+		ORDER BY e.start_at ASC LIMIT $4 OFFSET $5
 	`, workspaceID, unixToTime(start), unixToTime(end), pageSize, offset)
 	if err != nil {
 		return nil, 0, err
@@ -65,9 +71,9 @@ func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
 	}
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO events (id, title, start_at, end_at, time_range, location, kind, note_id, created_at, updated_at, workspace_id)
-			VALUES ($1, $2, $3, $4, tstzrange($3, $4, '[)'), $5, $6, $7, $8, $9, $10)
-		`, event.ID, event.Title, unixToTime(event.StartTime), unixToTime(event.EndTime), event.Location, event.Kind, event.NoteID, unixToTime(event.CreatedAt), unixToTime(event.UpdatedAt), workspaceID); err != nil {
+			INSERT INTO events (id, title, start_at, end_at, time_range, location, kind, note_id, project_id, created_at, updated_at, workspace_id)
+			VALUES ($1, $2, $3, $4, tstzrange($3, $4, '[)'), $5, $6, $7, $8, $9, $10, $11)
+		`, event.ID, event.Title, unixToTime(event.StartTime), unixToTime(event.EndTime), event.Location, event.Kind, event.NoteID, event.ProjectID, unixToTime(event.CreatedAt), unixToTime(event.UpdatedAt), workspaceID); err != nil {
 			return err
 		}
 		return upsertEventSearchIndex(ctx, tx, workspaceID, event)
@@ -96,6 +102,13 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 	if req.Kind != nil {
 		builder.Add("kind", *req.Kind)
 	}
+	if req.ProjectID != nil {
+		if strings.TrimSpace(*req.ProjectID) == "" {
+			builder.Add("project_id", nil)
+		} else {
+			builder.Add("project_id", *req.ProjectID)
+		}
+	}
 	clause, args := builder.ClauseAndArgs()
 	args = append(args, id, workspaceID)
 
@@ -108,8 +121,8 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 			return err
 		}
 		event, err := scanPostgresEvent(tx.QueryRowContext(ctx, `
-			SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
-			FROM events WHERE id = $1 AND workspace_id = $2
+			`+postgresEventSelect+`
+			WHERE e.id = $1 AND e.workspace_id = $2
 		`, id, workspaceID))
 		if err != nil {
 			return err
@@ -132,8 +145,8 @@ func (r eventRepository) GetByID(ctx context.Context, id string) (*model.Event, 
 		return nil, err
 	}
 	return scanPostgresEvent(r.db.QueryRowContext(ctx, `
-		SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
-		FROM events WHERE id = $1 AND workspace_id = $2
+		`+postgresEventSelect+`
+		WHERE e.id = $1 AND e.workspace_id = $2
 	`, id, workspaceID))
 }
 
@@ -157,10 +170,9 @@ func (r eventRepository) Today(ctx context.Context, start, end int64) ([]model.E
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, title, start_at, end_at, location, kind, note_id, created_at, updated_at
-		FROM events
-		WHERE workspace_id = $1 AND time_range && tstzrange($2, $3, '[)')
-		ORDER BY start_at ASC
+		`+postgresEventSelect+`
+		WHERE e.workspace_id = $1 AND e.time_range && tstzrange($2, $3, '[)')
+		ORDER BY e.start_at ASC
 	`, workspaceID, unixToTime(start), unixToTime(end))
 	if err != nil {
 		return nil, err
@@ -203,9 +215,12 @@ func scanPostgresEvent(row rowScanner) (*model.Event, error) {
 	var endAt time.Time
 	var location sql.NullString
 	var noteID sql.NullString
+	var projectID sql.NullString
+	var project sql.NullString
+	var projectType sql.NullString
 	var createdAt time.Time
 	var updatedAt time.Time
-	if err := row.Scan(&event.ID, &event.Title, &startAt, &endAt, &location, &event.Kind, &noteID, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&event.ID, &event.Title, &startAt, &endAt, &location, &event.Kind, &noteID, &projectID, &project, &projectType, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	event.StartTime = timeToUnix(startAt)
@@ -215,6 +230,15 @@ func scanPostgresEvent(row rowScanner) (*model.Event, error) {
 	}
 	if noteID.Valid {
 		event.NoteID = &noteID.String
+	}
+	if projectID.Valid {
+		event.ProjectID = &projectID.String
+	}
+	if project.Valid {
+		event.Project = &project.String
+	}
+	if projectType.Valid {
+		event.ProjectType = &projectType.String
 	}
 	event.CreatedAt = timeToUnix(createdAt)
 	event.UpdatedAt = timeToUnix(updatedAt)

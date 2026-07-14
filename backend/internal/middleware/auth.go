@@ -29,6 +29,22 @@ func (m AuthMiddleware) Required() gin.HandlerFunc {
 	}
 }
 
+// RequiredSessionOrWatch accepts the normal browser/iPhone session cookie or a
+// restricted Apple Watch bearer token. It is only attached to native-app routes.
+func (m AuthMiddleware) RequiredSessionOrWatch() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if m.restore(c, false) {
+			c.Next()
+			return
+		}
+		if m.restoreWatchDevice(c) {
+			c.Next()
+			return
+		}
+		abortAuth(c, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+	}
+}
+
 func (m AuthMiddleware) Optional() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_ = m.restore(c, false)
@@ -112,6 +128,47 @@ func (m AuthMiddleware) restore(c *gin.Context, required bool) bool {
 	ctx := auth.ContextWithIdentity(c.Request.Context(), identity)
 	ctx = auth.ContextWithWorkspaceScope(ctx, session.WorkspaceID)
 	c.Request = c.Request.WithContext(ctx)
+	return true
+}
+
+func (m AuthMiddleware) restoreWatchDevice(c *gin.Context) bool {
+	if m.Store == nil {
+		return false
+	}
+	header := strings.TrimSpace(c.GetHeader("Authorization"))
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	tokenHash, err := auth.HashSessionToken(m.SessionSecret, parts[1])
+	if err != nil {
+		return false
+	}
+	nativeStore, err := storage.NativeStoreFrom(m.Store)
+	if err != nil {
+		return false
+	}
+	device, err := nativeStore.WatchDevices().GetActiveByTokenHash(c.Request.Context(), tokenHash)
+	if err != nil {
+		return false
+	}
+	user, err := m.Store.Auth().GetUserByID(c.Request.Context(), device.UserID)
+	if err != nil || user.Status != "active" {
+		return false
+	}
+	if _, err := m.Store.Auth().GetWorkspaceMembership(c.Request.Context(), device.WorkspaceID, device.UserID); err != nil {
+		return false
+	}
+	identity := auth.RequestIdentity{
+		UserID:             user.ID,
+		WorkspaceID:        device.WorkspaceID,
+		Role:               user.Role,
+		MustChangePassword: user.MustChangePassword,
+	}
+	ctx := auth.ContextWithIdentity(c.Request.Context(), identity)
+	ctx = auth.ContextWithWorkspaceScope(ctx, device.WorkspaceID)
+	c.Request = c.Request.WithContext(ctx)
+	_ = nativeStore.WatchDevices().TouchLastSeen(ctx, device.ID, time.Now().Unix())
 	return true
 }
 

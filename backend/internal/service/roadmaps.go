@@ -92,9 +92,8 @@ func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID
 	}
 
 	sanitizeGeneratedRoadmapDraft(draft)
-	ensureRoadmapBranching(draft, *project)
-	sanitizeGeneratedRoadmapDraft(draft)
-	normalizeGeneratedRoadmapLayout(draft)
+	ensureGeneratedRoadmapDepthAndDetail(draft, *project)
+	normalizeGeneratedRoadmapToLinearPath(draft)
 
 	roadmap := &model.LearningRoadmap{
 		ProjectID: project.ID,
@@ -308,7 +307,7 @@ func shouldUseFallbackRoadmapDraft(err error) bool {
 	return strings.ToLower(strings.TrimSpace(os.Getenv("AI_PROVIDER"))) != "invalid-json"
 }
 
-func mockRoadmapDraft(project model.TaskProject) *roadmapDraft {
+func legacyMockRoadmapDraft(project model.TaskProject) *roadmapDraft {
 	nodeIDs := []string{randomLocalID("node"), randomLocalID("node"), randomLocalID("node"), randomLocalID("node"), randomLocalID("node"), randomLocalID("node")}
 	nodes := []model.RoadmapNode{
 		{
@@ -405,26 +404,86 @@ func mockRoadmapDraft(project model.TaskProject) *roadmapDraft {
 	}
 }
 
+func mockRoadmapDraft(project model.TaskProject) *roadmapDraft {
+	type roadmapStep struct {
+		NodeType           string
+		Title              string
+		Description        string
+		Deliverable        string
+		AcceptanceCriteria string
+		Queries            []string
+	}
+
+	projectGoal := strings.TrimSpace(project.Description)
+	if projectGoal == "" {
+		projectGoal = "系统掌握 " + project.Name + " 并能独立完成综合实践"
+	}
+	steps := []roadmapStep{
+		{"phase", "明确目标与能力诊断", "把学习目标拆成可验证的能力项，并通过一组基线题或小任务确认当前起点。", "目标清单、能力矩阵和基线测试记录", "目标包含明确完成日期和成果形式，并能指出至少 3 个当前薄弱点。", []string{project.Name + " learning objectives assessment", project.Name + " beginner skill checklist"}},
+		{"task", "搭建环境与资料体系", "准备完成整条路线需要的工具、练习环境和统一的笔记归档方式。", "可运行的学习环境和资料索引", "环境能够独立复现，资料按主题分类且包含官方文档入口。", []string{project.Name + " setup guide", project.Name + " official documentation getting started"}},
+		{"module", "建立核心概念地图", "先形成知识全景，理解关键概念之间的依赖关系，再进入细节学习。", "一张核心概念关系图和术语表", "能够用自己的话解释至少 10 个核心术语及其相互关系。", []string{project.Name + " core concepts overview", project.Name + " fundamentals roadmap"}},
+		{"module", "掌握基础知识单元一", "学习最基础、使用频率最高的知识，并通过小例子验证理解。", "基础知识笔记和 5 个最小示例", "不查资料能够解释关键原理，并独立完成全部最小示例。", []string{project.Name + " fundamentals tutorial", project.Name + " basic examples"}},
+		{"module", "掌握基础知识单元二", "补齐与上一单元直接相连的关键知识，形成可连续运用的基础能力。", "第二组知识笔记和对比示例", "能够说明两个基础单元的边界、联系及常见误区。", []string{project.Name + " essential concepts guide", project.Name + " common mistakes beginners"}},
+		{"task", "完成基础专项练习", "用由易到难的练习检验基础知识，记录错误类型而不只记录答案。", "不少于 20 题或 3 个专项练习及错题记录", "正确率达到 80%，所有错误都有原因分析和改进动作。", []string{project.Name + " practice exercises", project.Name + " beginner project exercises"}},
+		{"module", "构建进阶知识框架", "进入影响真实应用质量的进阶主题，理解它们何时需要以及如何取舍。", "进阶主题清单和决策对照表", "能针对 3 个典型场景选择合适方法并解释理由。", []string{project.Name + " advanced concepts", project.Name + " best practices tradeoffs"}},
+		{"module", "拆解高频难点", "集中处理最容易混淆或导致失败的难点，通过反例和调试过程建立判断力。", "难点案例集、反例和排查清单", "能够复现并解决至少 5 个常见问题，说明根因而不是只给结论。", []string{project.Name + " common pitfalls debugging", project.Name + " troubleshooting guide"}},
+		{"task", "建立实战工作流", "把零散知识组织成从分析、实施、验证到复盘的稳定工作流程。", "一份可重复使用的实战步骤模板", "使用模板完成一次小任务，过程包含输入、决策、验证和复盘。", []string{project.Name + " practical workflow", project.Name + " project best practices"}},
+		{"task", "完成第一轮综合实践", "在允许查阅资料的情况下完成一个覆盖核心知识的综合任务，重点保证过程完整。", project.Name + " 第一轮综合成果", "成果可运行或可演示，覆盖核心能力项，并记录关键设计决策。", []string{project.Name + " hands on project tutorial", project.Name + " end to end example"}},
+		{"module", "复盘结果与识别差距", "对照验收标准检查第一轮实践，区分知识缺口、熟练度不足和流程问题。", "问题清单、根因分类和强化计划", "每个问题都有证据、根因和下一步练习，且按影响程度排序。", []string{project.Name + " project review checklist", project.Name + " self assessment rubric"}},
+		{"task", "开展针对性强化训练", "围绕差距清单进行短周期刻意练习，每次只解决一个明确弱点。", "不少于 5 组强化练习和前后对比记录", "关键弱项的正确率或完成速度较基线提升至少 20%。", []string{project.Name + " deliberate practice", project.Name + " advanced exercises"}},
+		{"task", "完成第二轮独立实践", "减少对教程和答案的依赖，从空白开始独立完成新的综合任务。", project.Name + " 第二轮独立成果", "在限定时间内独立完成，核心步骤无需照抄教程，结果通过自测。", []string{project.Name + " independent project ideas", project.Name + " intermediate project challenge"}},
+		{"task", "完成完整模拟或正式交付", "按照真实考试、工作或项目环境完成一次完整演练，覆盖时间管理和质量检查。", "完整模拟记录或可交付项目", "在规定条件下达到目标分数或通过预设的质量检查清单。", []string{project.Name + " mock exam full practice", project.Name + " production project checklist"}},
+		{"phase", "执行最终验收", "用最初定义的能力矩阵逐项验收，并通过讲解、演示或测试证明学习结果。", "最终能力报告和成果演示", "所有核心能力项都有可核验的证据，未达标项有明确补救计划。", []string{project.Name + " final assessment", project.Name + " competency checklist"}},
+		{"task", "建立复习与持续维护计划", "把已掌握内容转成可持续的复习节奏，安排后续实践和定期复测。", "未来 8 周复习表和下一阶段计划", "计划包含复习间隔、复测方式和至少 2 个后续实践主题。", []string{project.Name + " spaced repetition plan", project.Name + " continuing learning roadmap"}},
+	}
+
+	nodes := make([]model.RoadmapNode, 0, len(steps))
+	for index, step := range steps {
+		status := "todo"
+		if index == 0 {
+			status = "active"
+		}
+		nodes = append(nodes, model.RoadmapNode{
+			ID:                   randomLocalID("node"),
+			Type:                 step.NodeType,
+			Title:                step.Title,
+			Description:          step.Description,
+			PathType:             "required",
+			Status:               status,
+			Deliverable:          step.Deliverable,
+			AcceptanceCriteria:   step.AcceptanceCriteria,
+			OrderIndex:           index,
+			ArticleSearchQueries: step.Queries,
+		})
+	}
+
+	draft := &roadmapDraft{
+		Title: project.Name + " 完整学习路径",
+		Goal:  projectGoal,
+		Nodes: nodes,
+	}
+	normalizeGeneratedRoadmapToLinearPath(draft)
+	return draft
+}
+
 func buildRoadmapSystemPrompt() string {
 	return strings.Join([]string{
 		"Return only valid JSON and no markdown.",
-		"Build a project-practice learning roadmap as graph data, similar to roadmap.sh but tailored for execution inside a task app.",
-		"The roadmap must not be a linear checklist. It must include branch learning logic:",
-		"- one main required path for the recommended learning order",
-		"- at least two choice branch nodes from the same parent node",
-		"- branch nodes must use type=choice and path_type=recommended, alternative, or optional",
-		"- branch edges must use style=dotted, while the main path uses style=solid",
-		"- branches should represent meaningful learning decisions such as official-docs-first, project-tutorial-first, framework choice, or depth-vs-speed path",
-		"Each phase/module/task must be project-practice oriented and include a concrete deliverable and acceptance_criteria.",
+		"Build a complete project-practice learning roadmap as graph data for execution inside a task app.",
+		"The roadmap must be strictly linear with 14 to 20 nodes and no branches, optional detours, alternatives, or choice nodes.",
+		"Create one continuous required path from the starting assessment to final validation and continued maintenance.",
+		"Use 4 to 6 phase/module milestones connected by concrete practice tasks, but keep every node in one sequential order.",
+		"Cover goal diagnosis, setup, foundations, core knowledge, deliberate practice, integrated practice, gap review, reinforcement, independent practice, final assessment, and retention planning.",
+		"Every node must include a detailed Chinese description, a concrete deliverable, and a measurable acceptance_criteria.",
 		"Each node must include article_search_queries with 2 or 3 English search queries for online articles, official documentation, and high-quality tutorials.",
 		"Do not invent article URLs. Provide search queries only; the backend will query online articles and attach real links.",
 		"Use Chinese titles and descriptions.",
 		"Node schema: id,type,title,description,path_type,status,deliverable,acceptance_criteria,x,y,order_index,article_search_queries.",
-		"Allowed node.type values: phase,module,task,choice.",
-		"Allowed node.path_type values: required,recommended,optional,alternative.",
+		"Allowed node.type values: phase,module,task. Do not use choice.",
+		"Every node.path_type must be required.",
 		"Allowed node.status values: active,todo.",
 		"Edge schema: id,source_node_id,target_node_id,style.",
-		"Allowed edge.style values: solid,dotted.",
+		"Create exactly nodes.length - 1 edges. Every edge must connect each node to the next node by order_index and use style=solid.",
 		"Return JSON object schema: {\"title\":\"...\",\"goal\":\"...\",\"nodes\":[...],\"edges\":[...]}.",
 	}, "\n")
 }
@@ -433,12 +492,102 @@ func buildRoadmapUserPrompt(project model.TaskProject) string {
 	return fmt.Sprintf(strings.Join([]string{
 		"Project name: %s",
 		"Description: %s",
-		"Generate a concise but branch-aware project-practice learning roadmap.",
-		"Prefer 6 to 10 nodes.",
-		"Make the central path directly lead to a runnable project deliverable.",
-		"Make the branch paths useful choices, not decorative side notes.",
-		"Give x/y positions so the main path is vertical and branches spread left/right.",
+		"Generate a comprehensive 14 to 20 node learning path tailored to this exact project.",
+		"Do not add branches or choices. Give the learner the complete recommended path directly.",
+		"Increase detail gradually from fundamentals to independent execution and final validation.",
+		"Every step must produce an observable result and have a measurable completion standard.",
+		"Give x/y positions in a readable sequential layout; the backend will normalize them if needed.",
 	}, "\n"), project.Name, project.Description)
+}
+
+func normalizeGeneratedRoadmapToLinearPath(draft *roadmapDraft) {
+	if draft == nil || len(draft.Nodes) == 0 {
+		return
+	}
+
+	sort.SliceStable(draft.Nodes, func(left, right int) bool {
+		if draft.Nodes[left].OrderIndex == draft.Nodes[right].OrderIndex {
+			return draft.Nodes[left].ID < draft.Nodes[right].ID
+		}
+		return draft.Nodes[left].OrderIndex < draft.Nodes[right].OrderIndex
+	})
+
+	const (
+		columns       = 3
+		horizontalGap = 320.0
+		verticalGap   = 170.0
+	)
+	for index := range draft.Nodes {
+		node := &draft.Nodes[index]
+		if node.Type == "choice" {
+			node.Type = "module"
+		}
+		node.PathType = "required"
+		node.OrderIndex = index
+		if index == 0 {
+			node.Status = "active"
+			node.ParentID = nil
+		} else {
+			node.Status = "todo"
+			parentID := draft.Nodes[index-1].ID
+			node.ParentID = &parentID
+		}
+
+		row := index / columns
+		column := index % columns
+		if row%2 == 1 {
+			column = columns - 1 - column
+		}
+		node.X = float64(column) * horizontalGap
+		node.Y = float64(row) * verticalGap
+	}
+
+	draft.Edges = make([]model.RoadmapEdge, 0, len(draft.Nodes)-1)
+	for index := 0; index < len(draft.Nodes)-1; index++ {
+		draft.Edges = append(draft.Edges, model.RoadmapEdge{
+			ID:           randomLocalID("edge"),
+			SourceNodeID: draft.Nodes[index].ID,
+			TargetNodeID: draft.Nodes[index+1].ID,
+			Style:        "solid",
+		})
+	}
+}
+
+func ensureGeneratedRoadmapDepthAndDetail(draft *roadmapDraft, project model.TaskProject) {
+	if draft == nil {
+		return
+	}
+
+	fallback := mockRoadmapDraft(project)
+	if len(draft.Nodes) > 20 {
+		draft.Nodes = draft.Nodes[:20]
+	}
+	for index := range draft.Nodes {
+		templateIndex := index
+		if templateIndex >= len(fallback.Nodes) {
+			templateIndex = len(fallback.Nodes) - 1
+		}
+		template := fallback.Nodes[templateIndex]
+		if strings.TrimSpace(draft.Nodes[index].Description) == "" {
+			draft.Nodes[index].Description = template.Description
+		}
+		if strings.TrimSpace(draft.Nodes[index].Deliverable) == "" {
+			draft.Nodes[index].Deliverable = template.Deliverable
+		}
+		if strings.TrimSpace(draft.Nodes[index].AcceptanceCriteria) == "" {
+			draft.Nodes[index].AcceptanceCriteria = template.AcceptanceCriteria
+		}
+		if len(nonEmptyStrings(draft.Nodes[index].ArticleSearchQueries)) == 0 {
+			draft.Nodes[index].ArticleSearchQueries = template.ArticleSearchQueries
+		}
+	}
+
+	if len(draft.Nodes) >= 14 {
+		return
+	}
+	for index := len(draft.Nodes); index < len(fallback.Nodes); index++ {
+		draft.Nodes = append(draft.Nodes, fallback.Nodes[index])
+	}
 }
 
 func ensureRoadmapBranching(draft *roadmapDraft, project model.TaskProject) {
@@ -830,7 +979,8 @@ func generateOpenAICompatibleRoadmap(project model.TaskProject) (*roadmapDraft, 
 	}
 
 	body := map[string]interface{}{
-		"model": modelName,
+		"model":      modelName,
+		"max_tokens": 8000,
 		"messages": []map[string]string{
 			{
 				"role":    "system",

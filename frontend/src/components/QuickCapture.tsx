@@ -92,6 +92,7 @@ export function QuickCapture() {
           end_time: startTime + 60 * 60,
           location: selectedProjectLabel,
           kind: selectedProject?.type === 'personal' ? 'personal' : 'work',
+          project_id: selectedProjectID,
         })
       } else if (kind === 'task') {
         await createTask.mutateAsync({

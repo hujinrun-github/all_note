@@ -155,12 +155,14 @@ CREATE TABLE IF NOT EXISTS roadmap_resources (
 CREATE TABLE IF NOT EXISTS events (
   rowid INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT UNIQUE NOT NULL,
+  workspace_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   start_time INTEGER NOT NULL,
   end_time INTEGER NOT NULL,
   location TEXT,
   kind TEXT NOT NULL DEFAULT 'work',
   note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
+  project_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

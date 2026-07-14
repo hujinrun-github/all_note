@@ -9,11 +9,13 @@ import (
 	"github.com/hujinrun/flowspace/internal/bootstrap"
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/handler"
+	"github.com/hujinrun/flowspace/internal/objectstore"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/router"
 	storagepkg "github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/postgres"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
+	"github.com/hujinrun/flowspace/internal/transcription"
 )
 
 func main() {
@@ -39,6 +41,27 @@ func main() {
 	authCfg, err := config.LoadAuthConfig(runtimeConfig.Environment)
 	if err != nil {
 		log.Fatalf("auth config: %v", err)
+	}
+	nativeCfg, err := config.LoadNativeConfig()
+	if err != nil {
+		log.Fatalf("native app config: %v", err)
+	}
+	var voiceObjects objectstore.Store = objectstore.UnavailableStore{}
+	if nativeCfg.MinIO.Enabled() {
+		voiceObjects, err = objectstore.NewMinIOStore(startupCtx, nativeCfg.MinIO)
+		if err != nil {
+			log.Fatalf("voice object storage: %v", err)
+		}
+		log.Printf("voice object storage initialized bucket=%s", nativeCfg.MinIO.Bucket)
+	} else {
+		log.Printf("voice object storage disabled: FLOWSPACE_MINIO_ENDPOINT is not configured")
+	}
+	var voiceTranscriber transcription.Transcriber
+	if nativeCfg.Transcription.Enabled() {
+		voiceTranscriber = transcription.NewHTTPTranscriber(nativeCfg.Transcription)
+		log.Printf("voice transcription initialized")
+	} else {
+		log.Printf("voice transcription disabled: FLOWSPACE_TRANSCRIPTION_URL is not configured")
 	}
 	bootstrapCfg := bootstrap.Config{
 		AdminEmail:    authCfg.Bootstrap.Email,
@@ -76,6 +99,9 @@ func main() {
 		Auth:            authCfg,
 		OAuthStateStore: oauthStateStore,
 		GitHubClient:    handler.NewGitHubHTTPClient(authCfg.GitHub),
+		VoiceObjects:    voiceObjects,
+		Transcriber:     voiceTranscriber,
+		MaxVoiceBytes:   nativeCfg.MaxVoiceAudioBytes,
 	})
 	addr := ":" + server.Port
 	log.Printf("server starting on %s", addr)

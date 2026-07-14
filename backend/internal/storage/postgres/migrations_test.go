@@ -62,7 +62,74 @@ func TestRunPostgresMigrationsCreatesCoreTablesSeedDataAndIsIdempotent(t *testin
 		WHERE e.extname = 'pg_trgm' AND n.nspname = 'public'
 	`, 1)
 	assertColumnType(t, db, schema, "events", "time_range", "tstzrange")
+	assertPostgresColumnExists(t, db, schema, "events", "project_id")
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+			AND tablename = 'events'
+			AND indexname = 'events_workspace_project_start_idx'
+	`, 1)
 	assertColumnType(t, db, schema, "search_index", "search_vector", "tsvector")
+}
+
+func TestPostgresEventProjectMigrationBackfillsOnlyPersonalEvents(t *testing.T) {
+	schema := fmt.Sprintf("fs_test_event_project_backfill_%d", time.Now().UnixNano())
+	db := openPostgresTestDB(t, schema)
+
+	if _, err := db.Exec(`
+		CREATE TABLE task_projects (
+			id TEXT NOT NULL,
+			workspace_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL DEFAULT 'regular',
+			description TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (workspace_id, id)
+		);
+		CREATE TABLE events (
+			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			title TEXT NOT NULL,
+			start_at TIMESTAMPTZ NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'work'
+		);
+		INSERT INTO task_projects (id, workspace_id, name, type)
+		VALUES ('personal', 'legacy_events_workspace_a', 'Personal A', 'personal');
+		INSERT INTO events (id, workspace_id, title, start_at, kind)
+		VALUES
+			('legacy_personal_a', 'legacy_events_workspace_a', 'Legacy Personal A', now(), 'personal'),
+			('legacy_work_a', 'legacy_events_workspace_a', 'Legacy Work A', now(), 'work'),
+			('legacy_reminder_a', 'legacy_events_workspace_a', 'Legacy Reminder A', now(), 'reminder'),
+			('legacy_personal_missing_workspace', 'legacy_events_workspace_missing', 'Legacy Personal Missing Workspace', now(), 'personal');
+	`); err != nil {
+		t.Fatalf("seed legacy event project migration tables: %v", err)
+	}
+	dir, err := findPostgresMigrationsDir()
+	if err != nil {
+		t.Fatalf("find postgres migrations dir: %v", err)
+	}
+	sqlBytes, err := os.ReadFile(filepath.Join(dir, "0007_event_project_identity.sql"))
+	if err != nil {
+		t.Fatalf("read 0007 migration: %v", err)
+	}
+	if _, err := db.Exec(string(sqlBytes)); err != nil {
+		t.Fatalf("apply 0007 migration: %v", err)
+	}
+
+	assertPostgresColumnExists(t, db, schema, "events", "project_id")
+	assertPostgresEventProjectID(t, db, "legacy_personal_a", sql.NullString{String: "personal", Valid: true})
+	assertPostgresEventProjectID(t, db, "legacy_work_a", sql.NullString{})
+	assertPostgresEventProjectID(t, db, "legacy_reminder_a", sql.NullString{})
+	assertPostgresEventProjectID(t, db, "legacy_personal_missing_workspace", sql.NullString{})
+	assertRowCount(t, db, `
+		SELECT COUNT(*)
+		FROM pg_indexes
+		WHERE schemaname = current_schema()
+			AND tablename = 'events'
+			AND indexname = 'events_workspace_project_start_idx'
+	`, 1)
 }
 
 func TestRunPostgresMigrationsAddsGitHubOAuthAuthSchema(t *testing.T) {
@@ -942,5 +1009,17 @@ func assertColumnType(t *testing.T, db *sql.DB, schema, table, column, want stri
 	}
 	if got != want {
 		t.Fatalf("expected %s.%s type %s, got %s", table, column, want, got)
+	}
+}
+
+func assertPostgresEventProjectID(t *testing.T, db *sql.DB, eventID string, want sql.NullString) {
+	t.Helper()
+
+	var got sql.NullString
+	if err := db.QueryRow(`SELECT project_id FROM events WHERE id = $1`, eventID).Scan(&got); err != nil {
+		t.Fatalf("read event %s project_id: %v", eventID, err)
+	}
+	if got.Valid != want.Valid || got.String != want.String {
+		t.Fatalf("event %s project_id = %#v, want %#v", eventID, got, want)
 	}
 }

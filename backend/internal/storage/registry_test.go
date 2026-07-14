@@ -54,12 +54,13 @@ func (s *fakeStore) Tasks() TaskRepository     { return nil }
 func (s *fakeStore) Recurrence() RecurrenceRepository {
 	return nil
 }
-func (s *fakeStore) Events() EventRepository     { return nil }
-func (s *fakeStore) Inbox() InboxRepository      { return nil }
-func (s *fakeStore) Roadmaps() RoadmapRepository { return nil }
-func (s *fakeStore) Sync() SyncRepository        { return nil }
-func (s *fakeStore) Search() SearchRepository    { return nil }
-func (s *fakeStore) Auth() AuthRepository        { return nil }
+func (s *fakeStore) Events() EventRepository      { return nil }
+func (s *fakeStore) Calendar() CalendarRepository { return nil }
+func (s *fakeStore) Inbox() InboxRepository       { return nil }
+func (s *fakeStore) Roadmaps() RoadmapRepository  { return nil }
+func (s *fakeStore) Sync() SyncRepository         { return nil }
+func (s *fakeStore) Search() SearchRepository     { return nil }
+func (s *fakeStore) Auth() AuthRepository         { return nil }
 
 func TestRegistryRejectsDuplicateProvider(t *testing.T) {
 	registry := NewRegistry()

@@ -67,16 +67,16 @@ FLOWSPACE_DATABASE_URL="postgres://user:password@host:port/dbname?sslmode=disabl
 **示例 — 日常开发（测试库）：**
 
 ```bash
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace_test?sslmode=disable" make dev
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace_test?sslmode=disable" make dev
 ```
 
 **示例 — 正式库：**
 
 ```bash
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace?sslmode=disable" make dev-prod
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace?sslmode=disable" make dev-prod
 ```
 
-> **项目默认 PostgreSQL 地址**：`192.168.1.20:19588`，用户 `postgres`，密码 `12345`。
+> **项目默认 PostgreSQL 地址**：`192.168.1.70:19588`，用户 `postgres`，密码 `12345`。
 > 测试库名 `flowspace_test`，正式库名 `flowspace`。
 
 ### SQLite
@@ -130,7 +130,7 @@ go run ./cmd/server
 ```bash
 cd backend
 FLOWSPACE_SQLITE_PATH="flowspace.db" \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace?sslmode=disable" \
 go run ./cmd/migrate_sqlite_to_pg
 ```
 
@@ -270,12 +270,12 @@ Linux/macOS 使用 GNU Make 即可，Makefile 不依赖平台专属 shell 语法
 ```bash
 # 测试库
 FLOWSPACE_ENV=test \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace_test?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace_test?sslmode=disable" \
 go run ./cmd/server
 
 # 正式库
 FLOWSPACE_ENV=prod \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace?sslmode=disable" \
 go run ./cmd/server
 ```
 
@@ -283,7 +283,7 @@ PowerShell 写法：
 
 ```powershell
 $env:FLOWSPACE_ENV = "test"
-$env:FLOWSPACE_DATABASE_URL = "postgres://postgres:12345@192.168.1.20:19588/flowspace_test?sslmode=disable"
+$env:FLOWSPACE_DATABASE_URL = "postgres://postgres:12345@192.168.1.70:19588/flowspace_test?sslmode=disable"
 go run ./cmd/server
 ```
 
@@ -425,12 +425,12 @@ go build -o server ./cmd/server
 
 # 测试后端：4101 + flowspace_test
 FLOWSPACE_ENV=test \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace_test?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace_test?sslmode=disable" \
 ./server
 
 # 正式后端：4201 + flowspace
 FLOWSPACE_ENV=prod \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace?sslmode=disable" \
 ./server
 
 # === SQLite 模式 ===
@@ -472,7 +472,7 @@ VITE_BACKEND_PORT=4201 npx vite --port 4200 --host 127.0.0.1
 # PostgreSQL 模式 — 测试后端 + 测试前端
 cd /mnt/d/MyGitProject/all_note/backend && go build -o server ./cmd/server && \
 FLOWSPACE_ENV=test \
-FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace_test?sslmode=disable" \
+FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace_test?sslmode=disable" \
 ./server &
 cd /mnt/d/MyGitProject/all_note/frontend && VITE_BACKEND_PORT=4101 npx vite --port 4100 --host 127.0.0.1 &
 

@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 import { App } from './App'
 import { lazy } from 'react'
+import { RequireAdmin } from './components/auth/RequireAdmin'
 
 const Dashboard = lazy(() => import('./routes/Dashboard'))
 const Login = lazy(() => import('./routes/Login'))
@@ -29,7 +30,7 @@ export const router = createBrowserRouter(
         { path: 'inbox', element: <Inbox /> },
         { path: 'search', element: <Search /> },
         { path: 'summary', element: <DailySummary /> },
-        { path: 'admin/users', element: <AccountAdmin /> },
+        { path: 'admin/users', element: <RequireAdmin><AccountAdmin /></RequireAdmin> },
         { path: 'change-password', element: <ChangePassword /> },
       ],
     },

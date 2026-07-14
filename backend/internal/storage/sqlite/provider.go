@@ -65,6 +65,18 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteEventProjectSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSQLiteCalendarProjectSourcesSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSQLiteNativeSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return newStore(db), nil
 }
 
@@ -181,6 +193,10 @@ func (s *store) Events() storage.EventRepository {
 	return eventRepository{db: s.db}
 }
 
+func (s *store) Calendar() storage.CalendarRepository {
+	return calendarRepository{db: s.db}
+}
+
 func (s *store) Inbox() storage.InboxRepository {
 	return inboxRepository{db: s.db}
 }
@@ -203,6 +219,14 @@ func (s *store) Recurrence() storage.RecurrenceRepository {
 
 func (s *store) Auth() storage.AuthRepository {
 	return authRepository{db: s.db}
+}
+
+func (s *store) WatchDevices() storage.WatchDeviceRepository {
+	return watchDeviceRepository{db: s.db}
+}
+
+func (s *store) VoiceNotes() storage.VoiceNoteRepository {
+	return voiceNoteRepository{db: s.db}
 }
 
 type storeTx struct {
@@ -234,6 +258,10 @@ func (s *storeTx) Events() storage.EventRepository {
 	return eventRepository{db: s.tx}
 }
 
+func (s *storeTx) Calendar() storage.CalendarRepository {
+	return calendarRepository{db: s.tx}
+}
+
 func (s *storeTx) Inbox() storage.InboxRepository {
 	return inboxRepository{db: s.tx}
 }
@@ -248,6 +276,14 @@ func (s *storeTx) Sync() storage.SyncRepository {
 
 func (s *storeTx) Auth() storage.AuthRepository {
 	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) WatchDevices() storage.WatchDeviceRepository {
+	return watchDeviceRepository{db: s.tx}
+}
+
+func (s *storeTx) VoiceNotes() storage.VoiceNoteRepository {
+	return voiceNoteRepository{db: s.tx}
 }
 
 func (s *storeTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
