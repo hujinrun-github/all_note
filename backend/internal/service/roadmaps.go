@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	stdhtml "html"
@@ -37,7 +38,7 @@ const (
 	defaultAIModel             = "deepseek-v4-pro"
 	defaultAIRequestTimeout    = 120 * time.Second
 	defaultArticleProvider     = "duckduckgo"
-	highSignalArticleHint      = `(popular OR "most read" OR upvoted) high quality technical article`
+	highSignalArticleHint      = `(popular OR "most read" OR upvoted OR recommended) high quality guide article tutorial`
 	roadmapNodeMinGapX         = 250
 	roadmapNodeMinGapY         = 95
 	roadmapLayoutStepY         = 130
@@ -69,6 +70,7 @@ var articleSearchSourceCatalog = []articleSearchSource{
 
 var (
 	articleHTTPClient      = &http.Client{Timeout: 20 * time.Second}
+	bingSearchURL          = "https://www.bing.com/search"
 	devToArticlesURL       = "https://dev.to/api/articles"
 	stackExchangeSearchURL = "https://api.stackexchange.com/2.3/search/advanced"
 )
@@ -107,15 +109,12 @@ func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID
 	if err != nil {
 		return nil, err
 	}
-	if err := attachInitialRoadmapResources(ctx, store, draft); err != nil {
-		return saved, nil
-	}
-	withResources, err := store.Roadmaps().GetLearningRoadmap(ctx, project.ID)
-	if err != nil {
-		return saved, nil
-	}
-	normalizeRoadmapDisplayLayout(withResources)
-	return withResources, nil
+	// Resource discovery can involve several third-party searches. It must not keep
+	// the generate request open after the roadmap itself has already been saved;
+	// otherwise the reverse proxy can return 504 while a valid roadmap exists.
+	scheduleInitialRoadmapResources(ctx, store, draft)
+	normalizeRoadmapDisplayLayout(saved)
+	return saved, nil
 }
 
 func GetLearningRoadmap(ctx context.Context, store storage.Store, projectID string) (*model.LearningRoadmap, error) {
@@ -964,6 +963,19 @@ func attachInitialRoadmapResources(ctx context.Context, store storage.Store, dra
 	return nil
 }
 
+func scheduleInitialRoadmapResources(ctx context.Context, store storage.Store, draft *roadmapDraft) {
+	backgroundCtx := context.WithoutCancel(ctx)
+	go func() {
+		defer func() {
+			// A failed optional enrichment must never take down the API server.
+			_ = recover()
+		}()
+		enrichmentCtx, cancel := context.WithTimeout(backgroundCtx, 2*time.Minute)
+		defer cancel()
+		_ = attachInitialRoadmapResources(enrichmentCtx, store, draft)
+	}()
+}
+
 func generateOpenAICompatibleRoadmap(project model.TaskProject) (*roadmapDraft, error) {
 	apiKey := strings.TrimSpace(os.Getenv("AI_API_KEY"))
 	if apiKey == "" {
@@ -1257,38 +1269,44 @@ func searchArticleResources(node model.RoadmapNode, linkedTasks []model.Task, re
 	if len(publicResources) >= limit {
 		return publicResources, nil
 	}
-	duckDuckGoResources, err := searchDuckDuckGoResources(node, linkedTasks, sources, limit-len(publicResources))
-	if err != nil {
-		if len(publicResources) > 0 {
-			return publicResources, nil
-		}
-		return nil, err
+	bingResources, bingErr := searchBingResources(node, linkedTasks, sources, limit-len(publicResources))
+	combined := filterAndRankArticleResources(node, linkedTasks, append(publicResources, bingResources...), limit)
+	if len(combined) >= limit {
+		return combined, nil
 	}
-	return limitArticleResources(append(publicResources, duckDuckGoResources...), limit), nil
+	duckDuckGoResources, duckDuckGoErr := searchDuckDuckGoResources(node, linkedTasks, sources, limit-len(combined))
+	combined = filterAndRankArticleResources(node, linkedTasks, append(combined, duckDuckGoResources...), limit)
+	if len(combined) > 0 {
+		return combined, nil
+	}
+	if bingErr != nil && duckDuckGoErr != nil {
+		return nil, fmt.Errorf("article search providers failed: bing: %v; duckduckgo: %v", bingErr, duckDuckGoErr)
+	}
+	return []model.RoadmapResource{}, nil
 }
 
 func searchPublicSourceResources(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
 	resources := make([]model.RoadmapResource, 0, limit)
 	for _, source := range sources {
-		if len(resources) >= limit {
-			break
-		}
-		remaining := limit - len(resources)
 		switch source.ID {
 		case "devto":
-			resources = append(resources, searchDevToResources(node, linkedTasks, remaining)...)
+			resources = append(resources, searchDevToResources(node, linkedTasks, limit)...)
 		case "stackoverflow":
-			resources = append(resources, searchStackOverflowResources(node, linkedTasks, remaining)...)
+			resources = append(resources, searchStackOverflowResources(node, linkedTasks, limit)...)
 		}
 	}
-	return limitArticleResources(resources, limit)
+	return filterAndRankArticleResources(node, linkedTasks, resources, limit)
 }
 
 func searchDevToResources(node model.RoadmapNode, linkedTasks []model.Task, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
+	tag, ok := articleTopicTag(node, linkedTasks)
+	if !ok {
+		return nil
+	}
 	values := url.Values{}
-	values.Set("tag", articleTopicTag(node, linkedTasks))
+	values.Set("tag", tag)
 	values.Set("top", "365")
 	values.Set("per_page", strconv.Itoa(limit))
 	requestURL := devToArticlesURL + "?" + values.Encode()
@@ -1393,7 +1411,7 @@ func searchStackOverflowResources(node model.RoadmapNode, linkedTasks []model.Ta
 	return resources
 }
 
-func articleTopicTag(node model.RoadmapNode, linkedTasks []model.Task) string {
+func articleTopicTag(node model.RoadmapNode, linkedTasks []model.Task) (string, bool) {
 	text := strings.ToLower(strings.Join(nonEmptyStrings([]string{
 		node.Title,
 		node.Deliverable,
@@ -1402,27 +1420,27 @@ func articleTopicTag(node model.RoadmapNode, linkedTasks []model.Task) string {
 	}), " "))
 	switch {
 	case strings.Contains(text, "golang") || strings.Contains(text, " go ") || strings.HasPrefix(text, "go "):
-		return "go"
+		return "go", true
 	case strings.Contains(text, "python"):
-		return "python"
+		return "python", true
 	case strings.Contains(text, "docker") || strings.Contains(text, "container"):
-		return "docker"
+		return "docker", true
 	case strings.Contains(text, "kubernetes") || strings.Contains(text, "k8s"):
-		return "kubernetes"
+		return "kubernetes", true
 	case strings.Contains(text, "react"):
-		return "react"
+		return "react", true
 	case strings.Contains(text, "typescript"):
-		return "typescript"
+		return "typescript", true
 	case strings.Contains(text, "javascript"):
-		return "javascript"
+		return "javascript", true
 	case strings.Contains(text, "postgres") || strings.Contains(text, "database") || strings.Contains(text, "sql"):
-		return "database"
+		return "database", true
 	case strings.Contains(text, "devops") || strings.Contains(text, "infra") || strings.Contains(text, "deploy"):
-		return "devops"
+		return "devops", true
 	case strings.Contains(text, "ai") || strings.Contains(text, "llm") || strings.Contains(text, "model") || strings.Contains(text, "gpu"):
-		return "ai"
+		return "ai", true
 	default:
-		return "programming"
+		return "", false
 	}
 }
 
@@ -1506,7 +1524,57 @@ func searchTavilyResourcesForNode(node model.RoadmapNode, linkedTasks []model.Ta
 			Summary: strings.TrimSpace(result.Content),
 		})
 	}
-	return ensureArticleResourceChoices(node, sources, resources, limit), nil
+	return filterAndRankArticleResources(node, linkedTasks, resources, limit), nil
+}
+
+func searchBingResources(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) ([]model.RoadmapResource, error) {
+	limit = normalizeArticleSearchLimit(limit)
+	values := url.Values{}
+	values.Set("format", "rss")
+	values.Set("q", buildArticleSearchQuery(node, linkedTasks, sources))
+	requestURL := bingSearchURL + "?" + values.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 FlowSpaceRoadmap/1.0")
+	resp, err := articleHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("Bing article search failed: %s", resp.Status)
+	}
+
+	var decoded struct {
+		Channel struct {
+			Items []struct {
+				Title       string `xml:"title"`
+				Link        string `xml:"link"`
+				Description string `xml:"description"`
+			} `xml:"item"`
+		} `xml:"channel"`
+	}
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, 1_000_000)).Decode(&decoded); err != nil {
+		return nil, err
+	}
+
+	resources := make([]model.RoadmapResource, 0, len(decoded.Channel.Items))
+	for _, item := range decoded.Channel.Items {
+		title := strings.TrimSpace(stdhtml.UnescapeString(item.Title))
+		link := strings.TrimSpace(item.Link)
+		if title == "" || link == "" {
+			continue
+		}
+		resources = append(resources, model.RoadmapResource{
+			Title:   title,
+			URL:     link,
+			Summary: strings.TrimSpace(stdhtml.UnescapeString(item.Description)),
+		})
+	}
+	return filterAndRankArticleResources(node, linkedTasks, resources, limit), nil
 }
 
 func searchDuckDuckGoResources(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource, limit int) ([]model.RoadmapResource, error) {
@@ -1530,38 +1598,29 @@ func searchDuckDuckGoResources(node model.RoadmapNode, linkedTasks []model.Task,
 	if err != nil {
 		return nil, err
 	}
-	return ensureArticleResourceChoices(node, sources, extractDuckDuckGoResults(doc, limit), limit), nil
+	return filterAndRankArticleResources(node, linkedTasks, extractDuckDuckGoResults(doc, limit), limit), nil
 }
 
 func buildArticleSearchQuery(node model.RoadmapNode, linkedTasks []model.Task, sources []articleSearchSource) string {
-	return strings.Join(nonEmptyStrings([]string{baseArticleSearchQuery(node, linkedTasks), highSignalArticleHint, articleSearchSourceQuery(sources)}), " ")
+	return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{baseArticleSearchQuery(node, linkedTasks), highSignalArticleHint, articleSearchSourceQuery(sources)}), " "))
 }
 
 func baseArticleSearchQuery(node model.RoadmapNode, linkedTasks []model.Task) string {
-	taskContext := linkedTaskArticleSearchContext(linkedTasks)
-	if taskContext != "" {
-		return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
-			taskContext,
-			node.Title,
-			node.Description,
-			node.Deliverable,
-			"official documentation tutorial",
-		}), " "))
-	}
+	primaryQuery := ""
 	for _, query := range node.ArticleSearchQueries {
 		if trimmed := strings.TrimSpace(query); trimmed != "" {
-			return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
-				trimmed,
-				node.Title,
-				node.Description,
-				node.Deliverable,
-			}), " "))
+			primaryQuery = trimmed
+			break
 		}
 	}
+	taskContext := linkedTaskArticleSearchContext(linkedTasks)
 	return compactArticleSearchQuery(strings.Join(nonEmptyStrings([]string{
+		strings.Join(articleTopicAliases(node, linkedTasks), " "),
+		primaryQuery,
 		node.Title,
 		node.Description,
 		node.Deliverable,
+		taskContext,
 		"official documentation tutorial",
 	}), " "))
 }
@@ -1635,6 +1694,9 @@ func articleSearchSourceQuery(sources []articleSearchSource) string {
 	}
 	hints := make([]string, 0, len(sources))
 	for _, source := range sources {
+		if source.ID == "google" {
+			return ""
+		}
 		if strings.TrimSpace(source.QueryHint) != "" {
 			hints = append(hints, source.QueryHint)
 		}
@@ -1694,9 +1756,164 @@ func limitArticleResources(resources []model.RoadmapResource, limit int) []model
 }
 
 func ensureArticleResourceChoices(node model.RoadmapNode, sources []articleSearchSource, resources []model.RoadmapResource, limit int) []model.RoadmapResource {
+	return filterAndRankArticleResources(node, nil, resources, limit)
+}
+
+type scoredArticleResource struct {
+	resource model.RoadmapResource
+	score    int
+	index    int
+}
+
+func filterAndRankArticleResources(node model.RoadmapNode, linkedTasks []model.Task, resources []model.RoadmapResource, limit int) []model.RoadmapResource {
 	limit = normalizeArticleSearchLimit(limit)
-	limited := limitArticleResources(resources, limit)
-	return limited
+	keywords := articleRelevanceKeywords(node, linkedTasks)
+	if len(keywords) == 0 {
+		return []model.RoadmapResource{}
+	}
+
+	unique := limitArticleResources(resources, maxArticleSearchResults)
+	scored := make([]scoredArticleResource, 0, len(unique))
+	for index, resource := range unique {
+		score := articleResourceRelevanceScore(resource, keywords)
+		if score < 2 || !matchesRequiredArticleTopics(node, linkedTasks, resource) {
+			continue
+		}
+		scored = append(scored, scoredArticleResource{resource: resource, score: score, index: index})
+	}
+	sort.SliceStable(scored, func(left, right int) bool {
+		if scored[left].score == scored[right].score {
+			return scored[left].index < scored[right].index
+		}
+		return scored[left].score > scored[right].score
+	})
+
+	filtered := make([]model.RoadmapResource, 0, minInt(limit, len(scored)))
+	for _, candidate := range scored {
+		filtered = append(filtered, candidate.resource)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered
+}
+
+func articleRelevanceKeywords(node model.RoadmapNode, linkedTasks []model.Task) []string {
+	contextParts := articleTopicAliases(node, linkedTasks)
+	contextParts = append(contextParts, node.Title, node.Description, node.Deliverable, node.AcceptanceCriteria)
+	contextParts = append(contextParts, node.ArticleSearchQueries...)
+	contextParts = append(contextParts, linkedTaskArticleSearchContext(linkedTasks))
+
+	stopWords := map[string]bool{
+		"a": true, "an": true, "and": true, "article": true, "articles": true, "basics": true,
+		"best": true, "complete": true, "documentation": true, "for": true, "foundation": true,
+		"guide": true, "high": true, "how": true, "introduction": true, "learn": true,
+		"learning": true, "most": true, "official": true, "overview": true, "phase": true,
+		"plan": true, "popular": true, "practice": true, "quality": true, "read": true,
+		"recommended": true, "stage": true, "study": true, "the": true, "to": true,
+		"tutorial": true, "upvoted": true, "with": true,
+	}
+
+	seen := map[string]bool{}
+	keywords := make([]string, 0, 24)
+	for _, field := range strings.FieldsFunc(strings.ToLower(strings.Join(nonEmptyStrings(contextParts), " ")), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r > 127)
+	}) {
+		term := strings.TrimSpace(field)
+		if term == "" || stopWords[term] || seen[term] {
+			continue
+		}
+		if len([]rune(term)) < 3 && !strings.ContainsAny(term, "0123456789") && term != "go" && term != "ai" {
+			continue
+		}
+		seen[term] = true
+		keywords = append(keywords, term)
+		if len(keywords) >= 24 {
+			break
+		}
+	}
+	return keywords
+}
+
+func articleTopicAliases(node model.RoadmapNode, linkedTasks []model.Task) []string {
+	contextText := articleSearchContextText(node, linkedTasks)
+	if !isJapaneseLearningContext(contextText) {
+		return nil
+	}
+
+	aliases := []string{"Japanese language"}
+	for _, level := range []string{"n1", "n2", "n3", "n4", "n5"} {
+		if strings.Contains(contextText, level) {
+			aliases = append([]string{"JLPT " + strings.ToUpper(level)}, aliases...)
+			break
+		}
+	}
+	return aliases
+}
+
+func matchesRequiredArticleTopics(node model.RoadmapNode, linkedTasks []model.Task, resource model.RoadmapResource) bool {
+	contextText := articleSearchContextText(node, linkedTasks)
+	if !isJapaneseLearningContext(contextText) {
+		return true
+	}
+
+	level := ""
+	for _, candidate := range []string{"n1", "n2", "n3", "n4", "n5"} {
+		if strings.Contains(contextText, candidate) {
+			level = candidate
+			break
+		}
+	}
+	if level == "" {
+		return true
+	}
+
+	resourceText := strings.ToLower(strings.Join([]string{resource.Title, resource.Summary, resource.URL}, " "))
+	return strings.Contains(resourceText, level) ||
+		strings.Contains(resourceText, "jlpt") ||
+		strings.Contains(resourceText, "日本语能力测试") ||
+		strings.Contains(resourceText, "日本語能力試験")
+}
+
+func articleSearchContextText(node model.RoadmapNode, linkedTasks []model.Task) string {
+	parts := []string{node.Title, node.Description, node.Deliverable, node.AcceptanceCriteria}
+	parts = append(parts, node.ArticleSearchQueries...)
+	parts = append(parts, linkedTaskArticleSearchContext(linkedTasks))
+	return strings.ToLower(strings.Join(nonEmptyStrings(parts), " "))
+}
+
+func isJapaneseLearningContext(contextText string) bool {
+	return strings.Contains(contextText, "日语") ||
+		strings.Contains(contextText, "日語") ||
+		strings.Contains(contextText, "日本語") ||
+		strings.Contains(contextText, "japanese") ||
+		strings.Contains(contextText, "jlpt")
+}
+
+func articleResourceRelevanceScore(resource model.RoadmapResource, keywords []string) int {
+	title := strings.ToLower(strings.TrimSpace(resource.Title))
+	summary := strings.ToLower(strings.TrimSpace(resource.Summary))
+	resourceURL := strings.ToLower(strings.TrimSpace(resource.URL))
+	score := 0
+	for _, keyword := range keywords {
+		if strings.Contains(title, keyword) {
+			score += 5
+		}
+		if strings.Contains(summary, keyword) {
+			score += 2
+		}
+		if strings.Contains(resourceURL, keyword) {
+			score++
+		}
+	}
+	return score
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func isArticleSearchEntry(resource model.RoadmapResource) bool {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
@@ -201,12 +202,23 @@ func TestGenerateLearningRoadmapAutomaticallyAttachesArticleResources(t *testing
 		t.Fatalf("generate learning roadmap: %v", err)
 	}
 
-	var resourceCount int
-	for _, node := range roadmap.Nodes {
-		resourceCount += len(node.Resources)
-	}
-	if resourceCount == 0 {
-		t.Fatal("expected roadmap generation to attach article resources automatically")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		roadmap, err = GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
+		if err != nil {
+			t.Fatalf("reload generated roadmap: %v", err)
+		}
+		resourceCount := 0
+		for _, node := range roadmap.Nodes {
+			resourceCount += len(node.Resources)
+		}
+		if resourceCount > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected roadmap generation to attach article resources asynchronously")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -910,8 +922,8 @@ func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search resources: %v", err)
 	}
-	if len(resources) < 10 {
-		t.Fatalf("expected stackoverflow resources, got %+v", resources)
+	if len(resources) == 0 {
+		t.Fatalf("expected relevant stackoverflow resources, got %+v", resources)
 	}
 	for _, term := range []string{"HNSW", "efConstruction", "rerank"} {
 		if !strings.Contains(capturedQuery, term) {
@@ -960,6 +972,109 @@ func TestPublicSourceArticleSearchReturnsRealArticlesOnRepeatedCalls(t *testing.
 		if strings.Contains(resources[0].URL, "/search") {
 			t.Fatalf("attempt %d returned a search entry instead of an article: %+v", attempt, resources[0])
 		}
+	}
+}
+
+func TestDevToSearchSkipsGenericProgrammingFallbackForUnrelatedTopic(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"title":"Generic programming article","url":"https://dev.to/example/generic"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	originalDevToURL := devToArticlesURL
+	devToArticlesURL = server.URL + "/articles"
+	t.Cleanup(func() { devToArticlesURL = originalDevToURL })
+
+	node := model.RoadmapNode{
+		Title:                "Japanese N2 readiness assessment",
+		Description:          "Assess vocabulary, grammar, reading, and listening ability for JLPT N2.",
+		Deliverable:          "JLPT N2 diagnostic score report",
+		ArticleSearchQueries: []string{"JLPT N2 diagnostic test study plan"},
+	}
+
+	resources := searchDevToResources(node, nil, 10)
+	if requests != 0 {
+		t.Fatalf("unrelated topic should not query the generic Dev.to programming feed, got %d requests", requests)
+	}
+	if len(resources) != 0 {
+		t.Fatalf("unrelated Dev.to resources should be empty, got %+v", resources)
+	}
+}
+
+func TestArticleSearchFiltersAndRanksResourcesByNodeRelevance(t *testing.T) {
+	node := model.RoadmapNode{
+		Title:                "Japanese N2 readiness assessment",
+		Description:          "Assess vocabulary, grammar, reading, and listening ability for JLPT N2.",
+		Deliverable:          "JLPT N2 diagnostic score report",
+		ArticleSearchQueries: []string{"JLPT N2 diagnostic test study plan"},
+	}
+
+	resources := filterAndRankArticleResources(node, nil, []model.RoadmapResource{
+		{
+			Title:   "You're Not Building Netflix: Stop Coding Like You Are",
+			URL:     "https://dev.to/example/netflix",
+			Summary: "A popular programming opinion article.",
+		},
+		{
+			Title:   "JLPT N2 Practice Test and Diagnostic Guide",
+			URL:     "https://example.com/jlpt-n2-diagnostic-guide",
+			Summary: "Measure Japanese vocabulary, grammar, reading, and listening before planning study.",
+		},
+		{
+			Title:   "How to Learn Japanese",
+			URL:     "https://example.com/learn-japanese",
+			Summary: "A broad Japanese language overview.",
+		},
+	}, 10)
+
+	if len(resources) != 1 {
+		t.Fatalf("expected only the JLPT N2-specific resource, got %+v", resources)
+	}
+	if resources[0].Title != "JLPT N2 Practice Test and Diagnostic Guide" {
+		t.Fatalf("most specific resource should rank first, got %+v", resources)
+	}
+	for _, resource := range resources {
+		if strings.Contains(resource.URL, "netflix") {
+			t.Fatalf("irrelevant popular resource was not filtered: %+v", resources)
+		}
+	}
+}
+
+func TestBingArticleSearchReturnsOnlyRelevantResults(t *testing.T) {
+	var capturedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+			<rss version="2.0"><channel>
+				<item><title>You're Not Building Netflix</title><link>https://dev.to/example/netflix</link><description>Programming opinion.</description></item>
+				<item><title>JLPT N2 Practice Test and Diagnostic Guide</title><link>https://example.com/jlpt-n2-guide</link><description>Assess Japanese vocabulary, grammar, reading, and listening.</description></item>
+			</channel></rss>`))
+	}))
+	t.Cleanup(server.Close)
+
+	originalBingURL := bingSearchURL
+	bingSearchURL = server.URL + "/search"
+	t.Cleanup(func() { bingSearchURL = originalBingURL })
+
+	node := model.RoadmapNode{
+		Title:                "Japanese N2 readiness assessment",
+		Description:          "Assess vocabulary, grammar, reading, and listening ability for JLPT N2.",
+		Deliverable:          "JLPT N2 diagnostic score report",
+		ArticleSearchQueries: []string{"JLPT N2 diagnostic test study plan"},
+	}
+	resources, err := searchBingResources(node, nil, selectedArticleSearchSources([]string{"google"}), 10)
+	if err != nil {
+		t.Fatalf("search Bing resources: %v", err)
+	}
+	if !strings.Contains(capturedQuery, "JLPT N2") {
+		t.Fatalf("search query lost the node topic: %q", capturedQuery)
+	}
+	if len(resources) != 1 || resources[0].Title != "JLPT N2 Practice Test and Diagnostic Guide" {
+		t.Fatalf("expected one relevant Bing result, got %+v", resources)
 	}
 }
 
