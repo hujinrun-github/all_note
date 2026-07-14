@@ -1,0 +1,99 @@
+name: Backend quality gates
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/deploy.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Check formatting
+        run: make format-check
+      - name: Vet
+        run: make lint
+      - name: Unit and SQLite contracts
+        run: make test-unit
+      - name: OpenAPI and gate specification
+        run: make test-openapi
+
+  race:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Race detector
+        run: make test-race
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: flowspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d flowspace_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FLOWSPACE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowspace_test?sslmode=disable
+      FLOWSPACE_REQUIRE_POSTGRES_TESTS: 'true'
+      FLOWSPACE_TEST_MINIO_ENDPOINT: http://localhost:9000
+      FLOWSPACE_TEST_MINIO_ACCESS_KEY: flowspace-ci
+      FLOWSPACE_TEST_MINIO_SECRET_KEY: flowspace-ci-secret
+      FLOWSPACE_REQUIRE_MINIO_TESTS: 'true'
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Start isolated MinIO
+        run: |
+          docker run --detach --rm --name flowspace-minio \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER="$FLOWSPACE_TEST_MINIO_ACCESS_KEY" \
+            --env MINIO_ROOT_PASSWORD="$FLOWSPACE_TEST_MINIO_SECRET_KEY" \
+            minio/minio:latest server /data
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs flowspace-minio
+          exit 1
+      - name: PostgreSQL contracts and migrations
+        run: make test-contract-postgres
+      - name: MinIO adapter contract
+        run: make test-object-minio

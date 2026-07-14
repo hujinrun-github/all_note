@@ -18,6 +18,26 @@ func TestLoadNativeConfigDefaultsToOptionalServicesDisabled(t *testing.T) {
 	if cfg.MaxVoiceAudioBytes != 50*1024*1024 {
 		t.Fatalf("MaxVoiceAudioBytes = %d", cfg.MaxVoiceAudioBytes)
 	}
+	if cfg.MobileSyncV1Enabled {
+		t.Fatal("mobile_sync_v1 must be disabled by default")
+	}
+}
+
+func TestLoadNativeConfigParsesMobileSyncV1FeatureFlag(t *testing.T) {
+	clearNativeConfigEnvironment(t)
+	t.Setenv("FLOWSPACE_ENABLE_MOBILE_SYNC_V1", "true")
+	cfg, err := LoadNativeConfig()
+	if err != nil {
+		t.Fatalf("LoadNativeConfig: %v", err)
+	}
+	if !cfg.MobileSyncV1Enabled {
+		t.Fatal("mobile_sync_v1 feature flag was not enabled")
+	}
+
+	t.Setenv("FLOWSPACE_ENABLE_MOBILE_SYNC_V1", "sometimes")
+	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ENABLE_MOBILE_SYNC_V1") {
+		t.Fatalf("invalid mobile sync feature flag error = %v", err)
+	}
 }
 
 func TestLoadNativeConfigParsesMinIOAndTranscription(t *testing.T) {
@@ -64,6 +84,7 @@ func TestLoadNativeConfigRejectsPartialCredentials(t *testing.T) {
 func clearNativeConfigEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
+		"FLOWSPACE_ENABLE_MOBILE_SYNC_V1",
 		"FLOWSPACE_VOICE_MAX_BYTES",
 		"FLOWSPACE_MINIO_ENDPOINT",
 		"FLOWSPACE_MINIO_ACCESS_KEY",

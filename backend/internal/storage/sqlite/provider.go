@@ -65,6 +65,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteMobileSyncSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureSQLiteEventProjectSchema(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -74,6 +78,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		return nil, err
 	}
 	if err := ensureSQLiteNativeSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSQLiteTranscriptionJobSchema(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -221,6 +229,18 @@ func (s *store) Auth() storage.AuthRepository {
 	return authRepository{db: s.db}
 }
 
+func (s *store) MobileSync() storage.MobileSyncRepository {
+	return mobileSyncRepository{db: s.db}
+}
+
+func (s *store) TranscriptionJobs() storage.TranscriptionJobRepository {
+	return transcriptionJobRepository{db: s.db}
+}
+
+func (s *store) TranscriptionJobWorker() storage.TranscriptionJobWorkerRepository {
+	return transcriptionJobWorkerRepository{db: s.db}
+}
+
 func (s *store) WatchDevices() storage.WatchDeviceRepository {
 	return watchDeviceRepository{db: s.db}
 }
@@ -276,6 +296,14 @@ func (s *storeTx) Sync() storage.SyncRepository {
 
 func (s *storeTx) Auth() storage.AuthRepository {
 	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) MobileSync() storage.MobileSyncRepository {
+	return mobileSyncRepository{db: s.tx}
+}
+
+func (s *storeTx) TranscriptionJobs() storage.TranscriptionJobRepository {
+	return transcriptionJobRepository{db: s.tx}
 }
 
 func (s *storeTx) WatchDevices() storage.WatchDeviceRepository {

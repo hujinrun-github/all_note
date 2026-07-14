@@ -1,0 +1,198 @@
+version: 1
+contract: mobile-v1
+contract_sha_file: api/mobile-v1.sha256
+policy:
+  missing_required_test: fail
+  skipped_required_test: fail
+  duplicate_required_test: fail
+  missing_evidence: fail
+  manually_overridden_result: fail
+gates:
+  - id: G0-01
+    owner: A2/A7
+    required_tests:
+      - MSYNC-MUT-001
+      - MSYNC-MUT-002
+      - MSYNC-MUT-003
+    required_evidence:
+      - postgres_version
+      - replay_sample_count
+      - entity_count
+      - receipt_count
+      - outbox_count
+    evaluator_rule: replay_sample_count == 100 && entity_count == 1 && receipt_count == 1 && outbox_count == 1
+  - id: G0-02
+    owner: A3a/A4/B4/A7
+    required_tests:
+      - MSYNC-CONFLICT-001
+      - MSYNC-CONFLICT-002
+      - MSYNC-OCC-001
+      - MSYNC-OCC-002
+      - MSYNC-OCC-003
+      - MSYNC-OCC-004
+      - MSYNC-OCC-005
+      - IOS-P0SYNC-001
+    required_evidence:
+      - postgres_connection_count
+      - conflict_count
+      - winning_write_count
+      - client_restart_fixture
+    evaluator_rule: postgres_connection_count >= 2 && conflict_count == 1 && winning_write_count == 1 && client_restart_fixture == passed
+  - id: G0-03
+    owner: A3b/B4/A7
+    required_tests:
+      - MSYNC-READ-001
+      - MSYNC-READ-002
+      - MSYNC-READ-003
+      - MSYNC-READ-004
+      - MSYNC-READ-005
+      - MSYNC-READ-006
+      - IOS-P0SYNC-002
+      - IOS-P0SYNC-003
+      - IOS-P0SYNC-004
+      - IOS-P0SYNC-005
+    required_evidence:
+      - oracle_digest
+      - converged_digest
+      - pending_mutation_count_before
+      - pending_mutation_count_after
+      - local_audio_count_before
+      - local_audio_count_after
+    evaluator_rule: oracle_digest == converged_digest && pending_mutation_count_before == pending_mutation_count_after && local_audio_count_before == local_audio_count_after
+  - id: G0-04
+    owner: A5/A6/B4/A7
+    required_tests:
+      - VOICE-ORDER-001
+      - VOICE-DELETE-001
+      - VOICE-DELETE-002
+      - VOICE-DELETE-003
+      - VOICE-CLEANUP-001
+      - TRANS-ORDER-001
+      - TRANS-RACE-001
+      - TRANS-TX-001
+      - IOS-P0VOICE-001
+      - IOS-P0VOICE-002
+    required_evidence:
+      - postgres_version
+      - minio_version
+      - resurrection_count
+      - orphan_result_count
+      - remaining_local_copy_count
+    evaluator_rule: resurrection_count == 0 && orphan_result_count == 0 && remaining_local_copy_count >= 1
+  - id: G0-05
+    owner: A5/A6/A7
+    required_tests:
+      - VOICE-UPLOAD-001
+      - VOICE-UPLOAD-002
+      - VOICE-UPLOAD-003
+      - VOICE-UPLOAD-004
+      - TRANS-GEN-001
+      - TRANS-GEN-003
+    required_evidence:
+      - schedule_seed_count
+      - voice_note_count
+      - generation_one_job_count
+      - valid_result_count
+      - checksum_conflict_count
+    evaluator_rule: schedule_seed_count == 100 && voice_note_count == 1 && generation_one_job_count == 1 && valid_result_count == 1
+  - id: G0-06
+    owner: A6/A7
+    required_tests:
+      - TRANS-HTTP-001
+      - TRANS-IDEM-001
+      - TRANS-IDEM-002
+      - TRANS-IDEM-003
+      - TRANS-GEN-002
+      - TRANS-GEN-004
+    required_evidence:
+      - sample_count
+      - failure_count
+      - timeout_count
+      - provider_call_count
+      - duration_ms_p95
+      - raw_metrics_sha256
+    evaluator_rule: sample_count == 100 && failure_count == 0 && timeout_count == 0 && provider_call_count == 0 && duration_ms_p95 <= 500
+  - id: G0-07
+    owner: A6/A7
+    required_tests:
+      - TRANS-LEASE-001
+      - TRANS-LEASE-002
+      - TRANS-LEASE-003
+      - TRANS-RETRY-001
+      - TRANS-RETRY-002
+      - TRANS-RETRY-003
+    required_evidence:
+      - worker_process_count
+      - crash_point_count
+      - recovery_elapsed_ms_max
+      - recovery_business_backoff_count
+    evaluator_rule: worker_process_count >= 2 && crash_point_count == 3 && recovery_elapsed_ms_max <= 150000 && recovery_business_backoff_count == 0
+  - id: G0-08
+    owner: A6/A7
+    required_tests:
+      - TRANS-CAS-001
+      - TRANS-RACE-001
+      - TRANS-TX-001
+    required_evidence:
+      - overwritten_user_body_count
+      - orphan_result_count
+      - atomic_commit_failures
+    evaluator_rule: overwritten_user_body_count == 0 && orphan_result_count == 0 && atomic_commit_failures == 0
+  - id: G0-09
+    owner: A4/A7
+    required_tests:
+      - MSYNC-AUTH-001
+      - MSYNC-AUTH-002
+    required_evidence:
+      - unauthorized_database_write_count
+      - allowlist_operation_count
+      - cross_workspace_rejection_count
+    evaluator_rule: unauthorized_database_write_count == 0 && allowlist_operation_count > 0 && cross_workspace_rejection_count > 0
+  - id: G0-10
+    owner: B1/B2
+    required_tests:
+      - APPLE-AUDIO-REAL-001
+      - APPLE-AUDIO-REAL-002
+      - WATCH-AUDIO-REAL-001
+      - APPLE-PERMISSION-REAL-001
+      - APPLE-STORAGE-REAL-001
+      - APPLE-B2-REQUIRED-MATRIX
+    required_evidence:
+      - mobile_build_digest
+      - manual_script_sha256
+      - required_matrix_case_count
+      - executed_matrix_case_count
+      - device_manifest_sha256
+    evaluator_rule: required_matrix_case_count == executed_matrix_case_count
+  - id: G0-11
+    owner: B3
+    required_tests:
+      - IOS-NAV-001
+      - IOS-NAV-002
+      - IOS-STATE-001
+      - IOS-STATE-002
+      - IOS-SEARCH-STATE-001
+      - IOS-CONFLICT-STATE-001
+      - IOS-DELETE-001
+      - IOS-DELETE-002
+      - IOS-PERMISSION-001
+      - IOS-STORAGE-001
+    required_evidence:
+      - required_state_case_count
+      - executed_state_case_count
+      - restart_case_count
+    evaluator_rule: required_state_case_count == executed_state_case_count && restart_case_count >= 2
+  - id: G0-12
+    owner: B3
+    required_tests:
+      - IOS-A11Y-001
+      - IOS-A11Y-002
+      - WATCH-A11Y-001
+      - APPLE-VOICEOVER-REAL-001
+      - WATCH-VOICEOVER-REAL-001
+    required_evidence:
+      - text_contrast_ratio_min
+      - non_text_contrast_ratio_min
+      - voiceover_required_case_count
+      - voiceover_executed_case_count
+    evaluator_rule: text_contrast_ratio_min >= 4.5 && non_text_contrast_ratio_min >= 3.0 && voiceover_required_case_count == voiceover_executed_case_count

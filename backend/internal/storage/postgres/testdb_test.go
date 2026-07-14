@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/testsupport"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -35,8 +35,11 @@ func createPostgresTestSchema(t *testing.T, schema string) string {
 		t.Fatalf("unsafe postgres test schema name: %v", err)
 	}
 
-	baseURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
-	if baseURL == "" {
+	baseURL, ready, err := testsupport.IntegrationTarget("PostgreSQL", "FLOWSPACE_TEST_DATABASE_URL", "FLOWSPACE_REQUIRE_POSTGRES_TESTS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready {
 		t.Skip("FLOWSPACE_TEST_DATABASE_URL is required for postgres integration tests")
 	}
 

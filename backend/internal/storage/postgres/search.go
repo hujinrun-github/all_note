@@ -125,7 +125,7 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id AND n.deleted_at IS NULL
 	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
 	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
@@ -183,7 +183,7 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id AND n.deleted_at IS NULL
 	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
 	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
@@ -254,7 +254,7 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id AND n.deleted_at IS NULL
 	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
 	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE
@@ -332,7 +332,7 @@ visible AS (
 		t.done,
 		e.kind
 	FROM matched m
-	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id
+	LEFT JOIN notes n ON m.entity_type = 'note' AND n.workspace_id = m.workspace_id AND n.id = m.entity_id AND n.deleted_at IS NULL
 	LEFT JOIN tasks t ON m.entity_type = 'task' AND t.workspace_id = m.workspace_id AND t.id = m.entity_id
 	LEFT JOIN events e ON m.entity_type = 'event' AND e.workspace_id = m.workspace_id AND e.id = m.entity_id
 	WHERE

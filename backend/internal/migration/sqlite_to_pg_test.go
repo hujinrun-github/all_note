@@ -12,16 +12,26 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/storage/postgres"
+	"github.com/hujinrun/flowspace/internal/testsupport"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lib/pq"
 	_ "modernc.org/sqlite"
 )
 
-func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
-	basePGURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
-	if basePGURL == "" {
+func postgresIntegrationURL(t *testing.T) string {
+	t.Helper()
+	value, ready, err := testsupport.IntegrationTarget("PostgreSQL", "FLOWSPACE_TEST_DATABASE_URL", "FLOWSPACE_REQUIRE_POSTGRES_TESTS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready {
 		t.Skip("FLOWSPACE_TEST_DATABASE_URL is required")
 	}
+	return value
+}
+
+func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
+	basePGURL := postgresIntegrationURL(t)
 	pgURL := createMigrationPostgresSchema(t, basePGURL, fmt.Sprintf("fs_test_migration_%d", time.Now().UnixNano()))
 	sqlitePath := seedMigrationSQLite(t)
 
@@ -132,10 +142,7 @@ func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
 }
 
 func TestSQLiteToPostgresBackfillsInitialBindingBeforeServiceSwitch(t *testing.T) {
-	basePGURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
-	if basePGURL == "" {
-		t.Skip("FLOWSPACE_TEST_DATABASE_URL is required")
-	}
+	basePGURL := postgresIntegrationURL(t)
 	pgURL := createMigrationPostgresSchema(t, basePGURL, fmt.Sprintf("fs_test_migration_binding_backfill_%d", time.Now().UnixNano()))
 	sqlitePath := seedMigrationSQLiteForBindingBackfill(t)
 
@@ -199,10 +206,7 @@ func TestSQLiteToPostgresBackfillsInitialBindingBeforeServiceSwitch(t *testing.T
 }
 
 func TestSQLiteToPostgresValidatesSourceBeforeTouchingPostgres(t *testing.T) {
-	basePGURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
-	if basePGURL == "" {
-		t.Skip("FLOWSPACE_TEST_DATABASE_URL is required")
-	}
+	basePGURL := postgresIntegrationURL(t)
 	pgURL := createMigrationPostgresSchema(t, basePGURL, fmt.Sprintf("fs_test_migration_preflight_%d", time.Now().UnixNano()))
 	sqlitePath := createSQLiteWithSchema(t)
 	sqliteDB, err := sql.Open("sqlite", sqlitePath)
@@ -245,10 +249,7 @@ func TestSQLiteToPostgresValidatesSourceBeforeTouchingPostgres(t *testing.T) {
 }
 
 func TestSQLiteToPostgresRejectsNonEmptySeedTables(t *testing.T) {
-	basePGURL := os.Getenv("FLOWSPACE_TEST_DATABASE_URL")
-	if basePGURL == "" {
-		t.Skip("FLOWSPACE_TEST_DATABASE_URL is required")
-	}
+	basePGURL := postgresIntegrationURL(t)
 	pgURL := createMigrationPostgresSchema(t, basePGURL, fmt.Sprintf("fs_test_migration_nonempty_%d", time.Now().UnixNano()))
 	pgDB, err := sql.Open("pgx", pgURL)
 	if err != nil {

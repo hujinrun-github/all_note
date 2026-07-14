@@ -123,7 +123,7 @@ func (r searchRepository) searchNotesFTS(ctx context.Context, workspaceID string
 		SELECT COUNT(*)
 		FROM notes_fts
 		JOIN notes n ON n.rowid = notes_fts.rowid
-		WHERE n.workspace_id = ? AND notes_fts MATCH ?
+		WHERE n.workspace_id = ? AND n.deleted_at IS NULL AND notes_fts MATCH ?
 	`, workspaceID, query).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -133,7 +133,7 @@ func (r searchRepository) searchNotesFTS(ctx context.Context, workspaceID string
 		       n.folder_id, n.updated_at
 		FROM notes_fts
 		JOIN notes n ON n.rowid = notes_fts.rowid
-		WHERE n.workspace_id = ? AND notes_fts MATCH ?
+		WHERE n.workspace_id = ? AND n.deleted_at IS NULL AND notes_fts MATCH ?
 		ORDER BY n.updated_at DESC LIMIT ?
 	`, workspaceID, query, limit)
 	if err != nil {
@@ -227,14 +227,14 @@ func (r searchRepository) searchEventsFTS(ctx context.Context, workspaceID strin
 
 func (r searchRepository) searchNotesLIKE(ctx context.Context, workspaceID string, query string, limit int) ([]model.SearchResult, int, error) {
 	var total int
-	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes WHERE workspace_id = ? AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)", workspaceID, query, query, query).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes WHERE workspace_id = ? AND deleted_at IS NULL AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)", workspaceID, query, query, query).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, folder_id, updated_at
 		FROM notes
-		WHERE workspace_id = ? AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)
+		WHERE workspace_id = ? AND deleted_at IS NULL AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)
 		ORDER BY updated_at DESC LIMIT ?
 	`, workspaceID, query, query, query, limit)
 	if err != nil {

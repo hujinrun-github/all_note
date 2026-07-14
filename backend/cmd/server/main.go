@@ -16,6 +16,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage/postgres"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
 	"github.com/hujinrun/flowspace/internal/transcription"
+	"github.com/hujinrun/flowspace/internal/transcriptionjob"
 )
 
 func main() {
@@ -95,14 +96,24 @@ func main() {
 	go oauthStateStore.RunCleanup(oauthStateCtx, 2*time.Minute, 1000)
 
 	r := router.Setup(router.Config{
-		Store:           store,
-		Auth:            authCfg,
-		OAuthStateStore: oauthStateStore,
-		GitHubClient:    handler.NewGitHubHTTPClient(authCfg.GitHub),
-		VoiceObjects:    voiceObjects,
-		Transcriber:     voiceTranscriber,
-		MaxVoiceBytes:   nativeCfg.MaxVoiceAudioBytes,
+		Store:               store,
+		Auth:                authCfg,
+		OAuthStateStore:     oauthStateStore,
+		GitHubClient:        handler.NewGitHubHTTPClient(authCfg.GitHub),
+		VoiceObjects:        voiceObjects,
+		Transcriber:         voiceTranscriber,
+		MaxVoiceBytes:       nativeCfg.MaxVoiceAudioBytes,
+		MobileSyncV1Enabled: nativeCfg.MobileSyncV1Enabled,
 	})
+	if nativeCfg.MobileSyncV1Enabled && nativeCfg.MinIO.Enabled() && nativeCfg.Transcription.Enabled() {
+		workerCtx, stopWorker := context.WithCancel(context.Background())
+		defer stopWorker()
+		worker := transcriptionjob.NewWorker(store, voiceObjects, voiceTranscriber, "server-transcription-worker")
+		go worker.Run(workerCtx, time.Second, func(err error) {
+			log.Printf("transcription worker: %v", err)
+		})
+		log.Printf("durable transcription worker initialized")
+	}
 	addr := ":" + server.Port
 	log.Printf("server starting on %s", addr)
 	if err := r.Run(addr); err != nil {

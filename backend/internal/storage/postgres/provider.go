@@ -178,6 +178,18 @@ func (s *store) Auth() storage.AuthRepository {
 	return authRepository{db: s.db}
 }
 
+func (s *store) MobileSync() storage.MobileSyncRepository {
+	return mobileSyncRepository{db: s.db}
+}
+
+func (s *store) TranscriptionJobs() storage.TranscriptionJobRepository {
+	return transcriptionJobRepository{db: s.db}
+}
+
+func (s *store) TranscriptionJobWorker() storage.TranscriptionJobWorkerRepository {
+	return transcriptionJobWorkerRepository{db: s.db}
+}
+
 func (s *store) WatchDevices() storage.WatchDeviceRepository {
 	return watchDeviceRepository{db: s.db}
 }
@@ -233,6 +245,14 @@ func (s *storeTx) Sync() storage.SyncRepository {
 
 func (s *storeTx) Auth() storage.AuthRepository {
 	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) MobileSync() storage.MobileSyncRepository {
+	return mobileSyncRepository{db: s.tx}
+}
+
+func (s *storeTx) TranscriptionJobs() storage.TranscriptionJobRepository {
+	return transcriptionJobRepository{db: s.tx}
 }
 
 func (s *storeTx) WatchDevices() storage.WatchDeviceRepository {

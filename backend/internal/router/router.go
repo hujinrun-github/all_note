@@ -13,13 +13,14 @@ import (
 )
 
 type Config struct {
-	Store           storage.Store
-	Auth            config.AuthConfig
-	OAuthStateStore auth.OAuthStateStore
-	GitHubClient    handler.GitHubClient
-	VoiceObjects    objectstore.Store
-	Transcriber     transcription.Transcriber
-	MaxVoiceBytes   int64
+	Store               storage.Store
+	Auth                config.AuthConfig
+	OAuthStateStore     auth.OAuthStateStore
+	GitHubClient        handler.GitHubClient
+	VoiceObjects        objectstore.Store
+	Transcriber         transcription.Transcriber
+	MaxVoiceBytes       int64
+	MobileSyncV1Enabled bool
 }
 
 func Setup(cfg Config) *gin.Engine {
@@ -51,7 +52,9 @@ func Setup(cfg Config) *gin.Engine {
 		nativeProtected.PUT("/voice-notes/:clientID/audio", handler.UploadVoiceAudio(cfg.Store, cfg.VoiceObjects, cfg.MaxVoiceBytes))
 		nativeProtected.GET("/voice-notes/:clientID/audio", handler.GetVoiceAudio(cfg.Store, cfg.VoiceObjects))
 		nativeProtected.GET("/voice-notes/:clientID/status", handler.GetVoiceNoteStatus(cfg.Store))
-		nativeProtected.POST("/voice-notes/:clientID/transcription", handler.TranscribeVoiceNote(cfg.Store, cfg.VoiceObjects, cfg.Transcriber))
+		if !cfg.MobileSyncV1Enabled {
+			nativeProtected.POST("/voice-notes/:clientID/transcription", handler.TranscribeVoiceNote(cfg.Store, cfg.VoiceObjects, cfg.Transcriber))
+		}
 
 		watchRoutes := api.Group("/watch")
 		watchRoutes.Use(authMiddleware.RequiredSessionOrWatch(), authMiddleware.RequirePasswordSettled())
@@ -59,6 +62,14 @@ func Setup(cfg Config) *gin.Engine {
 		watchRoutes.PATCH("/tasks/:id", handler.UpdateTask(cfg.Store))
 
 		protected.GET("/folders", handler.GetFolders(cfg.Store))
+		if cfg.MobileSyncV1Enabled {
+			nativeProtected.GET("/mobile/sync/changes", handler.ListMobileChanges(cfg.Store, cfg.Auth.SessionSecret))
+			nativeProtected.GET("/mobile/sync/snapshot", handler.GetMobileSnapshot(cfg.Store, cfg.Auth.SessionSecret))
+			protected.POST("/mobile/sync/mutations", handler.ApplyMobileMutations(cfg.Store))
+			protected.POST("/mobile/voice-notes/:clientID/transcriptions", handler.CreateMobileTranscriptionJob(cfg.Store))
+			protected.GET("/mobile/transcription-jobs/:jobID", handler.GetMobileTranscriptionJob(cfg.Store))
+			protected.POST("/mobile/transcription-jobs/:jobID/retry", handler.RetryMobileTranscriptionJob(cfg.Store))
+		}
 		protected.POST("/devices/watch/authorize", handler.AuthorizeWatchDevice(cfg.Store, cfg.Auth.SessionSecret))
 		protected.POST("/devices/watch/revoke", handler.RevokeWatchDevice(cfg.Store))
 		if cfg.Auth.EnableLocalDirectoryBrowser {

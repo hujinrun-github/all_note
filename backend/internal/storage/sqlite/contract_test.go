@@ -25,6 +25,36 @@ func TestSQLiteStoreContract(t *testing.T) {
 	})
 }
 
+func TestSQLiteMobileSyncNoteContract(t *testing.T) {
+	contracttest.RunMobileSyncNoteSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+		store, err := (Provider{}).Open(context.Background(), storage.Config{
+			Env:        "test",
+			Driver:     storage.DriverSQLite,
+			SQLitePath: filepath.Join(t.TempDir(), "flowspace.mobile-sync.test.db"),
+		})
+		if err != nil {
+			t.Fatalf("open sqlite store: %v", err)
+		}
+		return store
+	})
+}
+
+func TestSQLiteTranscriptionJobContract(t *testing.T) {
+	contracttest.RunTranscriptionJobSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+		store, err := (Provider{}).Open(context.Background(), storage.Config{
+			Env:        "test",
+			Driver:     storage.DriverSQLite,
+			SQLitePath: filepath.Join(t.TempDir(), "flowspace.transcription-job.test.db"),
+		})
+		if err != nil {
+			t.Fatalf("open sqlite store: %v", err)
+		}
+		return store
+	})
+}
+
 func TestSQLiteAuthContract(t *testing.T) {
 	contracttest.RunAuthContractTests(t, func(t *testing.T) storage.Store {
 		t.Helper()
