@@ -85,6 +85,7 @@ export interface RoadmapNode {
   x: number
   y: number
   order_index: number
+  article_search_queries?: string[]
   resources: RoadmapResource[]
   created_at: number
   updated_at: number
@@ -149,13 +150,26 @@ export async function listTaskProjects() {
   return res.data.projects
 }
 
-export async function createTaskProject(body: { name: string; type: TaskProject['type']; description?: string }) {
-  const res = await api.post<{ project: TaskProject }>('/api/task-projects', body)
+export async function createTaskProject(body: {
+  name: string
+  type: TaskProject['type']
+  description?: string
+}) {
+  const res = await api.post<{ project: TaskProject }>(
+    '/api/task-projects',
+    body
+  )
   return res.data.project
 }
 
-export async function updateTaskProject(id: string, body: Partial<Pick<TaskProject, 'name' | 'type' | 'description'>>) {
-  const res = await api.patch<{ project: TaskProject }>(`/api/task-projects/${id}`, body)
+export async function updateTaskProject(
+  id: string,
+  body: Partial<Pick<TaskProject, 'name' | 'type' | 'description'>>
+) {
+  const res = await api.patch<{ project: TaskProject }>(
+    `/api/task-projects/${id}`,
+    body
+  )
   return res.data.project
 }
 
@@ -191,13 +205,17 @@ export async function deleteTask(id: string) {
 }
 
 export async function generateLearningRoadmap(projectID: string) {
-  const res = await api.post<{ roadmap: LearningRoadmap }>(`/api/task-projects/${projectID}/roadmap/generate`)
+  const res = await api.post<{ roadmap: LearningRoadmap }>(
+    `/api/task-projects/${projectID}/roadmap/generate`
+  )
   return res.data.roadmap
 }
 
 export async function getLearningRoadmap(projectID: string) {
   try {
-    const res = await api.get<{ roadmap: LearningRoadmap }>(`/api/task-projects/${projectID}/roadmap`)
+    const res = await api.get<{ roadmap: LearningRoadmap }>(
+      `/api/task-projects/${projectID}/roadmap`
+    )
     return res.data.roadmap
   } catch (error) {
     if (error instanceof APIError && error.status === 404) return null
@@ -205,8 +223,14 @@ export async function getLearningRoadmap(projectID: string) {
   }
 }
 
-export async function updateRoadmapNode(id: string, body: Partial<RoadmapNode>) {
-  const res = await api.patch<{ node: RoadmapNode }>(`/api/roadmap-nodes/${id}`, body)
+export async function updateRoadmapNode(
+  id: string,
+  body: Partial<RoadmapNode>
+) {
+  const res = await api.patch<{ node: RoadmapNode }>(
+    `/api/roadmap-nodes/${id}`,
+    body
+  )
   return res.data.node
 }
 
@@ -222,9 +246,12 @@ export async function createRoadmapNode(
     deliverable?: string
     acceptance_criteria?: string
     edge_style?: 'solid' | 'dotted'
-  },
+  }
 ) {
-  const res = await api.post<{ node: RoadmapNode }>(`/api/roadmaps/${roadmapID}/nodes`, body)
+  const res = await api.post<{ node: RoadmapNode }>(
+    `/api/roadmaps/${roadmapID}/nodes`,
+    body
+  )
   return res.data.node
 }
 
@@ -232,22 +259,40 @@ export async function deleteRoadmapNode(id: string) {
   await api.del(`/api/roadmap-nodes/${id}`)
 }
 
-export async function saveRoadmapLayout(roadmapID: string, nodes: Array<{ id: string; x: number; y: number }>) {
+export async function saveRoadmapLayout(
+  roadmapID: string,
+  nodes: Array<{ id: string; x: number; y: number }>
+) {
   await api.patch(`/api/roadmaps/${roadmapID}/layout`, { nodes })
 }
 
 export async function optimizeRoadmapLayout(roadmapID: string) {
-  const res = await api.post<{ roadmap: LearningRoadmap }>(`/api/roadmaps/${roadmapID}/layout/optimize`)
+  const res = await api.post<{ roadmap: LearningRoadmap }>(
+    `/api/roadmaps/${roadmapID}/layout/optimize`
+  )
   return res.data.roadmap
 }
 
-export async function searchRoadmapNodeResources(nodeID: string, body: { sources?: string[] } = {}) {
-  const res = await api.post<{ resources: RoadmapResource[] }>(`/api/roadmap-nodes/${nodeID}/resources/search`, body)
-  return res.data.resources
+export async function searchRoadmapNodeResources(
+  nodeID: string,
+  body: { sources?: string[] } = {}
+) {
+  const res = await api.post<{
+    node_id: string
+    query: string
+    resources: RoadmapResource[]
+  }>(`/api/roadmap-nodes/${nodeID}/resources/search`, body)
+  return res.data
 }
 
-export async function addRoadmapNodeResource(nodeID: string, body: { title: string; url: string; summary?: string }) {
-  const res = await api.post<{ resource: RoadmapResource }>(`/api/roadmap-nodes/${nodeID}/resources`, body)
+export async function addRoadmapNodeResource(
+  nodeID: string,
+  body: { title: string; url: string; summary?: string }
+) {
+  const res = await api.post<{ resource: RoadmapResource }>(
+    `/api/roadmap-nodes/${nodeID}/resources`,
+    body
+  )
   return res.data.resource
 }
 
@@ -257,31 +302,37 @@ export async function deleteRoadmapResource(id: string) {
 
 export async function completeOccurrence(taskId: string, date: string) {
   const res = await api.post<{ occurrence: TaskOccurrence }>(
-    `/api/tasks/${taskId}/occurrences/${date}/complete`,
+    `/api/tasks/${taskId}/occurrences/${date}/complete`
   )
   return res.data.occurrence
 }
 
 export async function reopenOccurrence(taskId: string, date: string) {
   const res = await api.post<{ occurrence: TaskOccurrence }>(
-    `/api/tasks/${taskId}/occurrences/${date}/reopen`,
+    `/api/tasks/${taskId}/occurrences/${date}/reopen`
   )
   return res.data.occurrence
 }
 
 export async function skipOccurrence(taskId: string, date: string) {
   const res = await api.post<{ occurrence: TaskOccurrence }>(
-    `/api/tasks/${taskId}/occurrences/${date}/skip`,
+    `/api/tasks/${taskId}/occurrences/${date}/skip`
   )
   return res.data.occurrence
 }
 
 export async function getTaskOccurrences(from: string, to: string) {
-  const res = await api.get<{ occurrences: TaskOccurrence[] }>('/api/task-occurrences', { from, to })
+  const res = await api.get<{ occurrences: TaskOccurrence[] }>(
+    '/api/task-occurrences',
+    { from, to }
+  )
   return res.data.occurrences
 }
 
-export async function getRecurringTasks(params?: { page?: number; page_size?: number }) {
+export async function getRecurringTasks(params?: {
+  page?: number
+  page_size?: number
+}) {
   const res = await api.get<{ tasks: Task[] }>('/api/tasks', {
     execution_type: 'recurring',
     page: String(params?.page ?? 1),

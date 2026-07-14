@@ -3,9 +3,11 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
@@ -26,7 +28,7 @@ func (r noteRepository) List(ctx context.Context, filter storage.NoteFilter) ([]
 	if err != nil {
 		return nil, 0, err
 	}
-	where := []string{"n.workspace_id = ?"}
+	where := []string{"n.workspace_id = ?", "n.deleted_at IS NULL"}
 	args := []interface{}{workspaceID}
 
 	if strings.TrimSpace(filter.FolderID) != "" {
@@ -108,7 +110,7 @@ func (r noteRepository) GetByID(ctx context.Context, id string) (*model.Note, er
 	var note model.Note
 	err = r.db.QueryRowContext(ctx, `
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
-		FROM notes WHERE workspace_id = ? AND id = ?
+		FROM notes WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
 	`, workspaceID, id).Scan(&note.ID, &note.Title, &note.Body, &note.FolderID, &note.Tags, &note.CreatedAt, &note.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -179,11 +181,18 @@ func (r noteRepository) CreateWithID(ctx context.Context, note *model.Note) erro
 	}
 	note.Tags = tags
 
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO notes (id, title, body, folder_id, tags, created_at, updated_at, workspace_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, note.ID, note.Title, note.Body, note.FolderID, note.Tags, note.CreatedAt, note.UpdatedAt, workspaceID)
-	return err
+	clientID := deterministicSQLiteMobileNoteClientID(workspaceID, note.ID)
+	return r.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO notes (id, client_id, revision, title, body, folder_id, tags, created_at, updated_at, workspace_id)
+			VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+		`, note.ID, clientID, note.Title, note.Body, note.FolderID, note.Tags, note.CreatedAt, note.UpdatedAt, workspaceID); err != nil {
+			return err
+		}
+		return persistSQLiteServerNoteChange(
+			ctx, tx, workspaceID, uuid.NewString(), model.MobileOperationNoteServerCreated, clientID, note.UpdatedAt,
+		)
+	})
 }
 
 func (r noteRepository) Update(ctx context.Context, id string, req *model.UpdateNoteRequest) (*model.Note, error) {
@@ -191,8 +200,9 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 	if err != nil {
 		return nil, err
 	}
-	sets := []string{"updated_at = ?"}
-	args := []interface{}{nowUnix()}
+	now := nowUnix()
+	sets := []string{"updated_at = ?", "revision = revision + 1"}
+	args := []interface{}{now}
 
 	if req.Title != nil {
 		sets = append(sets, "title = ?")
@@ -215,16 +225,40 @@ func (r noteRepository) Update(ctx context.Context, id string, req *model.Update
 		args = append(args, tags)
 	}
 
-	args = append(args, id)
-	args = append(args, workspaceID)
-	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE notes SET %s WHERE id = ? AND workspace_id = ?", strings.Join(sets, ", ")), args...); err != nil {
-		return nil, err
-	}
-	// Merge project links if provided.
-	if req.ProjectIDs != nil {
-		if err := setNoteProjectLinks(ctx, r.db, workspaceID, id, *req.ProjectIDs); err != nil {
-			return nil, fmt.Errorf("update project links: %w", err)
+	mutationID := uuid.NewString()
+	err = r.withTx(ctx, func(tx *sql.Tx) error {
+		updateArgs := append(append([]interface{}{}, args...), id, workspaceID)
+		result, err := tx.ExecContext(ctx, fmt.Sprintf(
+			"UPDATE notes SET %s WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL",
+			strings.Join(sets, ", "),
+		), updateArgs...)
+		if err != nil {
+			return err
 		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected != 1 {
+			return sql.ErrNoRows
+		}
+		if req.ProjectIDs != nil {
+			if err := setNoteProjectLinks(ctx, tx, workspaceID, id, *req.ProjectIDs); err != nil {
+				return fmt.Errorf("update project links: %w", err)
+			}
+		}
+		var clientID string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT client_id FROM notes WHERE workspace_id = ? AND id = ?
+		`, workspaceID, id).Scan(&clientID); err != nil {
+			return err
+		}
+		return persistSQLiteServerNoteChange(
+			ctx, tx, workspaceID, mutationID, model.MobileOperationNoteServerUpdated, clientID, now,
+		)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return r.GetByID(ctx, id)
 }
@@ -234,8 +268,70 @@ func (r noteRepository) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, "DELETE FROM notes WHERE workspace_id = ? AND id = ?", workspaceID, id)
-	return err
+	now := nowUnix()
+	return r.withTx(ctx, func(tx *sql.Tx) error {
+		var clientID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT client_id FROM notes WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
+		`, workspaceID, id).Scan(&clientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE notes SET deleted_at = ?, updated_at = ?, revision = revision + 1
+			WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
+		`, now, now, workspaceID, id)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected != 1 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at)
+			VALUES (?, 'note', ?, ?)
+		`, workspaceID, clientID, now); err != nil {
+			return err
+		}
+		return persistSQLiteServerNoteChange(
+			ctx, tx, workspaceID, uuid.NewString(), model.MobileOperationNoteServerDeleted, clientID, now,
+		)
+	})
+}
+
+func (r noteRepository) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if tx, ok := r.db.(*sql.Tx); ok {
+		return fn(tx)
+	}
+	db, ok := r.db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("unsupported sqlite note runner %T", r.db)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r noteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
@@ -245,7 +341,7 @@ func (r noteRepository) ListAll(ctx context.Context) ([]model.Note, error) {
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
-		FROM notes WHERE workspace_id = ? ORDER BY updated_at DESC
+		FROM notes WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC
 	`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -261,7 +357,7 @@ func (r noteRepository) Recent(ctx context.Context, limit int) ([]model.Note, er
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, body, folder_id, tags, created_at, updated_at
-		FROM notes WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ?
+		FROM notes WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?
 	`, workspaceID, limit)
 	if err != nil {
 		return nil, err
@@ -308,7 +404,7 @@ func (r noteRepository) GetNotesByProjectIDs(ctx context.Context, projectIDs []s
 		`SELECT n.id, n.title, npl.project_id
 		 FROM notes n
 		 JOIN note_project_links npl ON n.workspace_id = npl.workspace_id AND n.id = npl.note_id
-		 WHERE n.workspace_id = ? AND npl.project_id IN (%s)
+		 WHERE n.workspace_id = ? AND n.deleted_at IS NULL AND npl.project_id IN (%s)
 		 ORDER BY n.updated_at DESC`, strings.Join(placeholders, ","))
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

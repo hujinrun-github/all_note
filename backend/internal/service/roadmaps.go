@@ -46,7 +46,6 @@ const (
 	roadmapBranchVerticalGap   = 145
 	minArticleSearchResults    = 10
 	maxArticleSearchResults    = 20
-	autoResourceNodeLimit      = 6
 )
 
 type articleSearchSource struct {
@@ -109,10 +108,6 @@ func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID
 	if err != nil {
 		return nil, err
 	}
-	// Resource discovery can involve several third-party searches. It must not keep
-	// the generate request open after the roadmap itself has already been saved;
-	// otherwise the reverse proxy can return 504 while a valid roadmap exists.
-	scheduleInitialRoadmapResources(ctx, store, draft)
 	normalizeRoadmapDisplayLayout(saved)
 	return saved, nil
 }
@@ -122,8 +117,36 @@ func GetLearningRoadmap(ctx context.Context, store storage.Store, projectID stri
 	if err != nil {
 		return nil, err
 	}
+	filterRoadmapResourcesByNodeRelevance(roadmap)
 	normalizeRoadmapDisplayLayout(roadmap)
 	return roadmap, nil
+}
+
+func filterRoadmapResourcesByNodeRelevance(roadmap *model.LearningRoadmap) {
+	if roadmap == nil {
+		return
+	}
+	for nodeIndex := range roadmap.Nodes {
+		node := &roadmap.Nodes[nodeIndex]
+		searched := make([]model.RoadmapResource, 0, len(node.Resources))
+		for _, resource := range node.Resources {
+			if resource.AddedBy == "search" {
+				searched = append(searched, resource)
+			}
+		}
+		relevant := filterAndRankArticleResources(*node, nil, searched, len(searched))
+		relevantURLs := make(map[string]bool, len(relevant))
+		for _, resource := range relevant {
+			relevantURLs[resource.URL] = true
+		}
+		filtered := make([]model.RoadmapResource, 0, len(node.Resources))
+		for _, resource := range node.Resources {
+			if resource.AddedBy != "search" || relevantURLs[resource.URL] {
+				filtered = append(filtered, resource)
+			}
+		}
+		node.Resources = filtered
+	}
 }
 
 func UpdateRoadmapNode(ctx context.Context, store storage.Store, id string, req *model.UpdateRoadmapNodeRequest) (*model.RoadmapNode, error) {
@@ -225,7 +248,7 @@ func OptimizeRoadmapLayout(ctx context.Context, store storage.Store, roadmapID s
 	return optimized, nil
 }
 
-func SearchRoadmapNodeResources(ctx context.Context, store storage.Store, nodeID string, req *model.SearchRoadmapResourcesRequest) ([]model.RoadmapResource, error) {
+func SearchRoadmapNodeResources(ctx context.Context, store storage.Store, nodeID string, req *model.SearchRoadmapResourcesRequest) (*model.RoadmapResourceSearchResult, error) {
 	node, err := store.Roadmaps().GetRoadmapNode(ctx, nodeID)
 	if err != nil {
 		return nil, err
@@ -239,6 +262,8 @@ func SearchRoadmapNodeResources(ctx context.Context, store storage.Store, nodeID
 	if err != nil {
 		return nil, err
 	}
+	selectedSources := selectedArticleSearchSources(sources)
+	query := buildArticleSearchQuery(*node, linkedTasks, selectedSources)
 	results, err := searchArticleResources(*node, linkedTasks, sources, articleSearchMaxResults())
 	if err != nil {
 		return nil, err
@@ -255,7 +280,7 @@ func SearchRoadmapNodeResources(ctx context.Context, store storage.Store, nodeID
 			results[index].AddedBy = "search"
 		}
 	}
-	return results, nil
+	return &model.RoadmapResourceSearchResult{NodeID: node.ID, Query: query, Resources: results}, nil
 }
 
 func AddRoadmapNodeResource(ctx context.Context, store storage.Store, nodeID string, req *model.CreateRoadmapResourceRequest) (*model.RoadmapResource, error) {
@@ -933,47 +958,6 @@ func hasRoadmapBranching(draft *roadmapDraft) bool {
 		}
 	}
 	return false
-}
-
-func attachInitialRoadmapResources(ctx context.Context, store storage.Store, draft *roadmapDraft) error {
-	if draft == nil {
-		return nil
-	}
-	attachedNodes := 0
-	for _, node := range draft.Nodes {
-		if attachedNodes >= autoResourceNodeLimit {
-			return nil
-		}
-		resources, err := searchArticleResources(node, nil, nil, 2)
-		if err != nil {
-			continue
-		}
-		for index := range resources {
-			resources[index].NodeID = node.ID
-			resources[index].SourceType = "article"
-			resources[index].AddedBy = "search"
-			if err := store.Roadmaps().AddRoadmapResource(ctx, &resources[index]); err != nil {
-				return err
-			}
-		}
-		if len(resources) > 0 {
-			attachedNodes++
-		}
-	}
-	return nil
-}
-
-func scheduleInitialRoadmapResources(ctx context.Context, store storage.Store, draft *roadmapDraft) {
-	backgroundCtx := context.WithoutCancel(ctx)
-	go func() {
-		defer func() {
-			// A failed optional enrichment must never take down the API server.
-			_ = recover()
-		}()
-		enrichmentCtx, cancel := context.WithTimeout(backgroundCtx, 2*time.Minute)
-		defer cancel()
-		_ = attachInitialRoadmapResources(enrichmentCtx, store, draft)
-	}()
 }
 
 func generateOpenAICompatibleRoadmap(project model.TaskProject) (*roadmapDraft, error) {

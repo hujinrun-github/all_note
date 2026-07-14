@@ -28,7 +28,13 @@ vi.mock('@xyflow/react', async () => {
     MarkerType: { ArrowClosed: 'arrowclosed' },
     MiniMap: () => null,
     Position: { Bottom: 'bottom', Left: 'left', Right: 'right', Top: 'top' },
-    ReactFlow: ({ children, nodes = [] }: { children?: React.ReactNode; nodes?: MockFlowNode[] }) => (
+    ReactFlow: ({
+      children,
+      nodes = [],
+    }: {
+      children?: React.ReactNode
+      nodes?: MockFlowNode[]
+    }) => (
       <div data-testid="react-flow">
         {nodes.map((node) => (
           <button
@@ -64,13 +70,12 @@ function createTestQueryClient() {
 }
 
 function renderTasks(queryClient = createTestQueryClient()) {
-
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <Tasks />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
@@ -159,34 +164,66 @@ describe('Tasks long task tracking', () => {
     vi.clearAllMocks()
     vi.mocked(tasksApi.listTaskProjects).mockResolvedValue(projects)
     vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(null)
-    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({ tasks: [], pagination })
+    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({
+      tasks: [],
+      pagination,
+    })
     vi.mocked(tasksApi.getTasks).mockImplementation(async (params) => {
       if (params.horizon === 'long') {
         return {
           tasks: [
-            task({ id: 'long-active', title: '搭 AI Infra 原型', status: 'active', updated_at: 1800000300 }),
-            task({ id: 'long-blocked', title: '等待 Notion 权限', status: 'blocked', updated_at: 1800000200 }),
-            task({ id: 'long-open', title: '整理同步边界', status: 'open', updated_at: 1800000100 }),
-            task({ id: 'long-done', title: '完成方案设计', status: 'done', done: 1, updated_at: 1800000000 }),
+            task({
+              id: 'long-active',
+              title: '搭 AI Infra 原型',
+              status: 'active',
+              updated_at: 1800000300,
+            }),
+            task({
+              id: 'long-blocked',
+              title: '等待 Notion 权限',
+              status: 'blocked',
+              updated_at: 1800000200,
+            }),
+            task({
+              id: 'long-open',
+              title: '整理同步边界',
+              status: 'open',
+              updated_at: 1800000100,
+            }),
+            task({
+              id: 'long-done',
+              title: '完成方案设计',
+              status: 'done',
+              done: 1,
+              updated_at: 1800000000,
+            }),
           ],
           pagination,
         }
       }
       return { tasks: [], pagination }
     })
-    vi.mocked(tasksApi.updateTask).mockResolvedValue(task({ id: 'long-blocked', status: 'active' }))
+    vi.mocked(tasksApi.updateTask).mockResolvedValue(
+      task({ id: 'long-blocked', status: 'active' })
+    )
   })
 
   it('shows only the active tab project as selected in the project list', async () => {
-    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([...projects, learningProject])
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([
+      ...projects,
+      learningProject,
+    ])
     vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(roadmap)
     const { container } = renderTasks()
     const user = userEvent.setup()
 
     await screen.findByText('AI Infra工程师')
-    const projectButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.task-project-select'))
+    const projectButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.task-project-select')
+    )
     expect(projectButtons).toHaveLength(3)
-    const [personalProjectButton, regularProjectButton, learningProjectButton] = projectButtons
+    const [personalProjectButton, regularProjectButton, learningProjectButton] =
+      projectButtons
 
     expect(personalProjectButton).toHaveClass('is-active')
     expect(regularProjectButton).not.toHaveClass('is-active')
@@ -216,14 +253,37 @@ describe('Tasks long task tracking', () => {
     expect(groupText.indexOf('进行中')).toBeLessThan(groupText.indexOf('阻塞'))
     expect(groupText.indexOf('阻塞')).toBeLessThan(groupText.indexOf('未开始'))
     expect(groupText.indexOf('未开始')).toBeLessThan(groupText.indexOf('完成'))
-    expect(within(screen.getByTestId('long-task-status-active')).getByText('搭 AI Infra 原型')).toBeVisible()
-    expect(within(screen.getByTestId('long-task-status-blocked')).getByText('等待 Notion 权限')).toBeVisible()
-    expect(within(screen.getByTestId('long-task-status-open')).getByText('整理同步边界')).toBeVisible()
-    expect(within(screen.getByTestId('long-task-status-done')).getByText('完成方案设计')).toBeVisible()
+    expect(
+      within(screen.getByTestId('long-task-status-active')).getByText(
+        '搭 AI Infra 原型'
+      )
+    ).toBeVisible()
+    expect(
+      within(screen.getByTestId('long-task-status-blocked')).getByText(
+        '等待 Notion 权限'
+      )
+    ).toBeVisible()
+    expect(
+      within(screen.getByTestId('long-task-status-open')).getByText(
+        '整理同步边界'
+      )
+    ).toBeVisible()
+    expect(
+      within(screen.getByTestId('long-task-status-done')).getByText(
+        '完成方案设计'
+      )
+    ).toBeVisible()
 
-    await user.selectOptions(screen.getByLabelText('更新长期任务状态：等待 Notion 权限'), 'active')
+    await user.selectOptions(
+      screen.getByLabelText('更新长期任务状态：等待 Notion 权限'),
+      'active'
+    )
 
-    await waitFor(() => expect(tasksApi.updateTask).toHaveBeenCalledWith('long-blocked', { status: 'active' }))
+    await waitFor(() =>
+      expect(tasksApi.updateTask).toHaveBeenCalledWith('long-blocked', {
+        status: 'active',
+      })
+    )
   })
 
   it('loads structured projects even when project name cache already exists', async () => {
@@ -234,8 +294,14 @@ describe('Tasks long task tracking', () => {
 
     await user.click(await screen.findByRole('tab', { name: '长期任务' }))
 
-    await waitFor(() => expect(screen.getAllByRole('option', { name: 'AI Infra' }).length).toBeGreaterThan(0))
-    expect(screen.queryByText('先在左侧新增一个任务项目')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole('option', { name: 'AI Infra' }).length
+      ).toBeGreaterThan(0)
+    )
+    expect(
+      screen.queryByText('先在左侧新增一个任务项目')
+    ).not.toBeInTheDocument()
   })
 
   it('selects a weekly task from the row content without completing it', async () => {
@@ -315,14 +381,17 @@ describe('Tasks long task tracking', () => {
 
     await screen.findByText('待处理任务')
 
-    const titles = Array.from(container.querySelectorAll('.task-section .task-row-title')).map((title) =>
-      title.textContent?.trim(),
-    )
+    const titles = Array.from(
+      container.querySelectorAll('.task-section .task-row-title')
+    ).map((title) => title.textContent?.trim())
     expect(titles).toEqual(['待处理任务', '已完成任务'])
   })
 
   it('groups projects by matching task views and creates typed projects from group controls', async () => {
-    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([...projects, learningProject])
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([
+      ...projects,
+      learningProject,
+    ])
     vi.mocked(tasksApi.createTaskProject).mockResolvedValue({
       id: 'learning-n2',
       name: 'N2 语法',
@@ -339,15 +408,23 @@ describe('Tasks long task tracking', () => {
     const learningGroup = screen.getByTestId('task-project-group-learning')
     expect(within(shortGroup).getByText('个人短期项目')).toBeVisible()
     expect(await within(shortGroup).findByText('1 个项目')).toBeVisible()
-    expect(await within(shortGroup).findByRole('button', { name: '选择项目 个人' })).toBeVisible()
+    expect(
+      await within(shortGroup).findByRole('button', { name: '选择项目 个人' })
+    ).toBeVisible()
     expect(within(longGroup).getByText('长期项目')).toBeVisible()
     expect(await within(longGroup).findByText('1 个项目')).toBeVisible()
     expect(await within(longGroup).findByText('AI Infra')).toBeVisible()
-    expect(within(learningGroup).getByRole('heading', { name: '学习项目' })).toBeVisible()
+    expect(
+      within(learningGroup).getByRole('heading', { name: '学习项目' })
+    ).toBeVisible()
     expect(await within(learningGroup).findByText('1 个项目')).toBeVisible()
-    expect(await within(learningGroup).findByText('AI Infra工程师')).toBeVisible()
+    expect(
+      await within(learningGroup).findByText('AI Infra工程师')
+    ).toBeVisible()
 
-    await user.click(within(learningGroup).getByRole('button', { name: '新建学习项目' }))
+    await user.click(
+      within(learningGroup).getByRole('button', { name: '新建学习项目' })
+    )
     await user.type(screen.getByLabelText('学习项目名称'), 'N2 语法')
     await user.click(screen.getByRole('button', { name: '创建学习项目' }))
 
@@ -427,7 +504,10 @@ describe('Tasks long task tracking', () => {
     await user.type(titleInput, '更新后的长期目标')
     await user.selectOptions(screen.getByLabelText('任务详情项目'), 'personal')
     await user.click(screen.getByRole('button', { name: '进行中' }))
-    await user.type(screen.getByLabelText('任务详情备注'), '下一步先整理任务边界')
+    await user.type(
+      screen.getByLabelText('任务详情备注'),
+      '下一步先整理任务边界'
+    )
     await user.click(screen.getByRole('button', { name: '保存修改' }))
 
     await waitFor(() =>
@@ -437,7 +517,7 @@ describe('Tasks long task tracking', () => {
         project_id: 'personal',
         status: 'active',
         planned_date: '',
-      }),
+      })
     )
   })
 })
@@ -445,10 +525,16 @@ describe('Tasks long task tracking', () => {
 describe('Tasks recurring task project selector', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([...projects, learningProject])
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([
+      ...projects,
+      learningProject,
+    ])
     vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(null)
     vi.mocked(tasksApi.getTasks).mockResolvedValue({ tasks: [], pagination })
-    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({ tasks: [], pagination })
+    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({
+      tasks: [],
+      pagination,
+    })
   })
 
   it('uses official task projects when creating recurring tasks', async () => {
@@ -463,18 +549,32 @@ describe('Tasks recurring task project selector', () => {
     const projectSelect = selects[selects.length - 1]
     const options = within(projectSelect).getAllByRole('option')
 
-    expect(options.map((option) => option.textContent)).toEqual(['个人', 'AI Infra', 'AI Infra工程师'])
-    expect(options.map((option) => option.getAttribute('value'))).toEqual(['personal', 'project-1', 'learning-1'])
+    expect(options.map((option) => option.textContent)).toEqual([
+      '个人',
+      'AI Infra',
+      'AI Infra工程师',
+    ])
+    expect(options.map((option) => option.getAttribute('value'))).toEqual([
+      'personal',
+      'project-1',
+      'learning-1',
+    ])
   })
 })
 
 describe('Tasks learning roadmap weekly linking', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([...projects, learningProject])
+    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([
+      ...projects,
+      learningProject,
+    ])
     vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(roadmap)
     vi.mocked(tasksApi.getTasks).mockResolvedValue({ tasks: [], pagination })
-    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({ tasks: [], pagination })
+    vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({
+      tasks: [],
+      pagination,
+    })
     vi.mocked(tasksApi.createTask).mockResolvedValue(
       task({
         id: 'week-roadmap-task',
@@ -484,7 +584,7 @@ describe('Tasks learning roadmap weekly linking', () => {
         roadmap_node_id: 'node-1',
         horizon: 'week',
         scope: 'daily',
-      }),
+      })
     )
   })
 
@@ -493,14 +593,20 @@ describe('Tasks learning roadmap weekly linking', () => {
     const user = userEvent.setup()
 
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
-    await user.click(await screen.findByRole('button', { name: '进入全屏编辑' }))
+    await user.click(
+      await screen.findByRole('button', { name: '进入全屏编辑' })
+    )
 
-    expect(container.querySelector('.roadmap-content')).toHaveClass('is-fullscreen')
+    expect(container.querySelector('.roadmap-content')).toHaveClass(
+      'is-fullscreen'
+    )
     expect(screen.getByRole('button', { name: '退出全屏编辑' })).toBeVisible()
     expect(screen.getByText('交付物')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: '退出全屏编辑' }))
-    expect(container.querySelector('.roadmap-content')).not.toHaveClass('is-fullscreen')
+    expect(container.querySelector('.roadmap-content')).not.toHaveClass(
+      'is-fullscreen'
+    )
   })
 
   it('does not expose add-to-week from roadmap views', async () => {
@@ -510,14 +616,104 @@ describe('Tasks learning roadmap weekly linking', () => {
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
     expect(await screen.findByTestId('roadmap-canvas')).toBeVisible()
 
-    expect(screen.queryByRole('button', { name: '加入本周' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '加入本周' })
+    ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '搜索文章' })).toBeVisible()
+    expect(screen.getByText('本节点搜索提示词')).toBeVisible()
 
     await user.click(await screen.findByTestId('roadmap-node'))
 
+    expect(screen.queryByTestId('roadmap-node-dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '编辑节点与任务' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
     expect(screen.getByTestId('roadmap-node-dialog')).toBeVisible()
-    expect(screen.queryByRole('button', { name: '加入本周' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '加入本周' })
+    ).not.toBeInTheDocument()
     expect(tasksApi.createTask).not.toHaveBeenCalled()
+  })
+
+  it('deletes an article from the selected roadmap node after confirmation', async () => {
+    vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue({
+      ...roadmap,
+      nodes: [
+        {
+          ...roadmap.nodes[0],
+          resources: [
+            {
+              id: 'resource-1',
+              node_id: 'node-1',
+              title: 'HNSW indexing guide',
+              url: 'https://example.com/hnsw',
+              summary: 'Index design for the selected node.',
+              source_type: 'article',
+              added_by: 'search',
+              created_at: 1,
+              updated_at: 1,
+            },
+          ],
+        },
+      ],
+    })
+    vi.mocked(tasksApi.deleteRoadmapResource).mockResolvedValue()
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(
+      await screen.findByRole('button', {
+        name: '删除文章 HNSW indexing guide',
+      })
+    )
+    expect(tasksApi.deleteRoadmapResource).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '确认删除' }))
+
+    expect(tasksApi.deleteRoadmapResource).toHaveBeenCalledWith('resource-1')
+  })
+
+  it('opens article search results with every candidate unselected', async () => {
+    vi.mocked(tasksApi.searchRoadmapNodeResources).mockResolvedValue({
+      node_id: 'node-1',
+      query: 'AI Infra system design official documentation',
+      resources: [
+        {
+          id: 'candidate-1',
+          node_id: 'node-1',
+          title: 'AI infrastructure guide',
+          url: 'https://example.com/ai-infra',
+          summary: 'Relevant guide.',
+          source_type: 'article',
+          added_by: 'search',
+          created_at: 1,
+          updated_at: 1,
+        },
+        {
+          id: 'candidate-2',
+          node_id: 'node-1',
+          title: 'System design reference',
+          url: 'https://example.com/system-design',
+          summary: 'Relevant reference.',
+          source_type: 'article',
+          added_by: 'search',
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    })
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(screen.getByRole('button', { name: '搜索文章' }))
+
+    const dialog = await screen.findByRole('dialog', { name: '选择文章' })
+    const checkboxes = within(dialog).getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(2)
+    checkboxes.forEach((checkbox) => expect(checkbox).not.toBeChecked())
+    expect(
+      within(dialog).getByRole('button', { name: '添加选中文章' })
+    ).toBeDisabled()
   })
 
   it('labels duplicate linked tasks with sequence and creation metadata', async () => {
@@ -560,10 +756,15 @@ describe('Tasks learning roadmap weekly linking', () => {
 
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
     await user.click(await screen.findByTestId('roadmap-node'))
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
 
     const list = await screen.findByTestId('roadmap-linked-task-list')
-    expect(within(list).getByText('AI Infra概述与系统设计基础 · 第 1 次推进')).toBeVisible()
-    expect(within(list).getByText('AI Infra概述与系统设计基础 · 第 2 次推进')).toBeVisible()
+    expect(
+      within(list).getByText('AI Infra概述与系统设计基础 · 第 1 次推进')
+    ).toBeVisible()
+    expect(
+      within(list).getByText('AI Infra概述与系统设计基础 · 第 2 次推进')
+    ).toBeVisible()
     expect(within(list).getByText('第 1 次')).toBeVisible()
     expect(within(list).getByText('第 2 次')).toBeVisible()
     expect(within(list).getAllByText('未完成')).toHaveLength(2)
@@ -595,6 +796,8 @@ describe('Tasks learning roadmap weekly linking', () => {
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
     await user.click(await screen.findByTestId('roadmap-node'))
 
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
     const list = await screen.findByTestId('roadmap-linked-task-list')
     expect(within(list).queryByText('暂无关联任务')).not.toBeInTheDocument()
     expect(within(list).getByText('每周复盘 HNSW · 第 1 次推进')).toBeVisible()
@@ -631,7 +834,7 @@ describe('Tasks learning roadmap weekly linking', () => {
         id: 'linked-task-with-content',
         title: 'AI Infra概述与系统设计基础 · 第 1 次推进',
         content: '完成容器基础复盘，补充 Kubernetes 调度问题',
-      }),
+      })
     )
     renderTasks()
     const user = userEvent.setup()
@@ -639,7 +842,10 @@ describe('Tasks learning roadmap weekly linking', () => {
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
     await user.click(await screen.findByTestId('roadmap-node'))
 
-    const contentInput = await screen.findByLabelText('任务内容：AI Infra概述与系统设计基础 · 第 1 次推进')
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
+    const contentInput = await screen.findByLabelText(
+      '任务内容：AI Infra概述与系统设计基础 · 第 1 次推进'
+    )
     expect(contentInput).toHaveValue('阅读分布式系统综述，并列出 3 个关键问题')
 
     await user.clear(contentInput)
@@ -647,9 +853,12 @@ describe('Tasks learning roadmap weekly linking', () => {
     await user.click(screen.getByRole('button', { name: '保存任务内容' }))
 
     await waitFor(() =>
-      expect(tasksApi.updateTask).toHaveBeenCalledWith('linked-task-with-content', {
-        content: '完成容器基础复盘，补充 Kubernetes 调度问题',
-      }),
+      expect(tasksApi.updateTask).toHaveBeenCalledWith(
+        'linked-task-with-content',
+        {
+          content: '完成容器基础复盘，补充 Kubernetes 调度问题',
+        }
+      )
     )
   })
 
@@ -668,7 +877,7 @@ describe('Tasks learning roadmap weekly linking', () => {
         due: dateInputToUnix(today),
         horizon: 'week',
         scope: 'daily',
-      }),
+      })
     )
     renderTasks()
     const user = userEvent.setup()
@@ -676,10 +885,14 @@ describe('Tasks learning roadmap weekly linking', () => {
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
     await user.click(await screen.findByTestId('roadmap-node'))
 
-    await user.type(await screen.findByTestId('roadmap-linked-task-title-input'), '调研 HNSW 参数')
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
+    await user.type(
+      await screen.findByTestId('roadmap-linked-task-title-input'),
+      '调研 HNSW 参数'
+    )
     await user.type(
       screen.getByTestId('roadmap-linked-task-content-input'),
-      '比较 efConstruction、M 和 rerank 的实际取舍',
+      '比较 efConstruction、M 和 rerank 的实际取舍'
     )
     await user.click(screen.getByTestId('roadmap-linked-task-create-button'))
 
@@ -694,7 +907,7 @@ describe('Tasks learning roadmap weekly linking', () => {
         due: dateInputToUnix(today),
         horizon: 'week',
         scope: 'daily',
-      }),
+      })
     )
   })
 
@@ -712,7 +925,7 @@ describe('Tasks learning roadmap weekly linking', () => {
         execution_type: 'recurring',
         horizon: 'week',
         scope: 'daily',
-      }),
+      })
     )
     renderTasks()
     const user = userEvent.setup()
@@ -720,14 +933,33 @@ describe('Tasks learning roadmap weekly linking', () => {
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
     await user.click(await screen.findByTestId('roadmap-node'))
 
-    await user.type(await screen.findByTestId('roadmap-linked-task-title-input'), '每周复盘 HNSW')
-    await user.type(screen.getByTestId('roadmap-linked-task-content-input'), '整理索引参数实验结论')
-    await user.selectOptions(screen.getByTestId('roadmap-linked-task-execution-type'), 'recurring')
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
+    await user.type(
+      await screen.findByTestId('roadmap-linked-task-title-input'),
+      '每周复盘 HNSW'
+    )
+    await user.type(
+      screen.getByTestId('roadmap-linked-task-content-input'),
+      '整理索引参数实验结论'
+    )
+    await user.selectOptions(
+      screen.getByTestId('roadmap-linked-task-execution-type'),
+      'recurring'
+    )
     await user.clear(screen.getByTestId('roadmap-linked-task-date-input'))
-    await user.type(screen.getByTestId('roadmap-linked-task-date-input'), startDate)
-    await user.selectOptions(screen.getByTestId('roadmap-linked-task-frequency-select'), 'weekly')
+    await user.type(
+      screen.getByTestId('roadmap-linked-task-date-input'),
+      startDate
+    )
+    await user.selectOptions(
+      screen.getByTestId('roadmap-linked-task-frequency-select'),
+      'weekly'
+    )
     await user.clear(screen.getByTestId('roadmap-linked-task-interval-input'))
-    await user.type(screen.getByTestId('roadmap-linked-task-interval-input'), '2')
+    await user.type(
+      screen.getByTestId('roadmap-linked-task-interval-input'),
+      '2'
+    )
     await user.click(screen.getByTestId('roadmap-linked-task-create-button'))
 
     await waitFor(() => expect(tasksApi.createTask).toHaveBeenCalled())
@@ -749,7 +981,7 @@ describe('Tasks learning roadmap weekly linking', () => {
           month_days: [],
           timezone: expect.any(String),
         }),
-      }),
+      })
     )
     expect(payload).not.toHaveProperty('planned_date')
     expect(payload).not.toHaveProperty('due')

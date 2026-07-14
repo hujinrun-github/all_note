@@ -1,25 +1,25 @@
 package model
 
 type Task struct {
-	ID            string  `json:"id"`
-	Title         string  `json:"title"`
-	Content       string  `json:"content"`
-	Project       *string `json:"project"`
-	ProjectID     *string `json:"project_id"`
-	ProjectType   *string `json:"project_type,omitempty"`
-	Due           *int64  `json:"due"`
-	PlannedDate   *string `json:"planned_date"`
-	Priority      int     `json:"priority"`
-	Done          int     `json:"done"`
-	Status        string  `json:"status"`
-	Horizon       string  `json:"horizon"`
-	Scope         string  `json:"scope"`
-	SortOrder     float64 `json:"sort_order"`
-	NoteID        *string `json:"note_id"`
-	RoadmapNodeID *string `json:"roadmap_node_id"`
-	CreatedAt     int64   `json:"created_at"`
-	UpdatedAt     int64   `json:"updated_at"`
-	CompletedAt     *int64  `json:"completed_at,omitempty"`
+	ID               string  `json:"id"`
+	Title            string  `json:"title"`
+	Content          string  `json:"content"`
+	Project          *string `json:"project"`
+	ProjectID        *string `json:"project_id"`
+	ProjectType      *string `json:"project_type,omitempty"`
+	Due              *int64  `json:"due"`
+	PlannedDate      *string `json:"planned_date"`
+	Priority         int     `json:"priority"`
+	Done             int     `json:"done"`
+	Status           string  `json:"status"`
+	Horizon          string  `json:"horizon"`
+	Scope            string  `json:"scope"`
+	SortOrder        float64 `json:"sort_order"`
+	NoteID           *string `json:"note_id"`
+	RoadmapNodeID    *string `json:"roadmap_node_id"`
+	CreatedAt        int64   `json:"created_at"`
+	UpdatedAt        int64   `json:"updated_at"`
+	CompletedAt      *int64  `json:"completed_at,omitempty"`
 	ExecutionType    string  `json:"execution_type,omitempty"`
 	OccurrenceDate   *string `json:"occurrence_date,omitempty"`
 	OccurrenceStatus *string `json:"occurrence_status,omitempty"`
@@ -27,38 +27,38 @@ type Task struct {
 }
 
 type CreateTaskRequest struct {
-	Title         string  `json:"title" binding:"required"`
-	Content       string  `json:"content"`
-	Project       *string `json:"project"`
-	ProjectID     *string `json:"project_id"`
-	Due           *int64  `json:"due"`
-	PlannedDate   *string `json:"planned_date"`
-	Priority      int     `json:"priority"`
-	Scope         string  `json:"scope"`
-	Horizon       string  `json:"horizon"`
-	RoadmapNodeID *string            `json:"roadmap_node_id"`
-	ExecutionType string             `json:"execution_type"`
-	Recurrence    *RecurrenceConfig  `json:"recurrence"`
+	Title         string            `json:"title" binding:"required"`
+	Content       string            `json:"content"`
+	Project       *string           `json:"project"`
+	ProjectID     *string           `json:"project_id"`
+	Due           *int64            `json:"due"`
+	PlannedDate   *string           `json:"planned_date"`
+	Priority      int               `json:"priority"`
+	Scope         string            `json:"scope"`
+	Horizon       string            `json:"horizon"`
+	RoadmapNodeID *string           `json:"roadmap_node_id"`
+	ExecutionType string            `json:"execution_type"`
+	Recurrence    *RecurrenceConfig `json:"recurrence"`
 }
 
 type UpdateTaskRequest struct {
-	Title         *string  `json:"title"`
-	Content       *string  `json:"content"`
-	Project       *string  `json:"project"`
-	ProjectID     *string  `json:"project_id"`
-	Due           *int64   `json:"due"`
-	PlannedDate   *string  `json:"planned_date"`
-	Priority      *int     `json:"priority"`
-	Done          *int     `json:"done"`
-	Status        *string  `json:"status"`
-	Scope         *string  `json:"scope"`
-	Horizon       *string  `json:"horizon"`
-	SortOrder      *float64          `json:"sort_order"`
-	RoadmapNodeID  *string           `json:"roadmap_node_id"`
-	ExecutionType  *string           `json:"execution_type"`
-	Recurrence     *RecurrenceConfig `json:"recurrence"`
-	Enabled        *bool             `json:"enabled"`
-	EndDate        *string           `json:"end_date"`
+	Title         *string           `json:"title"`
+	Content       *string           `json:"content"`
+	Project       *string           `json:"project"`
+	ProjectID     *string           `json:"project_id"`
+	Due           *int64            `json:"due"`
+	PlannedDate   *string           `json:"planned_date"`
+	Priority      *int              `json:"priority"`
+	Done          *int              `json:"done"`
+	Status        *string           `json:"status"`
+	Scope         *string           `json:"scope"`
+	Horizon       *string           `json:"horizon"`
+	SortOrder     *float64          `json:"sort_order"`
+	RoadmapNodeID *string           `json:"roadmap_node_id"`
+	ExecutionType *string           `json:"execution_type"`
+	Recurrence    *RecurrenceConfig `json:"recurrence"`
+	Enabled       *bool             `json:"enabled"`
+	EndDate       *string           `json:"end_date"`
 }
 
 type TaskProject struct {
@@ -143,6 +143,12 @@ type CreateRoadmapResourceRequest struct {
 
 type SearchRoadmapResourcesRequest struct {
 	Sources []string `json:"sources"`
+}
+
+type RoadmapResourceSearchResult struct {
+	NodeID    string            `json:"node_id"`
+	Query     string            `json:"query"`
+	Resources []RoadmapResource `json:"resources"`
 }
 
 type CreateRoadmapNodeRequest struct {

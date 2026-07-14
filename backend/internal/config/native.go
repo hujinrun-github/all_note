@@ -12,9 +12,10 @@ import (
 const defaultMaxVoiceAudioBytes int64 = 50 * 1024 * 1024
 
 type NativeConfig struct {
-	MaxVoiceAudioBytes int64
-	MinIO              MinIOConfig
-	Transcription      TranscriptionConfig
+	MaxVoiceAudioBytes  int64
+	MobileSyncV1Enabled bool
+	MinIO               MinIOConfig
+	Transcription       TranscriptionConfig
 }
 
 type MinIOConfig struct {
@@ -42,6 +43,10 @@ func (c TranscriptionConfig) Enabled() bool {
 }
 
 func LoadNativeConfig() (NativeConfig, error) {
+	mobileSyncV1Enabled, err := envBool("FLOWSPACE_ENABLE_MOBILE_SYNC_V1", false)
+	if err != nil {
+		return NativeConfig{}, err
+	}
 	maxBytes := defaultMaxVoiceAudioBytes
 	if value := strings.TrimSpace(os.Getenv("FLOWSPACE_VOICE_MAX_BYTES")); value != "" {
 		parsed, err := strconv.ParseInt(value, 10, 64)
@@ -60,9 +65,10 @@ func LoadNativeConfig() (NativeConfig, error) {
 		return NativeConfig{}, err
 	}
 	return NativeConfig{
-		MaxVoiceAudioBytes: maxBytes,
-		MinIO:              minioCfg,
-		Transcription:      transcriptionCfg,
+		MaxVoiceAudioBytes:  maxBytes,
+		MobileSyncV1Enabled: mobileSyncV1Enabled,
+		MinIO:               minioCfg,
+		Transcription:       transcriptionCfg,
 	}, nil
 }
 

@@ -1,0 +1,585 @@
+openapi: 3.1.0
+info:
+  title: FlowSpace Mobile Sync API
+  version: 1.0.0
+  description: >-
+    Versioned contract for offline-first iPhone and Apple Watch clients.
+    Existing desktop CRUD endpoints are outside this contract.
+servers:
+  - url: /
+security:
+  - sessionCookie: []
+  - watchBearer: []
+x-golden-fixtures:
+  - conflict.json
+  - error.json
+  - mutation-success.json
+  - tombstone.json
+paths:
+  /api/mobile/sync/mutations:
+    post:
+      operationId: applyMobileMutations
+      summary: Apply an idempotent batch of client mutations
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutationBatch'
+      responses:
+        '200':
+          description: Per-item mutation results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationBatchResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+  /api/mobile/sync/changes:
+    get:
+      operationId: listMobileChanges
+      summary: Read committed changes after an opaque cursor
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Scope'
+      responses:
+        '200':
+          description: Change page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangePage'
+        '409':
+          $ref: '#/components/responses/ResyncRequired'
+  /api/mobile/sync/snapshot:
+    get:
+      operationId: getMobileSnapshot
+      summary: Read an immutable paginated snapshot
+      parameters:
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/Scope'
+      responses:
+        '200':
+          description: Snapshot page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotPage'
+        '410':
+          $ref: '#/components/responses/ResyncRequired'
+  /api/mobile/sync/conflicts:
+    get:
+      operationId: listMobileConflicts
+      summary: List unresolved mobile conflicts
+      responses:
+        '200':
+          description: Conflict list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SyncConflict'
+  /api/mobile/sync/conflicts/{conflictID}/resolve:
+    post:
+      operationId: resolveMobileConflict
+      summary: Resolve a conflict using conflict and target revisions
+      parameters:
+        - $ref: '#/components/parameters/ConflictID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConflictResolution'
+      responses:
+        '200':
+          description: Conflict resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/mobile/voice-notes:
+    post:
+      operationId: createMobileVoiceNote
+      summary: Create voice-note metadata before audio transfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceNoteCreate'
+      responses:
+        '201':
+          description: Voice note metadata created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityEnvelope'
+        '200':
+          description: Idempotent replay of an existing receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityEnvelope'
+  /api/mobile/voice-notes/{clientID}/audio:
+    put:
+      operationId: putMobileVoiceAudio
+      summary: Upload an audio object idempotently by checksum
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/AudioSHA256'
+      requestBody:
+        required: true
+        content:
+          audio/*:
+            schema:
+              type: string
+              contentEncoding: binary
+      responses:
+        '204':
+          description: Audio stored or already present with the same checksum
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+    delete:
+      operationId: deleteMobileVoiceAudio
+      summary: Persist cloud-audio deletion intent before object cleanup
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/MutationIDHeader'
+      responses:
+        '204':
+          description: Deletion accepted or already complete
+  /api/mobile/voice-notes/{clientID}:
+    delete:
+      operationId: deleteMobileVoiceNote
+      summary: Tombstone a voice note and schedule object cleanup
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/MutationIDHeader'
+      responses:
+        '204':
+          description: Voice note tombstoned
+  /api/mobile/voice-notes/{clientID}/transcriptions:
+    post:
+      operationId: createMobileTranscriptionJob
+      summary: Persist and enqueue a transcription job
+      parameters:
+        - $ref: '#/components/parameters/ClientID'
+        - $ref: '#/components/parameters/MutationIDHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranscriptionRequest'
+      responses:
+        '202':
+          description: Job accepted or idempotently replayed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionJob'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /api/mobile/transcription-jobs/{jobID}:
+    get:
+      operationId: getMobileTranscriptionJob
+      summary: Read durable transcription status
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '200':
+          description: Job state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionJob'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/mobile/transcription-jobs/{jobID}/retry:
+    post:
+      operationId: retryMobileTranscriptionJob
+      summary: Create the next generation after a terminal failure
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+        - $ref: '#/components/parameters/MutationIDHeader'
+      responses:
+        '202':
+          description: Retry generation accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptionJob'
+        '409':
+          $ref: '#/components/responses/Conflict'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: flowspace_session
+    watchBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: watch-device-token
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    PageToken:
+      name: page_token
+      in: query
+      schema:
+        type: string
+    Scope:
+      name: scope
+      in: query
+      required: true
+      schema:
+        type: string
+        enum: [iphone, watch]
+    ConflictID:
+      name: conflictID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ClientID:
+      name: clientID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    JobID:
+      name: jobID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    MutationIDHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AudioSHA256:
+      name: X-Audio-SHA256
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-f0-9]{64}$'
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    PayloadTooLarge:
+      description: Batch or audio limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    Conflict:
+      description: Revision, identity, checksum, or active-job conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    Gone:
+      description: Resource was tombstoned and cannot be resurrected
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    NotFound:
+      description: Resource not found in the authenticated workspace
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    ResyncRequired:
+      description: Cursor or snapshot session expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+    Timestamp:
+      type: string
+      format: date-time
+    MutationBatch:
+      type: object
+      additionalProperties: false
+      required: [client_id, mutations]
+      properties:
+        client_id:
+          $ref: '#/components/schemas/UUID'
+        mutations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Mutation'
+    Mutation:
+      type: object
+      additionalProperties: false
+      required: [mutation_id, operation, entity_id, payload]
+      properties:
+        mutation_id:
+          $ref: '#/components/schemas/UUID'
+        operation:
+          type: string
+        entity_id:
+          $ref: '#/components/schemas/UUID'
+        base_revision:
+          type: integer
+          minimum: 0
+        depends_on_mutation_id:
+          $ref: '#/components/schemas/UUID'
+        field_mask:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        payload:
+          type: object
+    MutationBatchResult:
+      type: object
+      additionalProperties: false
+      required: [schema_version, results]
+      properties:
+        schema_version:
+          const: mobile-v1
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/MutationResult'
+    MutationResult:
+      type: object
+      additionalProperties: false
+      required: [mutation_id, status]
+      properties:
+        mutation_id:
+          $ref: '#/components/schemas/UUID'
+        status:
+          type: string
+          enum: [applied, replayed, conflict, retry_later, rejected]
+        entity:
+          $ref: '#/components/schemas/EntityEnvelope'
+        error:
+          $ref: '#/components/schemas/APIError'
+    EntityEnvelope:
+      type: object
+      additionalProperties: false
+      required: [entity_type, entity_id, revision, payload]
+      properties:
+        entity_type:
+          type: string
+          enum: [note, task, task_occurrence, event, inbox, voice_note, transcription_job, sync_conflict]
+        entity_id:
+          $ref: '#/components/schemas/UUID'
+        revision:
+          type: integer
+          minimum: 1
+        deleted_at:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        payload:
+          type: object
+    ChangePage:
+      type: object
+      additionalProperties: false
+      required: [schema_version, changes, next_cursor, has_more]
+      properties:
+        schema_version:
+          const: mobile-v1
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityEnvelope'
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    SnapshotPage:
+      type: object
+      additionalProperties: false
+      required: [schema_version, entities, has_more]
+      properties:
+        schema_version:
+          const: mobile-v1
+        entities:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityEnvelope'
+        next_page_token:
+          type: string
+        snapshot_cursor:
+          type: string
+        has_more:
+          type: boolean
+        scope_valid_until:
+          $ref: '#/components/schemas/Timestamp'
+    SyncConflict:
+      type: object
+      additionalProperties: false
+      required: [conflict_id, entity_type, entity_id, base_revision, remote_revision, local_payload, remote_payload, revision]
+      properties:
+        conflict_id:
+          $ref: '#/components/schemas/UUID'
+        entity_type:
+          type: string
+        entity_id:
+          $ref: '#/components/schemas/UUID'
+        base_revision:
+          type: integer
+        remote_revision:
+          type: integer
+        local_payload:
+          type: object
+        remote_payload:
+          type: object
+        revision:
+          type: integer
+          minimum: 1
+    ConflictResolution:
+      type: object
+      additionalProperties: false
+      required: [mutation_id, conflict_revision, target_revision, resolution]
+      properties:
+        mutation_id:
+          $ref: '#/components/schemas/UUID'
+        conflict_revision:
+          type: integer
+          minimum: 1
+        target_revision:
+          type: integer
+          minimum: 1
+        resolution:
+          type: string
+          enum: [keep_local, keep_remote, merge]
+        merged_payload:
+          type: object
+    VoiceNoteCreate:
+      type: object
+      additionalProperties: false
+      required: [mutation_id, client_id, recorded_at, duration_ms, audio_sha256, audio_bytes]
+      properties:
+        mutation_id:
+          $ref: '#/components/schemas/UUID'
+        client_id:
+          $ref: '#/components/schemas/UUID'
+        recorded_at:
+          $ref: '#/components/schemas/Timestamp'
+        duration_ms:
+          type: integer
+          minimum: 0
+        language:
+          type: string
+        audio_sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        audio_bytes:
+          type: integer
+          minimum: 1
+    TranscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [language]
+      properties:
+        language:
+          type: string
+    TranscriptionJob:
+      type: object
+      additionalProperties: false
+      required: [job_id, voice_note_id, generation, state, revision]
+      properties:
+        job_id:
+          $ref: '#/components/schemas/UUID'
+        voice_note_id:
+          $ref: '#/components/schemas/UUID'
+        generation:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          enum: [waiting_for_audio, queued, processing, retry_waiting, completed, needs_review, failed, canceled]
+        revision:
+          type: integer
+          minimum: 1
+        error_code:
+          type: string
+        next_attempt_at:
+          $ref: '#/components/schemas/Timestamp'
+    APIError:
+      type: object
+      additionalProperties: false
+      required: [schema_version, type, code, message]
+      properties:
+        schema_version:
+          const: mobile-v1
+        type:
+          const: error
+        code:
+          type: string
+        message:
+          type: string
+        retryable:
+          type: boolean
+        resync_required:
+          type: boolean
+    EventInput:
+      oneOf:
+        - $ref: '#/components/schemas/AllDayEventInput'
+        - $ref: '#/components/schemas/TimedEventInput'
+    AllDayEventInput:
+      type: object
+      additionalProperties: false
+      required: [title, start_date, end_date_exclusive]
+      properties:
+        title:
+          type: string
+        start_date:
+          type: string
+          format: date
+        end_date_exclusive:
+          type: string
+          format: date
+    TimedEventInput:
+      type: object
+      additionalProperties: false
+      required: [title, start_at, end_at, time_zone]
+      properties:
+        title:
+          type: string
+        start_at:
+          $ref: '#/components/schemas/Timestamp'
+        end_at:
+          $ref: '#/components/schemas/Timestamp'
+        time_zone:
+          type: string
+          description: IANA time-zone identifier

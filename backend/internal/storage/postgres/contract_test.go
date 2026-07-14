@@ -29,6 +29,40 @@ func TestPostgresStoreContract(t *testing.T) {
 	})
 }
 
+func TestPostgresMobileSyncNoteContract(t *testing.T) {
+	contracttest.RunMobileSyncNoteSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+		schema := fmt.Sprintf("fs_test_mobile_sync_contract_%d", time.Now().UnixNano())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		store, err := (Provider{}).Open(ctx, storage.Config{
+			Env:    "test",
+			Driver: storage.DriverPostgres,
+			URL:    createPostgresTestSchema(t, schema),
+		})
+		if err != nil {
+			t.Fatalf("open postgres store: %v", err)
+		}
+		return store
+	})
+}
+
+func TestPostgresTranscriptionJobContract(t *testing.T) {
+	contracttest.RunTranscriptionJobSuite(t, func(t *testing.T) storage.Store {
+		t.Helper()
+		schema := fmt.Sprintf("fs_test_transcription_job_contract_%d", time.Now().UnixNano())
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		store, err := (Provider{}).Open(ctx, storage.Config{
+			Env: "test", Driver: storage.DriverPostgres, URL: createPostgresTestSchema(t, schema),
+		})
+		if err != nil {
+			t.Fatalf("open postgres store: %v", err)
+		}
+		return store
+	})
+}
+
 func TestPostgresAuthContract(t *testing.T) {
 	contracttest.RunAuthContractTests(t, func(t *testing.T) storage.Store {
 		t.Helper()

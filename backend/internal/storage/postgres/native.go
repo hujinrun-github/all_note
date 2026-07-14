@@ -151,14 +151,40 @@ func (r voiceNoteRepository) ClaimUpload(ctx context.Context, clientID string, c
 }
 
 func (r voiceNoteRepository) MarkUploaded(ctx context.Context, clientID, sha256 string) (*model.VoiceNote, error) {
+	if db, ok := r.db.(*sql.DB); ok {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+		voice, err := (voiceNoteRepository{db: tx}).markUploaded(ctx, clientID, sha256)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		committed = true
+		return voice, nil
+	}
+	return r.markUploaded(ctx, clientID, sha256)
+}
+
+func (r voiceNoteRepository) markUploaded(ctx context.Context, clientID, sha256 string) (*model.VoiceNote, error) {
 	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().Unix()
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE voice_notes SET upload_state = 'uploaded', updated_at = $1
 		WHERE workspace_id = $2 AND client_id = $3 AND audio_sha256 = $4
-	`, time.Now().Unix(), workspaceID, clientID, sha256)
+	`, now, workspaceID, clientID, sha256)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +194,13 @@ func (r voiceNoteRepository) MarkUploaded(ctx context.Context, clientID, sha256 
 	}
 	if rows == 0 {
 		return nil, storage.ErrUploadConflict
+	}
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE transcription_jobs
+		SET state = 'queued', revision = revision + 1, updated_at = $1
+		WHERE workspace_id = $2 AND voice_note_id = $3 AND state = 'waiting_for_audio'
+	`, now, workspaceID, clientID); err != nil {
+		return nil, err
 	}
 	return r.GetByClientID(ctx, clientID)
 }

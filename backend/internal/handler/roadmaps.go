@@ -120,12 +120,12 @@ func SearchRoadmapNodeResources(store storage.Store) gin.HandlerFunc {
 			badRequest(c, "invalid search request")
 			return
 		}
-		resources, err := service.SearchRoadmapNodeResources(c.Request.Context(), store, c.Param("id"), &req)
+		result, err := service.SearchRoadmapNodeResources(c.Request.Context(), store, c.Param("id"), &req)
 		if err != nil {
 			internalError(c, "failed to search roadmap resources")
 			return
 		}
-		success(c, gin.H{"resources": resources})
+		success(c, gin.H{"node_id": result.NodeID, "query": result.Query, "resources": result.Resources})
 	}
 }
 

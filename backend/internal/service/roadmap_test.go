@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/repository"
@@ -191,7 +190,7 @@ func TestGenerateLearningRoadmapWithMockAI(t *testing.T) {
 	}
 }
 
-func TestGenerateLearningRoadmapAutomaticallyAttachesArticleResources(t *testing.T) {
+func TestGenerateLearningRoadmapDoesNotAttachArticleResources(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("AI_PROVIDER", "mock")
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "mock")
@@ -202,23 +201,10 @@ func TestGenerateLearningRoadmapAutomaticallyAttachesArticleResources(t *testing
 		t.Fatalf("generate learning roadmap: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		roadmap, err = GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), project.ID)
-		if err != nil {
-			t.Fatalf("reload generated roadmap: %v", err)
+	for _, node := range roadmap.Nodes {
+		if len(node.Resources) != 0 {
+			t.Fatalf("generated roadmap node should not include default resources: %+v", node.Resources)
 		}
-		resourceCount := 0
-		for _, node := range roadmap.Nodes {
-			resourceCount += len(node.Resources)
-		}
-		if resourceCount > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("expected roadmap generation to attach article resources asynchronously")
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -696,11 +682,15 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 	node := roadmap.Nodes[0]
 
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "mock")
-	resources, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{
+	result, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{
 		Sources: []string{"medium", "reddit"},
 	})
 	if err != nil {
 		t.Fatalf("search resources: %v", err)
+	}
+	resources := result.Resources
+	if result.NodeID != node.ID || !strings.Contains(result.Query, node.Title) {
+		t.Fatalf("search result must describe the selected node query: %+v", result)
 	}
 	if len(resources) < 10 {
 		t.Fatalf("expected at least 10 article candidates, got %d", len(resources))
@@ -918,10 +908,11 @@ func TestRoadmapArticleSearchUsesLinkedTaskContent(t *testing.T) {
 	stackExchangeSearchURL = server.URL + "/search/advanced"
 	t.Cleanup(func() { stackExchangeSearchURL = oldStackExchangeURL })
 
-	resources, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{Sources: []string{"stackoverflow"}})
+	result, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{Sources: []string{"stackoverflow"}})
 	if err != nil {
 		t.Fatalf("search resources: %v", err)
 	}
+	resources := result.Resources
 	if len(resources) == 0 {
 		t.Fatalf("expected relevant stackoverflow resources, got %+v", resources)
 	}
