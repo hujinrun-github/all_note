@@ -120,4 +120,100 @@ func RunEventInboxSuite(t *testing.T, factory StoreFactory) {
 			t.Fatalf("expected 2 deleted rows, got %d", deleted)
 		}
 	})
+
+	t.Run("EventsPersistProjectIdentityAndClearWithEmptyString", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := scopedContractContext(t, store)
+		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name:        "Calendar Learning",
+			Type:        "learning",
+			Description: "calendar source test",
+		})
+		if err != nil {
+			t.Fatalf("create project: %v", err)
+		}
+
+		event := model.Event{
+			Title:     "project event",
+			StartTime: time.Date(2026, 7, 9, 9, 0, 0, 0, time.Local).Unix(),
+			EndTime:   time.Date(2026, 7, 9, 10, 0, 0, 0, time.Local).Unix(),
+			Kind:      "work",
+			ProjectID: &project.ID,
+		}
+		if err := store.Events().Create(ctx, &event); err != nil {
+			t.Fatalf("create event: %v", err)
+		}
+
+		loaded, err := store.Events().GetByID(ctx, event.ID)
+		if err != nil {
+			t.Fatalf("load event: %v", err)
+		}
+		if loaded.ProjectID == nil || *loaded.ProjectID != project.ID {
+			t.Fatalf("project_id = %v, want %q", loaded.ProjectID, project.ID)
+		}
+		if loaded.Project == nil || *loaded.Project != project.Name {
+			t.Fatalf("project = %v, want %q", loaded.Project, project.Name)
+		}
+		if loaded.ProjectType == nil || *loaded.ProjectType != project.Type {
+			t.Fatalf("project_type = %v, want %q", loaded.ProjectType, project.Type)
+		}
+
+		clear := ""
+		updated, err := store.Events().Update(ctx, event.ID, &model.UpdateEventRequest{ProjectID: &clear})
+		if err != nil {
+			t.Fatalf("clear event project: %v", err)
+		}
+		if updated.ProjectID != nil || updated.Project != nil || updated.ProjectType != nil {
+			t.Fatalf("expected project fields cleared, got %+v", updated)
+		}
+	})
+
+	t.Run("DeleteProjectClearsEventProjectIDAndKeepsEventVisible", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := scopedContractContext(t, store)
+		project, err := store.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+			Name:        "Calendar Project Delete",
+			Type:        "regular",
+			Description: "event project delete test",
+		})
+		if err != nil {
+			t.Fatalf("create project: %v", err)
+		}
+
+		start := time.Date(2026, 7, 10, 9, 0, 0, 0, time.Local).Unix()
+		event := model.Event{
+			Title:     "project survives delete",
+			StartTime: start,
+			EndTime:   start + int64(time.Hour.Seconds()),
+			Kind:      "work",
+			ProjectID: &project.ID,
+		}
+		if err := store.Events().Create(ctx, &event); err != nil {
+			t.Fatalf("create event: %v", err)
+		}
+
+		if err := store.Tasks().DeleteProject(ctx, project.ID); err != nil {
+			t.Fatalf("delete project: %v", err)
+		}
+
+		loaded, err := store.Events().GetByID(ctx, event.ID)
+		if err != nil {
+			t.Fatalf("load event after project delete: %v", err)
+		}
+		if loaded.ProjectID != nil || loaded.Project != nil || loaded.ProjectType != nil {
+			t.Fatalf("expected deleted project fields cleared, got %+v", loaded)
+		}
+
+		listed, total, err := store.Events().List(ctx, start-1, start+int64(2*time.Hour.Seconds()), 1, 10)
+		if err != nil {
+			t.Fatalf("list events after project delete: %v", err)
+		}
+		if total != 1 || len(listed) != 1 || listed[0].ID != event.ID {
+			t.Fatalf("expected event to remain visible in workspace, total=%d events=%+v", total, listed)
+		}
+	})
 }

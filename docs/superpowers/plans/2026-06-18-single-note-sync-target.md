@@ -545,7 +545,7 @@ Implement the approved design in [2026-06-18-single-note-sync-target-design.md](
 - [ ] If PostgreSQL integration tests require the local test database, use the configured test connection:
   ```powershell
   $env:FLOWSPACE_DATABASE_DRIVER="postgres"
-  $env:FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.20:19588/flowspace_test?sslmode=disable"
+  $env:FLOWSPACE_DATABASE_URL="postgres://postgres:12345@192.168.1.70:19588/flowspace_test?sslmode=disable"
   go test ./...
   ```
 - [ ] Verify SQLite provider still passes:

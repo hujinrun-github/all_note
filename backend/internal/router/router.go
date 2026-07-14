@@ -6,8 +6,10 @@ import (
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/middleware"
+	"github.com/hujinrun/flowspace/internal/objectstore"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/hujinrun/flowspace/internal/transcription"
 )
 
 type Config struct {
@@ -15,6 +17,9 @@ type Config struct {
 	Auth            config.AuthConfig
 	OAuthStateStore auth.OAuthStateStore
 	GitHubClient    handler.GitHubClient
+	VoiceObjects    objectstore.Store
+	Transcriber     transcription.Transcriber
+	MaxVoiceBytes   int64
 }
 
 func Setup(cfg Config) *gin.Engine {
@@ -40,7 +45,22 @@ func Setup(cfg Config) *gin.Engine {
 		protected := api.Group("")
 		protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
 
+		nativeProtected := api.Group("")
+		nativeProtected.Use(authMiddleware.RequiredSessionOrWatch(), authMiddleware.RequirePasswordSettled())
+		nativeProtected.POST("/voice-notes", handler.CreateVoiceNote(cfg.Store))
+		nativeProtected.PUT("/voice-notes/:clientID/audio", handler.UploadVoiceAudio(cfg.Store, cfg.VoiceObjects, cfg.MaxVoiceBytes))
+		nativeProtected.GET("/voice-notes/:clientID/audio", handler.GetVoiceAudio(cfg.Store, cfg.VoiceObjects))
+		nativeProtected.GET("/voice-notes/:clientID/status", handler.GetVoiceNoteStatus(cfg.Store))
+		nativeProtected.POST("/voice-notes/:clientID/transcription", handler.TranscribeVoiceNote(cfg.Store, cfg.VoiceObjects, cfg.Transcriber))
+
+		watchRoutes := api.Group("/watch")
+		watchRoutes.Use(authMiddleware.RequiredSessionOrWatch(), authMiddleware.RequirePasswordSettled())
+		watchRoutes.GET("/snapshot", handler.GetWatchSnapshot(cfg.Store))
+		watchRoutes.PATCH("/tasks/:id", handler.UpdateTask(cfg.Store))
+
 		protected.GET("/folders", handler.GetFolders(cfg.Store))
+		protected.POST("/devices/watch/authorize", handler.AuthorizeWatchDevice(cfg.Store, cfg.Auth.SessionSecret))
+		protected.POST("/devices/watch/revoke", handler.RevokeWatchDevice(cfg.Store))
 		if cfg.Auth.EnableLocalDirectoryBrowser {
 			systemAdmin := protected.Group("/system")
 			systemAdmin.Use(authMiddleware.RequireAdmin())
@@ -123,6 +143,9 @@ func Setup(cfg Config) *gin.Engine {
 		protected.PATCH("/events/:id", handler.UpdateEvent(cfg.Store))
 		protected.DELETE("/events/:id", handler.DeleteEvent(cfg.Store))
 
+		protected.GET("/calendar/project-sources", handler.GetCalendarProjectSources(cfg.Store))
+		protected.PUT("/calendar/project-sources", handler.SaveCalendarProjectSources(cfg.Store))
+
 		protected.GET("/inbox", handler.GetInbox(cfg.Store))
 		protected.POST("/inbox", handler.CreateInboxItem(cfg.Store))
 		protected.POST("/inbox/:id/convert", handler.ConvertInboxItem(cfg.Store))
@@ -130,6 +153,7 @@ func Setup(cfg Config) *gin.Engine {
 		protected.DELETE("/inbox/:id", handler.DeleteInboxItem(cfg.Store))
 
 		protected.GET("/search", handler.Search(cfg.Store))
+		protected.POST("/japanese/furigana", handler.JapaneseFurigana)
 		protected.GET("/today", handler.GetToday(cfg.Store))
 		protected.GET("/summary", handler.GetSummary(cfg.Store))
 	}

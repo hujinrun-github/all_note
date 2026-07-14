@@ -38,6 +38,14 @@ func SessionIDFromContext(ctx context.Context) (string, bool) {
 	return identity.SessionID, true
 }
 
+func UserIDFromContext(ctx context.Context) (string, error) {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok || identity.UserID == "" {
+		return "", ErrMissingIdentity
+	}
+	return identity.UserID, nil
+}
+
 func ContextWithWorkspaceScope(ctx context.Context, workspaceID string) context.Context {
 	return context.WithValue(ctx, workspaceScopeKey, WorkspaceScope{WorkspaceID: workspaceID})
 }

@@ -253,6 +253,13 @@ func (r taskRepository) DeleteProject(ctx context.Context, id string) error {
 		`, workspaceID, nowUnix(), workspaceID, id); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE events
+			SET project_id = NULL
+			WHERE workspace_id = ? AND project_id = ?
+		`, workspaceID, id); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `DELETE FROM task_projects WHERE workspace_id = ? AND id = ?`, workspaceID, id)
 		if err != nil {
 			return err

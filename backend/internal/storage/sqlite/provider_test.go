@@ -365,6 +365,91 @@ func TestProviderOpenUpgradesLegacySyncSchemaBeforeInitializingFreshSchema(t *te
 	}
 }
 
+func TestProviderOpenMigratesLegacyEventsProjectID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.legacy-events.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE events (
+			rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+			id TEXT UNIQUE NOT NULL,
+			workspace_id TEXT NOT NULL,
+			title TEXT NOT NULL,
+			start_time INTEGER NOT NULL,
+			end_time INTEGER NOT NULL,
+			location TEXT,
+			kind TEXT NOT NULL DEFAULT 'work',
+			note_id TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		INSERT INTO events (id, workspace_id, title, start_time, end_time, kind, created_at, updated_at)
+		VALUES
+			('legacy_personal_a', '', 'Legacy Personal A', 1, 2, 'personal', unixepoch(), unixepoch()),
+			('legacy_work_a', '', 'Legacy Work A', 3, 4, 'work', unixepoch(), unixepoch()),
+			('legacy_reminder_a', '', 'Legacy Reminder A', 5, 6, 'reminder', unixepoch(), unixepoch()),
+			('legacy_personal_missing_workspace', 'legacy_events_workspace_missing', 'Legacy Personal Missing Workspace', 9, 10, 'personal', unixepoch(), unixepoch());
+	`); err != nil {
+		t.Fatalf("create legacy events table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	opened, err := (Provider{}).Open(context.Background(), storage.Config{
+		Env:        "test",
+		Driver:     storage.DriverSQLite,
+		SQLitePath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open upgraded sqlite provider: %v", err)
+	}
+	defer opened.Close()
+	sqliteStore := opened.(*store)
+	assertColumnExists(t, sqliteStore, "events", "project_id")
+	assertSQLiteEventProjectID(t, sqliteStore, "legacy_personal_a", sql.NullString{String: "personal", Valid: true})
+	assertSQLiteEventProjectID(t, sqliteStore, "legacy_work_a", sql.NullString{})
+	assertSQLiteEventProjectID(t, sqliteStore, "legacy_reminder_a", sql.NullString{})
+	assertSQLiteEventProjectID(t, sqliteStore, "legacy_personal_missing_workspace", sql.NullString{})
+	assertSQLiteRowCount(t, sqliteStore, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'index'
+			AND name = 'events_workspace_project_start_idx'
+	`, 1)
+
+	ctx := scopedSQLiteTestContext(t, opened, "sqlite_provider_legacy_events_workspace")
+	project, err := opened.Tasks().CreateProject(ctx, &model.CreateTaskProjectRequest{
+		Name: "Legacy Event Project",
+		Type: "regular",
+	})
+	if err != nil {
+		t.Fatalf("create project after events migration: %v", err)
+	}
+	event := model.Event{
+		Title:     "legacy migrated event",
+		StartTime: time.Date(2026, 7, 10, 9, 0, 0, 0, time.Local).Unix(),
+		EndTime:   time.Date(2026, 7, 10, 10, 0, 0, 0, time.Local).Unix(),
+		Kind:      "work",
+		ProjectID: &project.ID,
+	}
+	if err := opened.Events().Create(ctx, &event); err != nil {
+		t.Fatalf("create event after events migration: %v", err)
+	}
+	events, total, err := opened.Events().List(ctx, event.StartTime-1, event.EndTime+1, 1, 20)
+	if err != nil {
+		t.Fatalf("list events after events migration: %v", err)
+	}
+	if total != 1 || len(events) != 1 {
+		t.Fatalf("listed events total=%d events=%+v, want one event", total, events)
+	}
+	if events[0].ProjectID == nil || *events[0].ProjectID != project.ID {
+		t.Fatalf("listed ProjectID = %v, want %q", events[0].ProjectID, project.ID)
+	}
+}
+
 func TestStoreTransactRollsBackOnError(t *testing.T) {
 	store := openTestStore(t)
 	if _, err := store.db.Exec(`CREATE TABLE transact_probe (id TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
@@ -704,6 +789,18 @@ func assertSQLiteRowCount(t *testing.T, store *store, query string, want int) {
 	}
 	if got != want {
 		t.Fatalf("row count for %q = %d, want %d", query, got, want)
+	}
+}
+
+func assertSQLiteEventProjectID(t *testing.T, store *store, eventID string, want sql.NullString) {
+	t.Helper()
+
+	var got sql.NullString
+	if err := store.db.QueryRow(`SELECT project_id FROM events WHERE id = ?`, eventID).Scan(&got); err != nil {
+		t.Fatalf("read event %s project_id: %v", eventID, err)
+	}
+	if got.Valid != want.Valid || got.String != want.String {
+		t.Fatalf("event %s project_id = %#v, want %#v", eventID, got, want)
 	}
 }
 

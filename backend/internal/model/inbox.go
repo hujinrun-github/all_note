@@ -19,7 +19,12 @@ type CreateInboxRequest struct {
 }
 
 type ConvertInboxRequest struct {
-	Kind string `json:"kind" binding:"required"`
+	Kind      string  `json:"kind" binding:"required"`
+	Title     *string `json:"title"`
+	Content   *string `json:"content"`
+	ProjectID *string `json:"project_id"`
+	Due       *int64  `json:"due"`
+	Priority  *int    `json:"priority"`
 }
 
 type BatchInboxRequest struct {

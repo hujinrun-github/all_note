@@ -1,7 +1,7 @@
 import { api } from './client'
 
 export interface Event {
-  id: string; title: string; start_time: number; end_time: number; location?: string; kind: string; note_id?: string; created_at: number; updated_at: number
+  id: string; title: string; start_time: number; end_time: number; location?: string; kind: string; note_id?: string; project_id?: string; project?: string; project_type?: string; created_at: number; updated_at: number
 }
 
 export async function getEvents(params: { month?: string; page?: number; page_size?: number }) {
@@ -13,7 +13,7 @@ export async function getEvents(params: { month?: string; page?: number; page_si
   return { events: res.data.events, pagination: res.pagination! }
 }
 
-export async function createEvent(body: { title: string; start_time: number; end_time: number; location?: string; kind?: string }) {
+export async function createEvent(body: { title: string; start_time: number; end_time: number; location?: string; kind?: string; project_id?: string }) {
   const res = await api.post<{ event: Event }>('/api/events', body)
   return res.data.event
 }

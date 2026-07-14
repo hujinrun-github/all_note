@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/service"
@@ -30,6 +32,10 @@ func CreateEvent(store storage.Store) gin.HandlerFunc {
 		}
 		event, err := service.CreateEvent(c.Request.Context(), store, &req)
 		if err != nil {
+			if errors.Is(err, service.ErrInvalidEventProject) {
+				badRequest(c, "invalid project_id")
+				return
+			}
 			internalError(c, "failed to create event")
 			return
 		}
@@ -46,6 +52,10 @@ func UpdateEvent(store storage.Store) gin.HandlerFunc {
 		}
 		event, err := service.UpdateEvent(c.Request.Context(), store, c.Param("id"), &req)
 		if err != nil {
+			if errors.Is(err, service.ErrInvalidEventProject) {
+				badRequest(c, "invalid project_id")
+				return
+			}
 			notFound(c, "event not found")
 			return
 		}

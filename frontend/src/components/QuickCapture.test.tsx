@@ -47,6 +47,15 @@ function renderQuickCapture() {
   )
 }
 
+function tomorrowDateValue() {
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  const year = tomorrow.getFullYear()
+  const month = String(tomorrow.getMonth() + 1).padStart(2, '0')
+  const day = String(tomorrow.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 describe('QuickCapture', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -98,6 +107,8 @@ describe('QuickCapture', () => {
   it('lets users edit recognized time and project instead of showing fake readonly data', async () => {
     renderQuickCapture()
 
+    const selectedDate = tomorrowDateValue()
+
     const projectSelect = await screen.findByLabelText('捕获项目')
     const dateInput = screen.getByLabelText('捕获日期')
     const timeInput = screen.getByLabelText('捕获时间')
@@ -106,11 +117,11 @@ describe('QuickCapture', () => {
     expect(timeInput).not.toHaveAttribute('readonly')
     expect(projectSelect).toHaveDisplayValue('个人 · 个人')
 
-    fireEvent.change(dateInput, { target: { value: '2026-07-10' } })
+    fireEvent.change(dateInput, { target: { value: selectedDate } })
     fireEvent.change(timeInput, { target: { value: '15:30' } })
     await userEvent.selectOptions(projectSelect, 'learning-1')
 
-    expect(dateInput).toHaveValue('2026-07-10')
+    expect(dateInput).toHaveValue(selectedDate)
     expect(timeInput).toHaveValue('15:30')
     expect(projectSelect).toHaveValue('learning-1')
     expect(screen.getByText(/直接创建会写入日历/)).toBeVisible()
@@ -119,16 +130,17 @@ describe('QuickCapture', () => {
   it('directly creates an event with the selected time and project-derived calendar kind', async () => {
     renderQuickCapture()
     const user = userEvent.setup()
+    const selectedDate = tomorrowDateValue()
     const projectSelect = await screen.findByLabelText('捕获项目')
     const dateInput = screen.getByLabelText('捕获日期')
     const timeInput = screen.getByLabelText('捕获时间')
 
-    fireEvent.change(dateInput, { target: { value: '2026-07-10' } })
+    fireEvent.change(dateInput, { target: { value: selectedDate } })
     fireEvent.change(timeInput, { target: { value: '15:30' } })
     await user.selectOptions(projectSelect, 'learning-1')
     await user.click(screen.getByRole('button', { name: '直接创建' }))
 
-    const startTime = Math.floor(new Date('2026-07-10T15:30').getTime() / 1000)
+    const startTime = Math.floor(new Date(`${selectedDate}T15:30`).getTime() / 1000)
     await waitFor(() => expect(eventsApi.createEvent).toHaveBeenCalled())
     expect(vi.mocked(eventsApi.createEvent).mock.calls[0]?.[0]).toEqual({
       title: '明天晚上8点复习N2语法',
@@ -136,6 +148,7 @@ describe('QuickCapture', () => {
       end_time: startTime + 60 * 60,
       location: '学习写小说 · 学习项目',
       kind: 'work',
+      project_id: 'learning-1',
     })
   })
 })

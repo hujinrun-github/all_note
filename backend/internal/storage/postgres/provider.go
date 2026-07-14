@@ -154,6 +154,10 @@ func (s *store) Events() storage.EventRepository {
 	return eventRepository{db: s.db}
 }
 
+func (s *store) Calendar() storage.CalendarRepository {
+	return calendarRepository{db: s.db}
+}
+
 func (s *store) Inbox() storage.InboxRepository {
 	return inboxRepository{db: s.db}
 }
@@ -172,6 +176,14 @@ func (s *store) Search() storage.SearchRepository {
 
 func (s *store) Auth() storage.AuthRepository {
 	return authRepository{db: s.db}
+}
+
+func (s *store) WatchDevices() storage.WatchDeviceRepository {
+	return watchDeviceRepository{db: s.db}
+}
+
+func (s *store) VoiceNotes() storage.VoiceNoteRepository {
+	return voiceNoteRepository{db: s.db}
 }
 
 type storeTx struct {
@@ -203,6 +215,10 @@ func (s *storeTx) Events() storage.EventRepository {
 	return eventRepository{db: s.tx}
 }
 
+func (s *storeTx) Calendar() storage.CalendarRepository {
+	return calendarRepository{db: s.tx}
+}
+
 func (s *storeTx) Inbox() storage.InboxRepository {
 	return inboxRepository{db: s.tx}
 }
@@ -217,6 +233,14 @@ func (s *storeTx) Sync() storage.SyncRepository {
 
 func (s *storeTx) Auth() storage.AuthRepository {
 	return authRepository{db: s.tx}
+}
+
+func (s *storeTx) WatchDevices() storage.WatchDeviceRepository {
+	return watchDeviceRepository{db: s.tx}
+}
+
+func (s *storeTx) VoiceNotes() storage.VoiceNoteRepository {
+	return voiceNoteRepository{db: s.tx}
 }
 
 func (s *storeTx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {

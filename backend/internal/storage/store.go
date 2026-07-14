@@ -38,6 +38,7 @@ type Store interface {
 	Tasks() TaskRepository
 	Recurrence() RecurrenceRepository
 	Events() EventRepository
+	Calendar() CalendarRepository
 	Inbox() InboxRepository
 	Roadmaps() RoadmapRepository
 	Sync() SyncRepository
@@ -167,6 +168,11 @@ type EventRepository interface {
 	GetByID(context.Context, string) (*model.Event, error)
 	Delete(context.Context, string) error
 	Today(context.Context, int64, int64) ([]model.Event, error)
+}
+
+type CalendarRepository interface {
+	ListProjectSources(context.Context) (*model.CalendarProjectSourcesResponse, error)
+	SaveProjectSources(context.Context, []model.CalendarProjectSourceInput) (*model.CalendarProjectSourcesResponse, error)
 }
 
 type InboxRepository interface {

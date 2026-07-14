@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
+import { getCurrentUser } from '../../api/auth'
 import { useInboxList } from '../../hooks/useInbox'
 
 const navGroups = [
@@ -40,6 +41,13 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
   const inboxQ = useInboxList({ page_size: 1 })
   const inboxCount = inboxQ.data?.pagination.total ?? 0
   const toggleLabel = collapsed ? '展开侧边栏' : '收起侧边栏'
+  const currentUser = useQuery({
+    queryKey: ['auth', 'me'],
+    queryFn: getCurrentUser,
+    retry: false,
+    staleTime: 5 * 60_000,
+  })
+  const visibleGroups = navGroups.filter((group) => group.title !== '系统' || currentUser.data?.user.role === 'admin')
 
   return (
     <aside className={`workspace-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
@@ -64,7 +72,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
       </div>
 
       <nav className="sidebar-nav" aria-label="主导航">
-        {navGroups.map((group) => (
+        {visibleGroups.map((group) => (
           <div className="sidebar-group" key={group.title}>
             <span className="sidebar-group-title">{group.title}</span>
             {group.items.map(({ to, label, icon: Icon }) => {

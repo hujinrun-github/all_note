@@ -43,7 +43,7 @@
 - Phase 1 facade may use `context.Background()` for old calls. Any new or touched handler/service code should pass request context into storage-aware service methods.
 - Phase 1 uses `database/sql` with `pgx` stdlib inside the PostgreSQL provider to minimize rewrite blast radius. A later cleanup can move the provider internals to `pgxpool`.
 - Tests that need PostgreSQL require `FLOWSPACE_TEST_DATABASE_URL`. If the variable is absent, PostgreSQL integration tests skip with a clear message.
-- Current PostgreSQL test server is `192.168.1.20:19588` and reports PostgreSQL 10.6. Do not use PG12+ generated columns in migrations; store `events.time_range` and `search_index.search_vector` as normal columns maintained by the provider.
+- Current PostgreSQL test server is `192.168.1.70:19588` and reports PostgreSQL 10.6. Do not use PG12+ generated columns in migrations; store `events.time_range` and `search_index.search_vector` as normal columns maintained by the provider.
 - SQLite remains a runtime-compatible provider for local/lightweight use and contract tests. PostgreSQL remains the recommended production provider.
 - Existing SQLite files are retained as migration sources and backups even after production switches to PostgreSQL.
 - All later tasks that mention PostgreSQL repository tests must open a configured `storage.Store` through provider test helpers. Do not add new runtime code paths that call `repository.InitPostgres`.

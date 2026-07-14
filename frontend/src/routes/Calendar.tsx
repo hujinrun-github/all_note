@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
@@ -6,6 +6,8 @@ import { useCreateEvent, useEventsList } from '../hooks/useEvents'
 import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import type { Event } from '../api/events'
 import { useUpdateTask } from '../hooks/useTasks'
+import { useCalendarProjectSources, useSaveCalendarProjectSources } from '../hooks/useCalendarSources'
+import type { CalendarProjectSource } from '../api/calendar'
 
 type CalendarView = 'month' | 'week' | 'day'
 
@@ -24,11 +26,7 @@ interface TodayData {
 }
 
 const weekdays = ['日', '一', '二', '三', '四', '五', '六']
-const calendarSources = [
-  { id: 'work', label: '工作', className: 'is-work' },
-  { id: 'personal', label: '个人', className: 'is-personal' },
-  { id: 'reminder', label: '提醒', className: 'is-reminder' },
-]
+const unassignedSourceId = '__unassigned__'
 
 function formatEventStart(event: Pick<Event, 'start_time'>) {
   return new Date(event.start_time * 1000).toLocaleTimeString('zh-CN', {
@@ -52,14 +50,32 @@ function getCalendarKindClass(kind: string) {
   return `is-${kind === 'personal' || kind === 'reminder' ? kind : 'work'}`
 }
 
+function getCalendarSourceClass(type: string) {
+  return `is-${type === 'personal' || type === 'reminder' ? type : 'work'}`
+}
+
+function mergeConfigurableSources(sources: CalendarProjectSource[], availableProjects: CalendarProjectSource[]) {
+  const sourceMap = new Map<string, CalendarProjectSource>()
+  const allSources = [...sources, ...availableProjects]
+  allSources.forEach((source) => {
+    if (!source.default && !sourceMap.has(source.project_id)) {
+      sourceMap.set(source.project_id, source)
+    }
+  })
+  return Array.from(sourceMap.values()).sort((a, b) => a.order_index - b.order_index)
+}
+
+function getCalendarSourceName(source: Pick<CalendarProjectSource, 'project_id' | 'name'>) {
+  return source.project_id === 'personal' ? '个人' : source.name
+}
+
 export default function Calendar() {
   const navigate = useNavigate()
   const [currentDate, setCurrentDate] = useState(new Date())
   const [calendarView, setCalendarView] = useState<CalendarView>('month')
-  const [selectedSource, setSelectedSource] = useState('personal')
-  const [customSources, setCustomSources] = useState<Array<{ id: string; label: string }>>([])
-  const [isAddingSource, setIsAddingSource] = useState(false)
-  const [sourceDraft, setSourceDraft] = useState('')
+  const [selectedSourceProjectID, setSelectedSourceProjectID] = useState('personal')
+  const [isConfiguringSources, setIsConfiguringSources] = useState(false)
+  const [sourceConfigDraft, setSourceConfigDraft] = useState<Record<string, boolean>>({})
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
   const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`
@@ -74,6 +90,8 @@ export default function Calendar() {
   })
   const createEvent = useCreateEvent()
   const updateTask = useUpdateTask()
+  const { data: projectSourcesData } = useCalendarProjectSources()
+  const saveProjectSources = useSaveCalendarProjectSources()
 
   const firstDay = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -81,9 +99,52 @@ export default function Calendar() {
   const today = new Date()
   const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate())
   const [newEventTitle, setNewEventTitle] = useState('')
+  const [newEventStartTime, setNewEventStartTime] = useState('09:00')
+  const [newEventEndTime, setNewEventEndTime] = useState('10:00')
+  const events = data?.events ?? []
+  const projectSources = projectSourcesData?.sources ?? []
+  const configurableSources = useMemo(
+    () => mergeConfigurableSources(projectSourcesData?.sources ?? [], projectSourcesData?.available_projects ?? []),
+    [projectSourcesData],
+  )
+  const hasUnassignedEvents = events.some((event) => !event.project_id)
+  const visibleSources = useMemo(
+    () =>
+      hasUnassignedEvents
+        ? [
+            ...projectSources,
+            {
+              project_id: unassignedSourceId,
+              name: '未归属日程',
+              type: 'work',
+              enabled: true,
+              default: false,
+              color: '#667085',
+              order_index: Number.MAX_SAFE_INTEGER,
+            },
+          ]
+        : projectSources,
+    [hasUnassignedEvents, projectSources],
+  )
+  const selectedVisibleSource = visibleSources.find((source) => source.project_id === selectedSourceProjectID)
+  const selectedProjectSource = projectSources.find((source) => source.project_id === selectedVisibleSource?.project_id)
+  const isNewEventTimeInvalid =
+    !newEventStartTime || !newEventEndTime || newEventEndTime <= newEventStartTime
+  const canCreateEvent =
+    Boolean(selectedDay && newEventTitle.trim()) && !isNewEventTimeInvalid && !createEvent.isPending
+
+  useEffect(() => {
+    if (visibleSources.length === 0) return
+    if (visibleSources.some((source) => source.project_id === selectedSourceProjectID)) return
+    setSelectedSourceProjectID(visibleSources[0].project_id)
+  }, [selectedSourceProjectID, visibleSources])
 
   const eventsByDay: Record<number, Event[]> = {}
-  const visibleEvents = data?.events.filter((event) => event.kind === selectedSource) ?? []
+  const visibleEvents = selectedVisibleSource
+    ? events.filter((event) =>
+        selectedVisibleSource.project_id === unassignedSourceId ? !event.project_id : event.project_id === selectedVisibleSource.project_id,
+      )
+    : []
   visibleEvents.forEach((event) => {
     const start = new Date(event.start_time * 1000)
     if (start.getMonth() !== month) return
@@ -127,29 +188,40 @@ export default function Calendar() {
     return eventsByDay[date.getDate()] ?? []
   }
 
-  function handleAddSource(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const label = sourceDraft.trim()
-    if (!label) return
-    const id = `custom-${Date.now()}`
-    setCustomSources((sources) => [...sources, { id, label }])
-    setSelectedSource(id)
-    setSourceDraft('')
-    setIsAddingSource(false)
-  }
-
   async function handleAddEvent() {
-    if (!selectedDay || !newEventTitle.trim()) return
-    const start = new Date(year, month, selectedDay, 9, 0, 0, 0)
-    const end = new Date(year, month, selectedDay, 10, 0, 0, 0)
-    const eventKind = calendarSources.some((source) => source.id === selectedSource) ? selectedSource : 'work'
+    if (!selectedDay || !newEventTitle.trim() || isNewEventTimeInvalid) return
+    const [startHour, startMinute] = newEventStartTime.split(':').map(Number)
+    const [endHour, endMinute] = newEventEndTime.split(':').map(Number)
+    const start = new Date(year, month, selectedDay, startHour, startMinute, 0, 0)
+    const end = new Date(year, month, selectedDay, endHour, endMinute, 0, 0)
+    const eventKind = selectedProjectSource?.type === 'personal' ? 'personal' : 'work'
     await createEvent.mutateAsync({
       title: newEventTitle.trim(),
       start_time: Math.floor(start.getTime() / 1000),
       end_time: Math.floor(end.getTime() / 1000),
       kind: eventKind,
+      ...(selectedProjectSource ? { project_id: selectedProjectSource.project_id } : {}),
     })
     setNewEventTitle('')
+  }
+
+  function openProjectSourceConfig() {
+    setSourceConfigDraft(
+      Object.fromEntries(configurableSources.map((source) => [source.project_id, source.enabled])),
+    )
+    setIsConfiguringSources(true)
+  }
+
+  async function handleSaveProjectSourceConfig() {
+    await saveProjectSources.mutateAsync({
+      sources: configurableSources.map((source) => ({
+        project_id: source.project_id,
+        enabled: sourceConfigDraft[source.project_id] ?? source.enabled,
+        color: source.color,
+        order_index: source.order_index,
+      })),
+    })
+    setIsConfiguringSources(false)
   }
 
   async function handleToggleTask(id: string) {
@@ -189,52 +261,62 @@ export default function Calendar() {
           </div>
           <section>
             <h3>我的日历</h3>
-            {calendarSources.map((source) => (
+            {visibleSources.map((source) => (
               <button
-                key={source.id}
+                key={source.project_id}
                 type="button"
-                className={`calendar-source-item ${selectedSource === source.id ? 'is-active' : ''}`}
-                onClick={() => setSelectedSource(source.id)}
+                className={`calendar-source-item ${selectedSourceProjectID === source.project_id ? 'is-active' : ''}`}
+                onClick={() => setSelectedSourceProjectID(source.project_id)}
               >
-                <i className={source.className} />
-                {source.label}
-              </button>
-            ))}
-            {customSources.map((source) => (
-              <button
-                key={source.id}
-                type="button"
-                className={`calendar-source-item ${selectedSource === source.id ? 'is-active' : ''}`}
-                onClick={() => setSelectedSource(source.id)}
-              >
-                <i className="is-custom" />
-                {source.label}
+                <i className={getCalendarSourceClass(source.type)} style={{ background: source.color }} />
+                {getCalendarSourceName(source)}
               </button>
             ))}
           </section>
-          {isAddingSource ? (
-            <form className="calendar-source-add" onSubmit={handleAddSource}>
-              <input
-                value={sourceDraft}
-                onChange={(event) => setSourceDraft(event.target.value)}
-                placeholder="新日历名称"
-              />
-              <div>
-                <button type="submit">保存</button>
+          {isConfiguringSources ? (
+            <div className="calendar-source-add">
+              {configurableSources.length > 0 ? (
+                configurableSources.map((source) => (
+                  <label key={source.project_id} className="calendar-source-check">
+                    <input
+                      type="checkbox"
+                      checked={sourceConfigDraft[source.project_id] ?? source.enabled}
+                      onChange={(event) =>
+                        setSourceConfigDraft((draft) => ({
+                          ...draft,
+                          [source.project_id]: event.target.checked,
+                        }))
+                      }
+                    />
+                    {getCalendarSourceName(source)}
+                  </label>
+                ))
+              ) : (
+                <div className="calendar-source-empty">
+                  <p>请到任务工作台新建长期项目或学习项目。</p>
+                  <button type="button" onClick={() => navigate('/tasks')}>
+                    去任务工作台
+                  </button>
+                </div>
+              )}
+              <div className="calendar-source-actions">
+                <button type="button" onClick={handleSaveProjectSourceConfig} disabled={saveProjectSources.isPending}>
+                  保存配置
+                </button>
                 <button
                   type="button"
                   onClick={() => {
-                    setIsAddingSource(false)
-                    setSourceDraft('')
+                    setIsConfiguringSources(false)
+                    setSourceConfigDraft({})
                   }}
                 >
                   取消
                 </button>
               </div>
-            </form>
+            </div>
           ) : (
-            <button className="link-like" type="button" aria-label="添加日历" onClick={() => setIsAddingSource(true)}>
-              ＋ 添加日历
+            <button className="link-like" type="button" onClick={openProjectSourceConfig}>
+              配置项目
             </button>
           )}
         </aside>
@@ -380,19 +462,50 @@ export default function Calendar() {
                 ))}
               </div>
             )}
-            <div className="inline-create is-stacked">
+            <form
+              className="calendar-event-create"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleAddEvent()
+              }}
+            >
               <input
+                className="calendar-event-title"
                 value={newEventTitle}
                 onChange={(event) => setNewEventTitle(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void handleAddEvent()
-                }}
                 placeholder="新增日程"
+                aria-label="日程标题"
               />
-              <button onClick={handleAddEvent} disabled={!selectedDay || !newEventTitle.trim() || createEvent.isPending}>
+              <div className="calendar-event-time-fields">
+                <label>
+                  <span>开始</span>
+                  <input
+                    type="time"
+                    step="900"
+                    aria-label="开始时间"
+                    value={newEventStartTime}
+                    onChange={(event) => setNewEventStartTime(event.target.value)}
+                  />
+                </label>
+                <span className="calendar-event-time-separator" aria-hidden="true">至</span>
+                <label>
+                  <span>结束</span>
+                  <input
+                    type="time"
+                    step="900"
+                    aria-label="结束时间"
+                    value={newEventEndTime}
+                    onChange={(event) => setNewEventEndTime(event.target.value)}
+                  />
+                </label>
+              </div>
+              {newEventStartTime && newEventEndTime && newEventEndTime <= newEventStartTime ? (
+                <p className="calendar-event-time-error" role="alert">结束时间必须晚于开始时间</p>
+              ) : null}
+              <button type="submit" disabled={!canCreateEvent}>
                 添加日程
               </button>
-            </div>
+            </form>
           </section>
 
           <section className="inspector-section calendar-task-flow" data-testid="calendar-today-task-flow">

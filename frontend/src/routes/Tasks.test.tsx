@@ -488,6 +488,21 @@ describe('Tasks learning roadmap weekly linking', () => {
     )
   })
 
+  it('opens the roadmap graph and inspector in full-screen edit mode', async () => {
+    const { container } = renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(await screen.findByRole('button', { name: '进入全屏编辑' }))
+
+    expect(container.querySelector('.roadmap-content')).toHaveClass('is-fullscreen')
+    expect(screen.getByRole('button', { name: '退出全屏编辑' })).toBeVisible()
+    expect(screen.getByText('交付物')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '退出全屏编辑' }))
+    expect(container.querySelector('.roadmap-content')).not.toHaveClass('is-fullscreen')
+  })
+
   it('does not expose add-to-week from roadmap views', async () => {
     renderTasks()
     const user = userEvent.setup()
