@@ -7942,6 +7942,42 @@ select {
   line-height: 1.15;
 }
 
+.calendar-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  border-radius: 999px;
+  background: rgba(196, 116, 47, 0.08);
+  color: var(--color-fs-text-muted);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.calendar-sync-status i {
+  width: 7px;
+  height: 7px;
+  border: 2px solid rgba(196, 116, 47, 0.28);
+  border-top-color: var(--color-fs-accent);
+  border-radius: 50%;
+  animation: calendar-sync-spin 0.7s linear infinite;
+}
+
+@keyframes calendar-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .calendar-sync-status i {
+    animation: none;
+    border-color: var(--color-fs-accent);
+  }
+}
+
 .calendar-period-navigation,
 .calendar-period-stepper {
   display: inline-flex;

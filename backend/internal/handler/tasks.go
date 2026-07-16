@@ -20,9 +20,11 @@ func GetTasks(store storage.Store) gin.HandlerFunc {
 		horizon := c.Query("horizon")
 		projectID := c.Query("project_id")
 		plannedDate := c.Query("planned_date")
+		plannedFrom := c.Query("planned_from")
+		plannedTo := c.Query("planned_to")
 		executionType := c.Query("execution_type")
 
-		tasks, total, err := service.GetTasks(c.Request.Context(), store, project, status, scope, horizon, projectID, plannedDate, executionType, page, pageSize)
+		tasks, total, err := service.GetTasks(c.Request.Context(), store, project, status, scope, horizon, projectID, plannedDate, plannedFrom, plannedTo, executionType, page, pageSize)
 		if err != nil {
 			internalError(c, "failed to get tasks")
 			return

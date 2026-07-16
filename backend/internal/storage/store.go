@@ -112,6 +112,8 @@ type TaskFilter struct {
 	Horizon       string
 	ProjectID     string
 	PlannedDate   string
+	PlannedFrom   string
+	PlannedTo     string
 	RoadmapNodeID string
 	ExecutionType string // "" (default=single), "single", "recurring", "all"
 	Page          int

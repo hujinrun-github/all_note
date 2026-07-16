@@ -52,6 +52,43 @@ func RunTaskSuite(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	t.Run("TasksFilterByPlannedDateRange", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+
+		ctx := scopedContractContext(t, store)
+		for _, plannedDate := range []string{"2026-06-01", "2026-06-30", "2026-07-01"} {
+			date := plannedDate
+			if err := store.Tasks().Create(ctx, &model.Task{
+				Title:       "Scheduled " + plannedDate,
+				PlannedDate: &date,
+				Status:      "open",
+				Horizon:     "week",
+				Scope:       "daily",
+			}); err != nil {
+				t.Fatalf("create task for %s: %v", plannedDate, err)
+			}
+		}
+
+		tasks, total, err := store.Tasks().List(ctx, storage.TaskFilter{
+			PlannedFrom: "2026-06-01",
+			PlannedTo:   "2026-06-30",
+			Page:        1,
+			PageSize:    20,
+		})
+		if err != nil {
+			t.Fatalf("list tasks by planned date range: %v", err)
+		}
+		if total != 2 || len(tasks) != 2 {
+			t.Fatalf("expected two June tasks, total=%d tasks=%+v", total, tasks)
+		}
+		for _, task := range tasks {
+			if task.PlannedDate == nil || *task.PlannedDate < "2026-06-01" || *task.PlannedDate > "2026-06-30" {
+				t.Fatalf("task outside requested range: %+v", task)
+			}
+		}
+	})
+
 	t.Run("TasksFilterByRoadmapNodeID", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()

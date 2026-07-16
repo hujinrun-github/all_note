@@ -30,6 +30,14 @@ vi.mock('../api/client', () => ({
 vi.mock('../hooks/useEvents', () => ({
   useEventsList: vi.fn(),
   useCreateEvent: vi.fn(),
+  eventsListQueryOptions: (params: { month?: string; page?: number }) => ({
+    queryKey: ['events', params],
+    queryFn: async () => ({
+      events: [],
+      pagination: { page: 1, page_size: 50, total: 0 },
+    }),
+    staleTime: 5 * 60_000,
+  }),
 }))
 
 vi.mock('../hooks/useCalendarSources', () => ({
@@ -270,6 +278,58 @@ describe('Calendar today task flow', () => {
 
     expect(await screen.findByLabelText('任务：月历彩色任务')).toBeVisible()
     expect(await screen.findByLabelText('任务颜色：月历彩色任务')).toBeVisible()
+  })
+
+  it('loads only the current month task range and prefetches nearby months', async () => {
+    const currentDate = new Date()
+    const currentMonthStart = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-01`
+    const currentMonthEnd = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate()).padStart(2, '0')}`
+
+    renderCalendar()
+
+    await waitFor(() =>
+      expect(tasksApi.getTasks).toHaveBeenCalledWith(
+        expect.objectContaining({
+          planned_from: currentMonthStart,
+          planned_to: currentMonthEnd,
+        })
+      )
+    )
+    await waitFor(() =>
+      expect(
+        vi.mocked(tasksApi.getTasks).mock.calls.length
+      ).toBeGreaterThanOrEqual(3)
+    )
+  })
+
+  it('keeps the month grid visible while calendar data is refreshing', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useEventsList).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as unknown as ReturnType<typeof useEventsList>)
+
+    renderCalendar()
+
+    const initialGrid = screen.getByRole('grid')
+    expect(within(initialGrid).getAllByRole('button')).toHaveLength(42)
+    expect(screen.getByRole('status')).toHaveTextContent('更新中')
+
+    const nextMonth = new Date()
+    nextMonth.setMonth(nextMonth.getMonth() + 1, 1)
+    const nextMonthTitle = nextMonth.toLocaleDateString('zh-CN', {
+      month: 'long',
+      year: 'numeric',
+    })
+    await user.click(screen.getByRole('button', { name: '下个月' }))
+
+    expect(
+      screen.getByRole('grid', { name: `${nextMonthTitle}日历` })
+    ).toBeVisible()
+    expect(
+      screen.getAllByRole('heading', { name: nextMonthTitle })
+    ).not.toHaveLength(0)
   })
 
   it('switches calendar views from the Google-style calendar toolbar', async () => {
