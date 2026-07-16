@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type ComponentType,
   type FormEvent,
   useEffect,
@@ -16,6 +17,7 @@ import {
   Search,
   Trash2,
   WandSparkles,
+  X,
 } from 'lucide-react'
 import {
   Background,
@@ -66,7 +68,6 @@ import {
   dateToInputValue,
   todayDateInputValue,
 } from '../utils/taskForm'
-import { taskProjectTypeLabels } from '../utils/taskProjects'
 import { getTaskColor } from '../utils/taskColors'
 
 type TaskTab = 'week' | 'long' | 'recurring' | 'roadmap'
@@ -1013,17 +1014,26 @@ export default function Tasks() {
   ])
   const inspectorTask =
     activeTaskCandidates.find((task) => task.id === selectedTaskID) ??
-    activeTaskCandidates[0]
+    (activeTab === 'roadmap' ? undefined : activeTaskCandidates[0])
 
   useEffect(() => {
     if (activeTaskCandidates.length === 0) {
       setSelectedTaskID('')
       return
     }
+    if (activeTab === 'roadmap') {
+      if (
+        selectedTaskID &&
+        !activeTaskCandidates.some((task) => task.id === selectedTaskID)
+      ) {
+        setSelectedTaskID('')
+      }
+      return
+    }
     if (!activeTaskCandidates.some((task) => task.id === selectedTaskID)) {
       setSelectedTaskID(activeTaskCandidates[0].id)
     }
-  }, [activeTaskCandidates, selectedTaskID])
+  }, [activeTab, activeTaskCandidates, selectedTaskID])
 
   useEffect(() => {
     if (!inspectorTask) {
@@ -1071,7 +1081,9 @@ export default function Tasks() {
   }
 
   return (
-    <div className="task-workspace">
+    <div
+      className={`task-workspace${activeTab === 'roadmap' ? ' is-roadmap' : ''}`}
+    >
       <aside className="task-project-panel">
         <div className="task-project-panel-title">
           <span>项目</span>
@@ -1155,62 +1167,79 @@ export default function Tasks() {
                   <p className="task-project-empty">{meta.emptyCopy}</p>
                 ) : (
                   <div className="task-project-list">
-                    {groupProjects.map((project) => (
-                      <div className="task-project-item" key={project.id}>
-                        <button
-                          type="button"
-                          aria-label={`选择项目 ${project.name}`}
-                          className={
-                            project.id === activeProjectID
-                              ? 'task-project-select is-active'
-                              : 'task-project-select'
-                          }
-                          onClick={() => selectProject(project)}
-                        >
-                          <span className="task-project-name">
-                            {project.name}
-                          </span>
-                          <small className="task-project-kind">
-                            {taskProjectTypeLabels[project.type]}
-                          </small>
-                        </button>
+                    {groupProjects.map((project) => {
+                      const projectColor = getTaskColor(`project:${project.id}`)
+                      const isActive = project.id === activeProjectID
 
-                        {project.id !== 'personal' &&
-                          (pendingDeleteProjectID === project.id ? (
-                            <div className="task-project-delete-confirm">
+                      return (
+                        <div
+                          className="task-project-item"
+                          key={project.id}
+                          style={
+                            {
+                              '--project-color': projectColor,
+                            } as CSSProperties
+                          }
+                        >
+                          <button
+                            type="button"
+                            aria-label={`选择项目 ${project.name}`}
+                            aria-pressed={isActive}
+                            className={
+                              isActive
+                                ? 'task-project-select is-active'
+                                : 'task-project-select'
+                            }
+                            title={project.name}
+                            onClick={() => selectProject(project)}
+                          >
+                            <span
+                              className="task-project-color-dot"
+                              style={{ backgroundColor: projectColor }}
+                              aria-label={`项目颜色：${project.name}`}
+                            />
+                            <span className="task-project-name">
+                              {project.name}
+                            </span>
+                          </button>
+
+                          {project.id !== 'personal' &&
+                            (pendingDeleteProjectID === project.id ? (
+                              <div className="task-project-delete-confirm">
+                                <button
+                                  type="button"
+                                  aria-label={`确认删除 ${project.name}`}
+                                  disabled={deleteProjectMutation.isPending}
+                                  onClick={() =>
+                                    deleteProjectMutation.mutate(project)
+                                  }
+                                >
+                                  确认
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={`取消删除 ${project.name}`}
+                                  onClick={() => setPendingDeleteProjectID('')}
+                                >
+                                  取消
+                                </button>
+                              </div>
+                            ) : (
                               <button
+                                className="task-project-delete"
                                 type="button"
-                                aria-label={`确认删除 ${project.name}`}
-                                disabled={deleteProjectMutation.isPending}
+                                aria-label={`删除项目 ${project.name}`}
+                                title="删除项目"
                                 onClick={() =>
-                                  deleteProjectMutation.mutate(project)
+                                  setPendingDeleteProjectID(project.id)
                                 }
                               >
-                                确认
+                                ×
                               </button>
-                              <button
-                                type="button"
-                                aria-label={`取消删除 ${project.name}`}
-                                onClick={() => setPendingDeleteProjectID('')}
-                              >
-                                取消
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              className="task-project-delete"
-                              type="button"
-                              aria-label={`删除项目 ${project.name}`}
-                              title="删除项目"
-                              onClick={() =>
-                                setPendingDeleteProjectID(project.id)
-                              }
-                            >
-                              ×
-                            </button>
-                          ))}
-                      </div>
-                    ))}
+                            ))}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </section>
@@ -1294,7 +1323,10 @@ export default function Tasks() {
                 role="tab"
                 aria-selected={activeTab === tab}
                 className={activeTab === tab ? 'is-active' : ''}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => {
+                  setActiveTab(tab)
+                  setSelectedTaskID('')
+                }}
               >
                 {tabLabels[tab]}
               </button>
@@ -1443,32 +1475,20 @@ export default function Tasks() {
         )}
       </section>
 
-      <TaskDetailPanel
-        task={inspectorTask}
-        projects={projects}
-        draft={taskDetailDraft}
-        isSaving={updateTaskMutation.isPending}
-        onDraftChange={setTaskDetailDraft}
-        onSubmit={handleSaveTaskDetail}
-        emptyTitle={
-          activeTab === 'roadmap' ? '当前节点暂无关联任务' : undefined
-        }
-        emptyDescription={
-          activeTab === 'roadmap'
-            ? '创建关联任务后，可在这里编辑标题、日期、状态和备注。'
-            : undefined
-        }
-        emptyActionLabel={
-          activeTab === 'roadmap' && activeRoadmapNodeID
-            ? '创建当前节点任务'
-            : undefined
-        }
-        onEmptyAction={
-          activeTab === 'roadmap' && activeRoadmapNodeID
-            ? () => handleOpenRoadmapNode(activeRoadmapNodeID)
-            : undefined
-        }
-      />
+      {(activeTab !== 'roadmap' || inspectorTask) && (
+        <TaskDetailPanel
+          task={inspectorTask}
+          projects={projects}
+          draft={taskDetailDraft}
+          isSaving={updateTaskMutation.isPending}
+          isDrawer={activeTab === 'roadmap'}
+          onClose={
+            activeTab === 'roadmap' ? () => setSelectedTaskID('') : undefined
+          }
+          onDraftChange={setTaskDetailDraft}
+          onSubmit={handleSaveTaskDetail}
+        />
+      )}
 
       <RoadmapResourcePickerDialog
         nodeTitle={resourcePickerNode?.title ?? ''}
@@ -1809,6 +1829,8 @@ function TaskDetailPanel({
   projects,
   draft,
   isSaving,
+  isDrawer = false,
+  onClose,
   onDraftChange,
   onSubmit,
   emptyTitle,
@@ -1820,6 +1842,8 @@ function TaskDetailPanel({
   projects: TaskProject[]
   draft: TaskDetailDraft
   isSaving: boolean
+  isDrawer?: boolean
+  onClose?: () => void
   onDraftChange: (draft: TaskDetailDraft) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
   emptyTitle?: string
@@ -1836,7 +1860,9 @@ function TaskDetailPanel({
   }
 
   return (
-    <aside className="surface-panel task-detail-panel">
+    <aside
+      className={`surface-panel task-detail-panel${isDrawer ? ' is-drawer' : ''}`}
+    >
       <div className="panel-heading is-compact task-detail-heading">
         <div>
           <h2>任务详情</h2>
@@ -1848,13 +1874,26 @@ function TaskDetailPanel({
               : '选择或创建一个任务后在这里编辑'}
           </p>
         </div>
-        {canEdit && (
-          <span
-            className={`task-detail-state task-detail-state-${draft.status}`}
-          >
-            {longTaskStatusLabels[draft.status]}
-          </span>
-        )}
+        <div className="task-detail-heading-actions">
+          {canEdit && (
+            <span
+              className={`task-detail-state task-detail-state-${draft.status}`}
+            >
+              {longTaskStatusLabels[draft.status]}
+            </span>
+          )}
+          {onClose && (
+            <button
+              className="task-detail-close"
+              type="button"
+              aria-label="关闭任务详情"
+              title="关闭任务详情"
+              onClick={onClose}
+            >
+              <X aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
 
       {!canEdit ? (
@@ -2117,6 +2156,9 @@ function RoadmapTaskView({
   const generationPrompt = selectedProjectID
     ? (generationPrompts[selectedProjectID] ?? defaultGenerationPrompt)
     : ''
+  const selectedProjectColor = selectedProject
+    ? getTaskColor(`project:${selectedProject.id}`)
+    : ''
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -2159,8 +2201,16 @@ function RoadmapTaskView({
   return (
     <div className="roadmap-workspace">
       <div className="roadmap-toolbar">
-        <label>
-          <span>学习项目</span>
+        <label className="roadmap-project-picker">
+          <span className="roadmap-project-picker-label">
+            {selectedProjectColor && (
+              <i
+                style={{ backgroundColor: selectedProjectColor }}
+                aria-hidden="true"
+              />
+            )}
+            <span>学习项目</span>
+          </span>
           <select
             aria-label="学习项目"
             value={selectedProjectID}
@@ -2203,11 +2253,6 @@ function RoadmapTaskView({
                 : '生成完整路径'}
           </button>
         </div>
-        {selectedProject && (
-          <span className="roadmap-goal">
-            {selectedProject.description || selectedProject.name}
-          </span>
-        )}
       </div>
 
       {selectedProject && isGenerationPromptOpen && (
@@ -2246,7 +2291,15 @@ function RoadmapTaskView({
       )}
 
       {roadmap && (
-        <section className="roadmap-overview" aria-label="Roadmap 进度">
+        <section
+          className="roadmap-overview"
+          aria-label="Roadmap 进度"
+          style={
+            selectedProjectColor
+              ? ({ '--project-color': selectedProjectColor } as CSSProperties)
+              : undefined
+          }
+        >
           <div>
             <span>完整学习路径</span>
             <strong>{roadmap.title}</strong>

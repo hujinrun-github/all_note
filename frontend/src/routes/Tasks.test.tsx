@@ -223,6 +223,13 @@ describe('Tasks long task tracking', () => {
       container.querySelectorAll<HTMLButtonElement>('.task-project-select')
     )
     expect(projectButtons).toHaveLength(3)
+    const projectColorDots = Array.from(
+      container.querySelectorAll<HTMLElement>('.task-project-color-dot')
+    )
+    expect(projectColorDots).toHaveLength(3)
+    expect(
+      new Set(projectColorDots.map((dot) => dot.style.backgroundColor)).size
+    ).toBe(3)
     const [personalProjectButton, regularProjectButton, learningProjectButton] =
       projectButtons
 
@@ -664,18 +671,20 @@ describe('Tasks learning roadmap weekly linking', () => {
     expect(tasksApi.createTask).not.toHaveBeenCalled()
   })
 
-  it('opens the node task creator from an empty roadmap task detail panel', async () => {
-    renderTasks()
+  it('uses the roadmap inspector as the single task entry point when a node is empty', async () => {
+    const { container } = renderTasks()
     const user = userEvent.setup()
 
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
 
-    expect(screen.getByText('当前节点暂无关联任务')).toBeVisible()
     expect(
-      screen.getByText('创建关联任务后，可在这里编辑标题、日期、状态和备注。')
+      container.querySelector('.task-detail-panel')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText('当前节点还没有关联任务，可点击“编辑节点与任务”创建。')
     ).toBeVisible()
 
-    await user.click(screen.getByRole('button', { name: '创建当前节点任务' }))
+    await user.click(screen.getByRole('button', { name: '编辑节点与任务' }))
 
     expect(screen.getByTestId('roadmap-node-dialog')).toBeVisible()
   })
@@ -729,6 +738,11 @@ describe('Tasks learning roadmap weekly linking', () => {
     const user = userEvent.setup()
 
     await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(
+      await screen.findByRole('button', {
+        name: '在任务详情中编辑 梳理 AI Infra 核心概念 · 第 1 次推进',
+      })
+    )
 
     expect(
       await screen.findByText('编辑当前 Roadmap 节点的关联任务')
@@ -765,6 +779,9 @@ describe('Tasks learning roadmap weekly linking', () => {
         })
       )
     )
+
+    await user.click(screen.getByRole('button', { name: '关闭任务详情' }))
+    expect(screen.queryByLabelText('任务详情标题')).not.toBeInTheDocument()
   })
 
   it('deletes an article from the selected roadmap node after confirmation', async () => {
