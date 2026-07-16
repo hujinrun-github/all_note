@@ -531,7 +531,10 @@ func resolveUniqueOutputPath(note *model.Note, target *model.SyncTarget, fileNam
 }
 
 func canUseOutputPath(note *model.Note, target *model.SyncTarget, outputPath string) bool {
-	if _, err := os.Stat(outputPath); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(outputPath); err != nil {
+		// Only a successful stat proves that a candidate is occupied. Let the
+		// write-path validator report permission, ENOTDIR, and other filesystem
+		// errors instead of misclassifying them as file-name collisions.
 		return true
 	}
 	if note == nil || target == nil || note.ID == "" || target.ID == "" {
@@ -668,8 +671,13 @@ func resolveOutputPath(target *model.SyncTarget, fileName string) (string, error
 	if strings.TrimSpace(fileName) == "" {
 		return "", errors.New("file name is required")
 	}
-	if filepath.IsAbs(fileName) {
+	portableFileName := strings.ReplaceAll(fileName, `\`, "/")
+	normalizedFileName := filepath.Clean(filepath.FromSlash(portableFileName))
+	if filepath.IsAbs(normalizedFileName) {
 		return "", errors.New("file name must be relative")
+	}
+	if normalizedFileName == ".." || strings.HasPrefix(normalizedFileName, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("output path escapes base folder: %s", fileName)
 	}
 
 	baseDir, err := targetBaseDir(target)
@@ -677,7 +685,7 @@ func resolveOutputPath(target *model.SyncTarget, fileName string) (string, error
 		return "", err
 	}
 
-	outputPath, err := filepath.Abs(filepath.Join(baseDir, fileName))
+	outputPath, err := filepath.Abs(filepath.Join(baseDir, normalizedFileName))
 	if err != nil {
 		return "", fmt.Errorf("resolve output path: %w", err)
 	}

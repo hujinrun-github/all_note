@@ -672,8 +672,11 @@ func TestWriteNoteToTargetRecordsFailedState(t *testing.T) {
 	if state.Status != "failed" {
 		t.Fatalf("expected failed state, got %q", state.Status)
 	}
-	if state.ErrorMessage == nil || !strings.Contains(*state.ErrorMessage, "validate obsidian note path") {
-		t.Fatalf("expected write failure message, got %#v", state.ErrorMessage)
+	if state.ErrorMessage == nil {
+		t.Fatal("expected write failure message, got nil")
+	}
+	if !strings.Contains(*state.ErrorMessage, "validate obsidian note path") {
+		t.Fatalf("expected write failure message, got %q", *state.ErrorMessage)
 	}
 }
 
