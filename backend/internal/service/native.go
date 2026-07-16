@@ -224,7 +224,11 @@ func GetVoiceNote(ctx context.Context, store storage.Store, clientID string) (*m
 	if err != nil {
 		return nil, err
 	}
-	return nativeStore.VoiceNotes().GetByClientID(ctx, strings.TrimSpace(clientID))
+	voice, err := nativeStore.VoiceNotes().GetByClientID(ctx, strings.TrimSpace(clientID))
+	if err == nil && voice.DeletedAt != nil {
+		return nil, storage.ErrMobileEntityGone
+	}
+	return voice, err
 }
 
 func UploadVoiceAudio(ctx context.Context, store storage.Store, objects objectstore.Store, clientID, contentType, expectedSHA256 string, body io.Reader, declaredSize, maxBytes int64) (*model.VoiceNote, error) {
@@ -319,7 +323,11 @@ func UploadVoiceAudio(ctx context.Context, store storage.Store, objects objectst
 		_ = nativeStore.VoiceNotes().MarkUploadFailed(ctx, clientID, actualSHA256)
 		return nil, closeErr
 	}
-	return nativeStore.VoiceNotes().MarkUploaded(ctx, clientID, actualSHA256)
+	uploaded, err := nativeStore.VoiceNotes().MarkUploaded(ctx, clientID, actualSHA256)
+	if errors.Is(err, storage.ErrVoiceAudioGone) {
+		_ = objects.Remove(ctx, objectKey)
+	}
+	return uploaded, err
 }
 
 func GetVoiceAudio(ctx context.Context, store storage.Store, objects objectstore.Store, clientID string) (*model.VoiceNote, *objectstore.Object, error) {
@@ -328,6 +336,9 @@ func GetVoiceAudio(ctx context.Context, store storage.Store, objects objectstore
 		return nil, nil, err
 	}
 	if voice.UploadState != model.VoiceUploadUploaded || voice.ObjectKey == "" {
+		if voice.AudioState == model.VoiceAudioDeleteRequested || voice.AudioState == model.VoiceAudioDeleted {
+			return voice, nil, storage.ErrVoiceAudioGone
+		}
 		return voice, nil, ErrVoiceAudioNotUploaded
 	}
 	if objects == nil {
@@ -355,6 +366,9 @@ func TranscribeVoiceNote(ctx context.Context, store storage.Store, objects objec
 		return voice, nil
 	}
 	if voice.UploadState != model.VoiceUploadUploaded || voice.ObjectKey == "" {
+		if voice.AudioState == model.VoiceAudioDeleteRequested || voice.AudioState == model.VoiceAudioDeleted {
+			return nil, storage.ErrVoiceAudioGone
+		}
 		return nil, ErrVoiceAudioNotUploaded
 	}
 	language = strings.TrimSpace(language)

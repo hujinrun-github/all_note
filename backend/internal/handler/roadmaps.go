@@ -13,7 +13,12 @@ import (
 
 func GenerateLearningRoadmap(store storage.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		roadmap, err := service.GenerateLearningRoadmap(c.Request.Context(), store, c.Param("id"))
+		var req model.GenerateLearningRoadmapRequest
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			badRequest(c, "invalid roadmap generation prompt")
+			return
+		}
+		roadmap, err := service.GenerateLearningRoadmapWithPrompt(c.Request.Context(), store, c.Param("id"), req.Prompt)
 		if err != nil {
 			internalError(c, err.Error())
 			return

@@ -125,11 +125,28 @@ func (r transcriptionJobWorkerRepository) Fail(ctx context.Context, failure mode
 			return err
 		}
 		if job.State == model.TranscriptionJobFailed {
-			_, err = tx.ExecContext(ctx, `
+			var workspaceID string
+			if err := tx.QueryRowContext(ctx, `SELECT workspace_id FROM transcription_jobs WHERE job_id = ?`, failure.JobID).Scan(&workspaceID); err != nil {
+				return err
+			}
+			result, err := tx.ExecContext(ctx, `
 				UPDATE voice_notes
-				SET transcription_state = ?, transcription_error = ?, updated_at = ?
-				WHERE client_id = ?
-			`, model.TranscriptionFailed, failure.ErrorCode, failure.Now, job.VoiceNoteID)
+				SET transcription_state = ?, transcription_error = ?, updated_at = ?, revision = revision + 1
+				WHERE workspace_id = ? AND client_id = ? AND deleted_at IS NULL
+			`, model.TranscriptionFailed, failure.ErrorCode, failure.Now, workspaceID, job.VoiceNoteID)
+			if err != nil {
+				return err
+			}
+			if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+				if err != nil {
+					return err
+				}
+				return storage.ErrMobileEntityNotFound
+			}
+			if err := persistSQLiteTranscriptionJobChange(ctx, tx, workspaceID, job, "transcription_job.failed", failure.Now); err != nil {
+				return err
+			}
+			return persistSQLiteServerEntityChange(ctx, tx, workspaceID, job.JobID, "voice_note", "voice.server_updated", job.VoiceNoteID, failure.Now)
 		}
 		return err
 	})
@@ -186,8 +203,8 @@ func (r transcriptionJobWorkerRepository) Complete(ctx context.Context, completi
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE voice_notes
-			SET transcription_state = ?, transcription_error = '', updated_at = ?
-			WHERE workspace_id = ? AND client_id = ?
+			SET transcription_state = ?, transcription_error = '', updated_at = ?, revision = revision + 1
+			WHERE workspace_id = ? AND client_id = ? AND deleted_at IS NULL
 		`, model.TranscriptionCompleted, completion.Now, workspaceID, voiceNoteID); err != nil {
 			return err
 		}
@@ -225,27 +242,10 @@ func persistSQLiteTranscriptionCompletionChanges(
 	applied bool,
 	now int64,
 ) error {
-	jobPayload, err := json.Marshal(map[string]any{
-		"voice_note_id": job.VoiceNoteID,
-		"generation":    job.Generation,
-		"state":         job.State,
-		"error_code":    job.ErrorCode,
-	})
-	if err != nil {
+	if err := persistSQLiteTranscriptionJobChange(ctx, tx, workspaceID, job, "transcription_job.completed", now); err != nil {
 		return err
 	}
-	jobEntity := model.MobileEntityEnvelope{
-		EntityType: "transcription_job", ID: job.JobID, ClientID: job.JobID, Revision: job.Revision, Payload: jobPayload,
-	}
-	jobJSON, err := json.Marshal(jobEntity)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO mobile_sync_outbox (
-			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
-		) VALUES (?, ?, 'transcription_job', ?, 'transcription_job.completed', ?, ?, ?)
-	`, workspaceID, job.JobID, job.JobID, job.Revision, string(jobJSON), now); err != nil {
+	if err := persistSQLiteServerEntityChange(ctx, tx, workspaceID, job.JobID, "voice_note", "voice.server_updated", job.VoiceNoteID, now); err != nil {
 		return err
 	}
 	if !applied {
@@ -284,6 +284,38 @@ func persistSQLiteTranscriptionCompletionChanges(
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES (?, ?, 'note', ?, 'note.transcription_applied', ?, ?, ?)
 	`, workspaceID, job.JobID, clientID, revision, string(noteJSON), now)
+	return err
+}
+
+func persistSQLiteTranscriptionJobChange(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	job *model.TranscriptionJob,
+	operation string,
+	now int64,
+) error {
+	jobPayload, err := json.Marshal(map[string]any{
+		"voice_note_id": job.VoiceNoteID,
+		"generation":    job.Generation,
+		"state":         job.State,
+		"error_code":    job.ErrorCode,
+	})
+	if err != nil {
+		return err
+	}
+	jobEntity := model.MobileEntityEnvelope{
+		EntityType: "transcription_job", ID: job.JobID, ClientID: job.JobID, Revision: job.Revision, Payload: jobPayload,
+	}
+	jobJSON, err := json.Marshal(jobEntity)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO mobile_sync_outbox (
+			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
+		) VALUES (?, ?, 'transcription_job', ?, ?, ?, ?, ?)
+	`, workspaceID, job.JobID, job.JobID, operation, job.Revision, string(jobJSON), now)
 	return err
 }
 

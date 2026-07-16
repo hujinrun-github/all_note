@@ -21,6 +21,7 @@ export interface Task {
   occurrence_date?: string
   occurrence_status?: 'open' | 'done' | 'skipped'
   recurrence_label?: string
+  color?: string
   completed_at?: number
   created_at: number
   updated_at: number
@@ -48,6 +49,7 @@ export interface TaskOccurrence {
   project?: string
   roadmap_node_id?: string
   recurrence_label: string
+  color?: string
 }
 
 export interface TaskProject {
@@ -204,9 +206,13 @@ export async function deleteTask(id: string) {
   await api.del(`/api/tasks/${id}`)
 }
 
-export async function generateLearningRoadmap(projectID: string) {
+export async function generateLearningRoadmap(
+  projectID: string,
+  body: { prompt?: string } = {}
+) {
   const res = await api.post<{ roadmap: LearningRoadmap }>(
-    `/api/task-projects/${projectID}/roadmap/generate`
+    `/api/task-projects/${projectID}/roadmap/generate`,
+    body
   )
   return res.data.roadmap
 }
@@ -275,7 +281,7 @@ export async function optimizeRoadmapLayout(roadmapID: string) {
 
 export async function searchRoadmapNodeResources(
   nodeID: string,
-  body: { sources?: string[] } = {}
+  body: { sources?: string[]; query?: string } = {}
 ) {
   const res = await api.post<{
     node_id: string

@@ -10,6 +10,7 @@ import (
 var (
 	ErrAlreadyExists  = errors.New("already exists")
 	ErrUploadConflict = errors.New("audio upload conflicts with existing content")
+	ErrVoiceAudioGone = errors.New("voice audio was deleted")
 	ErrNativeStorage  = errors.New("native app storage is unavailable")
 )
 

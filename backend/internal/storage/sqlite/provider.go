@@ -85,6 +85,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteVoiceAudioCleanupSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return newStore(db), nil
 }
 
@@ -233,12 +237,20 @@ func (s *store) MobileSync() storage.MobileSyncRepository {
 	return mobileSyncRepository{db: s.db}
 }
 
+func (s *store) MobileSyncPublisher() storage.MobileSyncPublisherRepository {
+	return mobileSyncPublisherRepository{db: s.db}
+}
+
 func (s *store) TranscriptionJobs() storage.TranscriptionJobRepository {
 	return transcriptionJobRepository{db: s.db}
 }
 
 func (s *store) TranscriptionJobWorker() storage.TranscriptionJobWorkerRepository {
 	return transcriptionJobWorkerRepository{db: s.db}
+}
+
+func (s *store) VoiceAudioCleanup() storage.VoiceAudioCleanupRepository {
+	return voiceAudioCleanupRepository{db: s.db}
 }
 
 func (s *store) WatchDevices() storage.WatchDeviceRepository {
@@ -304,6 +316,10 @@ func (s *storeTx) MobileSync() storage.MobileSyncRepository {
 
 func (s *storeTx) TranscriptionJobs() storage.TranscriptionJobRepository {
 	return transcriptionJobRepository{db: s.tx}
+}
+
+func (s *storeTx) VoiceAudioCleanup() storage.VoiceAudioCleanupRepository {
+	return voiceAudioCleanupRepository{db: s.tx}
 }
 
 func (s *storeTx) WatchDevices() storage.WatchDeviceRepository {

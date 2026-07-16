@@ -591,6 +591,15 @@ func TestRoadmapPromptRequestsCompleteLinearPathAndOnlineArticles(t *testing.T) 
 			t.Fatalf("prompt still requests the old branching behavior %q: %s", forbidden, prompt)
 		}
 	}
+
+	customRequirement := "优先学习推理服务，并增加三个可运行的实战项目"
+	userPrompt := buildRoadmapUserPrompt(model.TaskProject{
+		Name:        "AI Infra 工程师",
+		Description: "掌握模型服务与基础设施",
+	}, customRequirement)
+	if !strings.Contains(userPrompt, customRequirement) || !strings.Contains(userPrompt, "User-defined generation requirements") {
+		t.Fatalf("custom generation requirement missing from user prompt: %s", userPrompt)
+	}
 }
 
 func TestGenerateLearningRoadmapInvalidAIJSONStoresFailedRoadmap(t *testing.T) {
@@ -684,6 +693,7 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "mock")
 	result, err := SearchRoadmapNodeResources(roadmapTestContext(t), roadmapTestStore(t), node.ID, &model.SearchRoadmapResourcesRequest{
 		Sources: []string{"medium", "reddit"},
+		Query:   "custom TypeScript architecture prompt",
 	})
 	if err != nil {
 		t.Fatalf("search resources: %v", err)
@@ -691,6 +701,9 @@ func TestRoadmapNodeResourcesBindToSelectedNode(t *testing.T) {
 	resources := result.Resources
 	if result.NodeID != node.ID || !strings.Contains(result.Query, node.Title) {
 		t.Fatalf("search result must describe the selected node query: %+v", result)
+	}
+	if !strings.Contains(result.Query, "custom TypeScript architecture prompt") {
+		t.Fatalf("search result must use the edited prompt: %q", result.Query)
 	}
 	if len(resources) < 10 {
 		t.Fatalf("expected at least 10 article candidates, got %d", len(resources))
@@ -824,6 +837,17 @@ func TestArticleSearchQueryUsesSelectedSourcesAsAlternatives(t *testing.T) {
 
 	if !strings.Contains(query, "site:medium.com OR site:reddit.com") {
 		t.Fatalf("selected sources should be alternatives, got %q", query)
+	}
+}
+
+func TestArticleSearchQuerySupportsCustomWebsiteSources(t *testing.T) {
+	sources := selectedArticleSearchSources([]string{"google", "site:docs.python.org"})
+	if len(sources) != 2 || sources[1].ID != "site:docs.python.org" {
+		t.Fatalf("expected custom website source to be selected, got %+v", sources)
+	}
+	query := articleSearchSourceQuery(sources)
+	if !strings.Contains(query, "site:docs.python.org") {
+		t.Fatalf("custom website source missing from query: %q", query)
 	}
 }
 

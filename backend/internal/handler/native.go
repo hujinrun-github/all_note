@@ -164,6 +164,8 @@ func handleNativeError(c *gin.Context, err error, fallbackStatus int) {
 		errorResponse(c, http.StatusUnsupportedMediaType, "UNSUPPORTED_AUDIO_TYPE", err.Error())
 	case errors.Is(err, storage.ErrUploadConflict):
 		conflict(c, "AUDIO_CONFLICT", err.Error())
+	case errors.Is(err, storage.ErrVoiceAudioGone), errors.Is(err, storage.ErrMobileEntityGone):
+		errorResponse(c, http.StatusGone, "VOICE_AUDIO_GONE", "voice audio or voice note was deleted")
 	case errors.Is(err, service.ErrVoiceAudioNotUploaded):
 		conflict(c, "AUDIO_NOT_UPLOADED", err.Error())
 	case errors.Is(err, service.ErrVoiceStorageUnavailable), errors.Is(err, objectstore.ErrUnavailable):

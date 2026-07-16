@@ -67,6 +67,7 @@ import {
   todayDateInputValue,
 } from '../utils/taskForm'
 import { taskProjectTypeLabels } from '../utils/taskProjects'
+import { getTaskColor } from '../utils/taskColors'
 
 type TaskTab = 'week' | 'long' | 'recurring' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
@@ -197,7 +198,13 @@ const taskProjectGroupMeta: Record<
   },
 }
 
-const articleSearchSourceOptions = [
+type ArticleSearchSourceOption = {
+  id: string
+  label: string
+  custom?: boolean
+}
+
+const articleSearchSourceOptions: ArticleSearchSourceOption[] = [
   { id: 'google', label: 'Google/通用' },
   { id: 'medium', label: 'Medium' },
   { id: 'reddit', label: 'Reddit' },
@@ -207,11 +214,95 @@ const articleSearchSourceOptions = [
   { id: 'github', label: 'GitHub' },
   { id: 'official', label: '官方文档' },
   { id: 'technical', label: '技术博客' },
-] as const
+]
 
 const defaultArticleSearchSources = articleSearchSourceOptions.map(
   (source) => source.id
 )
+
+const customArticleSearchSourcesStorageKey =
+  'flowspace-roadmap-custom-article-search-sources'
+const roadmapGenerationPromptsStorageKey =
+  'flowspace-roadmap-generation-prompts-v1'
+const maxRoadmapGenerationPromptLength = 4000
+
+function buildDefaultRoadmapGenerationPrompt(project?: TaskProject) {
+  if (!project) return ''
+  const goal = project.description.trim() || `系统掌握 ${project.name}`
+  return `请为「${project.name}」生成一条完整、连续且可执行的学习路径。学习目标：${goal}。从基础知识逐步推进到独立实践与最终验收；每个节点都要包含明确的学习任务、交付物和可验证的完成标准。`
+}
+
+function loadRoadmapGenerationPrompts(): Record<string, string> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(roadmapGenerationPromptsStorageKey) ?? '{}'
+    )
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored))
+      return {}
+    return Object.fromEntries(
+      Object.entries(stored).filter(
+        ([projectID, prompt]) =>
+          Boolean(projectID) &&
+          typeof prompt === 'string' &&
+          prompt.length <= maxRoadmapGenerationPromptLength
+      )
+    ) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+function normalizeCustomArticleSearchSource(
+  rawValue: string
+): ArticleSearchSourceOption | null {
+  const value = rawValue.trim().replace(/^site:/i, '')
+  if (!value) return null
+  try {
+    const parsed = new URL(
+      /^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `https://${value}`
+    )
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null
+    const hostname = parsed.hostname
+      .toLowerCase()
+      .replace(/^www\./, '')
+      .replace(/\.$/, '')
+    if (!hostname || !hostname.includes('.') || /\s/.test(hostname)) return null
+    return { id: `site:${hostname}`, label: hostname, custom: true }
+  } catch {
+    return null
+  }
+}
+
+function loadCustomArticleSearchSources(): ArticleSearchSourceOption[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(customArticleSearchSourcesStorageKey) ?? '[]'
+    )
+    if (!Array.isArray(stored)) return []
+    const sources = stored
+      .map((value) =>
+        typeof value === 'string'
+          ? normalizeCustomArticleSearchSource(value)
+          : null
+      )
+      .filter((source): source is ArticleSearchSourceOption => Boolean(source))
+    return sources.filter(
+      (source, index) =>
+        sources.findIndex((candidate) => candidate.id === source.id) === index
+    )
+  } catch {
+    return []
+  }
+}
+
+function buildRoadmapNodeSearchPrompt(node?: RoadmapNode) {
+  if (!node) return ''
+  return [node.article_search_queries?.[0], node.title, node.deliverable]
+    .filter(Boolean)
+    .join(' · ')
+}
 
 function resourceCandidateKey(resource: RoadmapResource) {
   return resource.id || resource.url
@@ -265,6 +356,10 @@ export default function Tasks() {
   const [articleSearchSources, setArticleSearchSources] = useState<string[]>(
     defaultArticleSearchSources
   )
+  const [
+    customArticleSearchSourceOptions,
+    setCustomArticleSearchSourceOptions,
+  ] = useState<ArticleSearchSourceOption[]>(loadCustomArticleSearchSources)
   const [pendingDeleteProjectID, setPendingDeleteProjectID] = useState('')
   const [recurringTitle, setRecurringTitle] = useState('')
   const [recurringFrequency, setRecurringFrequency] =
@@ -280,6 +375,20 @@ export default function Tasks() {
   const [selectedTaskID, setSelectedTaskID] = useState('')
   const [taskDetailDraft, setTaskDetailDraft] =
     useState<TaskDetailDraft>(emptyTaskDetailDraft)
+
+  const availableArticleSearchSourceOptions = useMemo(
+    () => [...articleSearchSourceOptions, ...customArticleSearchSourceOptions],
+    [customArticleSearchSourceOptions]
+  )
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      customArticleSearchSourcesStorageKey,
+      JSON.stringify(
+        customArticleSearchSourceOptions.map((source) => source.id)
+      )
+    )
+  }, [customArticleSearchSourceOptions])
 
   const projectsQuery = useQuery({
     queryKey: ['task-projects'],
@@ -498,7 +607,13 @@ export default function Tasks() {
   })
 
   const generateRoadmapMutation = useMutation({
-    mutationFn: generateLearningRoadmap,
+    mutationFn: ({
+      projectID,
+      prompt,
+    }: {
+      projectID: string
+      prompt: string
+    }) => generateLearningRoadmap(projectID, { prompt }),
     onSuccess: (roadmap) => {
       setSelectedNodeID(roadmap.nodes[0]?.id ?? '')
       queryClient.invalidateQueries({
@@ -511,10 +626,12 @@ export default function Tasks() {
     mutationFn: async ({
       nodeID,
       sources,
+      query,
     }: {
       nodeID: string
       sources: string[]
-    }) => searchRoadmapNodeResources(nodeID, { sources }),
+      query: string
+    }) => searchRoadmapNodeResources(nodeID, { sources, query }),
     onMutate: () => {
       setSelectedResourceCandidateIDs([])
     },
@@ -697,6 +814,29 @@ export default function Tasks() {
     )
   }
 
+  function handleAddArticleSearchSource(rawValue: string) {
+    const source = normalizeCustomArticleSearchSource(rawValue)
+    if (!source) return false
+    setCustomArticleSearchSourceOptions((current) =>
+      current.some((item) => item.id === source.id)
+        ? current
+        : [...current, source]
+    )
+    setArticleSearchSources((current) =>
+      current.includes(source.id) ? current : [...current, source.id]
+    )
+    return true
+  }
+
+  function handleRemoveArticleSearchSource(sourceID: string) {
+    setCustomArticleSearchSourceOptions((current) =>
+      current.filter((source) => source.id !== sourceID)
+    )
+    setArticleSearchSources((current) =>
+      current.filter((id) => id !== sourceID)
+    )
+  }
+
   function handleOpenRoadmapNode(nodeID: string) {
     if (!nodeID) {
       setSelectedNodeID('')
@@ -831,26 +971,28 @@ export default function Tasks() {
   const selectedRoadmapNode = roadmap?.nodes.find(
     (node) => node.id === selectedNodeID
   )
+  const activeRoadmapNode = selectedRoadmapNode ?? roadmap?.nodes[0]
+  const activeRoadmapNodeID = activeRoadmapNode?.id ?? ''
   const createNodeParent = roadmap?.nodes.find(
     (node) => node.id === createNodeParentID
   )
   const selectedNodeTasks = useMemo(() => {
-    if (!selectedNodeID) return []
+    if (!activeRoadmapNodeID) return []
     const taskByID = new Map<string, Task>()
     for (const task of [
       ...(weekTasksQuery.data?.tasks ?? []),
       ...(longTasksQuery.data?.tasks ?? []),
       ...(recurringTasksQuery.data?.tasks ?? []),
     ]) {
-      if (task.roadmap_node_id === selectedNodeID) {
+      if (task.roadmap_node_id === activeRoadmapNodeID) {
         taskByID.set(task.id, task)
       }
     }
-    return [...taskByID.values()]
+    return [...taskByID.values()].sort(compareRoadmapLinkedTasks)
   }, [
+    activeRoadmapNodeID,
     longTasksQuery.data?.tasks,
     recurringTasksQuery.data?.tasks,
-    selectedNodeID,
     weekTasksQuery.data?.tasks,
   ])
   const resourcePickerNode = roadmap?.nodes.find(
@@ -860,11 +1002,13 @@ export default function Tasks() {
     if (activeTab === 'week') return weekTasksQuery.data?.tasks ?? []
     if (activeTab === 'long') return longTasksQuery.data?.tasks ?? []
     if (activeTab === 'recurring') return recurringTasksQuery.data?.tasks ?? []
+    if (activeTab === 'roadmap') return selectedNodeTasks
     return []
   }, [
     activeTab,
     longTasksQuery.data?.tasks,
     recurringTasksQuery.data?.tasks,
+    selectedNodeTasks,
     weekTasksQuery.data?.tasks,
   ])
   const inspectorTask =
@@ -1074,61 +1218,58 @@ export default function Tasks() {
           })}
         </div>
 
-        <div className="task-view-list">
-          <div className="filter-title">视图</div>
-          {(Object.keys(tabLabels) as TaskTab[]).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              className={activeTab === tab ? 'is-active' : ''}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab === 'week' ? '今日任务' : tabLabels[tab]}
-            </button>
-          ))}
-        </div>
-
-        {activeProjectID && (
-          <div className="mt-4">
-            <h4 className="text-xs font-semibold text-fs-text-muted mb-2">
-              项目笔记
-            </h4>
-            {projectNotes.length === 0 && (
-              <p className="text-xs text-fs-text-muted">暂无笔记</p>
-            )}
-            {projectNotes.map((note) => (
+        {activeProjectID &&
+          projects.some((project) => project.id === activeProjectID) && (
+            <section className="task-project-notes">
+              <div className="task-project-notes-heading">
+                <h4>项目笔记</h4>
+                <span>{projectNotes.length}</span>
+              </div>
+              {projectNotes.length === 0 && (
+                <p className="task-project-notes-empty">暂无笔记</p>
+              )}
+              <div className="task-project-note-list">
+                {projectNotes.map((note) => (
+                  <button
+                    key={note.id}
+                    type="button"
+                    onClick={() =>
+                      navigate(`/editor/${encodeURIComponent(note.id)}`)
+                    }
+                  >
+                    <BookOpen aria-hidden="true" />
+                    <span>
+                      <strong>{note.title || '未命名笔记'}</strong>
+                      <small>
+                        {new Date(note.updated_at * 1000).toLocaleDateString(
+                          'zh-CN'
+                        )}
+                      </small>
+                    </span>
+                  </button>
+                ))}
+              </div>
               <button
-                key={note.id}
                 type="button"
-                className="block w-full text-left px-2 py-1 rounded hover:bg-fs-accent/5 text-sm"
-                onClick={() =>
+                className="task-project-note-create"
+                onClick={async () => {
+                  const note = await createNote({
+                    title: '未命名笔记',
+                    body: '',
+                    folder_id: '__uncategorized',
+                    tags: '[]',
+                    project_ids: activeProjectID
+                      ? [activeProjectID]
+                      : undefined,
+                  })
                   navigate(`/editor/${encodeURIComponent(note.id)}`)
-                }
+                }}
               >
-                <div className="truncate">{note.title || '未命名笔记'}</div>
-                <div className="text-xs text-fs-text-muted">
-                  {new Date(note.updated_at * 1000).toLocaleDateString('zh-CN')}
-                </div>
+                <Plus aria-hidden="true" />
+                新建项目笔记
               </button>
-            ))}
-            <button
-              type="button"
-              className="mt-2 text-sm text-fs-accent hover:underline"
-              onClick={async () => {
-                const note = await createNote({
-                  title: '未命名笔记',
-                  body: '',
-                  folder_id: '__uncategorized',
-                  tags: '[]',
-                  project_ids: activeProjectID ? [activeProjectID] : undefined,
-                })
-                navigate(`/editor/${encodeURIComponent(note.id)}`)
-              }}
-            >
-              + 新建项目笔记
-            </button>
-          </div>
-        )}
+            </section>
+          )}
       </aside>
 
       <section className="task-main-panel">
@@ -1235,9 +1376,12 @@ export default function Tasks() {
             roadmap={roadmap}
             isLoading={roadmapQuery.isLoading}
             selectedNodeID={selectedNodeID}
+            tasks={selectedNodeTasks}
+            selectedTaskID={inspectorTask?.id ?? ''}
             manualResourceTitle={manualResourceTitle}
             manualResourceURL={manualResourceURL}
             articleSearchSources={articleSearchSources}
+            articleSearchSourceOptions={availableArticleSearchSourceOptions}
             isGenerating={generateRoadmapMutation.isPending}
             isSearching={searchResourcesMutation.isPending}
             isAddingResource={addResourceMutation.isPending}
@@ -1256,10 +1400,14 @@ export default function Tasks() {
               setCreateNodeParentID('')
             }}
             onSelectNode={handleSelectRoadmapNode}
+            onSelectTask={setSelectedTaskID}
             onEditNode={handleOpenRoadmapNode}
-            onGenerate={() =>
+            onGenerate={(prompt) =>
               selectedLearningProjectID &&
-              generateRoadmapMutation.mutate(selectedLearningProjectID)
+              generateRoadmapMutation.mutate({
+                projectID: selectedLearningProjectID,
+                prompt,
+              })
             }
             onStartCreateProject={() => startProjectCreate('learning')}
             isCreatingProject={creatingProjectType === 'learning'}
@@ -1267,13 +1415,16 @@ export default function Tasks() {
             onOptimizeLayout={(roadmapID) =>
               optimizeRoadmapLayoutMutation.mutate(roadmapID)
             }
-            onSearchResources={(nodeID) =>
+            onSearchResources={(nodeID, query) =>
               searchResourcesMutation.mutate({
                 nodeID,
                 sources: articleSearchSources,
+                query,
               })
             }
             onToggleArticleSearchSource={handleToggleArticleSearchSource}
+            onAddArticleSearchSource={handleAddArticleSearchSource}
+            onRemoveArticleSearchSource={handleRemoveArticleSearchSource}
             onManualTitleChange={setManualResourceTitle}
             onManualURLChange={setManualResourceURL}
             onAddResource={(nodeID) => {
@@ -1299,6 +1450,24 @@ export default function Tasks() {
         isSaving={updateTaskMutation.isPending}
         onDraftChange={setTaskDetailDraft}
         onSubmit={handleSaveTaskDetail}
+        emptyTitle={
+          activeTab === 'roadmap' ? '当前节点暂无关联任务' : undefined
+        }
+        emptyDescription={
+          activeTab === 'roadmap'
+            ? '创建关联任务后，可在这里编辑标题、日期、状态和备注。'
+            : undefined
+        }
+        emptyActionLabel={
+          activeTab === 'roadmap' && activeRoadmapNodeID
+            ? '创建当前节点任务'
+            : undefined
+        }
+        onEmptyAction={
+          activeTab === 'roadmap' && activeRoadmapNodeID
+            ? () => handleOpenRoadmapNode(activeRoadmapNodeID)
+            : undefined
+        }
       />
 
       <RoadmapResourcePickerDialog
@@ -1589,11 +1758,17 @@ function LongTaskRow({
 }) {
   const status = normalizeLongTaskStatus(task)
   const project = task.project || '未命名项目'
+  const taskColor = getTaskColor(task.id, task.color)
 
   return (
     <div
       className={`task-row long-task-row long-task-row-${status} ${isSelected ? 'is-selected' : ''}`}
     >
+      <span
+        className="task-color-dot"
+        style={{ backgroundColor: taskColor }}
+        aria-label={`任务颜色：${task.title}`}
+      />
       <button
         type="button"
         className="long-task-done-toggle"
@@ -1636,6 +1811,10 @@ function TaskDetailPanel({
   isSaving,
   onDraftChange,
   onSubmit,
+  emptyTitle,
+  emptyDescription,
+  emptyActionLabel,
+  onEmptyAction,
 }: {
   task?: Task
   projects: TaskProject[]
@@ -1643,9 +1822,14 @@ function TaskDetailPanel({
   isSaving: boolean
   onDraftChange: (draft: TaskDetailDraft) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  emptyTitle?: string
+  emptyDescription?: string
+  emptyActionLabel?: string
+  onEmptyAction?: () => void
 }) {
   const canEdit = Boolean(task)
   const isRecurring = task?.execution_type === 'recurring'
+  const isRoadmapTask = Boolean(task?.roadmap_node_id)
 
   function patchDraft(patch: Partial<TaskDetailDraft>) {
     onDraftChange({ ...draft, ...patch })
@@ -1658,7 +1842,9 @@ function TaskDetailPanel({
           <h2>任务详情</h2>
           <p>
             {canEdit
-              ? '修改任务内容、状态和下一步动作'
+              ? isRoadmapTask
+                ? '编辑当前 Roadmap 节点的关联任务'
+                : '修改任务内容、状态和下一步动作'
               : '选择或创建一个任务后在这里编辑'}
           </p>
         </div>
@@ -1673,8 +1859,16 @@ function TaskDetailPanel({
 
       {!canEdit ? (
         <div className="task-detail-empty">
-          <strong>暂无可编辑任务</strong>
-          <p>当前视图还没有任务。先在中间列表添加一条，再回到这里补充详情。</p>
+          <strong>{emptyTitle || '暂无可编辑任务'}</strong>
+          <p>
+            {emptyDescription ||
+              '当前视图还没有任务。先在中间列表添加一条，再回到这里补充详情。'}
+          </p>
+          {emptyActionLabel && onEmptyAction && (
+            <button type="button" onClick={onEmptyAction}>
+              {emptyActionLabel}
+            </button>
+          )}
         </div>
       ) : (
         <form className="task-detail-form" onSubmit={onSubmit}>
@@ -1836,9 +2030,12 @@ function RoadmapTaskView({
   roadmap,
   isLoading,
   selectedNodeID,
+  tasks,
+  selectedTaskID,
   manualResourceTitle,
   manualResourceURL,
   articleSearchSources,
+  articleSearchSourceOptions,
   isGenerating,
   isSearching,
   isAddingResource,
@@ -1847,6 +2044,7 @@ function RoadmapTaskView({
   isCreatingNode,
   onSelectProject,
   onSelectNode,
+  onSelectTask,
   onEditNode,
   onGenerate,
   onStartCreateProject,
@@ -1855,6 +2053,8 @@ function RoadmapTaskView({
   onOptimizeLayout,
   onSearchResources,
   onToggleArticleSearchSource,
+  onAddArticleSearchSource,
+  onRemoveArticleSearchSource,
   onManualTitleChange,
   onManualURLChange,
   onAddResource,
@@ -1866,9 +2066,12 @@ function RoadmapTaskView({
   roadmap: LearningRoadmap | null | undefined
   isLoading: boolean
   selectedNodeID: string
+  tasks: Task[]
+  selectedTaskID: string
   manualResourceTitle: string
   manualResourceURL: string
   articleSearchSources: string[]
+  articleSearchSourceOptions: ArticleSearchSourceOption[]
   isGenerating: boolean
   isSearching: boolean
   isAddingResource: boolean
@@ -1877,14 +2080,17 @@ function RoadmapTaskView({
   isCreatingNode: boolean
   onSelectProject: (value: string) => void
   onSelectNode: (value: string) => void
+  onSelectTask: (taskID: string) => void
   onEditNode: (value: string) => void
-  onGenerate: () => void
+  onGenerate: (prompt: string) => void
   onStartCreateProject: () => void
   isCreatingProject: boolean
   onOpenCreateNode: (nodeID: string) => void
   onOptimizeLayout: (roadmapID: string) => void
-  onSearchResources: (nodeID: string) => void
+  onSearchResources: (nodeID: string, query: string) => void
   onToggleArticleSearchSource: (sourceID: string) => void
+  onAddArticleSearchSource: (value: string) => boolean
+  onRemoveArticleSearchSource: (sourceID: string) => void
   onManualTitleChange: (value: string) => void
   onManualURLChange: (value: string) => void
   onAddResource: (nodeID: string) => void
@@ -1902,6 +2108,39 @@ function RoadmapTaskView({
     ? Math.round((completedNodeCount / roadmap.nodes.length) * 100)
     : 0
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isGenerationPromptOpen, setIsGenerationPromptOpen] = useState(false)
+  const [generationPrompts, setGenerationPrompts] = useState<
+    Record<string, string>
+  >(loadRoadmapGenerationPrompts)
+  const defaultGenerationPrompt =
+    buildDefaultRoadmapGenerationPrompt(selectedProject)
+  const generationPrompt = selectedProjectID
+    ? (generationPrompts[selectedProjectID] ?? defaultGenerationPrompt)
+    : ''
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      roadmapGenerationPromptsStorageKey,
+      JSON.stringify(generationPrompts)
+    )
+  }, [generationPrompts])
+
+  function handleGenerationPromptChange(value: string) {
+    if (!selectedProjectID) return
+    setGenerationPrompts((current) => ({
+      ...current,
+      [selectedProjectID]: value,
+    }))
+  }
+
+  function handleRestoreGenerationPrompt() {
+    if (!selectedProjectID) return
+    setGenerationPrompts((current) => {
+      const next = { ...current }
+      delete next[selectedProjectID]
+      return next
+    })
+  }
 
   useEffect(() => {
     if (!isFullscreen) return
@@ -1938,25 +2177,73 @@ function RoadmapTaskView({
             ))}
           </select>
         </label>
-        <button
-          className="roadmap-generate-button"
-          type="button"
-          onClick={onGenerate}
-          disabled={!selectedProjectID || isGenerating}
-        >
-          <WandSparkles aria-hidden="true" />
-          {isGenerating
-            ? '正在生成完整路径...'
-            : roadmap
-              ? '重新生成完整路径'
-              : '生成完整路径'}
-        </button>
+        <div className="roadmap-generate-actions">
+          <button
+            className="roadmap-generation-prompt-toggle"
+            type="button"
+            aria-expanded={isGenerationPromptOpen}
+            onClick={() => setIsGenerationPromptOpen((current) => !current)}
+            disabled={!selectedProjectID}
+          >
+            编辑生成提示词
+          </button>
+          <button
+            className="roadmap-generate-button"
+            type="button"
+            onClick={() => onGenerate(generationPrompt.trim())}
+            disabled={
+              !selectedProjectID || isGenerating || !generationPrompt.trim()
+            }
+          >
+            <WandSparkles aria-hidden="true" />
+            {isGenerating
+              ? '正在生成完整路径...'
+              : roadmap
+                ? '重新生成完整路径'
+                : '生成完整路径'}
+          </button>
+        </div>
         {selectedProject && (
           <span className="roadmap-goal">
             {selectedProject.description || selectedProject.name}
           </span>
         )}
       </div>
+
+      {selectedProject && isGenerationPromptOpen && (
+        <section
+          className="roadmap-generation-prompt-editor"
+          aria-label="完整路径生成提示词"
+        >
+          <div>
+            <label htmlFor="roadmap-generation-prompt">
+              完整路径生成提示词
+            </label>
+            {generationPrompt !== defaultGenerationPrompt && (
+              <button type="button" onClick={handleRestoreGenerationPrompt}>
+                恢复默认
+              </button>
+            )}
+          </div>
+          <textarea
+            id="roadmap-generation-prompt"
+            value={generationPrompt}
+            onChange={(event) =>
+              handleGenerationPromptChange(event.target.value)
+            }
+            maxLength={maxRoadmapGenerationPromptLength}
+            rows={4}
+          />
+          <small>
+            <span>
+              这里填写你对完整学习路径的额外要求；系统仍会保留节点结构和输出格式约束。
+            </span>
+            <span>
+              {generationPrompt.length} / {maxRoadmapGenerationPromptLength}
+            </span>
+          </small>
+        </section>
+      )}
 
       {roadmap && (
         <section className="roadmap-overview" aria-label="Roadmap 进度">
@@ -2009,15 +2296,21 @@ function RoadmapTaskView({
           <RoadmapInspector
             node={selectedNode}
             stepNumber={selectedStepNumber}
+            tasks={tasks}
+            selectedTaskID={selectedTaskID}
             onEditNode={onEditNode}
+            onSelectTask={onSelectTask}
             manualTitle={manualResourceTitle}
             manualURL={manualResourceURL}
             articleSearchSources={articleSearchSources}
+            articleSearchSourceOptions={articleSearchSourceOptions}
             isSearching={isSearching}
             isAddingResource={isAddingResource}
             deletingResourceID={deletingResourceID}
             onSearchResources={onSearchResources}
             onToggleArticleSearchSource={onToggleArticleSearchSource}
+            onAddArticleSearchSource={onAddArticleSearchSource}
+            onRemoveArticleSearchSource={onRemoveArticleSearchSource}
             onManualTitleChange={onManualTitleChange}
             onManualURLChange={onManualURLChange}
             onAddResource={onAddResource}
@@ -2259,15 +2552,21 @@ function RoadmapFlowNode(props: NodeProps) {
 function RoadmapInspector({
   node,
   stepNumber,
+  tasks,
+  selectedTaskID,
   onEditNode,
+  onSelectTask,
   manualTitle,
   manualURL,
   articleSearchSources,
+  articleSearchSourceOptions,
   isSearching,
   isAddingResource,
   deletingResourceID,
   onSearchResources,
   onToggleArticleSearchSource,
+  onAddArticleSearchSource,
+  onRemoveArticleSearchSource,
   onManualTitleChange,
   onManualURLChange,
   onAddResource,
@@ -2275,25 +2574,37 @@ function RoadmapInspector({
 }: {
   node?: RoadmapNode
   stepNumber: number
+  tasks: Task[]
+  selectedTaskID: string
   onEditNode: (nodeID: string) => void
+  onSelectTask: (taskID: string) => void
   manualTitle: string
   manualURL: string
   articleSearchSources: string[]
+  articleSearchSourceOptions: ArticleSearchSourceOption[]
   isSearching: boolean
   isAddingResource: boolean
   deletingResourceID: string
-  onSearchResources: (nodeID: string) => void
+  onSearchResources: (nodeID: string, query: string) => void
   onToggleArticleSearchSource: (sourceID: string) => void
+  onAddArticleSearchSource: (value: string) => boolean
+  onRemoveArticleSearchSource: (sourceID: string) => void
   onManualTitleChange: (value: string) => void
   onManualURLChange: (value: string) => void
   onAddResource: (nodeID: string) => void
   onDeleteResource: (resourceID: string) => Promise<void>
 }) {
   const [pendingDeleteResourceID, setPendingDeleteResourceID] = useState('')
+  const defaultSearchPrompt = buildRoadmapNodeSearchPrompt(node)
+  const [searchPrompt, setSearchPrompt] = useState(defaultSearchPrompt)
+  const [customSourceDraft, setCustomSourceDraft] = useState('')
+  const [customSourceError, setCustomSourceError] = useState('')
 
   useEffect(() => {
     setPendingDeleteResourceID('')
-  }, [node?.id])
+    setSearchPrompt(defaultSearchPrompt)
+    setCustomSourceError('')
+  }, [node?.id, defaultSearchPrompt])
 
   if (!node) {
     return (
@@ -2302,14 +2613,6 @@ function RoadmapInspector({
       </aside>
     )
   }
-
-  const searchPrompt = [
-    node.article_search_queries?.[0],
-    node.title,
-    node.deliverable,
-  ]
-    .filter(Boolean)
-    .join(' · ')
 
   return (
     <aside className="roadmap-inspector">
@@ -2342,6 +2645,44 @@ function RoadmapInspector({
         <p>{node.acceptance_criteria || '暂无验收标准'}</p>
       </div>
 
+      <div className="roadmap-linked-task-section">
+        <div className="roadmap-linked-task-heading">
+          <strong>关联任务</strong>
+          <span>{tasks.length}</span>
+        </div>
+        {tasks.length === 0 ? (
+          <p className="roadmap-linked-task-empty">
+            当前节点还没有关联任务，可点击“编辑节点与任务”创建。
+          </p>
+        ) : (
+          <div className="roadmap-linked-task-list">
+            {tasks.map((task, index) => {
+              const title = formatRoadmapTaskTitle(task.title, index + 1)
+              const plannedDate = getTaskPlannedDate(task)
+
+              return (
+                <button
+                  key={task.id}
+                  type="button"
+                  className={task.id === selectedTaskID ? 'is-selected' : ''}
+                  aria-label={`在任务详情中编辑 ${title}`}
+                  onClick={() => onSelectTask(task.id)}
+                >
+                  <span>
+                    <strong>{title}</strong>
+                    <small>
+                      {plannedDate || '未安排日期'} ·{' '}
+                      {formatRoadmapTaskStatus(task)}
+                    </small>
+                  </span>
+                  <em>编辑详情</em>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="roadmap-resource-section-heading">
         <BookOpen aria-hidden="true" />
         <strong>学习资料</strong>
@@ -2349,16 +2690,36 @@ function RoadmapInspector({
       </div>
 
       <div className="roadmap-search-context">
-        <span>本节点搜索提示词</span>
-        <p>{searchPrompt}</p>
+        <label htmlFor={`roadmap-search-prompt-${node.id}`}>
+          本节点搜索提示词
+        </label>
+        <textarea
+          id={`roadmap-search-prompt-${node.id}`}
+          aria-label="搜索提示词"
+          value={searchPrompt}
+          onChange={(event) => setSearchPrompt(event.target.value)}
+          rows={3}
+        />
+        {searchPrompt !== defaultSearchPrompt && (
+          <button
+            type="button"
+            onClick={() => setSearchPrompt(defaultSearchPrompt)}
+          >
+            恢复节点默认提示词
+          </button>
+        )}
         <small>搜索结果将按当前节点的主题、交付物和验收目标过滤</small>
       </div>
 
       <div className="roadmap-inspector-actions">
         <button
           type="button"
-          onClick={() => onSearchResources(node.id)}
-          disabled={isSearching || articleSearchSources.length === 0}
+          onClick={() => onSearchResources(node.id, searchPrompt.trim())}
+          disabled={
+            isSearching ||
+            articleSearchSources.length === 0 ||
+            !searchPrompt.trim()
+          }
         >
           <Search aria-hidden="true" />
           {isSearching ? '搜索中...' : '搜索文章'}
@@ -2367,18 +2728,60 @@ function RoadmapInspector({
 
       <fieldset className="roadmap-source-settings" aria-label="搜索源">
         <legend>搜索源</legend>
-        <div>
+        <div className="roadmap-source-options">
           {articleSearchSourceOptions.map((source) => (
-            <label key={source.id}>
-              <input
-                type="checkbox"
-                checked={articleSearchSources.includes(source.id)}
-                onChange={() => onToggleArticleSearchSource(source.id)}
-              />
-              <span>{source.label}</span>
-            </label>
+            <div className="roadmap-source-option" key={source.id}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={articleSearchSources.includes(source.id)}
+                  onChange={() => onToggleArticleSearchSource(source.id)}
+                />
+                <span>{source.label}</span>
+              </label>
+              {source.custom && (
+                <button
+                  type="button"
+                  aria-label={`删除搜索源 ${source.label}`}
+                  title="删除自定义搜索源"
+                  onClick={() => onRemoveArticleSearchSource(source.id)}
+                >
+                  ×
+                </button>
+              )}
+            </div>
           ))}
         </div>
+        <form
+          className="roadmap-source-add-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (onAddArticleSearchSource(customSourceDraft)) {
+              setCustomSourceDraft('')
+              setCustomSourceError('')
+            } else {
+              setCustomSourceError('请输入有效的网站域名')
+            }
+          }}
+        >
+          <input
+            aria-label="自定义搜索源"
+            value={customSourceDraft}
+            onChange={(event) => {
+              setCustomSourceDraft(event.target.value)
+              setCustomSourceError('')
+            }}
+            placeholder="添加网站域名，如 docs.python.org"
+          />
+          <button type="submit" disabled={!customSourceDraft.trim()}>
+            添加来源
+          </button>
+        </form>
+        {customSourceError && (
+          <small className="roadmap-source-error" role="alert">
+            {customSourceError}
+          </small>
+        )}
       </fieldset>
 
       <form
@@ -2969,6 +3372,7 @@ function RoadmapLinkedTaskRow({
   const title = formatRoadmapTaskTitle(task.title, sequence)
   const actionLabel = isDone ? `重新打开 ${title}` : `完成 ${title}`
   const isDirty = content.trim() !== (task.content ?? '').trim()
+  const taskColor = getTaskColor(task.id, task.color)
 
   useEffect(() => {
     setContent(task.content ?? '')
@@ -2983,6 +3387,11 @@ function RoadmapLinkedTaskRow({
     <article
       className={`roadmap-linked-task-row${isDone ? ' is-done' : ''}${isUpdating ? ' is-updating' : ''}`}
     >
+      <span
+        className="task-color-dot"
+        style={{ backgroundColor: taskColor }}
+        aria-label={`任务颜色：${title}`}
+      />
       <button
         type="button"
         className="roadmap-linked-task-check"

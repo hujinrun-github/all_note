@@ -143,12 +143,17 @@ type CreateRoadmapResourceRequest struct {
 
 type SearchRoadmapResourcesRequest struct {
 	Sources []string `json:"sources"`
+	Query   string   `json:"query"`
 }
 
 type RoadmapResourceSearchResult struct {
 	NodeID    string            `json:"node_id"`
 	Query     string            `json:"query"`
 	Resources []RoadmapResource `json:"resources"`
+}
+
+type GenerateLearningRoadmapRequest struct {
+	Prompt string `json:"prompt" binding:"max=4000"`
 }
 
 type CreateRoadmapNodeRequest struct {

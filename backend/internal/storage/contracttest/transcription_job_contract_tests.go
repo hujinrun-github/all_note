@@ -327,6 +327,18 @@ func RunTranscriptionJobSuite(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		mobileRepository, err := storage.MobileSyncRepositoryFrom(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		voiceBefore, err := mobileRepository.GetEntityByClientID(ctx, "voice_note", voiceClientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changesBefore, err := mobileRepository.ListPendingChanges(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		worker := transcriptionJobWorkerRepository(t, store)
 		claim := func(attempt int64, at int64) *model.TranscriptionJobLease {
 			t.Helper()
@@ -379,6 +391,34 @@ func RunTranscriptionJobSuite(t *testing.T, factory StoreFactory) {
 		}
 		if failed.State != model.TranscriptionJobFailed || failed.NextAttemptAt != nil || failed.ErrorCode != "provider_5xx" {
 			t.Fatalf("failed job = %+v", failed)
+		}
+		voiceAfter, err := mobileRepository.GetEntityByClientID(ctx, "voice_note", voiceClientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if voiceAfter.Revision != voiceBefore.Revision+1 {
+			t.Fatalf("voice revision after terminal failure = %d, want %d", voiceAfter.Revision, voiceBefore.Revision+1)
+		}
+		changesAfter, err := mobileRepository.ListPendingChanges(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		terminalChanges := changesAfter[len(changesBefore):]
+		if len(terminalChanges) != 2 {
+			t.Fatalf("terminal failure changes = %d, want 2: %+v", len(terminalChanges), terminalChanges)
+		}
+		jobChangeFound := false
+		voiceChangeFound := false
+		for _, change := range terminalChanges {
+			switch change.Entity.EntityType {
+			case "transcription_job":
+				jobChangeFound = change.Operation == "transcription_job.failed" && change.Entity.ClientID == created.JobID
+			case "voice_note":
+				voiceChangeFound = change.Operation == "voice.server_updated" && change.Entity.ClientID == voiceClientID
+			}
+		}
+		if !jobChangeFound || !voiceChangeFound {
+			t.Fatalf("terminal failure changes = %+v", terminalChanges)
 		}
 		if _, err := worker.ClaimNext(context.Background(), model.ClaimTranscriptionJob{
 			WorkerID: "after-terminal", LeaseToken: "after-terminal", Now: at + 1000, LeaseExpiresAt: at + 1120,
@@ -571,6 +611,10 @@ func RunTranscriptionJobSuite(t *testing.T, factory StoreFactory) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				voiceBefore, err := mobileRepository.GetEntityByClientID(ctx, "voice_note", voiceClientID)
+				if err != nil {
+					t.Fatal(err)
+				}
 				worker := transcriptionJobWorkerRepository(t, store)
 				lease, err := worker.ClaimNext(context.Background(), model.ClaimTranscriptionJob{
 					WorkerID: "complete-worker", LeaseToken: "complete-lease", Now: now, LeaseExpiresAt: now + 120,
@@ -598,7 +642,7 @@ func RunTranscriptionJobSuite(t *testing.T, factory StoreFactory) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				wantChangeCount := len(beforeChanges) + 1
+				wantChangeCount := len(beforeChanges) + 2
 				if testCase.wantState == model.TranscriptionJobCompleted {
 					wantChangeCount++
 				}
@@ -608,6 +652,7 @@ func RunTranscriptionJobSuite(t *testing.T, factory StoreFactory) {
 				newChanges := afterChanges[len(beforeChanges):]
 				jobChangeFound := false
 				noteChangeFound := false
+				voiceChangeFound := false
 				for _, change := range newChanges {
 					switch change.Entity.EntityType {
 					case "transcription_job":
@@ -621,10 +666,19 @@ func RunTranscriptionJobSuite(t *testing.T, factory StoreFactory) {
 						}
 					case "note":
 						noteChangeFound = change.Operation == "note.transcription_applied"
+					case "voice_note":
+						voiceChangeFound = change.Operation == "voice.server_updated" && change.Entity.ClientID == voiceClientID
 					}
 				}
-				if !jobChangeFound || (testCase.wantState == model.TranscriptionJobCompleted) != noteChangeFound {
+				if !jobChangeFound || !voiceChangeFound || (testCase.wantState == model.TranscriptionJobCompleted) != noteChangeFound {
 					t.Fatalf("completion changes = %+v", newChanges)
+				}
+				voiceAfter, err := mobileRepository.GetEntityByClientID(ctx, "voice_note", voiceClientID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if voiceAfter.Revision != voiceBefore.Revision+1 {
+					t.Fatalf("voice revision after completion = %d, want %d", voiceAfter.Revision, voiceBefore.Revision+1)
 				}
 				if _, err := worker.Complete(context.Background(), model.CompleteTranscriptionJob{
 					JobID: created.JobID, LeaseToken: lease.LeaseToken, Text: "Stale overwrite", Now: now + 2,

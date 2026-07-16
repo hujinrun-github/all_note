@@ -159,7 +159,7 @@ func (r searchRepository) searchTasksFTS(ctx context.Context, workspaceID string
 		SELECT COUNT(*)
 		FROM tasks_fts
 		JOIN tasks t ON t.rowid = tasks_fts.rowid
-		WHERE t.workspace_id = ? AND tasks_fts MATCH ?
+		WHERE t.workspace_id = ? AND t.deleted_at IS NULL AND tasks_fts MATCH ?
 	`, workspaceID, query).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -169,7 +169,7 @@ func (r searchRepository) searchTasksFTS(ctx context.Context, workspaceID string
 		       t.done, t.updated_at
 		FROM tasks_fts
 		JOIN tasks t ON t.rowid = tasks_fts.rowid
-		WHERE t.workspace_id = ? AND tasks_fts MATCH ?
+		WHERE t.workspace_id = ? AND t.deleted_at IS NULL AND tasks_fts MATCH ?
 		ORDER BY t.updated_at DESC LIMIT ?
 	`, workspaceID, query, limit)
 	if err != nil {
@@ -195,7 +195,7 @@ func (r searchRepository) searchEventsFTS(ctx context.Context, workspaceID strin
 		SELECT COUNT(*)
 		FROM events_fts
 		JOIN events e ON e.rowid = events_fts.rowid
-		WHERE e.workspace_id = ? AND events_fts MATCH ?
+		WHERE e.workspace_id = ? AND e.deleted_at IS NULL AND events_fts MATCH ?
 	`, workspaceID, query).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -205,7 +205,7 @@ func (r searchRepository) searchEventsFTS(ctx context.Context, workspaceID strin
 		       e.kind, e.updated_at
 		FROM events_fts
 		JOIN events e ON e.rowid = events_fts.rowid
-		WHERE e.workspace_id = ? AND events_fts MATCH ?
+		WHERE e.workspace_id = ? AND e.deleted_at IS NULL AND events_fts MATCH ?
 		ORDER BY e.updated_at DESC LIMIT ?
 	`, workspaceID, query, limit)
 	if err != nil {
@@ -257,14 +257,14 @@ func (r searchRepository) searchNotesLIKE(ctx context.Context, workspaceID strin
 
 func (r searchRepository) searchTasksLIKE(ctx context.Context, workspaceID string, query string, limit int) ([]model.SearchResult, int, error) {
 	var total int
-	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE workspace_id = ? AND title LIKE ?", workspaceID, query).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE workspace_id = ? AND deleted_at IS NULL AND title LIKE ?", workspaceID, query).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, done, updated_at
 		FROM tasks
-		WHERE workspace_id = ? AND title LIKE ?
+		WHERE workspace_id = ? AND deleted_at IS NULL AND title LIKE ?
 		ORDER BY updated_at DESC LIMIT ?
 	`, workspaceID, query, limit)
 	if err != nil {
@@ -287,14 +287,14 @@ func (r searchRepository) searchTasksLIKE(ctx context.Context, workspaceID strin
 
 func (r searchRepository) searchEventsLIKE(ctx context.Context, workspaceID string, query string, limit int) ([]model.SearchResult, int, error) {
 	var total int
-	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events WHERE workspace_id = ? AND (title LIKE ? OR location LIKE ?)", workspaceID, query, query).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events WHERE workspace_id = ? AND deleted_at IS NULL AND (title LIKE ? OR location LIKE ?)", workspaceID, query, query).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, title, kind, updated_at
 		FROM events
-		WHERE workspace_id = ? AND (title LIKE ? OR location LIKE ?)
+		WHERE workspace_id = ? AND deleted_at IS NULL AND (title LIKE ? OR location LIKE ?)
 		ORDER BY updated_at DESC LIMIT ?
 	`, workspaceID, query, query, limit)
 	if err != nil {

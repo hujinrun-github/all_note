@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/mobilesync"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -34,6 +35,12 @@ func ApplyMobileMutations(store storage.Store) gin.HandlerFunc {
 			mobileError(c, http.StatusBadRequest, "invalid_request", "request body must contain one JSON object", false)
 			return
 		}
+		if identity, ok := auth.IdentityFromContext(c.Request.Context()); ok && identity.SessionID == "" {
+			if identity.DeviceID == "" || batch.ClientID != identity.DeviceID || !watchMutationBatchAllowed(batch) {
+				mobileError(c, http.StatusForbidden, "scope_forbidden", "watch credentials may only perform the documented watch operations", false)
+				return
+			}
+		}
 		result, err := mobilesync.ApplyBatch(c.Request.Context(), store, batch)
 		if err != nil {
 			switch {
@@ -48,6 +55,20 @@ func ApplyMobileMutations(store storage.Store) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, result)
 	}
+}
+
+func watchMutationBatchAllowed(batch mobilesync.MutationBatch) bool {
+	if len(batch.Mutations) == 0 {
+		return false
+	}
+	for _, mutation := range batch.Mutations {
+		switch mutation.Operation {
+		case "task_occurrence.complete", "task_occurrence.reopen", "voice.create", "voice_audio.delete", "voice_note.delete":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func ensureRequestEOF(decoder *json.Decoder) error {

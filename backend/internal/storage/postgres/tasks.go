@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
@@ -71,7 +73,7 @@ func (r taskRepository) List(ctx context.Context, filter storage.TaskFilter) ([]
 }
 
 func postgresTaskWhere(filter storage.TaskFilter, workspaceID string) ([]string, []interface{}) {
-	where := []string{"t.workspace_id = $1"}
+	where := []string{"t.workspace_id = $1", "t.deleted_at IS NULL"}
 	args := []interface{}{workspaceID}
 	next := 2
 	if filter.Project != "" {
@@ -291,16 +293,20 @@ func (r taskRepository) Create(ctx context.Context, task *model.Task) error {
 	if err := r.normalizeTaskDefaults(ctx, workspaceID, task); err != nil {
 		return err
 	}
+	clientID := deterministicPostgresMobileEntityClientID("task", workspaceID, task.ID)
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks (
-				id, title, content, project, project_id, due_at, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, execution_type, created_at, updated_at, workspace_id
+				id, client_id, revision, title, content, project, project_id, due_at, planned_date, priority, done, status, horizon, scope, sort_order, note_id, roadmap_node_id, execution_type, created_at, updated_at, workspace_id
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-		`, task.ID, task.Title, task.Content, task.Project, task.ProjectID, postgresTimePtr(task.Due), task.PlannedDate, task.Priority, task.Done == 1, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.ExecutionType, unixToTime(task.CreatedAt), unixToTime(task.UpdatedAt), workspaceID); err != nil {
+			VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8::date, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		`, task.ID, clientID, task.Title, task.Content, task.Project, task.ProjectID, postgresTimePtr(task.Due), task.PlannedDate, task.Priority, task.Done == 1, task.Status, task.Horizon, task.Scope, task.SortOrder, task.NoteID, task.RoadmapNodeID, task.ExecutionType, unixToTime(task.CreatedAt), unixToTime(task.UpdatedAt), workspaceID); err != nil {
 			return err
 		}
-		return upsertTaskSearchIndex(ctx, tx, workspaceID, task)
+		if err := upsertTaskSearchIndex(ctx, tx, workspaceID, task); err != nil {
+			return err
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "task", "task.server_created", clientID, unixToTime(task.UpdatedAt))
 	})
 }
 
@@ -313,7 +319,7 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 	err = r.withTx(ctx, func(tx *sql.Tx) error {
 		// TOCTOU: read current done state inside transaction
 		var currentDone bool
-		if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE workspace_id = $1 AND id = $2`, workspaceID, id).Scan(&currentDone); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT done FROM tasks WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`, workspaceID, id).Scan(&currentDone); err != nil {
 			return err
 		}
 
@@ -398,14 +404,14 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 		clause, args := builder.ClauseAndArgs()
 		args = append(args, id, workspaceID)
 
-		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = %s AND workspace_id = %s", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...)
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE tasks SET %s, revision = revision + 1 WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...)
 		if err != nil {
 			return err
 		}
 		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
 			return sql.ErrNoRows
 		}
-		task, err := scanPostgresTaskRow(tx.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.workspace_id = $1 AND t.id = $2`, workspaceID, id))
+		task, err := scanPostgresTaskRow(tx.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.workspace_id = $1 AND t.id = $2 AND t.deleted_at IS NULL`, workspaceID, id))
 		if err != nil {
 			return err
 		}
@@ -416,7 +422,11 @@ func (r taskRepository) Update(ctx context.Context, id string, req *model.Update
 			return err
 		}
 		updated = task
-		return nil
+		var clientID string
+		if err := tx.QueryRowContext(ctx, `SELECT client_id FROM tasks WHERE workspace_id = $1 AND id = $2`, workspaceID, id).Scan(&clientID); err != nil {
+			return err
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "task", "task.server_updated", clientID, time.Now().UTC())
 	})
 	if err != nil {
 		return nil, err
@@ -429,7 +439,7 @@ func (r taskRepository) GetByID(ctx context.Context, id string) (*model.Task, er
 	if err != nil {
 		return nil, err
 	}
-	return scanPostgresTaskRow(r.db.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.workspace_id = $1 AND t.id = $2`, workspaceID, id))
+	return scanPostgresTaskRow(r.db.QueryRowContext(ctx, postgresTaskSelectSQL()+` WHERE t.workspace_id = $1 AND t.id = $2 AND t.deleted_at IS NULL`, workspaceID, id))
 }
 
 func (r taskRepository) Delete(ctx context.Context, id string) error {
@@ -437,12 +447,32 @@ func (r taskRepository) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE workspace_id = $1 AND id = $2`, workspaceID, id); err != nil {
+		var clientID string
+		err := tx.QueryRowContext(ctx, `SELECT client_id FROM tasks WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`, workspaceID, id).Scan(&clientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'task' AND entity_id = $2`, workspaceID, id)
-		return err
+		if err := tombstonePostgresTaskOccurrences(ctx, tx, workspaceID, id, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM task_recurrence_rules WHERE workspace_id = $1 AND task_id = $2`, workspaceID, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET deleted_at = $1, updated_at = $1, revision = revision + 1 WHERE workspace_id = $2 AND id = $3 AND deleted_at IS NULL`, now, workspaceID, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES ($1, 'task', $2, $3) ON CONFLICT DO NOTHING`, workspaceID, clientID, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'task' AND entity_id = $2`, workspaceID, id); err != nil {
+			return err
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "task", "task.server_deleted", clientID, now)
 	})
 }
 
@@ -454,7 +484,7 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 	todayDate := time.Unix(todayStart, 0).In(time.Local).Format("2006-01-02")
 	overdueCutoffDate := time.Unix(overdueCutoff, 0).In(time.Local).Format("2006-01-02")
 	rows, err := r.db.QueryContext(ctx, postgresTaskSelectSQL()+`
-		WHERE t.workspace_id = $1 AND t.done = false AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single') AND (
+		WHERE t.workspace_id = $1 AND t.deleted_at IS NULL AND t.done = false AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single') AND (
 			(t.due_at >= $2 AND t.due_at < $3)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long' AND t.planned_date = $4::date)
 			OR (COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) = 'long'
@@ -473,6 +503,7 @@ func (r taskRepository) Today(ctx context.Context, todayStart, todayEnd, overdue
 
 	rows, err = r.db.QueryContext(ctx, postgresTaskSelectSQL()+`
 		WHERE t.workspace_id = $1
+			AND t.deleted_at IS NULL
 			AND t.done = false
 			AND (t.execution_type IS NULL OR t.execution_type = '' OR t.execution_type = 'single')
 			AND COALESCE(t.horizon, CASE WHEN t.scope IN ('monthly', 'yearly') THEN 'long' ELSE 'week' END) <> 'long'
@@ -498,7 +529,7 @@ func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to i
 	}
 	var total int
 	if err := r.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM tasks WHERE workspace_id = $1 AND completed_at >= $2 AND completed_at < $3`,
+		`SELECT COUNT(*) FROM tasks WHERE workspace_id = $1 AND deleted_at IS NULL AND completed_at >= $2 AND completed_at < $3`,
 		workspaceID, unixToTime(from), unixToTime(to),
 	).Scan(&total); err != nil {
 		return nil, 0, err
@@ -508,7 +539,7 @@ func (r taskRepository) GetCompletedTasksByRange(ctx context.Context, from, to i
 		`SELECT t.id, t.title, t.done, t.planned_date, t.due_at, t.completed_at, t.note_id,
 		        p.id, p.name, p.type
 		 FROM tasks t LEFT JOIN task_projects p ON p.workspace_id = t.workspace_id AND t.project_id = p.id
-		 WHERE t.workspace_id = $1 AND t.completed_at >= $2 AND t.completed_at < $3
+		 WHERE t.workspace_id = $1 AND t.deleted_at IS NULL AND t.completed_at >= $2 AND t.completed_at < $3
 		 ORDER BY t.completed_at DESC LIMIT $4 OFFSET $5`,
 		workspaceID, unixToTime(from), unixToTime(to), pageSize, offset,
 	)
@@ -555,7 +586,7 @@ func (r taskRepository) GetSummaryStats(ctx context.Context, from, to int64) (in
 	err = r.db.QueryRowContext(ctx,
 		`SELECT COUNT(DISTINCT DATE(completed_at)),
 		        COUNT(DISTINCT project_id)
-		 FROM tasks WHERE workspace_id = $1 AND completed_at >= $2 AND completed_at < $3`,
+		 FROM tasks WHERE workspace_id = $1 AND deleted_at IS NULL AND completed_at >= $2 AND completed_at < $3`,
 		workspaceID, unixToTime(from), unixToTime(to),
 	).Scan(&activeDays, &projectCount)
 	return activeDays, projectCount, err

@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
@@ -125,7 +127,8 @@ func (r recurrenceRepository) ListOccurrences(ctx context.Context, from, to stri
 		FROM task_occurrences o
 		JOIN tasks t ON t.workspace_id = o.workspace_id AND t.id = o.task_id
 		LEFT JOIN task_projects p ON p.workspace_id = t.workspace_id AND p.id = t.project_id
-		WHERE o.workspace_id = $1 AND o.occurrence_date >= $2::date AND o.occurrence_date <= $3::date
+		WHERE o.workspace_id = $1 AND o.deleted_at IS NULL AND t.deleted_at IS NULL
+			AND o.occurrence_date >= $2::date AND o.occurrence_date <= $3::date
 		ORDER BY o.occurrence_date, t.sort_order
 	`, workspaceID, from, to)
 	if err != nil {
@@ -147,7 +150,7 @@ func (r recurrenceRepository) GetCompletedOccurrencesByRange(ctx context.Context
 		FROM task_occurrences o
 		JOIN tasks t ON t.workspace_id = o.workspace_id AND t.id = o.task_id
 		LEFT JOIN task_projects p ON p.workspace_id = t.workspace_id AND p.id = t.project_id
-		WHERE o.workspace_id = $1
+		WHERE o.workspace_id = $1 AND o.deleted_at IS NULL AND t.deleted_at IS NULL
 			AND o.completed_at IS NOT NULL
 			AND o.completed_at >= to_timestamp($2)
 			AND o.completed_at < to_timestamp($3)
@@ -191,13 +194,7 @@ func (r recurrenceRepository) CompleteOccurrence(ctx context.Context, taskID, da
 	if err := r.ensureTaskInWorkspace(ctx, workspaceID, taskID); err != nil {
 		return nil, err
 	}
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO task_occurrences (task_id, occurrence_date, status, completed_at, workspace_id)
-		VALUES ($1, $2::date, 'done', to_timestamp($3), $4)
-		ON CONFLICT (task_id, occurrence_date) DO UPDATE SET
-			status = 'done', completed_at = to_timestamp($3), workspace_id = EXCLUDED.workspace_id, updated_at = now()
-	`, taskID, date, completedAt, workspaceID)
-	if err != nil {
+	if err := r.writeMobileOccurrence(ctx, workspaceID, taskID, date, "done", &completedAt); err != nil {
 		return nil, err
 	}
 	return r.getOccurrence(ctx, taskID, date)
@@ -211,13 +208,7 @@ func (r recurrenceRepository) ReopenOccurrence(ctx context.Context, taskID, date
 	if err := r.ensureTaskInWorkspace(ctx, workspaceID, taskID); err != nil {
 		return nil, err
 	}
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO task_occurrences (task_id, occurrence_date, status, completed_at, workspace_id)
-		VALUES ($1, $2::date, 'open', NULL, $3)
-		ON CONFLICT (task_id, occurrence_date) DO UPDATE SET
-			status = 'open', completed_at = NULL, workspace_id = EXCLUDED.workspace_id, updated_at = now()
-	`, taskID, date, workspaceID)
-	if err != nil {
+	if err := r.writeMobileOccurrence(ctx, workspaceID, taskID, date, "open", nil); err != nil {
 		return nil, err
 	}
 	return r.getOccurrence(ctx, taskID, date)
@@ -231,16 +222,48 @@ func (r recurrenceRepository) SkipOccurrence(ctx context.Context, taskID, date s
 	if err := r.ensureTaskInWorkspace(ctx, workspaceID, taskID); err != nil {
 		return nil, err
 	}
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO task_occurrences (task_id, occurrence_date, status, completed_at, workspace_id)
-		VALUES ($1, $2::date, 'skipped', NULL, $3)
-		ON CONFLICT (task_id, occurrence_date) DO UPDATE SET
-			status = 'skipped', completed_at = NULL, workspace_id = EXCLUDED.workspace_id, updated_at = now()
-	`, taskID, date, workspaceID)
-	if err != nil {
+	if err := r.writeMobileOccurrence(ctx, workspaceID, taskID, date, "skipped", nil); err != nil {
 		return nil, err
 	}
 	return r.getOccurrence(ctx, taskID, date)
+}
+
+func (r recurrenceRepository) writeMobileOccurrence(ctx context.Context, workspaceID, taskID, date, status string, completedAt *int64) error {
+	occurrenceID := deterministicPostgresMobileEntityClientID("task_occurrence", workspaceID, taskID+":"+date)
+	now := time.Now().UTC()
+	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_occurrences WHERE workspace_id = $1 AND task_id = $2 AND occurrence_date = $3::date`, workspaceID, taskID, date).Scan(&exists); err != nil {
+			return err
+		}
+		operation := "task_occurrence.server_created"
+		if exists == 0 {
+			var completed any
+			if completedAt != nil {
+				completed = time.Unix(*completedAt, 0).UTC()
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO task_occurrences (
+					task_id, occurrence_date, occurrence_id, revision, status, completed_at, workspace_id, created_at, updated_at
+				) VALUES ($1, $2::date, $3, 1, $4, $5, $6, $7, $7)
+			`, taskID, date, occurrenceID, status, completed, workspaceID, now); err != nil {
+				return err
+			}
+		} else {
+			operation = "task_occurrence.server_updated"
+			var completed any
+			if completedAt != nil {
+				completed = time.Unix(*completedAt, 0).UTC()
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE task_occurrences SET status = $1, completed_at = $2, revision = revision + 1, updated_at = $3
+				WHERE workspace_id = $4 AND task_id = $5 AND occurrence_date = $6::date AND deleted_at IS NULL
+			`, status, completed, now, workspaceID, taskID, date); err != nil {
+				return err
+			}
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "task_occurrence", operation, occurrenceID, now)
+	})
 }
 
 func (r recurrenceRepository) CountOccurrencesByTask(ctx context.Context, taskID string) (int, error) {
@@ -249,7 +272,7 @@ func (r recurrenceRepository) CountOccurrencesByTask(ctx context.Context, taskID
 		return 0, err
 	}
 	var count int
-	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_occurrences WHERE workspace_id = $1 AND task_id = $2`, workspaceID, taskID).Scan(&count)
+	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_occurrences WHERE workspace_id = $1 AND task_id = $2 AND deleted_at IS NULL`, workspaceID, taskID).Scan(&count)
 	return count, err
 }
 
@@ -277,7 +300,7 @@ func (r recurrenceRepository) getOccurrence(ctx context.Context, taskID, date st
 
 func (r recurrenceRepository) ensureTaskInWorkspace(ctx context.Context, workspaceID, taskID string) error {
 	var exists bool
-	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE workspace_id = $1 AND id = $2)`, workspaceID, taskID).Scan(&exists); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL)`, workspaceID, taskID).Scan(&exists); err != nil {
 		return err
 	}
 	if !exists {

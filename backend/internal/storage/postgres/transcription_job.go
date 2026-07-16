@@ -97,12 +97,8 @@ func createOrGetPostgresTranscriptionJob(ctx context.Context, tx *sql.Tx, worksp
 		return job, nil
 	}
 
-	var uploadState string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT upload_state FROM voice_notes WHERE workspace_id = $1 AND client_id = $2
-	`, workspaceID, request.VoiceNoteID).Scan(&uploadState); errors.Is(err, sql.ErrNoRows) {
-		return nil, storage.ErrMobileEntityNotFound
-	} else if err != nil {
+	uploadState, err := postgresVoiceUploadStateForTranscription(ctx, tx, workspaceID, request.VoiceNoteID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -202,12 +198,8 @@ func retryPostgresTranscriptionJob(ctx context.Context, tx *sql.Tx, workspaceID 
 	if latestGeneration != failed.Generation {
 		return nil, storage.ErrStaleTranscriptionJob
 	}
-	var uploadState string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT upload_state FROM voice_notes WHERE workspace_id = $1 AND client_id = $2
-	`, workspaceID, failed.VoiceNoteID).Scan(&uploadState); errors.Is(err, sql.ErrNoRows) {
-		return nil, storage.ErrMobileEntityNotFound
-	} else if err != nil {
+	uploadState, err := postgresVoiceUploadStateForTranscription(ctx, tx, workspaceID, failed.VoiceNoteID)
+	if err != nil {
 		return nil, err
 	}
 	generation := latestGeneration + 1
@@ -231,6 +223,24 @@ func retryPostgresTranscriptionJob(ctx context.Context, tx *sql.Tx, workspaceID 
 		return nil, err
 	}
 	return job, nil
+}
+
+func postgresVoiceUploadStateForTranscription(ctx context.Context, tx *sql.Tx, workspaceID, clientID string) (string, error) {
+	var uploadState, audioState string
+	var deletedAt sql.NullTime
+	err := tx.QueryRowContext(ctx, `
+		SELECT upload_state, audio_state, deleted_at FROM voice_notes WHERE workspace_id = $1 AND client_id = $2
+	`, workspaceID, clientID).Scan(&uploadState, &audioState, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", storage.ErrMobileEntityNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if deletedAt.Valid || audioState == model.VoiceAudioDeleteRequested || audioState == model.VoiceAudioDeleted {
+		return "", storage.ErrVoiceAudioGone
+	}
+	return uploadState, nil
 }
 
 func getPostgresTranscriptionJobReceipt(ctx context.Context, tx *sql.Tx, workspaceID string, request model.CreateTranscriptionJob) (*model.TranscriptionJob, bool, error) {

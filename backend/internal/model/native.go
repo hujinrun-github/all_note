@@ -6,6 +6,12 @@ const (
 	VoiceUploadUploaded  = "uploaded"
 	VoiceUploadFailed    = "failed"
 
+	VoiceAudioAbsent          = "absent"
+	VoiceAudioUploading       = "uploading"
+	VoiceAudioUploaded        = "uploaded"
+	VoiceAudioDeleteRequested = "delete_requested"
+	VoiceAudioDeleted         = "deleted"
+
 	TranscriptionNotStarted = "not_started"
 	TranscriptionProcessing = "processing"
 	TranscriptionCompleted  = "completed"
@@ -51,6 +57,8 @@ type VoiceNote struct {
 	RecordedAt         int64  `json:"recorded_at"`
 	Language           string `json:"language"`
 	UploadState        string `json:"upload_state"`
+	AudioState         string `json:"audio_state"`
+	AudioRevision      int64  `json:"audio_revision"`
 	TranscriptionState string `json:"transcription_state"`
 	TranscriptionError string `json:"transcription_error,omitempty"`
 	MimeType           string `json:"mime_type,omitempty"`
@@ -58,6 +66,8 @@ type VoiceNote struct {
 	AudioSHA256        string `json:"audio_sha256,omitempty"`
 	CreatedAt          int64  `json:"created_at"`
 	UpdatedAt          int64  `json:"updated_at"`
+	Revision           int64  `json:"revision"`
+	DeletedAt          *int64 `json:"deleted_at,omitempty"`
 	WorkspaceID        string `json:"-"`
 	ObjectKey          string `json:"-"`
 }

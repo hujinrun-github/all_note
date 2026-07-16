@@ -1,3 +1,5 @@
+import { getTaskColor } from '../../utils/taskColors'
+
 export interface TaskData {
   id: string
   title: string
@@ -11,6 +13,7 @@ export interface TaskData {
   occurrence_date?: string
   occurrence_status?: 'open' | 'done' | 'skipped'
   recurrence_label?: string
+  color?: string
 }
 
 export function TaskRow({
@@ -31,11 +34,17 @@ export function TaskRow({
   const isDone = !isRecurring && task.done === 1
   const showDone = isDone || isOccurrenceDone
   const actionLabel = showDone ? `重新打开 ${task.title}` : `完成 ${task.title}`
-  const dateLabel = task.occurrence_date || task.planned_date || formatDueDate(task.due)
+  const dateLabel =
+    task.occurrence_date || task.planned_date || formatDueDate(task.due)
+  const taskColor = getTaskColor(task.id, task.color)
 
   function handleToggle() {
     if (isRecurring && task.occurrence_date && onOccurrenceToggle) {
-      onOccurrenceToggle(task.id, task.occurrence_date, task.occurrence_status ?? 'open')
+      onOccurrenceToggle(
+        task.id,
+        task.occurrence_date,
+        task.occurrence_status ?? 'open'
+      )
     } else {
       onToggle(task.id)
     }
@@ -50,7 +59,14 @@ export function TaskRow({
   }
 
   return (
-    <div className={`task-row group ${showDone ? 'is-done' : ''} ${isSelected ? 'is-selected' : ''}`}>
+    <div
+      className={`task-row group ${showDone ? 'is-done' : ''} ${isSelected ? 'is-selected' : ''}`}
+    >
+      <span
+        className="task-color-dot"
+        style={{ backgroundColor: taskColor }}
+        aria-label={`任务颜色：${task.title}`}
+      />
       <button
         type="button"
         onClick={handleToggle}
@@ -84,11 +100,16 @@ export function TaskRow({
             <span className="task-recurrence-tag">{task.recurrence_label}</span>
           )}
           {task.project && (
-            <span className="task-project-tag" aria-label={`所属项目：${task.project}`}>
+            <span
+              className="task-project-tag"
+              aria-label={`所属项目：${task.project}`}
+            >
               {task.project}
             </span>
           )}
-          {showDone && !isRecurring && <span className="task-done-badge">已完成</span>}
+          {showDone && !isRecurring && (
+            <span className="task-done-badge">已完成</span>
+          )}
         </small>
       </button>
       {task.priority === 1 && <span className="priority-mark">高</span>}
@@ -98,5 +119,8 @@ export function TaskRow({
 
 function formatDueDate(due?: number) {
   if (!due) return ''
-  return new Date(due * 1000).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+  return new Date(due * 1000).toLocaleDateString('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+  })
 }

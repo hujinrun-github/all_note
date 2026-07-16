@@ -24,6 +24,13 @@ func TestSyncTokensAreOpaqueTamperEvidentAndWorkspaceScoped(t *testing.T) {
 	if _, err := codec.DecodeCursor(cursor, "workspace-a", "watch"); !errors.Is(err, ErrInvalidSyncToken) {
 		t.Fatalf("cross-scope cursor error=%v", err)
 	}
+	watchCursor, err := codec.EncodeCursor(SyncCursor{WorkspaceID: "workspace-a", Scope: "watch", Position: 9, TimeZone: "Asia/Shanghai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codec.DecodeCursorBound(watchCursor, "workspace-a", "watch", "America/New_York"); !errors.Is(err, ErrInvalidSyncToken) {
+		t.Fatalf("cross-timezone cursor error=%v", err)
+	}
 
 	pageToken, err := codec.EncodeSnapshotPage(SnapshotPageToken{
 		WorkspaceID: "workspace-a", Scope: "iphone", SessionID: "session-a", Offset: 7, ExpiresAt: 99,
