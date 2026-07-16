@@ -30,6 +30,33 @@ func postgresIntegrationURL(t *testing.T) string {
 	return value
 }
 
+func TestCreateMigrationPostgresSchemaCleansUp(t *testing.T) {
+	basePGURL := postgresIntegrationURL(t)
+	schema := fmt.Sprintf("fs_test_migration_cleanup_%d", time.Now().UnixNano())
+
+	t.Run("temporary schema", func(t *testing.T) {
+		_ = createMigrationPostgresSchema(t, basePGURL, schema)
+	})
+
+	root, err := sql.Open("pgx", basePGURL)
+	if err != nil {
+		t.Fatalf("open postgres root: %v", err)
+	}
+	defer root.Close()
+
+	var exists bool
+	if err := root.QueryRowContext(
+		context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`,
+		schema,
+	).Scan(&exists); err != nil {
+		t.Fatalf("check migration test schema cleanup: %v", err)
+	}
+	if exists {
+		t.Fatalf("expected migration test schema %q to be removed", schema)
+	}
+}
+
 func TestSQLiteToPostgresMigratesCoreDataAndSearchIndex(t *testing.T) {
 	basePGURL := postgresIntegrationURL(t)
 	pgURL := createMigrationPostgresSchema(t, basePGURL, fmt.Sprintf("fs_test_migration_%d", time.Now().UnixNano()))
@@ -442,12 +469,17 @@ func createMigrationPostgresSchema(t *testing.T, baseURL, schema string) string 
 	if err != nil {
 		t.Fatalf("open postgres root: %v", err)
 	}
-	defer root.Close()
 	if _, err := root.ExecContext(context.Background(), `CREATE SCHEMA `+pq.QuoteIdentifier(schema)); err != nil {
+		_ = root.Close()
 		t.Fatalf("create schema: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = root.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+pq.QuoteIdentifier(schema)+` CASCADE`)
+		defer root.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := root.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+pq.QuoteIdentifier(schema)+` CASCADE`); err != nil {
+			t.Errorf("drop postgres migration test schema %q: %v", schema, err)
+		}
 	})
 	u, err := url.Parse(baseURL)
 	if err != nil {
