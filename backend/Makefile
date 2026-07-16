@@ -101,7 +101,7 @@ test-race:
 	go test -race ./internal/... -count=1
 
 test-contract-postgres:
-	FLOWSPACE_REQUIRE_POSTGRES_TESTS=true go test ./internal/storage/postgres ./internal/migration -count=1
+	FLOWSPACE_REQUIRE_POSTGRES_TESTS=true go test -p 1 ./internal/storage/postgres ./internal/migration -count=1
 
 test-object-minio:
 	FLOWSPACE_REQUIRE_MINIO_TESTS=true go test ./internal/objectstore -run '^TestMinIOAdapterRoundTripAndDeleteIdempotently$$' -count=1
