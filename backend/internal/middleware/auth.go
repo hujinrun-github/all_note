@@ -161,6 +161,7 @@ func (m AuthMiddleware) restoreWatchDevice(c *gin.Context) bool {
 	}
 	identity := auth.RequestIdentity{
 		UserID:             user.ID,
+		DeviceID:           device.ID,
 		WorkspaceID:        device.WorkspaceID,
 		Role:               user.Role,
 		MustChangePassword: user.MustChangePassword,

@@ -34,7 +34,16 @@ func ensureSQLiteMobileSyncSchema(ctx context.Context, db *sql.DB) error {
 	if err := backfillSQLiteMobileNoteClientIDs(ctx, db); err != nil {
 		return err
 	}
+	entityTables := make(map[string]bool, 3)
 	for _, table := range []string{"tasks", "events", "inbox"} {
+		tableExists, err := sqliteTableExists(db, table)
+		if err != nil {
+			return err
+		}
+		if !tableExists {
+			continue
+		}
+		entityTables[table] = true
 		for _, column := range columns {
 			exists, err := sqliteColumnExists(db, table, column.name)
 			if err != nil {
@@ -51,16 +60,38 @@ func ensureSQLiteMobileSyncSchema(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+	occurrenceTableExists, err := sqliteTableExists(db, "task_occurrences")
+	if err != nil {
+		return err
+	}
+	if occurrenceTableExists {
+		for _, column := range []struct {
+			name       string
+			definition string
+		}{
+			{name: "occurrence_id", definition: "TEXT"},
+			{name: "revision", definition: "INTEGER NOT NULL DEFAULT 1"},
+			{name: "deleted_at", definition: "INTEGER"},
+		} {
+			exists, err := sqliteColumnExists(db, "task_occurrences", column.name)
+			if err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+			if _, err := db.ExecContext(ctx, "ALTER TABLE task_occurrences ADD COLUMN "+column.name+" "+column.definition); err != nil && !sqliteDuplicateColumnError(err) {
+				return fmt.Errorf("add task_occurrences.%s: %w", column.name, err)
+			}
+		}
+		if err := backfillSQLiteMobileOccurrenceIDs(ctx, db); err != nil {
+			return err
+		}
+	}
 
 	statements := []string{
 		`CREATE UNIQUE INDEX IF NOT EXISTS notes_workspace_client_id_idx
 			ON notes (workspace_id, client_id) WHERE client_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS tasks_workspace_client_id_idx
-			ON tasks (workspace_id, client_id) WHERE client_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS events_workspace_client_id_idx
-			ON events (workspace_id, client_id) WHERE client_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS inbox_workspace_client_id_idx
-			ON inbox (workspace_id, client_id) WHERE client_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS mobile_mutation_receipts (
 			workspace_id TEXT NOT NULL,
 			device_client_id TEXT NOT NULL,
@@ -103,6 +134,8 @@ func ensureSQLiteMobileSyncSchema(ctx context.Context, db *sql.DB) error {
 			workspace_id TEXT NOT NULL,
 			scope TEXT NOT NULL,
 			boundary_position INTEGER NOT NULL,
+			projection_time_zone TEXT NOT NULL DEFAULT 'UTC',
+			scope_valid_until INTEGER NOT NULL DEFAULT 0,
 			expires_at INTEGER NOT NULL,
 			created_at INTEGER NOT NULL
 		)`,
@@ -120,10 +153,93 @@ func ensureSQLiteMobileSyncSchema(ctx context.Context, db *sql.DB) error {
 			retired_at INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, entity_type, client_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS mobile_sync_conflicts (
+			workspace_id TEXT NOT NULL,
+			conflict_id TEXT NOT NULL,
+			mutation_id TEXT NOT NULL,
+			device_client_id TEXT NOT NULL,
+			request_sha256 TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			entity_client_id TEXT NOT NULL,
+			operation TEXT NOT NULL,
+			base_revision INTEGER NOT NULL,
+			remote_revision INTEGER NOT NULL,
+			local_payload TEXT NOT NULL,
+			remote_payload TEXT NOT NULL,
+			revision INTEGER NOT NULL DEFAULT 1,
+			resolution TEXT,
+			resolved_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, conflict_id),
+			UNIQUE (workspace_id, device_client_id, mutation_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS mobile_sync_conflicts_unresolved_idx
+			ON mobile_sync_conflicts (workspace_id, created_at, conflict_id) WHERE resolved_at IS NULL`,
+	}
+	for table := range entityTables {
+		statements = append(statements, fmt.Sprintf(
+			"CREATE UNIQUE INDEX IF NOT EXISTS %s_workspace_client_id_idx ON %s (workspace_id, client_id) WHERE client_id IS NOT NULL",
+			table, table,
+		))
+	}
+	if occurrenceTableExists {
+		statements = append(statements, `CREATE UNIQUE INDEX IF NOT EXISTS task_occurrences_workspace_occurrence_id_idx
+			ON task_occurrences (workspace_id, occurrence_id) WHERE occurrence_id IS NOT NULL`)
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("ensure mobile sync schema: %w", err)
+		}
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "projection_time_zone", definition: "TEXT NOT NULL DEFAULT 'UTC'"},
+		{name: "scope_valid_until", definition: "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		exists, err := sqliteColumnExists(db, "mobile_sync_snapshot_sessions", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE mobile_sync_snapshot_sessions ADD COLUMN "+column.name+" "+column.definition); err != nil && !sqliteDuplicateColumnError(err) {
+				return fmt.Errorf("add mobile_sync_snapshot_sessions.%s: %w", column.name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func backfillSQLiteMobileOccurrenceIDs(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `SELECT task_id, occurrence_date, workspace_id FROM task_occurrences WHERE occurrence_id IS NULL ORDER BY workspace_id, task_id, occurrence_date`)
+	if err != nil {
+		return err
+	}
+	type occurrence struct {
+		taskID, date, workspaceID string
+	}
+	occurrences := make([]occurrence, 0)
+	for rows.Next() {
+		var item occurrence
+		if err := rows.Scan(&item.taskID, &item.date, &item.workspaceID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		occurrences = append(occurrences, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range occurrences {
+		occurrenceID := deterministicSQLiteMobileEntityClientID("task_occurrence", item.workspaceID, item.taskID+":"+item.date)
+		if _, err := db.ExecContext(ctx, `UPDATE task_occurrences SET occurrence_id = ? WHERE workspace_id = ? AND task_id = ? AND occurrence_date = ? AND occurrence_id IS NULL`,
+			occurrenceID, item.workspaceID, item.taskID, item.date); err != nil {
+			return err
 		}
 	}
 	return nil

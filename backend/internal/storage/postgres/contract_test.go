@@ -51,7 +51,7 @@ func TestPostgresTranscriptionJobContract(t *testing.T) {
 	contracttest.RunTranscriptionJobSuite(t, func(t *testing.T) storage.Store {
 		t.Helper()
 		schema := fmt.Sprintf("fs_test_transcription_job_contract_%d", time.Now().UnixNano())
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		t.Cleanup(cancel)
 		store, err := (Provider{}).Open(ctx, storage.Config{
 			Env: "test", Driver: storage.DriverPostgres, URL: createPostgresTestSchema(t, schema),

@@ -8,13 +8,16 @@ import (
 )
 
 var (
-	ErrMutationIDReused      = errors.New("mutation ID was reused with a different request")
-	ErrRevisionConflict      = errors.New("base revision does not match current revision")
-	ErrMobileEntityNotFound  = errors.New("mobile entity was not found")
-	ErrMobileEntityGone      = errors.New("mobile entity is tombstoned")
-	ErrMobileSyncStorage     = errors.New("mobile sync storage is unavailable")
-	ErrMobileCursorExpired   = errors.New("mobile sync cursor is no longer retained")
-	ErrMobileSnapshotExpired = errors.New("mobile sync snapshot session expired")
+	ErrMutationIDReused       = errors.New("mutation ID was reused with a different request")
+	ErrRevisionConflict       = errors.New("base revision does not match current revision")
+	ErrMobileEntityNotFound   = errors.New("mobile entity was not found")
+	ErrMobileEntityGone       = errors.New("mobile entity is tombstoned")
+	ErrMobileSyncStorage      = errors.New("mobile sync storage is unavailable")
+	ErrMobileCursorExpired    = errors.New("mobile sync cursor is no longer retained")
+	ErrMobileSnapshotExpired  = errors.New("mobile sync snapshot session expired")
+	ErrMobileConflictNotFound = errors.New("mobile sync conflict was not found")
+	ErrMobileConflictAdvanced = errors.New("mobile sync conflict revision advanced")
+	ErrMobileTargetAdvanced   = errors.New("mobile sync target revision advanced")
 )
 
 type MobileSyncStore interface {
@@ -40,4 +43,7 @@ type MobileSyncRepository interface {
 	PruneCommittedChanges(context.Context, int64) error
 	BeginSnapshot(context.Context, model.BeginMobileSnapshot) (*model.MobileSnapshot, error)
 	ReadSnapshot(context.Context, model.ReadMobileSnapshot) (*model.MobileSnapshotPage, error)
+	CreateConflict(context.Context, model.CreateMobileSyncConflict) (*model.MobileMutationResult, error)
+	ListUnresolvedConflicts(context.Context) ([]model.MobileSyncConflict, error)
+	ResolveConflict(context.Context, model.ResolveMobileSyncConflict) (*model.MobileEntityEnvelope, error)
 }

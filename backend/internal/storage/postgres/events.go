@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
@@ -30,7 +32,7 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	var total int
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM events
-		WHERE workspace_id = $1 AND time_range && tstzrange($2, $3, '[)')
+		WHERE workspace_id = $1 AND deleted_at IS NULL AND time_range && tstzrange($2, $3, '[)')
 	`, workspaceID, unixToTime(start), unixToTime(end)).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -43,7 +45,7 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	offset := (page - 1) * pageSize
 	rows, err := r.db.QueryContext(ctx, `
 		`+postgresEventSelect+`
-		WHERE e.workspace_id = $1 AND e.time_range && tstzrange($2, $3, '[)')
+		WHERE e.workspace_id = $1 AND e.deleted_at IS NULL AND e.time_range && tstzrange($2, $3, '[)')
 		ORDER BY e.start_at ASC LIMIT $4 OFFSET $5
 	`, workspaceID, unixToTime(start), unixToTime(end), pageSize, offset)
 	if err != nil {
@@ -69,14 +71,18 @@ func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
 	if event.Kind == "" {
 		event.Kind = "work"
 	}
+	clientID := deterministicPostgresMobileEntityClientID("event", workspaceID, event.ID)
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO events (id, title, start_at, end_at, time_range, location, kind, note_id, project_id, created_at, updated_at, workspace_id)
-			VALUES ($1, $2, $3, $4, tstzrange($3, $4, '[)'), $5, $6, $7, $8, $9, $10, $11)
-		`, event.ID, event.Title, unixToTime(event.StartTime), unixToTime(event.EndTime), event.Location, event.Kind, event.NoteID, event.ProjectID, unixToTime(event.CreatedAt), unixToTime(event.UpdatedAt), workspaceID); err != nil {
+			INSERT INTO events (id, client_id, revision, title, start_at, end_at, time_range, location, kind, note_id, project_id, created_at, updated_at, workspace_id)
+			VALUES ($1, $2, 1, $3, $4, $5, tstzrange($4, $5, '[)'), $6, $7, $8, $9, $10, $11, $12)
+		`, event.ID, clientID, event.Title, unixToTime(event.StartTime), unixToTime(event.EndTime), event.Location, event.Kind, event.NoteID, event.ProjectID, unixToTime(event.CreatedAt), unixToTime(event.UpdatedAt), workspaceID); err != nil {
 			return err
 		}
-		return upsertEventSearchIndex(ctx, tx, workspaceID, event)
+		if err := upsertEventSearchIndex(ctx, tx, workspaceID, event); err != nil {
+			return err
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "event", "event.server_created", clientID, unixToTime(event.UpdatedAt))
 	})
 }
 
@@ -114,15 +120,22 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 
 	var updated *model.Event
 	err = r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = %s AND workspace_id = %s", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...); err != nil {
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s, revision = revision + 1 WHERE id = %s AND workspace_id = %s AND deleted_at IS NULL", clause, pgPlaceholder(len(args)-1), pgPlaceholder(len(args))), args...)
+		if err != nil {
 			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return err
+			}
+			return sql.ErrNoRows
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE events SET time_range = tstzrange(start_at, end_at, '[)') WHERE id = $1 AND workspace_id = $2`, id, workspaceID); err != nil {
 			return err
 		}
 		event, err := scanPostgresEvent(tx.QueryRowContext(ctx, `
 			`+postgresEventSelect+`
-			WHERE e.id = $1 AND e.workspace_id = $2
+			WHERE e.id = $1 AND e.workspace_id = $2 AND e.deleted_at IS NULL
 		`, id, workspaceID))
 		if err != nil {
 			return err
@@ -131,7 +144,11 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 			return err
 		}
 		updated = event
-		return nil
+		var clientID string
+		if err := tx.QueryRowContext(ctx, `SELECT client_id FROM events WHERE workspace_id = $1 AND id = $2`, workspaceID, id).Scan(&clientID); err != nil {
+			return err
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "event", "event.server_updated", clientID, time.Now().UTC())
 	})
 	if err != nil {
 		return nil, err
@@ -146,7 +163,7 @@ func (r eventRepository) GetByID(ctx context.Context, id string) (*model.Event, 
 	}
 	return scanPostgresEvent(r.db.QueryRowContext(ctx, `
 		`+postgresEventSelect+`
-		WHERE e.id = $1 AND e.workspace_id = $2
+		WHERE e.id = $1 AND e.workspace_id = $2 AND e.deleted_at IS NULL
 	`, id, workspaceID))
 }
 
@@ -155,12 +172,26 @@ func (r eventRepository) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
 	return r.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id = $1 AND workspace_id = $2`, id, workspaceID); err != nil {
+		var clientID string
+		err := tx.QueryRowContext(ctx, `SELECT client_id FROM events WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`, workspaceID, id).Scan(&clientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'event' AND entity_id = $2`, workspaceID, id)
-		return err
+		if _, err := tx.ExecContext(ctx, `UPDATE events SET deleted_at = $1, updated_at = $1, revision = revision + 1 WHERE workspace_id = $2 AND id = $3 AND deleted_at IS NULL`, now, workspaceID, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES ($1, 'event', $2, $3) ON CONFLICT DO NOTHING`, workspaceID, clientID, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'event' AND entity_id = $2`, workspaceID, id); err != nil {
+			return err
+		}
+		return persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "event", "event.server_deleted", clientID, now)
 	})
 }
 
@@ -171,7 +202,7 @@ func (r eventRepository) Today(ctx context.Context, start, end int64) ([]model.E
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		`+postgresEventSelect+`
-		WHERE e.workspace_id = $1 AND e.time_range && tstzrange($2, $3, '[)')
+		WHERE e.workspace_id = $1 AND e.deleted_at IS NULL AND e.time_range && tstzrange($2, $3, '[)')
 		ORDER BY e.start_at ASC
 	`, workspaceID, unixToTime(start), unixToTime(end))
 	if err != nil {

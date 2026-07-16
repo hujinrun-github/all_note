@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
@@ -95,11 +96,28 @@ func (r transcriptionJobWorkerRepository) Fail(ctx context.Context, failure mode
 			return err
 		}
 		if job.State == model.TranscriptionJobFailed {
-			_, err = tx.ExecContext(ctx, `
+			var workspaceID string
+			if err := tx.QueryRowContext(ctx, `SELECT workspace_id FROM transcription_jobs WHERE job_id = $1`, failure.JobID).Scan(&workspaceID); err != nil {
+				return err
+			}
+			result, err := tx.ExecContext(ctx, `
 				UPDATE voice_notes
-				SET transcription_state = $1, transcription_error = $2, updated_at = $3
-				WHERE client_id = $4
-			`, model.TranscriptionFailed, failure.ErrorCode, failure.Now, job.VoiceNoteID)
+				SET transcription_state = $1, transcription_error = $2, updated_at = $3, revision = revision + 1
+				WHERE workspace_id = $4 AND client_id = $5 AND deleted_at IS NULL
+			`, model.TranscriptionFailed, failure.ErrorCode, failure.Now, workspaceID, job.VoiceNoteID)
+			if err != nil {
+				return err
+			}
+			if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+				if err != nil {
+					return err
+				}
+				return storage.ErrMobileEntityNotFound
+			}
+			if err := persistPostgresTranscriptionJobChange(ctx, tx, workspaceID, job, "transcription_job.failed", failure.Now); err != nil {
+				return err
+			}
+			return persistPostgresServerEntityChange(ctx, tx, workspaceID, job.JobID, "voice_note", "voice.server_updated", job.VoiceNoteID, time.Unix(failure.Now, 0).UTC())
 		}
 		return err
 	})
@@ -159,8 +177,8 @@ func (r transcriptionJobWorkerRepository) Complete(ctx context.Context, completi
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE voice_notes
-			SET transcription_state = $1, transcription_error = '', updated_at = $2
-			WHERE workspace_id = $3 AND client_id = $4
+			SET transcription_state = $1, transcription_error = '', updated_at = $2, revision = revision + 1
+			WHERE workspace_id = $3 AND client_id = $4 AND deleted_at IS NULL
 		`, model.TranscriptionCompleted, completion.Now, workspaceID, voiceNoteID); err != nil {
 			return err
 		}
@@ -192,27 +210,10 @@ func persistPostgresTranscriptionCompletionChanges(
 	applied bool,
 	now int64,
 ) error {
-	jobPayload, err := json.Marshal(map[string]any{
-		"voice_note_id": job.VoiceNoteID,
-		"generation":    job.Generation,
-		"state":         job.State,
-		"error_code":    job.ErrorCode,
-	})
-	if err != nil {
+	if err := persistPostgresTranscriptionJobChange(ctx, tx, workspaceID, job, "transcription_job.completed", now); err != nil {
 		return err
 	}
-	jobEntity := model.MobileEntityEnvelope{
-		EntityType: "transcription_job", ID: job.JobID, ClientID: job.JobID, Revision: job.Revision, Payload: jobPayload,
-	}
-	jobJSON, err := json.Marshal(jobEntity)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO mobile_sync_outbox (
-			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
-		) VALUES ($1, $2, 'transcription_job', $2, 'transcription_job.completed', $3, $4::jsonb, to_timestamp($5))
-	`, workspaceID, job.JobID, job.Revision, jobJSON, now); err != nil {
+	if err := persistPostgresServerEntityChange(ctx, tx, workspaceID, job.JobID, "voice_note", "voice.server_updated", job.VoiceNoteID, time.Unix(now, 0).UTC()); err != nil {
 		return err
 	}
 	if !applied {
@@ -260,6 +261,38 @@ func persistPostgresTranscriptionCompletionChanges(
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES ($1, $2, 'note', $3, 'note.transcription_applied', $4, $5::jsonb, to_timestamp($6))
 	`, workspaceID, job.JobID, clientID, revision, noteJSON, now)
+	return err
+}
+
+func persistPostgresTranscriptionJobChange(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	job *model.TranscriptionJob,
+	operation string,
+	now int64,
+) error {
+	jobPayload, err := json.Marshal(map[string]any{
+		"voice_note_id": job.VoiceNoteID,
+		"generation":    job.Generation,
+		"state":         job.State,
+		"error_code":    job.ErrorCode,
+	})
+	if err != nil {
+		return err
+	}
+	jobEntity := model.MobileEntityEnvelope{
+		EntityType: "transcription_job", ID: job.JobID, ClientID: job.JobID, Revision: job.Revision, Payload: jobPayload,
+	}
+	jobJSON, err := json.Marshal(jobEntity)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO mobile_sync_outbox (
+			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
+		) VALUES ($1, $2, 'transcription_job', $2, $3, $4, $5::jsonb, to_timestamp($6))
+	`, workspaceID, job.JobID, operation, job.Revision, jobJSON, now)
 	return err
 }
 

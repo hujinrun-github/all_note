@@ -33,6 +33,10 @@ func ensureSQLiteNativeSchema(ctx context.Context, db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL,
 			client_id TEXT NOT NULL,
+			revision INTEGER NOT NULL DEFAULT 1,
+			deleted_at INTEGER,
+			audio_revision INTEGER NOT NULL DEFAULT 1,
+			audio_state TEXT NOT NULL DEFAULT 'absent',
 			note_id TEXT NOT NULL,
 			duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
 			recorded_at INTEGER NOT NULL,
@@ -66,6 +70,26 @@ func ensureSQLiteNativeSchema(ctx context.Context, db *sql.DB) error {
 	for _, stmt := range statements {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("ensure SQLite native app schema with %q: %w", stmt, err)
+		}
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "revision", definition: "INTEGER NOT NULL DEFAULT 1"},
+		{name: "deleted_at", definition: "INTEGER"},
+		{name: "audio_revision", definition: "INTEGER NOT NULL DEFAULT 1"},
+		{name: "audio_state", definition: "TEXT NOT NULL DEFAULT 'absent'"},
+	} {
+		exists, err := sqliteColumnExists(db, "voice_notes", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE voice_notes ADD COLUMN "+column.name+" "+column.definition); err != nil && !sqliteDuplicateColumnError(err) {
+			return fmt.Errorf("add voice_notes.%s: %w", column.name, err)
 		}
 	}
 	return nil

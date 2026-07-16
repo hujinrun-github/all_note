@@ -622,8 +622,8 @@ body {
   background: transparent;
   padding: 0.65rem 0.72rem;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  gap: 0.75rem;
+  grid-template-columns: 10px 20px minmax(0, 1fr) auto;
+  gap: 0.65rem;
   align-items: start;
   text-align: left;
   cursor: pointer;
@@ -631,6 +631,17 @@ body {
     background 0.16s var(--ease-standard),
     border-color 0.16s var(--ease-standard),
     transform 0.16s var(--ease-standard);
+}
+
+.task-color-dot {
+  width: 9px;
+  height: 9px;
+  display: block;
+  align-self: start;
+  margin-top: 6px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.86);
+  flex: 0 0 auto;
 }
 
 .task-row:hover,
@@ -1547,10 +1558,15 @@ body {
   padding: 0 0.25rem;
 }
 
-.roadmap-source-settings div {
+.roadmap-source-options {
   display: flex;
   flex-wrap: wrap;
   gap: 0.42rem;
+}
+
+.roadmap-source-option {
+  display: inline-flex;
+  align-items: center;
 }
 
 .roadmap-source-settings label {
@@ -1568,7 +1584,7 @@ body {
   cursor: pointer;
 }
 
-.roadmap-source-settings input {
+.roadmap-source-settings input[type='checkbox'] {
   width: 14px;
   height: 14px;
   accent-color: #2f80ed;
@@ -1578,6 +1594,72 @@ body {
   border-color: rgba(47, 128, 237, 0.34);
   background: rgba(47, 128, 237, 0.12);
   color: var(--color-fs-text);
+}
+
+.roadmap-source-option > button {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-fs-text-muted);
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.roadmap-source-option > button:hover {
+  background: rgba(176, 36, 36, 0.08);
+  color: #b02424;
+}
+
+.roadmap-source-add-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.42rem;
+}
+
+.roadmap-source-add-form input {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid var(--color-fs-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 0.6rem;
+  color: var(--color-fs-text);
+  font: inherit;
+  font-size: 0.74rem;
+  outline: none;
+}
+
+.roadmap-source-add-form input:focus {
+  border-color: #c4772e;
+  box-shadow: 0 0 0 2px rgba(196, 119, 46, 0.12);
+}
+
+.roadmap-source-add-form button {
+  min-height: 34px;
+  border: 1px solid #c4772e;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #9a581f;
+  padding: 0 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.roadmap-source-add-form button:disabled {
+  cursor: default;
+  opacity: 0.46;
+}
+
+.roadmap-source-error {
+  color: #b02424;
+  font-size: 0.68rem;
 }
 
 .roadmap-resource-form {
@@ -2008,7 +2090,7 @@ body {
 .roadmap-linked-task-row {
   min-height: 62px;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 10px 24px minmax(0, 1fr);
   align-items: start;
   gap: 0.75rem;
   border: 1px solid rgba(230, 224, 212, 0.72);
@@ -7142,8 +7224,8 @@ select {
 }
 
 .task-command-panel .task-row {
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 10px 22px minmax(0, 1fr);
+  gap: 12px;
   min-height: 74px;
 }
 
@@ -7321,8 +7403,7 @@ select {
   font-size: 0.78rem;
 }
 
-.task-project-list,
-.task-view-list {
+.task-project-list {
   border-bottom: 1px solid var(--color-fs-border);
   padding-bottom: 16px;
   margin-bottom: 16px;
@@ -7335,7 +7416,6 @@ select {
 }
 
 .task-project-select,
-.task-view-list button,
 .note-filter-panel button,
 .inbox-filter-panel button {
   width: 100%;
@@ -7350,7 +7430,6 @@ select {
 }
 
 .task-project-select.is-active,
-.task-view-list button.is-active,
 .note-filter-panel button.is-active,
 .inbox-filter-panel button.is-active {
   background: #efd9bf;
@@ -7458,6 +7537,23 @@ select {
   font-size: 15px;
 }
 
+.task-detail-empty button {
+  justify-self: start;
+  min-height: 38px;
+  margin-top: 4px;
+  border: 1px solid var(--color-fs-accent);
+  border-radius: 10px;
+  background: var(--color-fs-accent);
+  color: #fff;
+  padding: 0 14px;
+  font-weight: 820;
+  cursor: pointer;
+}
+
+.task-detail-empty button:hover {
+  filter: brightness(0.94);
+}
+
 .task-detail-status {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -7504,6 +7600,17 @@ select {
 
 .calendar-workspace {
   grid-template-columns: 260px minmax(620px, 1fr) 360px;
+}
+
+@media (max-width: 1550px) {
+  .calendar-workspace {
+    grid-template-columns: minmax(220px, 240px) minmax(620px, 1fr);
+  }
+
+  .calendar-inspector {
+    grid-column: 1 / -1;
+    min-height: auto;
+  }
 }
 
 .note-filter-panel,
@@ -7823,22 +7930,90 @@ select {
 }
 
 .calendar-month-heading {
+  min-height: 42px;
   margin-bottom: 14px;
 }
 
 .calendar-month-heading h2 {
+  margin: 0 0 0 10px;
+  color: var(--color-fs-text);
   font-size: 24px;
   font-weight: 850;
+  line-height: 1.15;
 }
 
-.calendar-month-heading > div {
+.calendar-period-navigation,
+.calendar-period-stepper {
   display: inline-flex;
-  gap: 4px;
   align-items: center;
-  border: 1px solid rgba(223, 202, 174, 0.82);
+}
+
+.calendar-period-navigation {
+  min-width: 0;
+  gap: 6px;
+}
+
+.calendar-period-stepper {
+  gap: 2px;
+}
+
+.calendar-month-heading .calendar-today-control {
+  min-height: 38px;
+  border-color: rgba(223, 202, 174, 0.92);
+  border-radius: 8px;
+  background: rgba(255, 253, 250, 0.92);
+  padding: 0 14px;
+  color: var(--color-fs-text);
+  font-weight: 800;
+}
+
+.calendar-month-heading .calendar-step-button {
+  width: 36px;
+  min-height: 36px;
+  display: inline-grid;
+  place-items: center;
   border-radius: 999px;
-  background: rgba(255, 253, 250, 0.76);
-  padding: 4px;
+  padding: 0;
+}
+
+.calendar-view-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.calendar-view-select select {
+  min-width: 88px;
+  min-height: 40px;
+  appearance: none;
+  border: 1px solid rgba(223, 202, 174, 0.92);
+  border-radius: 8px;
+  background: rgba(255, 253, 250, 0.94);
+  color: var(--color-fs-text);
+  padding: 0 34px 0 14px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.calendar-view-select svg {
+  position: absolute;
+  right: 11px;
+  color: var(--color-fs-text-muted);
+  pointer-events: none;
+}
+
+.calendar-view-select select:hover {
+  border-color: rgba(196, 116, 47, 0.56);
+  background: #fffdfa;
+}
+
+.calendar-month-heading button:focus-visible,
+.calendar-view-select select:focus-visible {
+  outline: 3px solid rgba(196, 116, 47, 0.2);
+  outline-offset: 2px;
 }
 
 .calendar-grid {
@@ -7981,6 +8156,44 @@ select {
   white-space: nowrap;
 }
 
+.calendar-month-task {
+  min-width: 0;
+  min-height: 22px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(109, 93, 73, 0.1);
+  border-radius: 7px;
+  background: rgba(109, 93, 73, 0.055);
+  color: var(--color-fs-text);
+  padding: 0 7px;
+}
+
+.calendar-month-task i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.88);
+}
+
+.calendar-month-task strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 820;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-month-task.is-done {
+  opacity: 0.62;
+}
+
+.calendar-month-task.is-done strong {
+  text-decoration: line-through;
+}
+
 .calendar-month-more {
   color: var(--color-fs-text-muted);
   font-size: 11px;
@@ -8087,6 +8300,52 @@ select {
   color: var(--color-fs-text-muted);
   font-size: 13px;
   font-weight: 820;
+}
+
+.calendar-day-task {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  border: 1px solid rgba(223, 202, 174, 0.82);
+  border-radius: 12px;
+  background: rgba(255, 253, 250, 0.82);
+  padding: 11px 12px;
+}
+
+.calendar-day-task > i {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9);
+}
+
+.calendar-day-task strong,
+.calendar-day-task span {
+  display: block;
+  min-width: 0;
+}
+
+.calendar-day-task strong {
+  color: var(--color-fs-text);
+  font-size: 14px;
+  font-weight: 830;
+}
+
+.calendar-day-task span {
+  margin-top: 3px;
+  color: var(--color-fs-text-muted);
+  font-size: 12px;
+}
+
+.calendar-day-task.is-done {
+  opacity: 0.64;
+}
+
+.calendar-day-task.is-done strong {
+  text-decoration: line-through;
 }
 
 .calendar-inspector {
@@ -9277,15 +9536,16 @@ select {
 
 /* Task workspace redesign */
 .task-workspace {
-  grid-template-columns: 280px minmax(0, 1fr) 340px;
-  gap: 18px;
-  align-items: stretch;
+  grid-template-columns: 236px minmax(520px, 1fr) 304px;
+  gap: 14px;
+  align-items: start;
 }
 
 .task-project-panel,
 .task-main-panel,
 .task-detail-panel {
-  min-height: 720px;
+  min-height: min(760px, calc(100dvh - 168px));
+  border-radius: 16px;
   border-color: rgba(211, 186, 151, 0.72);
   background:
     linear-gradient(
@@ -9294,14 +9554,18 @@ select {
       rgba(255, 251, 246, 0.78)
     ),
     var(--color-fs-surface);
-  box-shadow: 0 18px 48px rgba(96, 64, 35, 0.06);
+  box-shadow: 0 12px 34px rgba(96, 64, 35, 0.055);
 }
 
 .task-project-panel {
-  padding: 18px 14px;
+  position: sticky;
+  top: 20px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  padding: 16px 12px 18px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
 .task-project-panel-title {
@@ -9438,8 +9702,7 @@ select {
   font-size: 12px;
 }
 
-.task-project-list,
-.task-view-list {
+.task-project-list {
   border-bottom: 0;
   padding-bottom: 0;
   margin-bottom: 0;
@@ -9457,8 +9720,7 @@ select {
   gap: 6px;
 }
 
-.task-project-select,
-.task-view-list button {
+.task-project-select {
   min-height: 38px;
   position: relative;
   border-radius: 12px;
@@ -9473,8 +9735,7 @@ select {
     box-shadow 0.18s var(--ease-standard);
 }
 
-.task-project-select::before,
-.task-view-list button::before {
+.task-project-select::before {
   content: '';
   position: absolute;
   left: 6px;
@@ -9485,19 +9746,16 @@ select {
   background: transparent;
 }
 
-.task-project-select:hover,
-.task-view-list button:hover {
+.task-project-select:hover {
   background: rgba(196, 116, 47, 0.07);
 }
 
-.task-project-select.is-active,
-.task-view-list button.is-active {
+.task-project-select.is-active {
   background: #f1dcc0;
   box-shadow: inset 0 0 0 1px rgba(196, 116, 47, 0.08);
 }
 
-.task-project-select.is-active::before,
-.task-view-list button.is-active::before {
+.task-project-select.is-active::before {
   background: var(--color-fs-accent);
 }
 
@@ -9526,14 +9784,130 @@ select {
   opacity: 1;
 }
 
-.task-view-list {
+.task-project-notes {
   display: grid;
-  gap: 6px;
-  padding-top: 2px;
+  gap: 8px;
+  border-top: 1px solid rgba(234, 216, 191, 0.7);
+  padding: 14px 2px 0;
+}
+
+.task-project-notes-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.task-project-notes-heading h4 {
+  margin: 0;
+  color: var(--color-fs-text-muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.task-project-notes-heading span {
+  color: var(--color-fs-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-project-notes-empty {
+  margin: 0;
+  padding: 6px 4px;
+  color: var(--color-fs-text-muted);
+  font-size: 12px;
+}
+
+.task-project-note-list {
+  display: grid;
+  gap: 4px;
+}
+
+.task-project-note-list button {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-fs-text);
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s var(--ease-standard);
+}
+
+.task-project-note-list button:hover,
+.task-project-note-list button:focus-visible {
+  background: rgba(196, 116, 47, 0.07);
+  outline: none;
+}
+
+.task-project-note-list svg {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  color: var(--color-fs-accent);
+}
+
+.task-project-note-list span,
+.task-project-note-list strong,
+.task-project-note-list small {
+  min-width: 0;
+  display: block;
+}
+
+.task-project-note-list strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 780;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-project-note-list small {
+  margin-top: 2px;
+  color: var(--color-fs-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-project-note-create {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px dashed rgba(196, 116, 47, 0.28);
+  border-radius: 10px;
+  background: rgba(255, 248, 239, 0.54);
+  color: var(--color-fs-accent);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    background 0.18s var(--ease-standard),
+    border-color 0.18s var(--ease-standard);
+}
+
+.task-project-note-create:hover,
+.task-project-note-create:focus-visible {
+  border-color: rgba(196, 116, 47, 0.5);
+  background: rgba(196, 116, 47, 0.09);
+  outline: none;
+}
+
+.task-project-note-create svg {
+  width: 14px;
+  height: 14px;
 }
 
 .task-main-panel {
-  padding: 22px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
 }
@@ -9543,7 +9917,9 @@ select {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px;
   align-items: start;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid rgba(234, 216, 191, 0.74);
+  padding-bottom: 16px;
 }
 
 .task-main-panel > .panel-heading h2 {
@@ -9561,14 +9937,14 @@ select {
   align-items: center;
   gap: 4px;
   border: 1px solid rgba(234, 216, 191, 0.78);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(255, 248, 239, 0.64);
   padding: 4px;
 }
 
 .task-main-panel .segmented-tabs button {
   min-height: 34px;
-  border-radius: 10px;
+  border-radius: 9px;
   padding: 0 14px;
   font-size: 13px;
   font-weight: 830;
@@ -9751,7 +10127,7 @@ select {
 }
 
 .long-task-row {
-  grid-template-columns: 24px minmax(0, 1fr) minmax(112px, auto);
+  grid-template-columns: 10px 24px minmax(0, 1fr) minmax(112px, auto);
   align-items: center;
   gap: 14px;
   padding: 14px 0;
@@ -9800,6 +10176,10 @@ select {
 }
 
 .task-detail-panel {
+  position: sticky;
+  top: 20px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -10095,6 +10475,13 @@ select {
     min-height: auto;
   }
 
+  .task-project-panel,
+  .task-detail-panel {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
   .page-local-actions {
     margin-top: 0;
   }
@@ -10123,6 +10510,29 @@ select {
 
   .workspace-search-hint {
     display: none;
+  }
+
+  .calendar-month-heading {
+    position: relative;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .calendar-period-navigation {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .calendar-period-navigation h2 {
+    flex: 1 1 100%;
+    order: 2;
+    margin: 4px 0 0;
+    font-size: 22px;
+  }
+
+  .calendar-view-select {
+    position: absolute;
+    right: 16px;
   }
 
   .dashboard-grid {
@@ -10234,6 +10644,24 @@ select {
   border-radius: 7px;
 }
 
+.roadmap-generate-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.roadmap-toolbar .roadmap-generation-prompt-toggle {
+  min-height: 40px;
+  border: 1px solid #dfc9aa;
+  background: #fffdfa;
+  color: #9a581f;
+}
+
+.roadmap-toolbar .roadmap-generation-prompt-toggle[aria-expanded='true'] {
+  border-color: #c4772e;
+  background: #f3e2cc;
+}
+
 .roadmap-generate-button svg {
   width: 16px;
   height: 16px;
@@ -10243,6 +10671,72 @@ select {
   flex: 1;
   min-width: 220px;
   padding-bottom: 2px;
+}
+
+.roadmap-generation-prompt-editor {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dfc9aa;
+  border-radius: 9px;
+  background: #fff8ed;
+  padding: 11px 12px;
+}
+
+.roadmap-generation-prompt-editor > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.roadmap-generation-prompt-editor label {
+  color: #9a581f;
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
+.roadmap-generation-prompt-editor > div button {
+  border: 0;
+  background: transparent;
+  color: #9a581f;
+  padding: 0;
+  font-size: 0.7rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.roadmap-generation-prompt-editor textarea {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  border: 1px solid #dfc9aa;
+  border-radius: 7px;
+  background: #fffdfa;
+  padding: 9px 10px;
+  color: var(--color-fs-text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  outline: none;
+}
+
+.roadmap-generation-prompt-editor textarea:focus {
+  border-color: #c4772e;
+  box-shadow: 0 0 0 2px rgba(196, 119, 46, 0.12);
+}
+
+.roadmap-generation-prompt-editor small {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-fs-text-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.roadmap-generation-prompt-editor small span:last-child {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .roadmap-overview {
@@ -10636,6 +11130,97 @@ select {
   padding: 10px 11px;
 }
 
+.roadmap-linked-task-section {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #e8dac7;
+  padding-top: 12px;
+}
+
+.roadmap-linked-task-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.roadmap-linked-task-heading strong {
+  font-size: 0.82rem;
+}
+
+.roadmap-linked-task-heading span {
+  color: var(--color-fs-text-muted);
+  font-size: 0.72rem;
+}
+
+.roadmap-linked-task-empty {
+  margin: 0;
+  border: 1px dashed #dfc9aa;
+  border-radius: 8px;
+  background: #fffaf1;
+  color: var(--color-fs-text-muted);
+  padding: 9px 10px;
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.roadmap-linked-task-list {
+  display: grid;
+  gap: 7px;
+}
+
+.roadmap-linked-task-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid #e1d2bd;
+  border-radius: 8px;
+  background: #fffdfa;
+  color: var(--color-fs-text);
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.roadmap-linked-task-list button:hover {
+  border-color: #c4772e;
+  background: #fff8ed;
+}
+
+.roadmap-linked-task-list button.is-selected {
+  border-color: #c4772e;
+  background: #fff3df;
+  box-shadow: inset 3px 0 0 #c4772e;
+}
+
+.roadmap-linked-task-list button > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.roadmap-linked-task-list strong {
+  overflow: hidden;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roadmap-linked-task-list small {
+  color: var(--color-fs-text-muted);
+  font-size: 0.66rem;
+}
+
+.roadmap-linked-task-list em {
+  color: #a85e20;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .roadmap-resource-section-heading {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -10680,11 +11265,43 @@ select {
   padding: 10px 11px;
 }
 
-.roadmap-search-context span,
+.roadmap-search-context label,
 .roadmap-resource-search-query span {
   color: #9a581f;
   font-size: 0.7rem;
   font-weight: 850;
+}
+
+.roadmap-search-context textarea {
+  width: 100%;
+  min-height: 78px;
+  resize: vertical;
+  border: 1px solid #dfc9aa;
+  border-radius: 6px;
+  background: #fffdfa;
+  padding: 8px 9px;
+  color: var(--color-fs-text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.5;
+  outline: none;
+}
+
+.roadmap-search-context textarea:focus {
+  border-color: #c4772e;
+  box-shadow: 0 0 0 2px rgba(196, 119, 46, 0.12);
+}
+
+.roadmap-search-context > button {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: #9a581f;
+  padding: 0;
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .roadmap-search-context p,
@@ -10719,7 +11336,7 @@ select {
   background: #fffdfa;
 }
 
-.roadmap-source-settings input {
+.roadmap-source-settings input[type='checkbox'] {
   accent-color: #c4772e;
 }
 
@@ -10825,8 +11442,17 @@ select {
   }
 
   .roadmap-toolbar label,
-  .roadmap-generate-button,
+  .roadmap-generate-actions,
   .roadmap-goal {
+    width: 100%;
+  }
+
+  .roadmap-generate-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .roadmap-generate-actions button {
     width: 100%;
   }
 

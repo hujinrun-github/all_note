@@ -80,6 +80,7 @@ type MobileCommittedChangePage struct {
 type BeginMobileSnapshot struct {
 	SessionID string
 	Scope     string
+	TimeZone  string
 	Now       int64
 	ExpiresAt int64
 }
@@ -89,6 +90,8 @@ type MobileSnapshot struct {
 	Scope            string
 	BoundaryPosition int64
 	ExpiresAt        int64
+	ScopeValidUntil  int64
+	TimeZone         string
 	TotalEntities    int64
 }
 
@@ -105,4 +108,41 @@ type MobileSnapshotPage struct {
 	HasMore          bool
 	BoundaryPosition int64
 	ExpiresAt        int64
+	ScopeValidUntil  int64
+	TimeZone         string
+}
+
+type MobileSyncConflict struct {
+	ConflictID     string          `json:"conflict_id"`
+	EntityType     string          `json:"entity_type"`
+	EntityClientID string          `json:"entity_id"`
+	Operation      string          `json:"operation"`
+	BaseRevision   int64           `json:"base_revision"`
+	RemoteRevision int64           `json:"remote_revision"`
+	LocalPayload   json.RawMessage `json:"local_payload"`
+	RemotePayload  json.RawMessage `json:"remote_payload"`
+	Revision       int64           `json:"revision"`
+	ResolvedAt     *int64          `json:"resolved_at,omitempty"`
+}
+
+type CreateMobileSyncConflict struct {
+	ConflictID     string
+	MutationID     string
+	DeviceClientID string
+	RequestSHA256  string
+	EntityType     string
+	EntityClientID string
+	Operation      string
+	BaseRevision   int64
+	LocalPayload   json.RawMessage
+}
+
+type ResolveMobileSyncConflict struct {
+	ConflictID       string
+	MutationID       string
+	RequestSHA256    string
+	ConflictRevision int64
+	TargetRevision   int64
+	Resolution       string
+	MergedPayload    json.RawMessage
 }

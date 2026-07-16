@@ -1,12 +1,22 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import Calendar from './Calendar'
 import { api } from '../api/client'
 import { useCreateEvent, useEventsList } from '../hooks/useEvents'
-import { useCalendarProjectSources, useSaveCalendarProjectSources } from '../hooks/useCalendarSources'
+import {
+  useCalendarProjectSources,
+  useSaveCalendarProjectSources,
+} from '../hooks/useCalendarSources'
+import * as tasksApi from '../api/tasks'
 
 const createEventMock = vi.fn()
 const saveProjectSourcesMock = vi.fn()
@@ -27,13 +37,20 @@ vi.mock('../hooks/useCalendarSources', () => ({
   useSaveCalendarProjectSources: vi.fn(),
 }))
 
+vi.mock('../api/tasks', () => ({
+  getTasks: vi.fn(),
+  getTaskOccurrences: vi.fn(),
+  completeOccurrence: vi.fn(),
+  reopenOccurrence: vi.fn(),
+}))
+
 function renderCalendar(queryClient = createTestQueryClient()) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <Calendar />
       </QueryClientProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   )
 }
 
@@ -49,7 +66,9 @@ function createTestQueryClient() {
 function getCalendarButtonByText(...parts: string[]) {
   const button = screen
     .getAllByRole('button')
-    .find((candidate) => parts.some((part) => candidate.textContent?.includes(part)))
+    .find((candidate) =>
+      parts.some((part) => candidate.textContent?.includes(part))
+    )
   expect(button).toBeTruthy()
   return button as HTMLElement
 }
@@ -57,12 +76,49 @@ function getCalendarButtonByText(...parts: string[]) {
 describe('Calendar today task flow', () => {
   beforeEach(() => {
     const currentDate = new Date()
-    const eventStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 9, 30)
-    const eventEnd = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 10, 15)
+    const eventStart = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth(),
+      currentDate.getDate(),
+      9,
+      30
+    )
+    const eventEnd = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth(),
+      currentDate.getDate(),
+      10,
+      15
+    )
 
     vi.clearAllMocks()
     saveProjectSourcesMock.mockResolvedValue({})
     createEventMock.mockResolvedValue({})
+    vi.mocked(tasksApi.getTasks).mockResolvedValue({
+      tasks: [
+        {
+          id: 'task-calendar-color',
+          title: '月历彩色任务',
+          content: '',
+          project: 'Personal',
+          project_id: 'personal',
+          project_type: 'personal',
+          planned_date: `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`,
+          priority: 0,
+          done: 0,
+          status: 'open',
+          horizon: 'week',
+          scope: 'weekly',
+          sort_order: 0,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      pagination: { page: 1, page_size: 100, total: 1 },
+    })
+    vi.mocked(tasksApi.getTaskOccurrences).mockResolvedValue([])
+    vi.mocked(tasksApi.completeOccurrence).mockResolvedValue({} as never)
+    vi.mocked(tasksApi.reopenOccurrence).mockResolvedValue({} as never)
     vi.mocked(useEventsList).mockReturnValue({
       data: {
         events: [
@@ -196,7 +252,7 @@ describe('Calendar today task flow', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/api/today'))
 
     const taskFlow = await screen.findByTestId('calendar-today-task-flow')
-    expect(within(taskFlow).getByText('今日任务流')).toBeVisible()
+    expect(within(taskFlow).getByText('今日任务')).toBeVisible()
     expect(within(taskFlow).getByText('推进 PostgreSQL 迁移')).toBeVisible()
     expect(within(taskFlow).getByLabelText('所属项目：AI Infra')).toBeVisible()
     expect(within(taskFlow).getByText('补齐日历任务流')).toBeVisible()
@@ -209,15 +265,30 @@ describe('Calendar today task flow', () => {
     expect(await screen.findByLabelText('日程：设计评审，09:30')).toBeVisible()
   })
 
-  it('switches calendar views from the top mode controls', async () => {
-    const user = userEvent.setup()
+  it('shows scheduled tasks with the same generated color treatment in the calendar', async () => {
     renderCalendar()
 
-    await user.click(screen.getByRole('button', { name: '周' }))
-    expect(screen.getByText('本周视图')).toBeVisible()
+    expect(await screen.findByLabelText('任务：月历彩色任务')).toBeVisible()
+    expect(await screen.findByLabelText('任务颜色：月历彩色任务')).toBeVisible()
+  })
 
-    await user.click(screen.getByRole('button', { name: '日' }))
+  it('switches calendar views from the Google-style calendar toolbar', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+    const viewSelect = screen.getByRole('combobox', { name: '日历视图' })
+
+    expect(viewSelect).toHaveValue('month')
+    expect(screen.getAllByRole('button', { name: '今天' })).toHaveLength(1)
+
+    await user.selectOptions(viewSelect, 'week')
+    expect(screen.getByText('本周视图')).toBeVisible()
+    expect(screen.getByRole('button', { name: '上一周' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '下一周' })).toBeVisible()
+
+    await user.selectOptions(viewSelect, 'day')
     expect(screen.getByText('当日视图')).toBeVisible()
+    expect(screen.getByRole('button', { name: '前一天' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '后一天' })).toBeVisible()
   })
 
   it('renders project calendar sources and filters events by project id', async () => {
@@ -225,18 +296,26 @@ describe('Calendar today task flow', () => {
     renderCalendar()
 
     expect(screen.getByRole('button', { name: '个人' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Personal' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Personal' })
+    ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '学习计划' })).toBeVisible()
     expect(screen.getByRole('button', { name: '固定事项' })).toBeVisible()
     expect(await screen.findByLabelText('日程：设计评审，09:30')).toBeVisible()
-    expect(screen.queryByLabelText('日程：算法复盘，09:30')).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('日程：算法复盘，09:30')
+    ).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '学习计划' }))
-    expect(screen.queryByLabelText('日程：设计评审，09:30')).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('日程：设计评审，09:30')
+    ).not.toBeInTheDocument()
     expect(screen.getByLabelText('日程：算法复盘，09:30')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: '固定事项' }))
-    expect(screen.queryByLabelText('日程：算法复盘，09:30')).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('日程：算法复盘，09:30')
+    ).not.toBeInTheDocument()
     expect(screen.getByLabelText('日程：周会准备，09:30')).toBeVisible()
   })
 
@@ -253,9 +332,24 @@ describe('Calendar today task flow', () => {
 
     expect(saveProjectSourcesMock).toHaveBeenCalledWith({
       sources: [
-        { project_id: 'learning', enabled: true, color: '#12b76a', order_index: 1 },
-        { project_id: 'regular', enabled: true, color: '#f79009', order_index: 2 },
-        { project_id: 'archived', enabled: false, color: '#667085', order_index: 3 },
+        {
+          project_id: 'learning',
+          enabled: true,
+          color: '#12b76a',
+          order_index: 1,
+        },
+        {
+          project_id: 'regular',
+          enabled: true,
+          color: '#f79009',
+          order_index: 2,
+        },
+        {
+          project_id: 'archived',
+          enabled: false,
+          color: '#667085',
+          order_index: 3,
+        },
       ],
     })
   })
@@ -282,8 +376,12 @@ describe('Calendar today task flow', () => {
     renderCalendar()
 
     await user.click(getCalendarButtonByText('配置项目', '閰嶇疆椤圭洰'))
-    expect(screen.queryByLabelText('calendar-source-name')).not.toBeInTheDocument()
-    expect(screen.getByText('请到任务工作台新建长期项目或学习项目。')).toBeVisible()
+    expect(
+      screen.queryByLabelText('calendar-source-name')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText('请到任务工作台新建长期项目或学习项目。')
+    ).toBeVisible()
     expect(screen.getByRole('button', { name: '去任务工作台' })).toBeVisible()
   })
 
@@ -300,7 +398,7 @@ describe('Calendar today task flow', () => {
         title: '读论文',
         project_id: 'learning',
         kind: 'work',
-      }),
+      })
     )
   })
 
@@ -310,18 +408,34 @@ describe('Calendar today task flow', () => {
     renderCalendar()
 
     await user.type(screen.getByPlaceholderText('新增日程'), '下午评审')
-    fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '13:30' } })
-    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '15:00' } })
+    fireEvent.change(screen.getByLabelText('开始时间'), {
+      target: { value: '13:30' },
+    })
+    fireEvent.change(screen.getByLabelText('结束时间'), {
+      target: { value: '15:00' },
+    })
     await user.click(screen.getByRole('button', { name: '添加日程' }))
 
-    const start = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 13, 30)
-    const end = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 15, 0)
+    const start = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth(),
+      currentDate.getDate(),
+      13,
+      30
+    )
+    const end = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth(),
+      currentDate.getDate(),
+      15,
+      0
+    )
     expect(createEventMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: '下午评审',
         start_time: Math.floor(start.getTime() / 1000),
         end_time: Math.floor(end.getTime() / 1000),
-      }),
+      })
     )
   })
 
@@ -330,8 +444,12 @@ describe('Calendar today task flow', () => {
     renderCalendar()
 
     await user.type(screen.getByPlaceholderText('新增日程'), '无效日程')
-    fireEvent.change(screen.getByLabelText('开始时间'), { target: { value: '15:00' } })
-    fireEvent.change(screen.getByLabelText('结束时间'), { target: { value: '14:30' } })
+    fireEvent.change(screen.getByLabelText('开始时间'), {
+      target: { value: '15:00' },
+    })
+    fireEvent.change(screen.getByLabelText('结束时间'), {
+      target: { value: '14:30' },
+    })
 
     expect(screen.getByText('结束时间必须晚于开始时间')).toBeVisible()
     expect(screen.getByRole('button', { name: '添加日程' })).toBeDisabled()
@@ -353,7 +471,7 @@ describe('Calendar today task flow', () => {
       expect.objectContaining({
         title: 'unsourced event',
         kind: 'work',
-      }),
+      })
     )
     expect(payload).not.toHaveProperty('project_id')
   })
@@ -361,7 +479,13 @@ describe('Calendar today task flow', () => {
   it('creates without project_id from the unassigned source fallback', async () => {
     const user = userEvent.setup()
     const currentDate = new Date()
-    const eventStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), 13, 0)
+    const eventStart = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth(),
+      currentDate.getDate(),
+      13,
+      0
+    )
     vi.mocked(useEventsList).mockReturnValue({
       data: {
         events: [
@@ -383,7 +507,11 @@ describe('Calendar today task flow', () => {
 
     const unassignedButton = screen
       .getAllByRole('button')
-      .find((button) => button.textContent?.includes('未归属') || button.textContent?.includes('鏈綊'))
+      .find(
+        (button) =>
+          button.textContent?.includes('未归属') ||
+          button.textContent?.includes('鏈綊')
+      )
     expect(unassignedButton).toBeTruthy()
     await user.click(unassignedButton as HTMLElement)
     await user.type(screen.getByRole('textbox'), 'new orphan event')
@@ -394,7 +522,7 @@ describe('Calendar today task flow', () => {
       expect.objectContaining({
         title: 'new orphan event',
         kind: 'work',
-      }),
+      })
     )
     expect(payload).not.toHaveProperty('project_id')
   })

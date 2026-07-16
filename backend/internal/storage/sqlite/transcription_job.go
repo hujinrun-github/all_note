@@ -93,12 +93,8 @@ func createOrGetSQLiteTranscriptionJob(ctx context.Context, tx *sql.Tx, workspac
 		return job, nil
 	}
 
-	var uploadState string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT upload_state FROM voice_notes WHERE workspace_id = ? AND client_id = ?
-	`, workspaceID, request.VoiceNoteID).Scan(&uploadState); errors.Is(err, sql.ErrNoRows) {
-		return nil, storage.ErrMobileEntityNotFound
-	} else if err != nil {
+	uploadState, err := sqliteVoiceUploadStateForTranscription(ctx, tx, workspaceID, request.VoiceNoteID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -189,12 +185,8 @@ func retrySQLiteTranscriptionJob(ctx context.Context, tx *sql.Tx, workspaceID st
 	if latestGeneration != failed.Generation {
 		return nil, storage.ErrStaleTranscriptionJob
 	}
-	var uploadState string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT upload_state FROM voice_notes WHERE workspace_id = ? AND client_id = ?
-	`, workspaceID, failed.VoiceNoteID).Scan(&uploadState); errors.Is(err, sql.ErrNoRows) {
-		return nil, storage.ErrMobileEntityNotFound
-	} else if err != nil {
+	uploadState, err := sqliteVoiceUploadStateForTranscription(ctx, tx, workspaceID, failed.VoiceNoteID)
+	if err != nil {
 		return nil, err
 	}
 	generation := latestGeneration + 1
@@ -218,6 +210,24 @@ func retrySQLiteTranscriptionJob(ctx context.Context, tx *sql.Tx, workspaceID st
 		return nil, err
 	}
 	return job, nil
+}
+
+func sqliteVoiceUploadStateForTranscription(ctx context.Context, tx *sql.Tx, workspaceID, clientID string) (string, error) {
+	var uploadState, audioState string
+	var deletedAt sql.NullInt64
+	err := tx.QueryRowContext(ctx, `
+		SELECT upload_state, audio_state, deleted_at FROM voice_notes WHERE workspace_id = ? AND client_id = ?
+	`, workspaceID, clientID).Scan(&uploadState, &audioState, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", storage.ErrMobileEntityNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if deletedAt.Valid || audioState == model.VoiceAudioDeleteRequested || audioState == model.VoiceAudioDeleted {
+		return "", storage.ErrVoiceAudioGone
+	}
+	return uploadState, nil
 }
 
 func getSQLiteTranscriptionJobReceipt(ctx context.Context, tx *sql.Tx, workspaceID string, request model.CreateTranscriptionJob) (*model.TranscriptionJob, bool, error) {

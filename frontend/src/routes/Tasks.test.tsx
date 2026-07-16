@@ -162,6 +162,7 @@ const roadmap: LearningRoadmap = {
 describe('Tasks long task tracking', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.localStorage.clear()
     vi.mocked(tasksApi.listTaskProjects).mockResolvedValue(projects)
     vi.mocked(tasksApi.getLearningRoadmap).mockResolvedValue(null)
     vi.mocked(tasksApi.getRecurringTasks).mockResolvedValue({
@@ -335,6 +336,10 @@ describe('Tasks long task tracking', () => {
     })
     renderTasks()
     const user = userEvent.setup()
+
+    expect(screen.queryByText('视图')).not.toBeInTheDocument()
+    expect(await screen.findByLabelText('任务颜色：第一条任务')).toBeVisible()
+    expect(screen.getByLabelText('任务颜色：第二条任务')).toBeVisible()
 
     await user.click(await screen.findByText('第二条任务'))
 
@@ -565,6 +570,7 @@ describe('Tasks recurring task project selector', () => {
 describe('Tasks learning roadmap weekly linking', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.localStorage.clear()
     vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([
       ...projects,
       learningProject,
@@ -585,6 +591,30 @@ describe('Tasks learning roadmap weekly linking', () => {
         horizon: 'week',
         scope: 'daily',
       })
+    )
+  })
+
+  it('generates the complete roadmap with an edited prompt', async () => {
+    vi.mocked(tasksApi.generateLearningRoadmap).mockResolvedValue(roadmap)
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(screen.getByRole('button', { name: '编辑生成提示词' }))
+    const prompt = screen.getByRole('textbox', {
+      name: '完整路径生成提示词',
+    }) as HTMLTextAreaElement
+    expect(prompt.value).toContain('AI Infra工程师')
+
+    await user.clear(prompt)
+    await user.type(prompt, '优先学习推理服务，并增加三个可运行的实战项目')
+    await user.click(screen.getByRole('button', { name: '重新生成完整路径' }))
+
+    await waitFor(() =>
+      expect(tasksApi.generateLearningRoadmap).toHaveBeenCalledWith(
+        'learning-1',
+        { prompt: '优先学习推理服务，并增加三个可运行的实战项目' }
+      )
     )
   })
 
@@ -632,6 +662,109 @@ describe('Tasks learning roadmap weekly linking', () => {
       screen.queryByRole('button', { name: '加入本周' })
     ).not.toBeInTheDocument()
     expect(tasksApi.createTask).not.toHaveBeenCalled()
+  })
+
+  it('opens the node task creator from an empty roadmap task detail panel', async () => {
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+
+    expect(screen.getByText('当前节点暂无关联任务')).toBeVisible()
+    expect(
+      screen.getByText('创建关联任务后，可在这里编辑标题、日期、状态和备注。')
+    ).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '创建当前节点任务' }))
+
+    expect(screen.getByTestId('roadmap-node-dialog')).toBeVisible()
+  })
+
+  it('edits a linked roadmap task in the task detail panel', async () => {
+    vi.mocked(tasksApi.getTasks).mockImplementation(async (params) => {
+      if (params.horizon === 'week') {
+        return {
+          tasks: [
+            task({
+              id: 'unrelated-task',
+              title: '无关任务',
+              project_id: 'personal',
+              project_type: 'personal',
+              planned_date: '2026-07-19',
+              horizon: 'week',
+              scope: 'daily',
+            }),
+            task({
+              id: 'linked-detail-task',
+              title: '梳理 AI Infra 核心概念',
+              content: '整理端到端链路',
+              project: learningProject.name,
+              project_id: learningProject.id,
+              project_type: 'learning',
+              roadmap_node_id: 'node-1',
+              planned_date: '2026-07-20',
+              horizon: 'week',
+              scope: 'daily',
+            }),
+          ],
+          pagination,
+        }
+      }
+      return { tasks: [], pagination }
+    })
+    vi.mocked(tasksApi.updateTask).mockResolvedValue(
+      task({
+        id: 'linked-detail-task',
+        title: '梳理 AI Infra 核心概念与案例',
+        content: '补充推理服务案例',
+        project: learningProject.name,
+        project_id: learningProject.id,
+        project_type: 'learning',
+        roadmap_node_id: 'node-1',
+        planned_date: '2026-07-20',
+        status: 'active',
+      })
+    )
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+
+    expect(
+      await screen.findByText('编辑当前 Roadmap 节点的关联任务')
+    ).toBeVisible()
+    expect(screen.getByLabelText('任务详情标题')).toHaveValue(
+      '梳理 AI Infra 核心概念'
+    )
+    expect(screen.getByLabelText('任务详情备注')).toHaveValue('整理端到端链路')
+    expect(
+      screen.getByRole('button', {
+        name: '在任务详情中编辑 梳理 AI Infra 核心概念 · 第 1 次推进',
+      })
+    ).toHaveClass('is-selected')
+
+    await user.clear(screen.getByLabelText('任务详情标题'))
+    await user.type(
+      screen.getByLabelText('任务详情标题'),
+      '梳理 AI Infra 核心概念与案例'
+    )
+    await user.clear(screen.getByLabelText('任务详情备注'))
+    await user.type(screen.getByLabelText('任务详情备注'), '补充推理服务案例')
+    await user.click(screen.getByRole('button', { name: '进行中' }))
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() =>
+      expect(tasksApi.updateTask).toHaveBeenCalledWith(
+        'linked-detail-task',
+        expect.objectContaining({
+          title: '梳理 AI Infra 核心概念与案例',
+          content: '补充推理服务案例',
+          project_id: learningProject.id,
+          planned_date: '2026-07-20',
+          status: 'active',
+        })
+      )
+    )
   })
 
   it('deletes an article from the selected roadmap node after confirmation', async () => {
@@ -714,6 +847,42 @@ describe('Tasks learning roadmap weekly linking', () => {
     expect(
       within(dialog).getByRole('button', { name: '添加选中文章' })
     ).toBeDisabled()
+  })
+
+  it('searches with an edited prompt and a custom website source', async () => {
+    vi.mocked(tasksApi.searchRoadmapNodeResources).mockResolvedValue({
+      node_id: 'node-1',
+      query: 'custom retrieval architecture prompt site:docs.python.org',
+      resources: [],
+    })
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    const prompt = await screen.findByRole('textbox', { name: '搜索提示词' })
+    await user.clear(prompt)
+    await user.type(prompt, 'custom retrieval architecture prompt')
+
+    await user.type(
+      screen.getByRole('textbox', { name: '自定义搜索源' }),
+      'docs.python.org'
+    )
+    await user.click(screen.getByRole('button', { name: '添加来源' }))
+
+    expect(
+      screen.getByRole('checkbox', { name: 'docs.python.org' })
+    ).toBeChecked()
+    await user.click(screen.getByRole('button', { name: '搜索文章' }))
+
+    await waitFor(() =>
+      expect(tasksApi.searchRoadmapNodeResources).toHaveBeenCalledWith(
+        'node-1',
+        expect.objectContaining({
+          query: 'custom retrieval architecture prompt',
+          sources: expect.arrayContaining(['site:docs.python.org']),
+        })
+      )
+    )
   })
 
   it('labels duplicate linked tasks with sequence and creation metadata', async () => {

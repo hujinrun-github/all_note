@@ -3,9 +3,11 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
@@ -29,7 +31,7 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	var total int
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM events
-		WHERE workspace_id = ? AND start_time < ? AND end_time > ?
+		WHERE workspace_id = ? AND deleted_at IS NULL AND start_time < ? AND end_time > ?
 	`, workspaceID, end, start).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -42,7 +44,7 @@ func (r eventRepository) List(ctx context.Context, start, end int64, page, pageS
 	offset := (page - 1) * pageSize
 	rows, err := r.db.QueryContext(ctx, `
 		`+sqliteEventSelect+`
-		WHERE e.workspace_id = ? AND e.start_time < ? AND e.end_time > ?
+		WHERE e.workspace_id = ? AND e.deleted_at IS NULL AND e.start_time < ? AND e.end_time > ?
 		ORDER BY e.start_time ASC LIMIT ? OFFSET ?
 	`, workspaceID, end, start, pageSize, offset)
 	if err != nil {
@@ -68,11 +70,16 @@ func (r eventRepository) Create(ctx context.Context, event *model.Event) error {
 	if event.Kind == "" {
 		event.Kind = "work"
 	}
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO events (id, title, start_time, end_time, location, kind, note_id, project_id, created_at, updated_at, workspace_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.ID, event.Title, event.StartTime, event.EndTime, event.Location, event.Kind, event.NoteID, event.ProjectID, event.CreatedAt, event.UpdatedAt, workspaceID)
-	return err
+	clientID := deterministicSQLiteMobileEntityClientID("event", workspaceID, event.ID)
+	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO events (id, client_id, revision, title, start_time, end_time, location, kind, note_id, project_id, created_at, updated_at, workspace_id)
+			VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, event.ID, clientID, event.Title, event.StartTime, event.EndTime, event.Location, event.Kind, event.NoteID, event.ProjectID, event.CreatedAt, event.UpdatedAt, workspaceID); err != nil {
+			return err
+		}
+		return persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "event", "event.server_created", clientID, event.UpdatedAt)
+	})
 }
 
 func (r eventRepository) Update(ctx context.Context, id string, req *model.UpdateEventRequest) (*model.Event, error) {
@@ -80,8 +87,9 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 	if err != nil {
 		return nil, err
 	}
-	sets := []string{"updated_at = ?"}
-	args := []interface{}{nowUnix()}
+	now := nowUnix()
+	sets := []string{"updated_at = ?", "revision = revision + 1"}
+	args := []interface{}{now}
 	if req.Title != nil {
 		sets = append(sets, "title = ?")
 		args = append(args, *req.Title)
@@ -112,10 +120,31 @@ func (r eventRepository) Update(ctx context.Context, id string, req *model.Updat
 	}
 	args = append(args, id)
 	args = append(args, workspaceID)
-	if _, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = ? AND workspace_id = ?", strings.Join(sets, ", ")), args...); err != nil {
-		return nil, err
-	}
-	return r.GetByID(ctx, id)
+	var updated *model.Event
+	err = (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE events SET %s WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL", strings.Join(sets, ", ")), args...)
+		if err != nil {
+			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return err
+			}
+			return sql.ErrNoRows
+		}
+		updated, err = scanSQLiteEvent(tx.QueryRowContext(ctx, `
+			`+sqliteEventSelect+` WHERE e.workspace_id = ? AND e.id = ? AND e.deleted_at IS NULL
+		`, workspaceID, id))
+		if err != nil {
+			return err
+		}
+		var clientID string
+		if err := tx.QueryRowContext(ctx, `SELECT client_id FROM events WHERE workspace_id = ? AND id = ?`, workspaceID, id).Scan(&clientID); err != nil {
+			return err
+		}
+		return persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "event", "event.server_updated", clientID, now)
+	})
+	return updated, err
 }
 
 func (r eventRepository) GetByID(ctx context.Context, id string) (*model.Event, error) {
@@ -125,7 +154,7 @@ func (r eventRepository) GetByID(ctx context.Context, id string) (*model.Event, 
 	}
 	return scanSQLiteEvent(r.db.QueryRowContext(ctx, `
 		`+sqliteEventSelect+`
-		WHERE e.workspace_id = ? AND e.id = ?
+		WHERE e.workspace_id = ? AND e.id = ? AND e.deleted_at IS NULL
 	`, workspaceID, id))
 }
 
@@ -134,8 +163,24 @@ func (r eventRepository) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, "DELETE FROM events WHERE workspace_id = ? AND id = ?", workspaceID, id)
-	return err
+	now := nowUnix()
+	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		var clientID string
+		err := tx.QueryRowContext(ctx, `SELECT client_id FROM events WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, workspaceID, id).Scan(&clientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE events SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, now, now, workspaceID, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES (?, 'event', ?, ?)`, workspaceID, clientID, now); err != nil {
+			return err
+		}
+		return persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "event", "event.server_deleted", clientID, now)
+	})
 }
 
 func (r eventRepository) Today(ctx context.Context, start, end int64) ([]model.Event, error) {
@@ -145,7 +190,7 @@ func (r eventRepository) Today(ctx context.Context, start, end int64) ([]model.E
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		`+sqliteEventSelect+`
-		WHERE e.workspace_id = ? AND e.start_time < ? AND e.end_time > ? ORDER BY e.start_time ASC
+		WHERE e.workspace_id = ? AND e.deleted_at IS NULL AND e.start_time < ? AND e.end_time > ? ORDER BY e.start_time ASC
 	`, workspaceID, end, start)
 	if err != nil {
 		return nil, err

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 var ErrInvalidSyncToken = errors.New("invalid mobile sync token")
@@ -16,6 +17,8 @@ type SyncCursor struct {
 	WorkspaceID string `json:"workspace_id"`
 	Scope       string `json:"scope"`
 	Position    int64  `json:"position"`
+	TimeZone    string `json:"time_zone"`
+	Protocol    string `json:"protocol"`
 }
 
 type SnapshotPageToken struct {
@@ -24,6 +27,8 @@ type SnapshotPageToken struct {
 	SessionID   string `json:"session_id"`
 	Offset      int64  `json:"offset"`
 	ExpiresAt   int64  `json:"expires_at"`
+	TimeZone    string `json:"time_zone"`
+	Protocol    string `json:"protocol"`
 }
 
 type TokenCodec struct {
@@ -35,6 +40,7 @@ func NewTokenCodec(secret string) TokenCodec {
 }
 
 func (c TokenCodec) EncodeCursor(cursor SyncCursor) (string, error) {
+	normalizeTokenBinding(&cursor.TimeZone, &cursor.Protocol)
 	if cursor.WorkspaceID == "" || !validSyncScope(cursor.Scope) || cursor.Position < 0 {
 		return "", ErrInvalidSyncToken
 	}
@@ -46,13 +52,22 @@ func (c TokenCodec) DecodeCursor(token, workspaceID, scope string) (SyncCursor, 
 	if err := c.decode(token, "cursor", &cursor); err != nil {
 		return SyncCursor{}, err
 	}
-	if cursor.WorkspaceID != workspaceID || cursor.Scope != scope || cursor.Position < 0 {
+	if cursor.WorkspaceID != workspaceID || cursor.Scope != scope || cursor.Position < 0 || !validTokenBinding(cursor.TimeZone, cursor.Protocol) {
+		return SyncCursor{}, ErrInvalidSyncToken
+	}
+	return cursor, nil
+}
+
+func (c TokenCodec) DecodeCursorBound(token, workspaceID, scope, timeZone string) (SyncCursor, error) {
+	cursor, err := c.DecodeCursor(token, workspaceID, scope)
+	if err != nil || cursor.TimeZone != timeZone || cursor.Protocol != "mobile-v1" {
 		return SyncCursor{}, ErrInvalidSyncToken
 	}
 	return cursor, nil
 }
 
 func (c TokenCodec) EncodeSnapshotPage(page SnapshotPageToken) (string, error) {
+	normalizeTokenBinding(&page.TimeZone, &page.Protocol)
 	if page.WorkspaceID == "" || !validSyncScope(page.Scope) || page.SessionID == "" || page.Offset < 0 || page.ExpiresAt <= 0 {
 		return "", ErrInvalidSyncToken
 	}
@@ -64,7 +79,15 @@ func (c TokenCodec) DecodeSnapshotPage(token, workspaceID, scope string) (Snapsh
 	if err := c.decode(token, "snapshot", &page); err != nil {
 		return SnapshotPageToken{}, err
 	}
-	if page.WorkspaceID != workspaceID || page.Scope != scope || page.SessionID == "" || page.Offset < 0 || page.ExpiresAt <= 0 {
+	if page.WorkspaceID != workspaceID || page.Scope != scope || page.SessionID == "" || page.Offset < 0 || page.ExpiresAt <= 0 || !validTokenBinding(page.TimeZone, page.Protocol) {
+		return SnapshotPageToken{}, ErrInvalidSyncToken
+	}
+	return page, nil
+}
+
+func (c TokenCodec) DecodeSnapshotPageBound(token, workspaceID, scope, timeZone string) (SnapshotPageToken, error) {
+	page, err := c.DecodeSnapshotPage(token, workspaceID, scope)
+	if err != nil || page.TimeZone != timeZone || page.Protocol != "mobile-v1" {
 		return SnapshotPageToken{}, ErrInvalidSyncToken
 	}
 	return page, nil
@@ -124,4 +147,21 @@ func (c TokenCodec) sign(payload []byte) []byte {
 
 func validSyncScope(scope string) bool {
 	return scope == "iphone" || scope == "watch"
+}
+
+func normalizeTokenBinding(timeZone, protocol *string) {
+	if *timeZone == "" {
+		*timeZone = "UTC"
+	}
+	if *protocol == "" {
+		*protocol = "mobile-v1"
+	}
+}
+
+func validTokenBinding(timeZone, protocol string) bool {
+	if protocol != "mobile-v1" {
+		return false
+	}
+	_, err := time.LoadLocation(timeZone)
+	return err == nil
 }

@@ -46,6 +46,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Scope'
+        - $ref: '#/components/parameters/TimeZone'
       responses:
         '200':
           description: Change page
@@ -62,6 +63,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/PageToken'
         - $ref: '#/components/parameters/Scope'
+        - $ref: '#/components/parameters/TimeZone'
       responses:
         '200':
           description: Snapshot page
@@ -105,29 +107,6 @@ paths:
                 $ref: '#/components/schemas/EntityEnvelope'
         '409':
           $ref: '#/components/responses/Conflict'
-  /api/mobile/voice-notes:
-    post:
-      operationId: createMobileVoiceNote
-      summary: Create voice-note metadata before audio transfer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VoiceNoteCreate'
-      responses:
-        '201':
-          description: Voice note metadata created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EntityEnvelope'
-        '200':
-          description: Idempotent replay of an existing receipt
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EntityEnvelope'
   /api/mobile/voice-notes/{clientID}/audio:
     put:
       operationId: putMobileVoiceAudio
@@ -143,31 +122,12 @@ paths:
               type: string
               contentEncoding: binary
       responses:
-        '204':
+        '200':
           description: Audio stored or already present with the same checksum
         '409':
           $ref: '#/components/responses/Conflict'
         '410':
           $ref: '#/components/responses/Gone'
-    delete:
-      operationId: deleteMobileVoiceAudio
-      summary: Persist cloud-audio deletion intent before object cleanup
-      parameters:
-        - $ref: '#/components/parameters/ClientID'
-        - $ref: '#/components/parameters/MutationIDHeader'
-      responses:
-        '204':
-          description: Deletion accepted or already complete
-  /api/mobile/voice-notes/{clientID}:
-    delete:
-      operationId: deleteMobileVoiceNote
-      summary: Tombstone a voice note and schedule object cleanup
-      parameters:
-        - $ref: '#/components/parameters/ClientID'
-        - $ref: '#/components/parameters/MutationIDHeader'
-      responses:
-        '204':
-          description: Voice note tombstoned
   /api/mobile/voice-notes/{clientID}/transcriptions:
     post:
       operationId: createMobileTranscriptionJob
@@ -251,6 +211,12 @@ components:
       schema:
         type: string
         enum: [iphone, watch]
+    TimeZone:
+      name: time_zone
+      in: query
+      description: IANA time zone used by the finite Watch projection; defaults to UTC.
+      schema:
+        type: string
     ConflictID:
       name: conflictID
       in: path
@@ -352,6 +318,24 @@ components:
           $ref: '#/components/schemas/UUID'
         operation:
           type: string
+          enum:
+            - note.create
+            - note.update
+            - note.delete
+            - task.create
+            - task.update
+            - task.delete
+            - event.create
+            - event.update
+            - event.delete
+            - inbox.create
+            - inbox.update
+            - inbox.delete
+            - task_occurrence.complete
+            - task_occurrence.reopen
+            - voice.create
+            - voice_audio.delete
+            - voice_note.delete
         entity_id:
           $ref: '#/components/schemas/UUID'
         base_revision:
@@ -425,6 +409,12 @@ components:
           type: string
         has_more:
           type: boolean
+        time_zone:
+          type: string
+        scope_valid_until:
+          $ref: '#/components/schemas/Timestamp'
+        projection_refresh_required:
+          type: boolean
     SnapshotPage:
       type: object
       additionalProperties: false
@@ -444,10 +434,14 @@ components:
           type: boolean
         scope_valid_until:
           $ref: '#/components/schemas/Timestamp'
+        time_zone:
+          type: string
+        projection_refresh_required:
+          type: boolean
     SyncConflict:
       type: object
       additionalProperties: false
-      required: [conflict_id, entity_type, entity_id, base_revision, remote_revision, local_payload, remote_payload, revision]
+      required: [conflict_id, entity_type, entity_id, operation, base_revision, remote_revision, local_payload, remote_payload, revision]
       properties:
         conflict_id:
           $ref: '#/components/schemas/UUID'
@@ -455,6 +449,8 @@ components:
           type: string
         entity_id:
           $ref: '#/components/schemas/UUID'
+        operation:
+          type: string
         base_revision:
           type: integer
         remote_revision:

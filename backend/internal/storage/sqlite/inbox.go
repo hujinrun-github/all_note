@@ -3,9 +3,11 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
@@ -19,7 +21,7 @@ func (r inboxRepository) List(ctx context.Context, kind string, page, pageSize i
 	if err != nil {
 		return nil, 0, err
 	}
-	where := "workspace_id = ? AND archived = 0 AND converted_to IS NULL"
+	where := "workspace_id = ? AND deleted_at IS NULL AND archived = 0 AND converted_to IS NULL"
 	args := []interface{}{workspaceID}
 	if kind != "" && kind != "all" {
 		where += " AND kind = ?"
@@ -63,11 +65,16 @@ func (r inboxRepository) Create(ctx context.Context, item *model.InboxItem) erro
 	if item.Source == "" {
 		item.Source = "quick-capture"
 	}
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO inbox (id, kind, title, body, source, archived, converted_to, created_at, updated_at, workspace_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, item.ID, item.Kind, item.Title, item.Body, item.Source, item.Archived, item.ConvertedTo, item.CreatedAt, item.UpdatedAt, workspaceID)
-	return err
+	clientID := deterministicSQLiteMobileEntityClientID("inbox", workspaceID, item.ID)
+	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO inbox (id, client_id, revision, kind, title, body, source, archived, converted_to, created_at, updated_at, workspace_id)
+			VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, item.ID, clientID, item.Kind, item.Title, item.Body, item.Source, item.Archived, item.ConvertedTo, item.CreatedAt, item.UpdatedAt, workspaceID); err != nil {
+			return err
+		}
+		return persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "inbox", "inbox.server_created", clientID, item.UpdatedAt)
+	})
 }
 
 func (r inboxRepository) GetByID(ctx context.Context, id string) (*model.InboxItem, error) {
@@ -77,7 +84,7 @@ func (r inboxRepository) GetByID(ctx context.Context, id string) (*model.InboxIt
 	}
 	return scanSQLiteInboxItem(r.db.QueryRowContext(ctx, `
 		SELECT id, kind, title, body, source, archived, converted_to, created_at, updated_at
-		FROM inbox WHERE workspace_id = ? AND id = ?
+		FROM inbox WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
 	`, workspaceID, id))
 }
 
@@ -86,14 +93,24 @@ func (r inboxRepository) MarkConverted(ctx context.Context, id, convertedTo stri
 	if err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, "UPDATE inbox SET converted_to = ?, updated_at = ? WHERE workspace_id = ? AND id = ? AND converted_to IS NULL", convertedTo, nowUnix(), workspaceID, id)
-	if err != nil {
-		return err
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected != 1 {
-		return sql.ErrNoRows
-	}
-	return err
+	now := nowUnix()
+	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, "UPDATE inbox SET converted_to = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND id = ? AND converted_to IS NULL AND deleted_at IS NULL", convertedTo, now, workspaceID, id)
+		if err != nil {
+			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			if err != nil {
+				return err
+			}
+			return sql.ErrNoRows
+		}
+		var clientID string
+		if err := tx.QueryRowContext(ctx, `SELECT client_id FROM inbox WHERE workspace_id = ? AND id = ?`, workspaceID, id).Scan(&clientID); err != nil {
+			return err
+		}
+		return persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "inbox", "inbox.server_updated", clientID, now)
+	})
 }
 
 func (r inboxRepository) Delete(ctx context.Context, id string) error {
@@ -101,8 +118,24 @@ func (r inboxRepository) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, "DELETE FROM inbox WHERE workspace_id = ? AND id = ?", workspaceID, id)
-	return err
+	now := nowUnix()
+	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		var clientID string
+		err := tx.QueryRowContext(ctx, `SELECT client_id FROM inbox WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, workspaceID, id).Scan(&clientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE inbox SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, now, now, workspaceID, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES (?, 'inbox', ?, ?)`, workspaceID, clientID, now); err != nil {
+			return err
+		}
+		return persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "inbox", "inbox.server_deleted", clientID, now)
+	})
 }
 
 func (r inboxRepository) BatchArchive(ctx context.Context, ids []string) (int64, error) {
@@ -121,11 +154,28 @@ func (r inboxRepository) BatchArchive(ctx context.Context, ids []string) (int64,
 	for i, id := range ids {
 		args[i+2] = id
 	}
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET archived = 1, updated_at = ? WHERE workspace_id = ? AND id IN (%s)", placeholders), args...)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+	var affected int64
+	err = (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		clientIDs, err := sqliteInboxClientIDs(ctx, tx, workspaceID, placeholders, ids)
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET archived = 1, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND deleted_at IS NULL AND id IN (%s)", placeholders), args...)
+		if err != nil {
+			return err
+		}
+		affected, err = result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		for _, clientID := range clientIDs {
+			if err := persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "inbox", "inbox.server_updated", clientID, args[0].(int64)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return affected, err
 }
 
 func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, error) {
@@ -144,11 +194,59 @@ func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, 
 		_ = i
 		args = append(args, id)
 	}
-	result, err := r.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM inbox WHERE workspace_id = ? AND id IN (%s)", placeholders), args...)
-	if err != nil {
-		return 0, err
+	now := nowUnix()
+	var affected int64
+	err = (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		clientIDs, err := sqliteInboxClientIDs(ctx, tx, workspaceID, placeholders, ids)
+		if err != nil {
+			return err
+		}
+		updateArgs := make([]interface{}, 0, len(ids)+3)
+		updateArgs = append(updateArgs, now, now, workspaceID)
+		for _, id := range ids {
+			updateArgs = append(updateArgs, id)
+		}
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND deleted_at IS NULL AND id IN (%s)", placeholders), updateArgs...)
+		if err != nil {
+			return err
+		}
+		affected, err = result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		for _, clientID := range clientIDs {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES (?, 'inbox', ?, ?)`, workspaceID, clientID, now); err != nil {
+				return err
+			}
+			if err := persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "inbox", "inbox.server_deleted", clientID, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return affected, err
+}
+
+func sqliteInboxClientIDs(ctx context.Context, tx *sql.Tx, workspaceID, placeholders string, ids []string) ([]string, error) {
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, workspaceID)
+	for _, id := range ids {
+		args = append(args, id)
 	}
-	return result.RowsAffected()
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT client_id FROM inbox WHERE workspace_id = ? AND deleted_at IS NULL AND id IN (%s) ORDER BY id`, placeholders), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	clientIDs := make([]string, 0, len(ids))
+	for rows.Next() {
+		var clientID string
+		if err := rows.Scan(&clientID); err != nil {
+			return nil, err
+		}
+		clientIDs = append(clientIDs, clientID)
+	}
+	return clientIDs, rows.Err()
 }
 
 func scanSQLiteInboxItem(row sqliteRowScanner) (*model.InboxItem, error) {

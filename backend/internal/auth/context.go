@@ -12,6 +12,7 @@ const (
 type RequestIdentity struct {
 	UserID             string
 	SessionID          string
+	DeviceID           string
 	WorkspaceID        string
 	Role               string
 	MustChangePassword bool

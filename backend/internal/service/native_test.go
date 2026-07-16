@@ -99,6 +99,45 @@ func TestUploadVoiceAudioIsIdempotentAndRejectsDifferentContent(t *testing.T) {
 	}
 }
 
+func TestUploadVoiceAudioRemovesLateObjectWhenDeleteWinsDuringPut(t *testing.T) {
+	store, ctx := openNativeServiceStore(t)
+	clientID := uuid.NewString()
+	if _, _, err := CreateVoiceNote(ctx, store, model.CreateVoiceNoteRequest{ClientID: clientID}); err != nil {
+		t.Fatalf("create voice note: %v", err)
+	}
+	repository, err := storage.MobileSyncRepositoryFrom(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := objectstore.NewMemoryStore()
+	baseTwo := int64(2)
+	objects := deletingAfterPutStore{
+		base: base,
+		afterPut: func() error {
+			_, err := repository.ApplyEntityMutation(ctx, model.MobileEntityMutation{
+				MutationID: uuid.NewString(), DeviceClientID: uuid.NewString(), EntityType: "voice_note", EntityClientID: clientID,
+				Operation: "voice_audio.delete", BaseRevision: &baseTwo, RequestSHA256: "delete-during-put", Payload: []byte(`{}`),
+			})
+			return err
+		},
+	}
+	audio := []byte("late upload")
+	if _, err := UploadVoiceAudio(ctx, store, objects, clientID, "audio/mp4", "", bytes.NewReader(audio), int64(len(audio)), 1024); !errors.Is(err, storage.ErrVoiceAudioGone) {
+		t.Fatalf("upload/delete race error=%v, want ErrVoiceAudioGone", err)
+	}
+	voice, err := storage.NativeStoreFrom(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := voice.VoiceNotes().GetByClientID(ctx, clientID)
+	if err != nil || stored.AudioState != model.VoiceAudioDeleteRequested {
+		t.Fatalf("voice after upload/delete race=%+v err=%v", stored, err)
+	}
+	if _, err := base.Get(ctx, stored.ObjectKey); !errors.Is(err, objectstore.ErrNotFound) {
+		t.Fatalf("late object survived delete-wins race: %v", err)
+	}
+}
+
 func TestTranscribeVoiceNoteUpdatesOrdinaryNote(t *testing.T) {
 	store, ctx := openNativeServiceStore(t)
 	clientID := uuid.NewString()
@@ -127,6 +166,26 @@ func TestTranscribeVoiceNoteUpdatesOrdinaryNote(t *testing.T) {
 	if note.Body != transcriber.text {
 		t.Fatalf("ordinary note body = %q, want %q", note.Body, transcriber.text)
 	}
+}
+
+type deletingAfterPutStore struct {
+	base     objectstore.Store
+	afterPut func() error
+}
+
+func (s deletingAfterPutStore) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	if err := s.base.Put(ctx, key, reader, size, contentType); err != nil {
+		return err
+	}
+	return s.afterPut()
+}
+
+func (s deletingAfterPutStore) Get(ctx context.Context, key string) (*objectstore.Object, error) {
+	return s.base.Get(ctx, key)
+}
+
+func (s deletingAfterPutStore) Remove(ctx context.Context, key string) error {
+	return s.base.Remove(ctx, key)
 }
 
 func TestWatchDeviceCanBeRevoked(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/bootstrap"
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/handler"
+	"github.com/hujinrun/flowspace/internal/mobilesyncpublisher"
 	"github.com/hujinrun/flowspace/internal/objectstore"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/router"
@@ -17,6 +18,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
 	"github.com/hujinrun/flowspace/internal/transcription"
 	"github.com/hujinrun/flowspace/internal/transcriptionjob"
+	"github.com/hujinrun/flowspace/internal/voiceaudiocleanup"
 )
 
 func main() {
@@ -113,6 +115,24 @@ func main() {
 			log.Printf("transcription worker: %v", err)
 		})
 		log.Printf("durable transcription worker initialized")
+	}
+	if nativeCfg.MobileSyncV1Enabled && nativeCfg.MinIO.Enabled() {
+		cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+		defer stopCleanup()
+		worker := voiceaudiocleanup.NewWorker(store, voiceObjects, "server-voice-audio-cleanup-worker")
+		go worker.Run(cleanupCtx, time.Second, func(err error) {
+			log.Printf("voice audio cleanup worker: %v", err)
+		})
+		log.Printf("durable voice audio cleanup worker initialized")
+	}
+	if nativeCfg.MobileSyncV1Enabled {
+		publisherCtx, stopPublisher := context.WithCancel(context.Background())
+		defer stopPublisher()
+		worker := mobilesyncpublisher.NewWorker(store)
+		go worker.Run(publisherCtx, 250*time.Millisecond, func(err error) {
+			log.Printf("mobile sync publisher worker: %v", err)
+		})
+		log.Printf("mobile sync publisher worker initialized")
 	}
 	addr := ":" + server.Port
 	log.Printf("server starting on %s", addr)

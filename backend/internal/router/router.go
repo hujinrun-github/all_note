@@ -65,7 +65,10 @@ func Setup(cfg Config) *gin.Engine {
 		if cfg.MobileSyncV1Enabled {
 			nativeProtected.GET("/mobile/sync/changes", handler.ListMobileChanges(cfg.Store, cfg.Auth.SessionSecret))
 			nativeProtected.GET("/mobile/sync/snapshot", handler.GetMobileSnapshot(cfg.Store, cfg.Auth.SessionSecret))
-			protected.POST("/mobile/sync/mutations", handler.ApplyMobileMutations(cfg.Store))
+			nativeProtected.POST("/mobile/sync/mutations", handler.ApplyMobileMutations(cfg.Store))
+			protected.GET("/mobile/sync/conflicts", handler.ListMobileConflicts(cfg.Store))
+			protected.POST("/mobile/sync/conflicts/:conflictID/resolve", handler.ResolveMobileConflict(cfg.Store))
+			nativeProtected.PUT("/mobile/voice-notes/:clientID/audio", handler.UploadVoiceAudio(cfg.Store, cfg.VoiceObjects, cfg.MaxVoiceBytes))
 			protected.POST("/mobile/voice-notes/:clientID/transcriptions", handler.CreateMobileTranscriptionJob(cfg.Store))
 			protected.GET("/mobile/transcription-jobs/:jobID", handler.GetMobileTranscriptionJob(cfg.Store))
 			protected.POST("/mobile/transcription-jobs/:jobID/retry", handler.RetryMobileTranscriptionJob(cfg.Store))

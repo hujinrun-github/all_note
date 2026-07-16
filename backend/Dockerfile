@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/flowspace-server ./cmd/server
+RUN GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux go build -p 1 -o /out/flowspace-server ./cmd/server
 
 FROM alpine:3.22
 

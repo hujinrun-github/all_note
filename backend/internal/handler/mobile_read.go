@@ -31,19 +31,24 @@ type mobileEntityWire struct {
 }
 
 type mobileChangePageWire struct {
-	SchemaVersion string             `json:"schema_version"`
-	Changes       []mobileEntityWire `json:"changes"`
-	NextCursor    string             `json:"next_cursor"`
-	HasMore       bool               `json:"has_more"`
+	SchemaVersion             string             `json:"schema_version"`
+	Changes                   []mobileEntityWire `json:"changes"`
+	NextCursor                string             `json:"next_cursor"`
+	HasMore                   bool               `json:"has_more"`
+	TimeZone                  string             `json:"time_zone,omitempty"`
+	ScopeValidUntil           string             `json:"scope_valid_until,omitempty"`
+	ProjectionRefreshRequired bool               `json:"projection_refresh_required,omitempty"`
 }
 
 type mobileSnapshotPageWire struct {
-	SchemaVersion   string             `json:"schema_version"`
-	Entities        []mobileEntityWire `json:"entities"`
-	NextPageToken   string             `json:"next_page_token,omitempty"`
-	SnapshotCursor  string             `json:"snapshot_cursor"`
-	HasMore         bool               `json:"has_more"`
-	ScopeValidUntil string             `json:"scope_valid_until"`
+	SchemaVersion             string             `json:"schema_version"`
+	Entities                  []mobileEntityWire `json:"entities"`
+	NextPageToken             string             `json:"next_page_token,omitempty"`
+	SnapshotCursor            string             `json:"snapshot_cursor"`
+	HasMore                   bool               `json:"has_more"`
+	ScopeValidUntil           string             `json:"scope_valid_until"`
+	TimeZone                  string             `json:"time_zone,omitempty"`
+	ProjectionRefreshRequired bool               `json:"projection_refresh_required,omitempty"`
 }
 
 func ListMobileChanges(store storage.Store, tokenSecret string) gin.HandlerFunc {
@@ -59,13 +64,18 @@ func ListMobileChanges(store storage.Store, tokenSecret string) gin.HandlerFunc 
 			return
 		}
 		now := time.Now().UTC()
+		projectionTimeZone, err := mobileProjectionTimeZone(c, scope)
+		if err != nil {
+			mobileError(c, http.StatusBadRequest, "invalid_time_zone", "time_zone must be an IANA time zone", false)
+			return
+		}
 		if err := publishMobileChanges(c, syncRepo, now.Unix()); err != nil {
 			mobileError(c, http.StatusInternalServerError, "mobile_sync_unavailable", "mobile sync is unavailable", true)
 			return
 		}
 		position := int64(0)
 		if token := strings.TrimSpace(c.Query("cursor")); token != "" {
-			cursor, err := codec.DecodeCursor(token, workspaceID, scope)
+			cursor, err := codec.DecodeCursorBound(token, workspaceID, scope, projectionTimeZone)
 			if err != nil {
 				mobileResyncError(c, http.StatusConflict, "The cursor is invalid or belongs to another sync scope.")
 				return
@@ -82,19 +92,44 @@ func ListMobileChanges(store storage.Store, tokenSecret string) gin.HandlerFunc 
 			return
 		}
 		nextCursor, err := codec.EncodeCursor(mobilesync.SyncCursor{
-			WorkspaceID: workspaceID, Scope: scope, Position: page.NextPosition,
+			WorkspaceID: workspaceID, Scope: scope, Position: page.NextPosition, TimeZone: projectionTimeZone,
 		})
 		if err != nil {
 			mobileError(c, http.StatusInternalServerError, "mobile_sync_unavailable", "mobile sync is unavailable", true)
 			return
 		}
 		changes := make([]mobileEntityWire, 0, len(page.Changes))
+		projectionRefreshRequired := scope == "watch" && len(page.Changes) > 0
 		for _, change := range page.Changes {
-			changes = append(changes, mobileEntityToWire(change.Entity))
+			if scope != "watch" && mobileEntityAllowedForScope(scope, change.Entity.EntityType) {
+				changes = append(changes, mobileEntityToWire(change.Entity))
+			}
+		}
+		scopeValidUntil := ""
+		if scope == "watch" {
+			value, err := nextLocalMidnight(now, projectionTimeZone)
+			if err != nil {
+				mobileError(c, http.StatusBadRequest, "invalid_time_zone", "time_zone must be an IANA time zone", false)
+				return
+			}
+			scopeValidUntil = value.Format(time.RFC3339)
 		}
 		c.JSON(http.StatusOK, mobileChangePageWire{
 			SchemaVersion: "mobile-v1", Changes: changes, NextCursor: nextCursor, HasMore: page.HasMore,
+			TimeZone: projectionTimeZone, ScopeValidUntil: scopeValidUntil, ProjectionRefreshRequired: projectionRefreshRequired,
 		})
+	}
+}
+
+func mobileEntityAllowedForScope(scope, entityType string) bool {
+	if scope == "iphone" {
+		return true
+	}
+	switch entityType {
+	case "task", "task_occurrence", "event", "voice_note", "transcription_job":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -111,11 +146,16 @@ func GetMobileSnapshot(store storage.Store, tokenSecret string) gin.HandlerFunc 
 			return
 		}
 		now := time.Now().UTC()
+		projectionTimeZone, err := mobileProjectionTimeZone(c, scope)
+		if err != nil {
+			mobileError(c, http.StatusBadRequest, "invalid_time_zone", "time_zone must be an IANA time zone", false)
+			return
+		}
 		var sessionID string
 		var offset int64
 		var expiresAt int64
 		if token := strings.TrimSpace(c.Query("page_token")); token != "" {
-			pageToken, err := codec.DecodeSnapshotPage(token, workspaceID, scope)
+			pageToken, err := codec.DecodeSnapshotPageBound(token, workspaceID, scope, projectionTimeZone)
 			if err != nil || now.Unix() > pageToken.ExpiresAt {
 				mobileResyncError(c, http.StatusGone, "The snapshot session expired or is invalid.")
 				return
@@ -127,7 +167,8 @@ func GetMobileSnapshot(store storage.Store, tokenSecret string) gin.HandlerFunc 
 				return
 			}
 			snapshot, err := syncRepo.BeginSnapshot(c.Request.Context(), model.BeginMobileSnapshot{
-				SessionID: uuid.NewString(), Scope: scope, Now: now.Unix(), ExpiresAt: now.Add(mobileSnapshotLifetime).Unix(),
+				SessionID: uuid.NewString(), Scope: scope, TimeZone: projectionTimeZone,
+				Now: now.Unix(), ExpiresAt: now.Add(mobileSnapshotLifetime).Unix(),
 			})
 			if err != nil {
 				mobileError(c, http.StatusInternalServerError, "mobile_sync_unavailable", "mobile sync is unavailable", true)
@@ -149,7 +190,8 @@ func GetMobileSnapshot(store storage.Store, tokenSecret string) gin.HandlerFunc 
 		nextPageToken := ""
 		if page.HasMore {
 			nextPageToken, err = codec.EncodeSnapshotPage(mobilesync.SnapshotPageToken{
-				WorkspaceID: workspaceID, Scope: scope, SessionID: sessionID, Offset: page.NextOffset, ExpiresAt: expiresAt,
+				WorkspaceID: workspaceID, Scope: scope, SessionID: sessionID, Offset: page.NextOffset,
+				ExpiresAt: expiresAt, TimeZone: projectionTimeZone,
 			})
 			if err != nil {
 				mobileError(c, http.StatusInternalServerError, "mobile_sync_unavailable", "mobile sync is unavailable", true)
@@ -157,7 +199,7 @@ func GetMobileSnapshot(store storage.Store, tokenSecret string) gin.HandlerFunc 
 			}
 		}
 		snapshotCursor, err := codec.EncodeCursor(mobilesync.SyncCursor{
-			WorkspaceID: workspaceID, Scope: scope, Position: page.BoundaryPosition,
+			WorkspaceID: workspaceID, Scope: scope, Position: page.BoundaryPosition, TimeZone: projectionTimeZone,
 		})
 		if err != nil {
 			mobileError(c, http.StatusInternalServerError, "mobile_sync_unavailable", "mobile sync is unavailable", true)
@@ -170,9 +212,39 @@ func GetMobileSnapshot(store storage.Store, tokenSecret string) gin.HandlerFunc 
 		c.JSON(http.StatusOK, mobileSnapshotPageWire{
 			SchemaVersion: "mobile-v1", Entities: entities, NextPageToken: nextPageToken,
 			SnapshotCursor: snapshotCursor, HasMore: page.HasMore,
-			ScopeValidUntil: time.Unix(page.ExpiresAt, 0).UTC().Format(time.RFC3339),
+			ScopeValidUntil: time.Unix(page.ScopeValidUntil, 0).In(mustLoadLocation(projectionTimeZone)).Format(time.RFC3339),
+			TimeZone:        projectionTimeZone,
 		})
 	}
+}
+
+func mobileProjectionTimeZone(c *gin.Context, scope string) (string, error) {
+	if scope != "watch" {
+		return "UTC", nil
+	}
+	value := strings.TrimSpace(c.Query("time_zone"))
+	if value == "" {
+		value = "UTC"
+	}
+	_, err := time.LoadLocation(value)
+	return value, err
+}
+
+func nextLocalMidnight(now time.Time, timeZone string) (time.Time, error) {
+	location, err := time.LoadLocation(timeZone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	local := now.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location).AddDate(0, 0, 1), nil
+}
+
+func mustLoadLocation(timeZone string) *time.Location {
+	location, err := time.LoadLocation(timeZone)
+	if err != nil {
+		return time.UTC
+	}
+	return location
 }
 
 func mobileReadScope(c *gin.Context) (string, string, bool) {

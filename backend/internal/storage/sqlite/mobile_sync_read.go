@@ -10,6 +10,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/hujinrun/flowspace/internal/watchprojection"
 )
 
 const maxMobileReadPageSize = 1000
@@ -202,8 +203,12 @@ func (r mobileSyncRepository) BeginSnapshot(ctx context.Context, request model.B
 		return nil, errors.New("invalid mobile snapshot request")
 	}
 	snapshot := &model.MobileSnapshot{
-		SessionID: request.SessionID, Scope: request.Scope, ExpiresAt: request.ExpiresAt,
+		SessionID: request.SessionID, Scope: request.Scope, ExpiresAt: request.ExpiresAt, TimeZone: request.TimeZone,
 	}
+	if snapshot.TimeZone == "" {
+		snapshot.TimeZone = "UTC"
+	}
+	snapshot.ScopeValidUntil = snapshot.ExpiresAt
 	err = r.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO mobile_sync_change_heads (workspace_id, latest_position, min_position)
@@ -218,14 +223,24 @@ func (r mobileSyncRepository) BeginSnapshot(ctx context.Context, request model.B
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mobile_sync_snapshot_sessions (
-				session_id, workspace_id, scope, boundary_position, expires_at, created_at
-			) VALUES (?, ?, ?, ?, ?, ?)
-		`, request.SessionID, workspaceID, request.Scope, snapshot.BoundaryPosition, request.ExpiresAt, request.Now); err != nil {
+				session_id, workspace_id, scope, boundary_position, projection_time_zone, scope_valid_until, expires_at, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, request.SessionID, workspaceID, request.Scope, snapshot.BoundaryPosition, snapshot.TimeZone,
+			snapshot.ScopeValidUntil, request.ExpiresAt, request.Now); err != nil {
 			return err
 		}
-		entities, err := collectSQLiteSnapshotEntities(ctx, tx, workspaceID)
+		entities, err := collectSQLiteSnapshotEntities(ctx, tx, workspaceID, request.Scope)
 		if err != nil {
 			return err
+		}
+		if request.Scope == "watch" {
+			entities, snapshot.ScopeValidUntil, err = watchprojection.ProjectSnapshot(entities, request.Now, snapshot.TimeZone)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE mobile_sync_snapshot_sessions SET scope_valid_until = ? WHERE session_id = ?`, snapshot.ScopeValidUntil, request.SessionID); err != nil {
+				return err
+			}
 		}
 		for index, entity := range entities {
 			encoded, err := json.Marshal(entity)
@@ -245,7 +260,7 @@ func (r mobileSyncRepository) BeginSnapshot(ctx context.Context, request model.B
 	return snapshot, err
 }
 
-func collectSQLiteSnapshotEntities(ctx context.Context, tx *sql.Tx, workspaceID string) ([]model.MobileEntityEnvelope, error) {
+func collectSQLiteSnapshotEntities(ctx context.Context, tx *sql.Tx, workspaceID, scope string) ([]model.MobileEntityEnvelope, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT client_id FROM notes
 		WHERE workspace_id = ? AND client_id IS NOT NULL
@@ -270,8 +285,117 @@ func collectSQLiteSnapshotEntities(ctx context.Context, tx *sql.Tx, workspaceID 
 		return nil, err
 	}
 	entities := make([]model.MobileEntityEnvelope, 0, len(clientIDs))
-	for _, clientID := range clientIDs {
-		entity, err := getSQLiteMobileNote(ctx, tx, workspaceID, clientID)
+	if scope == "iphone" {
+		for _, clientID := range clientIDs {
+			entity, err := getSQLiteMobileNote(ctx, tx, workspaceID, clientID)
+			if err != nil {
+				return nil, err
+			}
+			entities = append(entities, *entity)
+		}
+	}
+	entityTypes := []string{"task", "event"}
+	if scope == "iphone" {
+		entityTypes = append(entityTypes, "inbox")
+	}
+	for _, entityType := range entityTypes {
+		entities, err = appendSQLiteSnapshotEntityType(ctx, tx, workspaceID, entityType, entities)
+		if err != nil {
+			return nil, err
+		}
+	}
+	occurrenceRows, err := tx.QueryContext(ctx, `
+		SELECT occurrence_id FROM task_occurrences
+		WHERE workspace_id = ? AND occurrence_id IS NOT NULL ORDER BY occurrence_id
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	occurrenceIDs := make([]string, 0)
+	for occurrenceRows.Next() {
+		var occurrenceID string
+		if err := occurrenceRows.Scan(&occurrenceID); err != nil {
+			_ = occurrenceRows.Close()
+			return nil, err
+		}
+		occurrenceIDs = append(occurrenceIDs, occurrenceID)
+	}
+	if err := occurrenceRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := occurrenceRows.Err(); err != nil {
+		return nil, err
+	}
+	for _, occurrenceID := range occurrenceIDs {
+		entity, err := getSQLiteMobileOccurrence(ctx, tx, workspaceID, occurrenceID)
+		if err != nil {
+			return nil, err
+		}
+		entities = append(entities, *entity)
+	}
+	if scope == "iphone" {
+		conflictRows, err := tx.QueryContext(ctx, `
+			SELECT conflict_id FROM mobile_sync_conflicts
+			WHERE workspace_id = ? AND resolved_at IS NULL ORDER BY conflict_id
+		`, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		conflictIDs := make([]string, 0)
+		for conflictRows.Next() {
+			var conflictID string
+			if err := conflictRows.Scan(&conflictID); err != nil {
+				_ = conflictRows.Close()
+				return nil, err
+			}
+			conflictIDs = append(conflictIDs, conflictID)
+		}
+		if err := conflictRows.Close(); err != nil {
+			return nil, err
+		}
+		if err := conflictRows.Err(); err != nil {
+			return nil, err
+		}
+		for _, conflictID := range conflictIDs {
+			conflict, err := getSQLiteConflict(ctx, tx, workspaceID, conflictID)
+			if err != nil {
+				return nil, err
+			}
+			entity, err := sqliteConflictEntity(*conflict)
+			if err != nil {
+				return nil, err
+			}
+			entities = append(entities, *entity)
+		}
+	}
+	voiceLimit := maxMobileReadPageSize
+	if scope == "watch" {
+		voiceLimit = 20
+	}
+	voiceRows, err := tx.QueryContext(ctx, `
+		SELECT client_id FROM voice_notes
+		WHERE workspace_id = ? ORDER BY updated_at DESC, client_id LIMIT ?
+	`, workspaceID, voiceLimit)
+	if err != nil {
+		return nil, err
+	}
+	voiceClientIDs := make([]string, 0)
+	for voiceRows.Next() {
+		var clientID string
+		if err := voiceRows.Scan(&clientID); err != nil {
+			_ = voiceRows.Close()
+			return nil, err
+		}
+		voiceClientIDs = append(voiceClientIDs, clientID)
+	}
+	if err := voiceRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := voiceRows.Err(); err != nil {
+		return nil, err
+	}
+	for _, clientID := range voiceClientIDs {
+		entity, err := getSQLiteMobileVoiceNote(ctx, tx, workspaceID, clientID)
 		if err != nil {
 			return nil, err
 		}
@@ -310,6 +434,41 @@ func collectSQLiteSnapshotEntities(ctx context.Context, tx *sql.Tx, workspaceID 
 	return entities, jobRows.Err()
 }
 
+func appendSQLiteSnapshotEntityType(ctx context.Context, tx *sql.Tx, workspaceID, entityType string, entities []model.MobileEntityEnvelope) ([]model.MobileEntityEnvelope, error) {
+	table, err := sqliteMobileEntityTable(entityType)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT client_id FROM `+table+`
+		WHERE workspace_id = ? AND client_id IS NOT NULL ORDER BY client_id`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	clientIDs := make([]string, 0)
+	for rows.Next() {
+		var clientID string
+		if err := rows.Scan(&clientID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		clientIDs = append(clientIDs, clientID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, clientID := range clientIDs {
+		entity, err := getSQLiteMobileEntity(ctx, tx, workspaceID, entityType, clientID)
+		if err != nil {
+			return nil, err
+		}
+		entities = append(entities, *entity)
+	}
+	return entities, nil
+}
+
 func (r mobileSyncRepository) ReadSnapshot(ctx context.Context, request model.ReadMobileSnapshot) (*model.MobileSnapshotPage, error) {
 	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 	if err != nil {
@@ -319,12 +478,13 @@ func (r mobileSyncRepository) ReadSnapshot(ctx context.Context, request model.Re
 		return nil, errors.New("invalid mobile snapshot page request")
 	}
 	request.Limit = normalizeMobileReadLimit(request.Limit)
-	var boundary, expiresAt int64
+	var boundary, expiresAt, scopeValidUntil int64
+	var projectionTimeZone string
 	err = r.db.QueryRowContext(ctx, `
-		SELECT boundary_position, expires_at
+		SELECT boundary_position, expires_at, scope_valid_until, projection_time_zone
 		FROM mobile_sync_snapshot_sessions
 		WHERE workspace_id = ? AND session_id = ?
-	`, workspaceID, request.SessionID).Scan(&boundary, &expiresAt)
+	`, workspaceID, request.SessionID).Scan(&boundary, &expiresAt, &scopeValidUntil, &projectionTimeZone)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && request.Now > expiresAt) {
 		return nil, storage.ErrMobileSnapshotExpired
 	}
@@ -362,7 +522,7 @@ func (r mobileSyncRepository) ReadSnapshot(ctx context.Context, request model.Re
 	}
 	return &model.MobileSnapshotPage{
 		Entities: entities, NextOffset: request.Offset + int64(len(entities)), HasMore: hasMore,
-		BoundaryPosition: boundary, ExpiresAt: expiresAt,
+		BoundaryPosition: boundary, ExpiresAt: expiresAt, ScopeValidUntil: scopeValidUntil, TimeZone: projectionTimeZone,
 	}, nil
 }
 

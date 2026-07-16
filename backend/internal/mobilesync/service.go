@@ -97,30 +97,58 @@ func applyMutation(ctx context.Context, repository storage.MobileSyncRepository,
 	if err != nil {
 		return rejectedMutation(mutationID, "invalid_payload")
 	}
-	if input.Operation != model.MobileOperationNoteCreate && input.Operation != model.MobileOperationNoteUpdate && input.Operation != model.MobileOperationNoteDelete {
-		return rejectedMutation(mutationID, "unsupported_operation")
-	}
-	payload, err := decodeNotePayload(input.Payload)
+	canonicalPayload, err := canonicalJSONObject(input.Payload)
 	if err != nil {
 		return rejectedMutation(mutationID, "invalid_payload")
 	}
-	result, err := repository.ApplyNoteMutation(ctx, model.MobileNoteMutation{
-		MutationID:     mutationID,
-		DeviceClientID: deviceClientID,
-		EntityClientID: entityID,
-		Operation:      input.Operation,
-		BaseRevision:   input.BaseRevision,
-		RequestSHA256:  requestHash,
-		Payload:        payload,
-	})
-	if err == nil {
-		return MutationResult{
-			MutationID: result.MutationID, Status: result.Status, Entity: entityToWire(result.Entity),
+	entityType, supported := mutationEntityType(input.Operation)
+	if !supported {
+		return rejectedMutation(mutationID, "unsupported_operation")
+	}
+	var result *model.MobileMutationResult
+	if entityType == "note" {
+		payload, decodeErr := decodeNotePayload(input.Payload)
+		if decodeErr != nil {
+			return rejectedMutation(mutationID, "invalid_payload")
 		}
+		result, err = repository.ApplyNoteMutation(ctx, model.MobileNoteMutation{
+			MutationID:     mutationID,
+			DeviceClientID: deviceClientID,
+			EntityClientID: entityID,
+			Operation:      input.Operation,
+			BaseRevision:   input.BaseRevision,
+			RequestSHA256:  requestHash,
+			Payload:        payload,
+		})
+	} else {
+		result, err = repository.ApplyEntityMutation(ctx, model.MobileEntityMutation{
+			MutationID:     mutationID,
+			DeviceClientID: deviceClientID,
+			EntityType:     entityType,
+			EntityClientID: entityID,
+			Operation:      input.Operation,
+			BaseRevision:   input.BaseRevision,
+			RequestSHA256:  requestHash,
+			Payload:        canonicalPayload,
+		})
+	}
+	if err == nil {
+		return mobileMutationResultToWire(result)
 	}
 	switch {
 	case errors.Is(err, storage.ErrRevisionConflict):
-		return mutationError(mutationID, model.MobileMutationConflict, "revision_conflict")
+		if input.BaseRevision == nil {
+			return mutationError(mutationID, model.MobileMutationConflict, "revision_conflict")
+		}
+		conflictResult, conflictErr := repository.CreateConflict(ctx, model.CreateMobileSyncConflict{
+			ConflictID: uuid.NewString(), MutationID: mutationID, DeviceClientID: deviceClientID,
+			RequestSHA256: requestHash, EntityType: entityType, EntityClientID: entityID,
+			Operation: input.Operation, BaseRevision: *input.BaseRevision, LocalPayload: canonicalPayload,
+		})
+		if conflictErr != nil {
+			return mutationError(mutationID, model.MobileMutationConflict, "revision_conflict")
+		}
+		return mobileMutationResultToWire(conflictResult)
 	case errors.Is(err, storage.ErrMutationIDReused):
 		return rejectedMutation(mutationID, "mutation_id_reused")
 	case errors.Is(err, storage.ErrMobileEntityGone):
@@ -129,6 +157,38 @@ func applyMutation(ctx context.Context, repository storage.MobileSyncRepository,
 		return rejectedMutation(mutationID, "entity_not_found")
 	default:
 		return rejectedMutation(mutationID, "mutation_failed")
+	}
+}
+
+func mobileMutationResultToWire(result *model.MobileMutationResult) MutationResult {
+	wire := MutationResult{
+		MutationID: result.MutationID, Status: result.Status, Entity: entityToWire(result.Entity),
+	}
+	if result.ErrorCode != "" {
+		wire.Error = &APIError{
+			SchemaVersion: "mobile-v1", Type: "error", Code: result.ErrorCode,
+			Message: "mobile mutation was not applied", Retryable: false,
+		}
+	}
+	return wire
+}
+
+func mutationEntityType(operation string) (string, bool) {
+	switch operation {
+	case model.MobileOperationNoteCreate, model.MobileOperationNoteUpdate, model.MobileOperationNoteDelete:
+		return "note", true
+	case "task.create", "task.update", "task.delete":
+		return "task", true
+	case "event.create", "event.update", "event.delete":
+		return "event", true
+	case "inbox.create", "inbox.update", "inbox.delete":
+		return "inbox", true
+	case "task_occurrence.complete", "task_occurrence.reopen":
+		return "task_occurrence", true
+	case "voice.create", "voice_audio.delete", "voice_note.delete":
+		return "voice_note", true
+	default:
+		return "", false
 	}
 }
 

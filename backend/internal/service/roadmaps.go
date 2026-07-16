@@ -75,6 +75,10 @@ var (
 )
 
 func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID string) (*model.LearningRoadmap, error) {
+	return GenerateLearningRoadmapWithPrompt(ctx, store, projectID, "")
+}
+
+func GenerateLearningRoadmapWithPrompt(ctx context.Context, store storage.Store, projectID string, customPrompt string) (*model.LearningRoadmap, error) {
 	project, err := store.Tasks().GetProjectByID(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -83,7 +87,7 @@ func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID
 		return nil, fmt.Errorf("project is not a learning project")
 	}
 
-	draft, err := generateRoadmapDraft(*project)
+	draft, err := generateRoadmapDraft(*project, customPrompt)
 	if err != nil {
 		if !shouldUseFallbackRoadmapDraft(err) {
 			_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
@@ -255,16 +259,22 @@ func SearchRoadmapNodeResources(ctx context.Context, store storage.Store, nodeID
 	}
 
 	var sources []string
+	var customQuery string
 	if req != nil {
 		sources = req.Sources
+		customQuery = strings.TrimSpace(req.Query)
 	}
 	linkedTasks, _, err := store.Tasks().List(ctx, storage.TaskFilter{RoadmapNodeID: node.ID, Page: 1, PageSize: 10000})
 	if err != nil {
 		return nil, err
 	}
+	searchNode := *node
+	if customQuery != "" {
+		searchNode.ArticleSearchQueries = []string{customQuery}
+	}
 	selectedSources := selectedArticleSearchSources(sources)
-	query := buildArticleSearchQuery(*node, linkedTasks, selectedSources)
-	results, err := searchArticleResources(*node, linkedTasks, sources, articleSearchMaxResults())
+	query := buildArticleSearchQuery(searchNode, linkedTasks, selectedSources)
+	results, err := searchArticleResources(searchNode, linkedTasks, sources, articleSearchMaxResults())
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +320,7 @@ func DeleteRoadmapResource(ctx context.Context, store storage.Store, id string) 
 	return store.Roadmaps().DeleteRoadmapResource(ctx, id)
 }
 
-func generateRoadmapDraft(project model.TaskProject) (*roadmapDraft, error) {
+func generateRoadmapDraft(project model.TaskProject, customPrompt string) (*roadmapDraft, error) {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("AI_PROVIDER")))
 	if provider == "" {
 		provider = defaultAIProvider
@@ -321,7 +331,7 @@ func generateRoadmapDraft(project model.TaskProject) (*roadmapDraft, error) {
 	if provider == "invalid-json" {
 		return nil, errors.New("AI response was not valid JSON")
 	}
-	return generateOpenAICompatibleRoadmap(project)
+	return generateOpenAICompatibleRoadmap(project, customPrompt)
 }
 
 func shouldUseFallbackRoadmapDraft(err error) bool {
@@ -512,8 +522,8 @@ func buildRoadmapSystemPrompt() string {
 	}, "\n")
 }
 
-func buildRoadmapUserPrompt(project model.TaskProject) string {
-	return fmt.Sprintf(strings.Join([]string{
+func buildRoadmapUserPrompt(project model.TaskProject, customPrompt string) string {
+	prompt := fmt.Sprintf(strings.Join([]string{
 		"Project name: %s",
 		"Description: %s",
 		"Generate a comprehensive 14 to 20 node learning path tailored to this exact project.",
@@ -522,6 +532,10 @@ func buildRoadmapUserPrompt(project model.TaskProject) string {
 		"Every step must produce an observable result and have a measurable completion standard.",
 		"Give x/y positions in a readable sequential layout; the backend will normalize them if needed.",
 	}, "\n"), project.Name, project.Description)
+	if customPrompt = strings.TrimSpace(customPrompt); customPrompt != "" {
+		prompt += "\nUser-defined generation requirements:\n" + customPrompt
+	}
+	return prompt
 }
 
 func normalizeGeneratedRoadmapToLinearPath(draft *roadmapDraft) {
@@ -960,7 +974,7 @@ func hasRoadmapBranching(draft *roadmapDraft) bool {
 	return false
 }
 
-func generateOpenAICompatibleRoadmap(project model.TaskProject) (*roadmapDraft, error) {
+func generateOpenAICompatibleRoadmap(project model.TaskProject, customPrompt string) (*roadmapDraft, error) {
 	apiKey := strings.TrimSpace(os.Getenv("AI_API_KEY"))
 	if apiKey == "" {
 		return nil, errors.New("AI_API_KEY is required")
@@ -984,7 +998,7 @@ func generateOpenAICompatibleRoadmap(project model.TaskProject) (*roadmapDraft, 
 			},
 			{
 				"role":    "user",
-				"content": buildRoadmapUserPrompt(project),
+				"content": buildRoadmapUserPrompt(project, customPrompt),
 			},
 		},
 		"temperature": 0.4,
@@ -1664,12 +1678,34 @@ func selectedArticleSearchSources(requested []string) []articleSearchSource {
 		if source, ok := catalog[id]; ok && !seen[source.ID] {
 			selected = append(selected, source)
 			seen[source.ID] = true
+			continue
+		}
+		if source, ok := customArticleSearchSource(id); ok && !seen[source.ID] {
+			selected = append(selected, source)
+			seen[source.ID] = true
 		}
 	}
 	if len(selected) == 0 {
 		return articleSearchSourceCatalog
 	}
 	return selected
+}
+
+func customArticleSearchSource(rawID string) (articleSearchSource, bool) {
+	if !strings.HasPrefix(rawID, "site:") {
+		return articleSearchSource{}, false
+	}
+	domain := strings.TrimSpace(strings.TrimPrefix(rawID, "site:"))
+	parsed, err := url.Parse("https://" + domain)
+	if err != nil || parsed.Hostname() == "" || parsed.Host != domain || parsed.Path != "" {
+		return articleSearchSource{}, false
+	}
+	hostname := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if hostname == "" || !strings.Contains(hostname, ".") {
+		return articleSearchSource{}, false
+	}
+	id := "site:" + hostname
+	return articleSearchSource{ID: id, Label: hostname, QueryHint: id, MockURL: "https://" + hostname}, true
 }
 
 func articleSearchSourceQuery(sources []articleSearchSource) string {
@@ -1679,7 +1715,7 @@ func articleSearchSourceQuery(sources []articleSearchSource) string {
 	hints := make([]string, 0, len(sources))
 	for _, source := range sources {
 		if source.ID == "google" {
-			return ""
+			continue
 		}
 		if strings.TrimSpace(source.QueryHint) != "" {
 			hints = append(hints, source.QueryHint)
@@ -1687,6 +1723,9 @@ func articleSearchSourceQuery(sources []articleSearchSource) string {
 	}
 	if len(hints) == 1 {
 		return hints[0]
+	}
+	if len(hints) == 0 {
+		return ""
 	}
 	return "(" + strings.Join(hints, " OR ") + ")"
 }
