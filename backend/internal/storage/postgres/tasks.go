@@ -106,6 +106,16 @@ func postgresTaskWhere(filter storage.TaskFilter, workspaceID string) ([]string,
 		args = append(args, filter.PlannedDate)
 		next++
 	}
+	if filter.PlannedFrom != "" {
+		where = append(where, fmt.Sprintf("t.planned_date >= %s::date", pgPlaceholder(next)))
+		args = append(args, filter.PlannedFrom)
+		next++
+	}
+	if filter.PlannedTo != "" {
+		where = append(where, fmt.Sprintf("t.planned_date <= %s::date", pgPlaceholder(next)))
+		args = append(args, filter.PlannedTo)
+		next++
+	}
 	if filter.RoadmapNodeID != "" {
 		where = append(where, fmt.Sprintf("t.roadmap_node_id = %s", pgPlaceholder(next)))
 		args = append(args, filter.RoadmapNodeID)

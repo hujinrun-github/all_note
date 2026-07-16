@@ -18,7 +18,7 @@ func (e *RecurringTaskError) Error() string {
 	return e.Message
 }
 
-func GetTasks(ctx context.Context, store storage.Store, project, status, scope, horizon, projectID, plannedDate, executionType string, page, pageSize int) ([]model.Task, int, error) {
+func GetTasks(ctx context.Context, store storage.Store, project, status, scope, horizon, projectID, plannedDate, plannedFrom, plannedTo, executionType string, page, pageSize int) ([]model.Task, int, error) {
 	return store.Tasks().List(ctx, storage.TaskFilter{
 		Project:       project,
 		Status:        status,
@@ -26,6 +26,8 @@ func GetTasks(ctx context.Context, store storage.Store, project, status, scope, 
 		Horizon:       horizon,
 		ProjectID:     projectID,
 		PlannedDate:   plannedDate,
+		PlannedFrom:   plannedFrom,
+		PlannedTo:     plannedTo,
 		ExecutionType: executionType,
 		Page:          page,
 		PageSize:      pageSize,

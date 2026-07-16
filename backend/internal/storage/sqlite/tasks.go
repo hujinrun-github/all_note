@@ -123,6 +123,14 @@ func sqliteTaskWhere(filter storage.TaskFilter, workspaceID string) ([]string, [
 		where = append(where, "t.planned_date = ?")
 		args = append(args, filter.PlannedDate)
 	}
+	if filter.PlannedFrom != "" {
+		where = append(where, "t.planned_date >= ?")
+		args = append(args, filter.PlannedFrom)
+	}
+	if filter.PlannedTo != "" {
+		where = append(where, "t.planned_date <= ?")
+		args = append(args, filter.PlannedTo)
+	}
 	if filter.RoadmapNodeID != "" {
 		where = append(where, "t.roadmap_node_id = ?")
 		args = append(args, filter.RoadmapNodeID)

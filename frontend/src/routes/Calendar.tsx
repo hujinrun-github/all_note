@@ -3,7 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { api } from '../api/client'
-import { useCreateEvent, useEventsList } from '../hooks/useEvents'
+import {
+  eventsListQueryOptions,
+  useCreateEvent,
+  useEventsList,
+} from '../hooks/useEvents'
 import { TaskRow, type TaskData } from '../components/ui/TaskRow'
 import type { Event } from '../api/events'
 import { useUpdateTask } from '../hooks/useTasks'
@@ -152,10 +156,12 @@ function occurrenceToCalendarTask(occurrence: TaskOccurrence): CalendarTask {
   }
 }
 
-async function getAllTasks() {
+async function getTasksByDateRange(from: string, to: string) {
   const pageSize = 100
   const firstPage = await getTasks({
     status: 'all',
+    planned_from: from,
+    planned_to: to,
     page: 1,
     page_size: pageSize,
   })
@@ -167,7 +173,13 @@ async function getAllTasks() {
 
   const remainingPages = await Promise.all(
     Array.from({ length: totalPages - 1 }, (_, index) =>
-      getTasks({ status: 'all', page: index + 2, page_size: pageSize })
+      getTasks({
+        status: 'all',
+        planned_from: from,
+        planned_to: to,
+        page: index + 2,
+        page_size: pageSize,
+      })
     )
   )
   return [firstPage, ...remainingPages].flatMap((page) => page.tasks)
@@ -175,7 +187,7 @@ async function getAllTasks() {
 
 async function getCalendarTasks(from: string, to: string) {
   const [tasks, occurrences] = await Promise.all([
-    getAllTasks(),
+    getTasksByDateRange(from, to),
     getTaskOccurrences(from, to),
   ])
 
@@ -189,6 +201,25 @@ async function getCalendarTasks(from: string, to: string) {
         task.planned_date! <= to
     )
   return [...scheduledTasks, ...occurrences.map(occurrenceToCalendarTask)]
+}
+
+function getCalendarMonthQuery(date: Date) {
+  const year = date.getFullYear()
+  const month = date.getMonth()
+  return {
+    monthStr: `${year}-${String(month + 1).padStart(2, '0')}`,
+    from: dateToInputValue(new Date(year, month, 1)),
+    to: dateToInputValue(new Date(year, month + 1, 0)),
+  }
+}
+
+function calendarTasksQueryOptions(monthStr: string, from: string, to: string) {
+  return {
+    queryKey: ['calendar-task-schedule', monthStr] as const,
+    queryFn: () => getCalendarTasks(from, to),
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+  }
 }
 
 function CalendarTaskChip({ task }: { task: CalendarTask }) {
@@ -248,7 +279,7 @@ export default function Calendar() {
   const monthStart = dateToInputValue(new Date(year, month, 1))
   const monthEnd = dateToInputValue(new Date(year, month + 1, 0))
 
-  const { data, isLoading } = useEventsList({ month: monthStr })
+  const { data, isLoading, isFetching } = useEventsList({ month: monthStr })
   const { data: todayData, isLoading: isTodayLoading } = useQuery({
     queryKey: ['today'],
     queryFn: async () => {
@@ -257,8 +288,8 @@ export default function Calendar() {
     },
   })
   const calendarTasksQuery = useQuery({
-    queryKey: ['calendar-task-schedule', monthStr],
-    queryFn: () => getCalendarTasks(monthStart, monthEnd),
+    ...calendarTasksQueryOptions(monthStr, monthStart, monthEnd),
+    placeholderData: (previousData) => previousData,
   })
   const createEvent = useCreateEvent()
   const updateTask = useUpdateTask()
@@ -285,6 +316,27 @@ export default function Calendar() {
       ])
     },
   })
+  const isCalendarRefreshing =
+    isLoading || isFetching || calendarTasksQuery.isFetching
+
+  useEffect(() => {
+    if (isCalendarRefreshing) return
+    ;([-1, 1] as const).forEach((offset) => {
+      const adjacentMonth = getCalendarMonthQuery(
+        new Date(year, month + offset, 1)
+      )
+      void queryClient.prefetchQuery(
+        eventsListQueryOptions({ month: adjacentMonth.monthStr })
+      )
+      void queryClient.prefetchQuery(
+        calendarTasksQueryOptions(
+          adjacentMonth.monthStr,
+          adjacentMonth.from,
+          adjacentMonth.to
+        )
+      )
+    })
+  }, [isCalendarRefreshing, month, queryClient, year])
 
   const firstDay = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -453,16 +505,20 @@ export default function Calendar() {
     setSelectedDay(now.getDate())
   }
 
+  function navigateMonth(direction: -1 | 1) {
+    const targetDate = new Date(year, month + direction, 1)
+    const targetMonthDays = new Date(
+      targetDate.getFullYear(),
+      targetDate.getMonth() + 1,
+      0
+    ).getDate()
+    setCurrentDate(targetDate)
+    setSelectedDay((day) => (day ? Math.min(day, targetMonthDays) : day))
+  }
+
   function navigateCalendar(direction: -1 | 1) {
     if (calendarView === 'month') {
-      const targetDate = new Date(year, month + direction, 1)
-      const targetMonthDays = new Date(
-        targetDate.getFullYear(),
-        targetDate.getMonth() + 1,
-        0
-      ).getDate()
-      setCurrentDate(targetDate)
-      setSelectedDay((day) => (day ? Math.min(day, targetMonthDays) : day))
+      navigateMonth(direction)
       return
     }
 
@@ -595,17 +651,9 @@ export default function Calendar() {
         <aside className="surface-panel calendar-source-panel">
           <h2>{monthTitle}</h2>
           <div className="calendar-source-nav">
-            <button
-              onClick={() => setCurrentDate(new Date(year, month - 1, 1))}
-            >
-              上一月
-            </button>
+            <button onClick={() => navigateMonth(-1)}>上一月</button>
             <span>·</span>
-            <button
-              onClick={() => setCurrentDate(new Date(year, month + 1, 1))}
-            >
-              下一月
-            </button>
+            <button onClick={() => navigateMonth(1)}>下一月</button>
           </div>
           <section>
             <h3>我的日历</h3>
@@ -716,6 +764,12 @@ export default function Calendar() {
                 </button>
               </div>
               <h2 aria-live="polite">{calendarPeriodTitle}</h2>
+              {isCalendarRefreshing ? (
+                <span className="calendar-sync-status" role="status">
+                  <i aria-hidden="true" />
+                  更新中
+                </span>
+              ) : null}
             </div>
             <label className="calendar-view-select">
               <select
@@ -737,10 +791,13 @@ export default function Calendar() {
             </label>
           </div>
 
-          {isLoading || calendarTasksQuery.isLoading ? (
-            <div className="h-[560px] bg-fs-hover rounded-lg animate-pulse" />
-          ) : calendarView === 'month' ? (
-            <div className="calendar-grid">
+          {calendarView === 'month' ? (
+            <div
+              className="calendar-grid"
+              role="grid"
+              aria-label={`${calendarPeriodTitle}日历`}
+              aria-busy={isCalendarRefreshing}
+            >
               {weekdays.map((weekday) => (
                 <div key={weekday} className="calendar-weekday">
                   {weekday}

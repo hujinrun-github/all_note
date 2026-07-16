@@ -121,6 +121,8 @@ export async function getTasks(params: {
   scope?: string
   horizon?: string
   planned_date?: string
+  planned_from?: string
+  planned_to?: string
   page?: number
   page_size?: number
 }) {
@@ -131,6 +133,8 @@ export async function getTasks(params: {
     scope: params.scope ?? '',
     horizon: params.horizon ?? '',
     planned_date: params.planned_date ?? '',
+    planned_from: params.planned_from ?? '',
+    planned_to: params.planned_to ?? '',
     page: String(params.page ?? 1),
     page_size: String(params.page_size ?? 100),
   })
