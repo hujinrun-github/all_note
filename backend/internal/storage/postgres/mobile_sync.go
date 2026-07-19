@@ -362,11 +362,15 @@ func getPostgresMobileNote(ctx context.Context, runner postgresRunner, workspace
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(map[string]string{
+	tags := row.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	payload, err := json.Marshal(map[string]any{
 		"title":     row.Title,
 		"body":      row.Body,
 		"folder_id": row.FolderID,
-		"tags":      tagsArrayToJSONString(row.Tags),
+		"tags":      tags,
 	})
 	if err != nil {
 		return nil, err

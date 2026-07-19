@@ -60,6 +60,25 @@ func ensureSQLiteMobileSyncSchema(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+	if entityTables["events"] {
+		for _, column := range []struct {
+			name       string
+			definition string
+		}{
+			{name: "is_all_day", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "notes", definition: "TEXT NOT NULL DEFAULT ''"},
+		} {
+			exists, err := sqliteColumnExists(db, "events", column.name)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				if _, err := db.ExecContext(ctx, "ALTER TABLE events ADD COLUMN "+column.name+" "+column.definition); err != nil && !sqliteDuplicateColumnError(err) {
+					return fmt.Errorf("add events.%s: %w", column.name, err)
+				}
+			}
+		}
+	}
 	occurrenceTableExists, err := sqliteTableExists(db, "task_occurrences")
 	if err != nil {
 		return err

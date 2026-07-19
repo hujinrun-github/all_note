@@ -1,7 +1,9 @@
 package mobilecontract
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +19,8 @@ type openAPIDocument struct {
 	} `yaml:"info"`
 	Paths      map[string]map[string]any `yaml:"paths"`
 	Components struct {
-		Schemas map[string]schemaDocument `yaml:"schemas"`
+		SecuritySchemes map[string]securitySchemeDocument `yaml:"securitySchemes"`
+		Schemas         map[string]schemaDocument         `yaml:"schemas"`
 	} `yaml:"components"`
 	GoldenFixtures []string `yaml:"x-golden-fixtures"`
 }
@@ -27,6 +30,10 @@ type schemaDocument struct {
 	Required             []string                     `yaml:"required"`
 	Properties           map[string]referenceDocument `yaml:"properties"`
 	AdditionalProperties *bool                        `yaml:"additionalProperties"`
+}
+
+type securitySchemeDocument struct {
+	Name string `yaml:"name"`
 }
 
 type referenceDocument struct {
@@ -56,6 +63,7 @@ func TestMobileV1OpenAPIContainsEveryDocumentedOperation(t *testing.T) {
 	}
 
 	required := map[string][]string{
+		"/api/mobile/capabilities":                          {"get"},
 		"/api/mobile/sync/mutations":                        {"post"},
 		"/api/mobile/sync/changes":                          {"get"},
 		"/api/mobile/sync/snapshot":                         {"get"},
@@ -82,6 +90,23 @@ func TestMobileV1OpenAPIContainsEveryDocumentedOperation(t *testing.T) {
 				t.Errorf("%s %s has no operationId", method, path)
 			}
 		}
+	}
+}
+
+func TestMobileV1RuntimeContractSHAIsCurrent(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "api", "mobile-v1.openapi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != ContractSHA256 {
+		t.Fatalf("runtime contract SHA = %s, file SHA = %s", ContractSHA256, got)
+	}
+}
+
+func TestMobileV1SessionCookieMatchesRuntimeDefault(t *testing.T) {
+	document := loadMobileV1Contract(t)
+	if got := document.Components.SecuritySchemes["sessionCookie"].Name; got != "fs_session" {
+		t.Fatalf("session cookie = %q, want fs_session", got)
 	}
 }
 
@@ -114,31 +139,23 @@ func TestMobileV1GoldenExamplesValidateAgainstSchema(t *testing.T) {
 	}
 }
 
-func TestAllDayAndTimedEventWireModelsAreMutuallyExclusive(t *testing.T) {
+func TestTaskAndEventWireModelsMatchMobileClientPayloads(t *testing.T) {
 	document := loadMobileV1Contract(t)
+	task := document.Components.Schemas["TaskInput"]
+	for _, field := range []string{"title", "content", "project_id", "due", "planned_date", "priority", "done", "status"} {
+		if _, ok := task.Properties[field]; !ok {
+			t.Errorf("TaskInput missing %s", field)
+		}
+	}
 	event := document.Components.Schemas["EventInput"]
-	gotRefs := make([]string, 0, len(event.OneOf))
-	for _, candidate := range event.OneOf {
-		gotRefs = append(gotRefs, candidate.Ref)
+	assertExactRequired(t, "EventInput", event.Required, []string{"end_time", "is_all_day", "start_time", "title"})
+	for _, field := range []string{"title", "start_time", "end_time", "location", "kind", "is_all_day", "notes"} {
+		if _, ok := event.Properties[field]; !ok {
+			t.Errorf("EventInput missing %s", field)
+		}
 	}
-	sort.Strings(gotRefs)
-	wantRefs := []string{"#/components/schemas/AllDayEventInput", "#/components/schemas/TimedEventInput"}
-	if len(gotRefs) != len(wantRefs) || gotRefs[0] != wantRefs[0] || gotRefs[1] != wantRefs[1] {
-		t.Fatalf("EventInput oneOf = %v, want %v", gotRefs, wantRefs)
-	}
-
-	allDay := document.Components.Schemas["AllDayEventInput"]
-	timed := document.Components.Schemas["TimedEventInput"]
-	assertExactRequired(t, "AllDayEventInput", allDay.Required, []string{"end_date_exclusive", "start_date", "title"})
-	assertExactRequired(t, "TimedEventInput", timed.Required, []string{"end_at", "start_at", "time_zone", "title"})
-	if _, ok := allDay.Properties["start_at"]; ok {
-		t.Error("AllDayEventInput must not expose start_at")
-	}
-	if _, ok := timed.Properties["start_date"]; ok {
-		t.Error("TimedEventInput must not expose start_date")
-	}
-	if allDay.AdditionalProperties == nil || *allDay.AdditionalProperties || timed.AdditionalProperties == nil || *timed.AdditionalProperties {
-		t.Error("event variants must reject undeclared fields")
+	if task.AdditionalProperties == nil || *task.AdditionalProperties || event.AdditionalProperties == nil || *event.AdditionalProperties {
+		t.Error("mobile entity inputs must reject undeclared fields")
 	}
 }
 

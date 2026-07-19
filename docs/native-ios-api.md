@@ -7,6 +7,7 @@
 音频文件保存在 MinIO，数据库只保存笔记、上传状态和对象键。服务端通过环境变量读取凭据，不把访问密钥写入代码或数据库。
 
 ```powershell
+$env:FLOWSPACE_ENABLE_MOBILE_SYNC_V1 = "true"
 $env:FLOWSPACE_MINIO_ENDPOINT = "http://minio-host:9000"
 $env:FLOWSPACE_MINIO_ACCESS_KEY = "<access-key>"
 $env:FLOWSPACE_MINIO_SECRET_KEY = "<secret-key>"
@@ -15,6 +16,30 @@ $env:FLOWSPACE_MINIO_BUCKET = "flowspace"
 # 可选，默认 50 MiB
 $env:FLOWSPACE_VOICE_MAX_BYTES = "52428800"
 ```
+
+`FLOWSPACE_ENABLE_MOBILE_SYNC_V1` 默认关闭。开启后会注册 `/api/mobile/...` 的 capabilities、snapshot、changes、mutation、冲突、移动音频和异步转写接口，并启动 mobile outbox publisher。旧 `/api/voice-notes/{client_id}/transcription` 在开关开启或关闭时都会保留。
+
+## Mobile v1 同步
+
+iPhone 登录后先请求：
+
+```http
+GET /api/mobile/capabilities
+```
+
+响应包含固定的 `schema_version`、OpenAPI `contract_sha256`，以及同步、音频上传、异步转写和 Watch 配对能力。客户端应在合同 SHA 不一致时保持只读，不发送网络 mutation。
+
+核心同步接口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/mobile/sync/snapshot?scope=iphone` | 首次或强制重同步的一致性分页快照 |
+| `GET` | `/api/mobile/sync/changes?scope=iphone&cursor=...` | opaque cursor 增量读取 |
+| `POST` | `/api/mobile/sync/mutations` | 最多 100 条、1 MiB 的幂等 mutation 批次 |
+| `GET` | `/api/mobile/sync/conflicts` | 未解决冲突 |
+| `POST` | `/api/mobile/sync/conflicts/{conflictID}/resolve` | 使用 conflict/target 双 revision CAS 解决冲突 |
+
+权威字段与错误结构见 [`backend/api/mobile-v1.openapi.yaml`](../backend/api/mobile-v1.openapi.yaml)。
 
 如果没有设置 MinIO 变量，现有网页接口仍可启动和使用；音频上传与读取会返回 `503 VOICE_STORAGE_UNAVAILABLE`。
 

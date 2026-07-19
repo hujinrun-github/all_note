@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS events (
   end_time INTEGER NOT NULL,
   location TEXT,
   kind TEXT NOT NULL DEFAULT 'work',
+  is_all_day INTEGER NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
   note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
   project_id TEXT,
   created_at INTEGER NOT NULL,

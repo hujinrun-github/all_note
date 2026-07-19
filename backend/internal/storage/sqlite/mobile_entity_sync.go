@@ -138,8 +138,10 @@ func createSQLiteMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID strin
 			EndTime   int64   `json:"end_time"`
 			Location  *string `json:"location"`
 			Kind      string  `json:"kind"`
+			IsAllDay  *bool   `json:"is_all_day"`
+			Notes     string  `json:"notes"`
 		}
-		if err := decodeEntityPayload(mutation.Payload, &payload); err != nil || strings.TrimSpace(payload.Title) == "" || payload.EndTime <= payload.StartTime {
+		if err := decodeEntityPayload(mutation.Payload, &payload); err != nil || strings.TrimSpace(payload.Title) == "" || payload.EndTime <= payload.StartTime || payload.IsAllDay == nil {
 			return nil, errors.New("event.create requires title and a valid time range")
 		}
 		if payload.Kind == "" {
@@ -147,10 +149,10 @@ func createSQLiteMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID strin
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO events (
-				id, client_id, revision, title, start_time, end_time, location, kind, created_at, updated_at, workspace_id
-			) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+				id, client_id, revision, title, start_time, end_time, location, kind, is_all_day, notes, created_at, updated_at, workspace_id
+			) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, entityID, mutation.EntityClientID, strings.TrimSpace(payload.Title), payload.StartTime, payload.EndTime,
-			payload.Location, payload.Kind, now, now, workspaceID); err != nil {
+			payload.Location, payload.Kind, *payload.IsAllDay, payload.Notes, now, now, workspaceID); err != nil {
 			return nil, err
 		}
 	case "inbox":
@@ -190,21 +192,25 @@ func updateSQLiteMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID strin
 	switch mutation.EntityType {
 	case "task":
 		var payload struct {
-			Title    *string `json:"title"`
-			Content  *string `json:"content"`
-			Priority *int    `json:"priority"`
-			Done     *int    `json:"done"`
-			Status   *string `json:"status"`
+			Title       *string `json:"title"`
+			Content     *string `json:"content"`
+			ProjectID   *string `json:"project_id"`
+			Due         *int64  `json:"due"`
+			PlannedDate *string `json:"planned_date"`
+			Priority    *int    `json:"priority"`
+			Done        *int    `json:"done"`
+			Status      *string `json:"status"`
 		}
 		if err := decodeEntityPayload(mutation.Payload, &payload); err != nil {
 			return nil, err
 		}
 		result, err := tx.ExecContext(ctx, `
 			UPDATE tasks SET
-				title = COALESCE(?, title), content = COALESCE(?, content), priority = COALESCE(?, priority),
+				title = COALESCE(?, title), content = COALESCE(?, content), project_id = COALESCE(?, project_id),
+				due = COALESCE(?, due), planned_date = COALESCE(?, planned_date), priority = COALESCE(?, priority),
 				done = COALESCE(?, done), status = COALESCE(?, status), revision = revision + 1, updated_at = ?
 			WHERE workspace_id = ? AND client_id = ? AND revision = ? AND deleted_at IS NULL
-		`, payload.Title, payload.Content, payload.Priority, payload.Done, payload.Status, now,
+		`, payload.Title, payload.Content, payload.ProjectID, payload.Due, payload.PlannedDate, payload.Priority, payload.Done, payload.Status, now,
 			workspaceID, mutation.EntityClientID, current.revision)
 		if err != nil {
 			return nil, err
@@ -219,16 +225,32 @@ func updateSQLiteMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID strin
 			EndTime   *int64  `json:"end_time"`
 			Location  *string `json:"location"`
 			Kind      *string `json:"kind"`
+			IsAllDay  *bool   `json:"is_all_day"`
+			Notes     *string `json:"notes"`
 		}
 		if err := decodeEntityPayload(mutation.Payload, &payload); err != nil {
 			return nil, err
 		}
+		var startTime, endTime int64
+		if err := tx.QueryRowContext(ctx, `SELECT start_time, end_time FROM events WHERE workspace_id = ? AND client_id = ?`, workspaceID, mutation.EntityClientID).Scan(&startTime, &endTime); err != nil {
+			return nil, err
+		}
+		if payload.StartTime != nil {
+			startTime = *payload.StartTime
+		}
+		if payload.EndTime != nil {
+			endTime = *payload.EndTime
+		}
+		if endTime <= startTime {
+			return nil, errors.New("event update requires a valid time range")
+		}
 		result, err := tx.ExecContext(ctx, `
 			UPDATE events SET
-				title = COALESCE(?, title), start_time = COALESCE(?, start_time), end_time = COALESCE(?, end_time),
-				location = COALESCE(?, location), kind = COALESCE(?, kind), revision = revision + 1, updated_at = ?
+				title = COALESCE(?, title), start_time = ?, end_time = ?, location = COALESCE(?, location),
+				kind = COALESCE(?, kind), is_all_day = COALESCE(?, is_all_day), notes = COALESCE(?, notes),
+				revision = revision + 1, updated_at = ?
 			WHERE workspace_id = ? AND client_id = ? AND revision = ? AND deleted_at IS NULL
-		`, payload.Title, payload.StartTime, payload.EndTime, payload.Location, payload.Kind, now,
+		`, payload.Title, startTime, endTime, payload.Location, payload.Kind, payload.IsAllDay, payload.Notes, now,
 			workspaceID, mutation.EntityClientID, current.revision)
 		if err != nil {
 			return nil, err
@@ -381,30 +403,31 @@ func getSQLiteMobileEntity(ctx context.Context, runner sqliteRunner, workspaceID
 	var payload []byte
 	switch entityType {
 	case "task":
-		var title, content, status, executionType string
+		var title, content, projectID, status, executionType string
 		var priority, done int
 		var due sql.NullInt64
 		var plannedDate sql.NullString
 		if err := runner.QueryRowContext(ctx, `
-			SELECT title, content, priority, done, status, due, planned_date, execution_type
+			SELECT title, content, project_id, priority, done, status, due, planned_date, execution_type
 			FROM tasks WHERE workspace_id = ? AND client_id = ?
-		`, workspaceID, clientID).Scan(&title, &content, &priority, &done, &status, &due, &plannedDate, &executionType); err != nil {
+		`, workspaceID, clientID).Scan(&title, &content, &projectID, &priority, &done, &status, &due, &plannedDate, &executionType); err != nil {
 			return nil, err
 		}
 		payload, err = json.Marshal(map[string]any{
-			"title": title, "content": content, "priority": priority, "done": done, "status": status,
+			"title": title, "content": content, "project_id": projectID, "priority": priority, "done": done, "status": status,
 			"due": nullableSQLiteMobileEntityInt64(due), "planned_date": nullableMobileEntityString(plannedDate), "execution_type": executionType,
 		})
 	case "event":
-		var title, kind string
+		var title, kind, notes string
 		var startTime, endTime int64
+		var isAllDay bool
 		var location sql.NullString
 		if err := runner.QueryRowContext(ctx, `
-			SELECT title, start_time, end_time, location, kind FROM events WHERE workspace_id = ? AND client_id = ?
-		`, workspaceID, clientID).Scan(&title, &startTime, &endTime, &location, &kind); err != nil {
+			SELECT title, start_time, end_time, location, kind, is_all_day, notes FROM events WHERE workspace_id = ? AND client_id = ?
+		`, workspaceID, clientID).Scan(&title, &startTime, &endTime, &location, &kind, &isAllDay, &notes); err != nil {
 			return nil, err
 		}
-		payload, err = json.Marshal(map[string]any{"title": title, "start_time": startTime, "end_time": endTime, "location": nullableMobileEntityString(location), "kind": kind})
+		payload, err = json.Marshal(map[string]any{"title": title, "start_time": startTime, "end_time": endTime, "location": nullableMobileEntityString(location), "kind": kind, "is_all_day": isAllDay, "notes": notes})
 	case "inbox":
 		var kind, title string
 		var body sql.NullString

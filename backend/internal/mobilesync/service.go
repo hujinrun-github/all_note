@@ -28,19 +28,21 @@ func CanonicalRequestHash(input MutationInput) (string, error) {
 		return "", err
 	}
 	canonical := struct {
-		MutationID   string          `json:"mutation_id"`
-		Operation    string          `json:"operation"`
-		EntityID     string          `json:"entity_id"`
-		BaseRevision *int64          `json:"base_revision,omitempty"`
-		FieldMask    []string        `json:"field_mask,omitempty"`
-		Payload      json.RawMessage `json:"payload"`
+		MutationID        string          `json:"mutation_id"`
+		Operation         string          `json:"operation"`
+		EntityID          string          `json:"entity_id"`
+		BaseRevision      *int64          `json:"base_revision,omitempty"`
+		DependsOnMutation *string         `json:"depends_on_mutation_id,omitempty"`
+		FieldMask         []string        `json:"field_mask,omitempty"`
+		Payload           json.RawMessage `json:"payload"`
 	}{
-		MutationID:   strings.TrimSpace(input.MutationID),
-		Operation:    strings.TrimSpace(input.Operation),
-		EntityID:     strings.TrimSpace(input.EntityID),
-		BaseRevision: input.BaseRevision,
-		FieldMask:    fieldMask,
-		Payload:      canonicalPayload,
+		MutationID:        strings.TrimSpace(input.MutationID),
+		Operation:         strings.TrimSpace(input.Operation),
+		EntityID:          strings.TrimSpace(input.EntityID),
+		BaseRevision:      input.BaseRevision,
+		DependsOnMutation: canonicalOptionalString(input.DependsOnMutation),
+		FieldMask:         fieldMask,
+		Payload:           canonicalPayload,
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
@@ -92,6 +94,11 @@ func applyMutation(ctx context.Context, repository storage.MobileSyncRepository,
 	entityID := strings.TrimSpace(input.EntityID)
 	if _, err := uuid.Parse(entityID); err != nil {
 		return rejectedMutation(mutationID, "invalid_entity_id")
+	}
+	if input.DependsOnMutation != nil {
+		if _, err := uuid.Parse(strings.TrimSpace(*input.DependsOnMutation)); err != nil {
+			return rejectedMutation(mutationID, "invalid_dependency_id")
+		}
 	}
 	requestHash, err := CanonicalRequestHash(input)
 	if err != nil {
@@ -239,6 +246,14 @@ func canonicalFieldMask(input []string) ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func canonicalOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	return &trimmed
 }
 
 func decodeNotePayload(raw json.RawMessage) (model.MobileNotePayload, error) {

@@ -146,8 +146,10 @@ func createPostgresMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID str
 			EndTime   int64   `json:"end_time"`
 			Location  *string `json:"location"`
 			Kind      string  `json:"kind"`
+			IsAllDay  *bool   `json:"is_all_day"`
+			Notes     string  `json:"notes"`
 		}
-		if err := decodePostgresEntityPayload(mutation.Payload, &payload); err != nil || strings.TrimSpace(payload.Title) == "" || payload.EndTime <= payload.StartTime {
+		if err := decodePostgresEntityPayload(mutation.Payload, &payload); err != nil || strings.TrimSpace(payload.Title) == "" || payload.EndTime <= payload.StartTime || payload.IsAllDay == nil {
 			return nil, errors.New("event.create requires title and a valid time range")
 		}
 		if payload.Kind == "" {
@@ -157,10 +159,10 @@ func createPostgresMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID str
 		endAt := time.Unix(payload.EndTime, 0).UTC()
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO events (
-				id, client_id, revision, title, start_at, end_at, time_range, location, kind, created_at, updated_at, workspace_id
-			) VALUES ($1, $2, 1, $3, $4, $5, tstzrange($4, $5, '[)'), $6, $7, $8, $8, $9)
+				id, client_id, revision, title, start_at, end_at, time_range, location, kind, is_all_day, notes, created_at, updated_at, workspace_id
+			) VALUES ($1, $2, 1, $3, $4, $5, tstzrange($4, $5, '[)'), $6, $7, $8, $9, $10, $10, $11)
 		`, entityID, mutation.EntityClientID, strings.TrimSpace(payload.Title), startAt, endAt,
-			payload.Location, payload.Kind, now, workspaceID); err != nil {
+			payload.Location, payload.Kind, *payload.IsAllDay, payload.Notes, now, workspaceID); err != nil {
 			return nil, err
 		}
 	case "inbox":
@@ -204,11 +206,14 @@ func updatePostgresMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID str
 	switch mutation.EntityType {
 	case "task":
 		var payload struct {
-			Title    *string `json:"title"`
-			Content  *string `json:"content"`
-			Priority *int    `json:"priority"`
-			Done     *int    `json:"done"`
-			Status   *string `json:"status"`
+			Title       *string `json:"title"`
+			Content     *string `json:"content"`
+			ProjectID   *string `json:"project_id"`
+			Due         *int64  `json:"due"`
+			PlannedDate *string `json:"planned_date"`
+			Priority    *int    `json:"priority"`
+			Done        *int    `json:"done"`
+			Status      *string `json:"status"`
 		}
 		if err := decodePostgresEntityPayload(mutation.Payload, &payload); err != nil {
 			return nil, err
@@ -220,10 +225,12 @@ func updatePostgresMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID str
 		}
 		result, err = tx.ExecContext(ctx, `
 			UPDATE tasks SET title = COALESCE($1, title), content = COALESCE($2, content),
-				priority = COALESCE($3, priority), done = COALESCE($4, done), status = COALESCE($5, status),
-				revision = revision + 1, updated_at = $6
-			WHERE workspace_id = $7 AND client_id = $8 AND revision = $9 AND deleted_at IS NULL
-		`, payload.Title, payload.Content, payload.Priority, done, payload.Status, now, workspaceID, mutation.EntityClientID, current.revision)
+				project_id = COALESCE($3, project_id), due_at = COALESCE($4, due_at), planned_date = COALESCE($5::date, planned_date),
+				priority = COALESCE($6, priority), done = COALESCE($7, done), status = COALESCE($8, status),
+				revision = revision + 1, updated_at = $9
+			WHERE workspace_id = $10 AND client_id = $11 AND revision = $12 AND deleted_at IS NULL
+		`, payload.Title, payload.Content, payload.ProjectID, postgresMobileUnixPtr(payload.Due), payload.PlannedDate,
+			payload.Priority, done, payload.Status, now, workspaceID, mutation.EntityClientID, current.revision)
 	case "event":
 		var payload struct {
 			Title     *string `json:"title"`
@@ -231,6 +238,8 @@ func updatePostgresMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID str
 			EndTime   *int64  `json:"end_time"`
 			Location  *string `json:"location"`
 			Kind      *string `json:"kind"`
+			IsAllDay  *bool   `json:"is_all_day"`
+			Notes     *string `json:"notes"`
 		}
 		if err := decodePostgresEntityPayload(mutation.Payload, &payload); err != nil {
 			return nil, err
@@ -253,9 +262,10 @@ func updatePostgresMobileEntity(ctx context.Context, tx *sql.Tx, workspaceID str
 		result, err = tx.ExecContext(ctx, `
 			UPDATE events SET title = COALESCE($1, title), start_at = $2, end_at = $3,
 				time_range = tstzrange($2, $3, '[)'), location = COALESCE($4, location), kind = COALESCE($5, kind),
-				revision = revision + 1, updated_at = $6
-			WHERE workspace_id = $7 AND client_id = $8 AND revision = $9 AND deleted_at IS NULL
-		`, payload.Title, startAt, endAt, payload.Location, payload.Kind, now, workspaceID, mutation.EntityClientID, current.revision)
+				is_all_day = COALESCE($6, is_all_day), notes = COALESCE($7, notes), revision = revision + 1, updated_at = $8
+			WHERE workspace_id = $9 AND client_id = $10 AND revision = $11 AND deleted_at IS NULL
+		`, payload.Title, startAt, endAt, payload.Location, payload.Kind, payload.IsAllDay, payload.Notes,
+			now, workspaceID, mutation.EntityClientID, current.revision)
 	case "inbox":
 		var payload struct {
 			Title    *string `json:"title"`
@@ -423,15 +433,15 @@ func getPostgresMobileEntity(ctx context.Context, runner postgresRunner, workspa
 	var payload []byte
 	switch entityType {
 	case "task":
-		var title, content, status, executionType string
+		var title, content, projectID, status, executionType string
 		var priority int
 		var done bool
 		var dueAt sql.NullTime
 		var plannedDate sql.NullTime
 		if err := runner.QueryRowContext(ctx, `
-			SELECT title, content, priority, done, status, due_at, planned_date, execution_type
+			SELECT title, content, project_id, priority, done, status, due_at, planned_date, execution_type
 			FROM tasks WHERE workspace_id = $1 AND client_id = $2
-		`, workspaceID, clientID).Scan(&title, &content, &priority, &done, &status, &dueAt, &plannedDate, &executionType); err != nil {
+		`, workspaceID, clientID).Scan(&title, &content, &projectID, &priority, &done, &status, &dueAt, &plannedDate, &executionType); err != nil {
 			return nil, err
 		}
 		doneValue := 0
@@ -439,18 +449,19 @@ func getPostgresMobileEntity(ctx context.Context, runner postgresRunner, workspa
 			doneValue = 1
 		}
 		payload, err = json.Marshal(map[string]any{
-			"title": title, "content": content, "priority": priority, "done": doneValue, "status": status,
+			"title": title, "content": content, "project_id": projectID, "priority": priority, "done": doneValue, "status": status,
 			"due": nullablePostgresMobileEntityUnix(dueAt), "planned_date": nullablePostgresMobileEntityDate(plannedDate), "execution_type": executionType,
 		})
 	case "event":
-		var title, kind string
+		var title, kind, notes string
 		var startAt, endAt time.Time
+		var isAllDay bool
 		var location sql.NullString
-		if err := runner.QueryRowContext(ctx, `SELECT title, start_at, end_at, location, kind FROM events WHERE workspace_id = $1 AND client_id = $2`, workspaceID, clientID).
-			Scan(&title, &startAt, &endAt, &location, &kind); err != nil {
+		if err := runner.QueryRowContext(ctx, `SELECT title, start_at, end_at, location, kind, is_all_day, notes FROM events WHERE workspace_id = $1 AND client_id = $2`, workspaceID, clientID).
+			Scan(&title, &startAt, &endAt, &location, &kind, &isAllDay, &notes); err != nil {
 			return nil, err
 		}
-		payload, err = json.Marshal(map[string]any{"title": title, "start_time": startAt.UTC().Unix(), "end_time": endAt.UTC().Unix(), "location": nullablePostgresMobileEntityString(location), "kind": kind})
+		payload, err = json.Marshal(map[string]any{"title": title, "start_time": startAt.UTC().Unix(), "end_time": endAt.UTC().Unix(), "location": nullablePostgresMobileEntityString(location), "kind": kind, "is_all_day": isAllDay, "notes": notes})
 	case "inbox":
 		var kind, title string
 		var body sql.NullString
