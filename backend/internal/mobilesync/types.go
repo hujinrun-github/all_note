@@ -21,12 +21,13 @@ type MutationBatch struct {
 }
 
 type MutationInput struct {
-	MutationID   string          `json:"mutation_id"`
-	Operation    string          `json:"operation"`
-	EntityID     string          `json:"entity_id"`
-	BaseRevision *int64          `json:"base_revision,omitempty"`
-	FieldMask    []string        `json:"field_mask,omitempty"`
-	Payload      json.RawMessage `json:"payload"`
+	MutationID        string          `json:"mutation_id"`
+	Operation         string          `json:"operation"`
+	EntityID          string          `json:"entity_id"`
+	BaseRevision      *int64          `json:"base_revision,omitempty"`
+	DependsOnMutation *string         `json:"depends_on_mutation_id,omitempty"`
+	FieldMask         []string        `json:"field_mask,omitempty"`
+	Payload           json.RawMessage `json:"payload"`
 }
 
 type BatchResult struct {

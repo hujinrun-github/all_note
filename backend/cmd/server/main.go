@@ -98,14 +98,16 @@ func main() {
 	go oauthStateStore.RunCleanup(oauthStateCtx, 2*time.Minute, 1000)
 
 	r := router.Setup(router.Config{
-		Store:               store,
-		Auth:                authCfg,
-		OAuthStateStore:     oauthStateStore,
-		GitHubClient:        handler.NewGitHubHTTPClient(authCfg.GitHub),
-		VoiceObjects:        voiceObjects,
-		Transcriber:         voiceTranscriber,
-		MaxVoiceBytes:       nativeCfg.MaxVoiceAudioBytes,
-		MobileSyncV1Enabled: nativeCfg.MobileSyncV1Enabled,
+		Store:                store,
+		Auth:                 authCfg,
+		OAuthStateStore:      oauthStateStore,
+		GitHubClient:         handler.NewGitHubHTTPClient(authCfg.GitHub),
+		VoiceObjects:         voiceObjects,
+		Transcriber:          voiceTranscriber,
+		MaxVoiceBytes:        nativeCfg.MaxVoiceAudioBytes,
+		MobileSyncV1Enabled:  nativeCfg.MobileSyncV1Enabled,
+		VoiceUploadEnabled:   nativeCfg.MobileSyncV1Enabled && nativeCfg.MinIO.Enabled(),
+		TranscriptionEnabled: nativeCfg.MobileSyncV1Enabled && nativeCfg.MinIO.Enabled() && nativeCfg.Transcription.Enabled(),
 	})
 	if nativeCfg.MobileSyncV1Enabled && nativeCfg.MinIO.Enabled() && nativeCfg.Transcription.Enabled() {
 		workerCtx, stopWorker := context.WithCancel(context.Background())

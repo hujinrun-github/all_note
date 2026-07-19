@@ -16,6 +16,21 @@ x-golden-fixtures:
   - mutation-success.json
   - tombstone.json
 paths:
+  /api/mobile/capabilities:
+    get:
+      operationId: getMobileCapabilities
+      summary: Report the active mobile contract and enabled features
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Mobile capability report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileCapabilities'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/mobile/sync/mutations:
     post:
       operationId: applyMobileMutations
@@ -188,7 +203,7 @@ components:
     sessionCookie:
       type: apiKey
       in: cookie
-      name: flowspace_session
+      name: fs_session
     watchBearer:
       type: http
       scheme: bearer
@@ -531,6 +546,29 @@ components:
           type: string
         next_attempt_at:
           $ref: '#/components/schemas/Timestamp'
+    MobileCapabilities:
+      type: object
+      additionalProperties: false
+      required: [schema_version, contract_sha256, features]
+      properties:
+        schema_version:
+          const: mobile-v1
+        contract_sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        features:
+          type: object
+          additionalProperties: false
+          required: [sync, voice_upload, transcription_jobs, watch_pairing]
+          properties:
+            sync:
+              type: boolean
+            voice_upload:
+              type: boolean
+            transcription_jobs:
+              type: boolean
+            watch_pairing:
+              type: boolean
     APIError:
       type: object
       additionalProperties: false
@@ -548,34 +586,44 @@ components:
           type: boolean
         resync_required:
           type: boolean
+    TaskInput:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+        project_id:
+          type: string
+        due:
+          $ref: '#/components/schemas/Timestamp'
+        planned_date:
+          type: string
+          format: date
+        priority:
+          type: integer
+        done:
+          type: integer
+          enum: [0, 1]
+        status:
+          type: string
     EventInput:
-      oneOf:
-        - $ref: '#/components/schemas/AllDayEventInput'
-        - $ref: '#/components/schemas/TimedEventInput'
-    AllDayEventInput:
       type: object
       additionalProperties: false
-      required: [title, start_date, end_date_exclusive]
+      required: [title, start_time, end_time, is_all_day]
       properties:
         title:
           type: string
-        start_date:
-          type: string
-          format: date
-        end_date_exclusive:
-          type: string
-          format: date
-    TimedEventInput:
-      type: object
-      additionalProperties: false
-      required: [title, start_at, end_at, time_zone]
-      properties:
-        title:
-          type: string
-        start_at:
+        start_time:
           $ref: '#/components/schemas/Timestamp'
-        end_at:
+        end_time:
           $ref: '#/components/schemas/Timestamp'
-        time_zone:
+        location:
           type: string
-          description: IANA time-zone identifier
+        kind:
+          type: string
+        is_all_day:
+          type: boolean
+        notes:
+          type: string

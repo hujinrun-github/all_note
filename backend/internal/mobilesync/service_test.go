@@ -59,6 +59,30 @@ func TestCanonicalRequestHashDistinguishesOmittedAndExplicitNull(t *testing.T) {
 	}
 }
 
+func TestCanonicalRequestHashIncludesMutationDependency(t *testing.T) {
+	dependencyA := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	dependencyB := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	input := MutationInput{
+		MutationID:        "11111111-1111-4111-8111-111111111111",
+		Operation:         "note.create",
+		EntityID:          "22222222-2222-4222-8222-222222222222",
+		DependsOnMutation: &dependencyA,
+		Payload:           json.RawMessage(`{"title":"dependency"}`),
+	}
+	first, err := CanonicalRequestHash(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.DependsOnMutation = &dependencyB
+	second, err := CanonicalRequestHash(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("changing depends_on_mutation_id must change the canonical request hash")
+	}
+}
+
 func TestApplyBatchRejectsLimitsBeforeStoreUse(t *testing.T) {
 	mutations := make([]MutationInput, MaxBatchMutations+1)
 	for i := range mutations {
