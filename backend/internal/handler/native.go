@@ -70,6 +70,14 @@ func CreateVoiceNote(store storage.Store) gin.HandlerFunc {
 }
 
 func UploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64) gin.HandlerFunc {
+	return uploadVoiceAudio(store, objects, maxBytes, false)
+}
+
+func UploadMobileVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64) gin.HandlerFunc {
+	return uploadVoiceAudio(store, objects, maxBytes, true)
+}
+
+func uploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64, mobile bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		voice, err := service.UploadVoiceAudio(
 			c.Request.Context(),
@@ -83,7 +91,15 @@ func UploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes i
 			maxBytes,
 		)
 		if err != nil {
-			handleNativeError(c, err, http.StatusInternalServerError)
+			if mobile {
+				handleMobileVoiceError(c, err, http.StatusInternalServerError)
+			} else {
+				handleNativeError(c, err, http.StatusInternalServerError)
+			}
+			return
+		}
+		if mobile {
+			c.JSON(http.StatusOK, gin.H{"voice_note": voice})
 			return
 		}
 		success(c, gin.H{"voice_note": voice})
@@ -176,5 +192,30 @@ func handleNativeError(c *gin.Context, err error, fallbackStatus int) {
 		notFound(c, "audio object not found")
 	default:
 		errorResponse(c, fallbackStatus, "NATIVE_SERVICE_ERROR", "native app request failed")
+	}
+}
+
+func handleMobileVoiceError(c *gin.Context, err error, fallbackStatus int) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, objectstore.ErrNotFound):
+		mobileError(c, http.StatusNotFound, "NOT_FOUND", "voice note or audio object was not found", false)
+	case errors.Is(err, service.ErrInvalidVoiceClientID), errors.Is(err, service.ErrInvalidVoiceMetadata):
+		mobileError(c, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+	case errors.Is(err, service.ErrVoiceAudioTooLarge):
+		mobileError(c, http.StatusRequestEntityTooLarge, "AUDIO_TOO_LARGE", err.Error(), false)
+	case errors.Is(err, service.ErrVoiceAudioChecksum):
+		mobileError(c, http.StatusUnprocessableEntity, "CHECKSUM_MISMATCH", err.Error(), false)
+	case errors.Is(err, service.ErrVoiceAudioType):
+		mobileError(c, http.StatusUnsupportedMediaType, "UNSUPPORTED_AUDIO_TYPE", err.Error(), false)
+	case errors.Is(err, storage.ErrUploadConflict):
+		mobileError(c, http.StatusConflict, "AUDIO_CONFLICT", err.Error(), false)
+	case errors.Is(err, storage.ErrVoiceAudioGone), errors.Is(err, storage.ErrMobileEntityGone):
+		mobileError(c, http.StatusGone, "VOICE_AUDIO_GONE", "voice audio or voice note was deleted", false)
+	case errors.Is(err, service.ErrVoiceAudioNotUploaded):
+		mobileError(c, http.StatusConflict, "AUDIO_NOT_UPLOADED", err.Error(), false)
+	case errors.Is(err, service.ErrVoiceStorageUnavailable), errors.Is(err, objectstore.ErrUnavailable):
+		mobileError(c, http.StatusServiceUnavailable, "VOICE_STORAGE_UNAVAILABLE", "voice storage is unavailable", true)
+	default:
+		mobileError(c, fallbackStatus, "NATIVE_SERVICE_ERROR", "native app request failed", true)
 	}
 }

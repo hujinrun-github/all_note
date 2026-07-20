@@ -234,7 +234,7 @@ func TestMobileMutationRouteSupportsTaskEventAndInbox(t *testing.T) {
 				"mutation_id": "74747474-7474-4474-8474-747474747474",
 				"operation":   "event.create",
 				"entity_id":   "75757575-7575-4575-8575-757575757575",
-				"payload":     map[string]any{"title": "Offline event", "start_time": 1800000000, "end_time": 1800003600},
+				"payload":     map[string]any{"title": "Offline event", "start_time": 1800000000, "end_time": 1800003600, "is_all_day": false, "notes": "Review"},
 			},
 			{
 				"mutation_id": "76767676-7676-4676-8676-767676767676",
@@ -277,12 +277,29 @@ func TestMobileMutationRouteSupportsTaskEventAndInbox(t *testing.T) {
 			t.Fatalf("result[%d]=%+v", index, mutationResult)
 		}
 	}
+	var taskPayload map[string]any
+	if err := json.Unmarshal(result.Results[0].Entity.Payload, &taskPayload); err != nil {
+		t.Fatal(err)
+	}
+	if taskPayload["project_id"] != "personal" {
+		t.Fatalf("task payload = %+v, want project_id=personal", taskPayload)
+	}
+	var eventPayload map[string]any
+	if err := json.Unmarshal(result.Results[1].Entity.Payload, &eventPayload); err != nil {
+		t.Fatal(err)
+	}
+	if eventPayload["is_all_day"] != false || eventPayload["notes"] != "Review" {
+		t.Fatalf("event payload = %+v, want explicit all-day flag and notes", eventPayload)
+	}
 }
 
 func TestMobileMutationRouteRegistrationFollowsFeatureFlag(t *testing.T) {
 	disabled := setupRouterAuthEnv(t, false)
 	if registeredRoutes(Setup(disabled.config))["POST /api/mobile/sync/mutations"] {
 		t.Fatal("mobile mutation route must be absent while mobile_sync_v1 is disabled")
+	}
+	if registeredRoutes(Setup(disabled.config))["GET /api/mobile/capabilities"] {
+		t.Fatal("mobile capabilities route must be absent while mobile_sync_v1 is disabled")
 	}
 	if !registeredRoutes(Setup(disabled.config))["POST /api/voice-notes/:clientID/transcription"] {
 		t.Fatal("legacy transcription route should remain available while mobile_sync_v1 is disabled")
@@ -293,6 +310,9 @@ func TestMobileMutationRouteRegistrationFollowsFeatureFlag(t *testing.T) {
 	if !registeredRoutes(Setup(enabled.config))["POST /api/mobile/sync/mutations"] {
 		t.Fatal("mobile mutation route must be registered when mobile_sync_v1 is enabled")
 	}
+	if !registeredRoutes(Setup(enabled.config))["GET /api/mobile/capabilities"] {
+		t.Fatal("mobile capabilities route must be registered when mobile_sync_v1 is enabled")
+	}
 	if !registeredRoutes(Setup(enabled.config))["GET /api/mobile/sync/changes"] ||
 		!registeredRoutes(Setup(enabled.config))["GET /api/mobile/sync/snapshot"] {
 		t.Fatal("mobile read routes must be registered when mobile_sync_v1 is enabled")
@@ -300,8 +320,74 @@ func TestMobileMutationRouteRegistrationFollowsFeatureFlag(t *testing.T) {
 	if !registeredRoutes(Setup(enabled.config))["POST /api/mobile/transcription-jobs/:jobID/retry"] {
 		t.Fatal("mobile transcription retry route must be registered when mobile_sync_v1 is enabled")
 	}
-	if registeredRoutes(Setup(enabled.config))["POST /api/voice-notes/:clientID/transcription"] {
-		t.Fatal("legacy synchronous transcription route must be absent while mobile_sync_v1 is enabled")
+	if !registeredRoutes(Setup(enabled.config))["POST /api/voice-notes/:clientID/transcription"] {
+		t.Fatal("legacy synchronous transcription route must remain available while mobile_sync_v1 is enabled")
+	}
+}
+
+func TestMobileCapabilitiesReportsPinnedContractAndActualFeatures(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	env.config.MobileSyncV1Enabled = true
+	env.config.VoiceUploadEnabled = true
+	env.config.TranscriptionEnabled = false
+	sessionToken := "mobile-capabilities-session"
+	createRouterSession(t, env, sessionToken)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/mobile/capabilities", nil)
+	request.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: sessionToken})
+	response := httptest.NewRecorder()
+	Setup(env.config).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("capabilities status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		SchemaVersion  string `json:"schema_version"`
+		ContractSHA256 string `json:"contract_sha256"`
+		Features       struct {
+			Sync              bool `json:"sync"`
+			VoiceUpload       bool `json:"voice_upload"`
+			TranscriptionJobs bool `json:"transcription_jobs"`
+			WatchPairing      bool `json:"watch_pairing"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.SchemaVersion != "mobile-v1" || body.ContractSHA256 != "4342beb03eb11a919d4139cd1723083d4f0acb9e62dff928788be292c306b3a6" {
+		t.Fatalf("capabilities contract = %+v", body)
+	}
+	if !body.Features.Sync || !body.Features.VoiceUpload || body.Features.TranscriptionJobs || !body.Features.WatchPairing {
+		t.Fatalf("capabilities features = %+v", body.Features)
+	}
+	for _, forbidden := range []string{"endpoint", "secret", "access_key", "password"} {
+		if bytes.Contains(bytes.ToLower(response.Body.Bytes()), []byte(forbidden)) {
+			t.Fatalf("capabilities leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestMobileVoiceErrorsUseMobileEnvelopeWithoutChangingLegacyEnvelope(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	env.config.MobileSyncV1Enabled = true
+	sessionToken := "mobile-audio-error-session"
+	createRouterSession(t, env, sessionToken)
+	router := Setup(env.config)
+
+	request := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, path, bytes.NewBufferString("audio"))
+		req.Header.Set("Content-Type", "audio/mp4")
+		req.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: sessionToken})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		return response
+	}
+	mobile := request("/api/mobile/voice-notes/not-a-uuid/audio")
+	if mobile.Code < http.StatusBadRequest || !bytes.Contains(mobile.Body.Bytes(), []byte(`"schema_version":"mobile-v1"`)) || bytes.Contains(mobile.Body.Bytes(), []byte(`"error":`)) {
+		t.Fatalf("mobile audio error status=%d body=%s", mobile.Code, mobile.Body.String())
+	}
+	legacy := request("/api/voice-notes/not-a-uuid/audio")
+	if legacy.Code < http.StatusBadRequest || !bytes.Contains(legacy.Body.Bytes(), []byte(`"error":`)) || bytes.Contains(legacy.Body.Bytes(), []byte(`"schema_version":`)) {
+		t.Fatalf("legacy audio error status=%d body=%s", legacy.Code, legacy.Body.String())
 	}
 }
 
@@ -706,6 +792,8 @@ func TestNativeRoutesAreRegistered(t *testing.T) {
 		"PUT /api/voice-notes/:clientID/audio",
 		"GET /api/voice-notes/:clientID/audio",
 		"GET /api/voice-notes/:clientID/status",
+		"POST /api/voice-notes/:clientID/transcription",
+		"GET /api/mobile/capabilities",
 		"POST /api/mobile/sync/mutations",
 		"PUT /api/mobile/voice-notes/:clientID/audio",
 		"POST /api/mobile/voice-notes/:clientID/transcriptions",

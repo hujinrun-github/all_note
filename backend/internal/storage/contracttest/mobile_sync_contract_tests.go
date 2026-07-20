@@ -106,6 +106,31 @@ func RunMobileSyncNoteSuite(t *testing.T, factory StoreFactory) {
 		}
 	})
 
+	t.Run("MBI-BE-NOTE-002_MobileReadPayloadReturnsTagArray", func(t *testing.T) {
+		store := factory(t)
+		defer store.Close()
+		ctx := scopedContractContext(t, store)
+		repository := mobileSyncRepository(t, store)
+		title := "Tagged note"
+		tags := `["ios","sync"]`
+		result, err := repository.ApplyNoteMutation(ctx, model.MobileNoteMutation{
+			MutationID: uuid.NewString(), DeviceClientID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			EntityClientID: uuid.NewString(), Operation: model.MobileOperationNoteCreate,
+			RequestSHA256: "tag-array", Payload: model.MobileNotePayload{Title: &title, Tags: &tags},
+		})
+		if err != nil || result.Entity == nil {
+			t.Fatalf("create tagged note result=%+v err=%v", result, err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(result.Entity.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := payload["tags"].([]any)
+		if !ok || len(got) != 2 || got[0] != "ios" || got[1] != "sync" {
+			t.Fatalf("mobile tags payload=%+v, want JSON array", payload["tags"])
+		}
+	})
+
 	t.Run("MSYNC-STORE-003_RevisionConflictAndTombstone", func(t *testing.T) {
 		store := factory(t)
 		defer store.Close()
@@ -421,7 +446,7 @@ func RunMobileSyncNoteSuite(t *testing.T, factory StoreFactory) {
 		if err != nil || len(second.Entities) != 1 || second.HasMore || second.BoundaryPosition != snapshot.BoundaryPosition {
 			t.Fatalf("second snapshot page=%+v err=%v", second, err)
 		}
-		var frozenPayload map[string]string
+		var frozenPayload map[string]any
 		if err := json.Unmarshal(second.Entities[0].Payload, &frozenPayload); err != nil {
 			t.Fatal(err)
 		}
@@ -479,7 +504,7 @@ func RunMobileSyncNoteSuite(t *testing.T, factory StoreFactory) {
 			{
 				MutationID: uuid.NewString(), DeviceClientID: deviceID, EntityType: "event",
 				EntityClientID: "84848484-8484-4484-8484-848484848484", Operation: "event.create",
-				RequestSHA256: "snapshot-event", Payload: json.RawMessage(`{"title":"Snapshot event","start_time":1800000000,"end_time":1800003600}`),
+				RequestSHA256: "snapshot-event", Payload: json.RawMessage(`{"title":"Snapshot event","start_time":1800000000,"end_time":1800003600,"is_all_day":false}`),
 			},
 			{
 				MutationID: uuid.NewString(), DeviceClientID: deviceID, EntityType: "inbox",
@@ -525,12 +550,12 @@ func RunMobileSyncNoteSuite(t *testing.T, factory StoreFactory) {
 		{
 			name: "task", entityType: "task", clientID: "a3a3a3a3-a3a3-43a3-83a3-a3a3a3a3a3a3",
 			createPayload: json.RawMessage(`{"title":"Offline task","content":"Captured offline","priority":2}`),
-			updatePayload: json.RawMessage(`{"done":1}`),
+			updatePayload: json.RawMessage(`{"project_id":"personal","due":1800010800,"planned_date":"2027-01-18","done":1}`),
 		},
 		{
 			name: "event", entityType: "event", clientID: "b4b4b4b4-b4b4-44b4-84b4-b4b4b4b4b4b4",
-			createPayload: json.RawMessage(`{"title":"Offline event","start_time":1800000000,"end_time":1800003600,"kind":"work"}`),
-			updatePayload: json.RawMessage(`{"location":"Room 2"}`),
+			createPayload: json.RawMessage(`{"title":"Offline event","start_time":1800000000,"end_time":1800003600,"kind":"work","is_all_day":false,"notes":"Review"}`),
+			updatePayload: json.RawMessage(`{"location":"Room 2","is_all_day":true,"notes":"Updated notes"}`),
 		},
 		{
 			name: "inbox", entityType: "inbox", clientID: "c5c5c5c5-c5c5-45c5-85c5-c5c5c5c5c5c5",
@@ -568,6 +593,20 @@ func RunMobileSyncNoteSuite(t *testing.T, factory StoreFactory) {
 			})
 			if err != nil || updated.Entity == nil || updated.Entity.Revision != 2 {
 				t.Fatalf("update result=%+v err=%v", updated, err)
+			}
+			var updatedPayload map[string]any
+			if err := json.Unmarshal(updated.Entity.Payload, &updatedPayload); err != nil {
+				t.Fatal(err)
+			}
+			switch testCase.entityType {
+			case "task":
+				if updatedPayload["project_id"] != "personal" || updatedPayload["due"] != float64(1800010800) || updatedPayload["planned_date"] != "2027-01-18" {
+					t.Fatalf("updated task payload=%+v", updatedPayload)
+				}
+			case "event":
+				if updatedPayload["is_all_day"] != true || updatedPayload["notes"] != "Updated notes" {
+					t.Fatalf("updated event payload=%+v", updatedPayload)
+				}
 			}
 			baseTwo := int64(2)
 			deleted, err := repository.ApplyEntityMutation(ctx, model.MobileEntityMutation{

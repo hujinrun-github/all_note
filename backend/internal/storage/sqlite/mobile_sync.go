@@ -338,11 +338,17 @@ func getSQLiteMobileNote(ctx context.Context, runner sqliteRunner, workspaceID, 
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(map[string]string{
+	tags := make([]string, 0)
+	if strings.TrimSpace(row.Tags) != "" {
+		if err := json.Unmarshal([]byte(row.Tags), &tags); err != nil {
+			return nil, fmt.Errorf("decode mobile note tags: %w", err)
+		}
+	}
+	payload, err := json.Marshal(map[string]any{
 		"title":     row.Title,
 		"body":      row.Body,
 		"folder_id": row.FolderID,
-		"tags":      row.Tags,
+		"tags":      tags,
 	})
 	if err != nil {
 		return nil, err

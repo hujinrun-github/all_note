@@ -8,6 +8,7 @@ FORMAT_PATHS := \
 	internal/auth/context.go \
 	internal/middleware/auth.go \
 	internal/handler/mobile_conflicts.go \
+	internal/handler/mobile_capabilities.go \
 	internal/handler/mobile_read.go \
 	internal/handler/mobile_sync.go \
 	internal/handler/native.go \
