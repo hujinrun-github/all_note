@@ -33,6 +33,9 @@ func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
 	if err := createSQLiteAuthTables(ctx, db); err != nil {
 		return err
 	}
+	if err := createSQLiteUserProfileTables(ctx, db); err != nil {
+		return err
+	}
 	if err := ensureSQLiteAuthColumns(db); err != nil {
 		return err
 	}
@@ -51,6 +54,34 @@ func ensureSQLiteAuthSchema(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 	return rebuildSQLiteFTSAfterWorkspaceMigration(ctx, db)
+}
+
+func createSQLiteUserProfileTables(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS user_profiles (
+			user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			locale TEXT NOT NULL DEFAULT 'zh-CN',
+			time_zone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_avatar_blobs (
+			user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg','image/png','image/webp')),
+			size_bytes INTEGER NOT NULL CHECK (size_bytes BETWEEN 1 AND 2097152),
+			sha256 TEXT NOT NULL,
+			width INTEGER NOT NULL CHECK (width > 0),
+			height INTEGER NOT NULL CHECK (height > 0),
+			content BLOB NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func createSQLiteAuthTables(ctx context.Context, db *sql.DB) error {

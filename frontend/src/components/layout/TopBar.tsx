@@ -5,14 +5,42 @@ import { getCurrentUser, logout } from '../../api/auth'
 import { useUIStore } from '../../stores/ui'
 
 const pageMeta: Record<string, { title: string; subtitle: string }> = {
-  '/': { title: '今日', subtitle: `${formatToday()} · 把任务、日程和笔记收束到一个可执行视图` },
-  '/notes': { title: '笔记库', subtitle: '按项目、标签和最近更新整理想法，让知识可以继续被任务调用' },
-  '/tasks': { title: '任务工作台', subtitle: '按项目、状态和节奏推进每天要完成的事情' },
-  '/calendar': { title: '日历', subtitle: '查看月份安排，连接任务、提醒和关联笔记' },
-  '/inbox': { title: '未整理捕获', subtitle: '把临时想法转为笔记、任务或日程，先捕获，再整理成具体对象' },
-  '/search': { title: '全局搜索', subtitle: '跨笔记、任务、日程和项目找回上下文' },
-  '/summary': { title: '每日总结', subtitle: '回顾完成事项、未完成事项和知识产出' },
-  '/admin/users': { title: '账号管理', subtitle: '管理登录账号、角色权限和临时密码' },
+  '/settings': {
+    title: '用户设置',
+    subtitle: '管理个人资料，以及当前工作空间使用的存储和 AI 服务',
+  },
+  '/': {
+    title: '今日',
+    subtitle: `${formatToday()} · 把任务、日程和笔记收束到一个可执行视图`,
+  },
+  '/notes': {
+    title: '笔记库',
+    subtitle: '按项目、标签和最近更新整理想法，让知识可以继续被任务调用',
+  },
+  '/tasks': {
+    title: '任务工作台',
+    subtitle: '按项目、状态和节奏推进每天要完成的事情',
+  },
+  '/calendar': {
+    title: '日历',
+    subtitle: '查看月份安排，连接任务、提醒和关联笔记',
+  },
+  '/inbox': {
+    title: '未整理捕获',
+    subtitle: '把临时想法转为笔记、任务或日程，先捕获，再整理成具体对象',
+  },
+  '/search': {
+    title: '全局搜索',
+    subtitle: '跨笔记、任务、日程和项目找回上下文',
+  },
+  '/summary': {
+    title: '每日总结',
+    subtitle: '回顾完成事项、未完成事项和知识产出',
+  },
+  '/admin/users': {
+    title: '账号管理',
+    subtitle: '管理登录账号、角色权限和临时密码',
+  },
   '/change-password': { title: '修改密码', subtitle: '更新当前账号的登录凭据' },
 }
 
@@ -23,7 +51,9 @@ function formatToday() {
     month: 'long',
     day: 'numeric',
   }).format(date)
-  const weekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(date)
+  const weekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(
+    date
+  )
   return `${dateText}，${weekday}`
 }
 
@@ -54,7 +84,10 @@ export function TopBar() {
     retry: false,
     staleTime: 5 * 60_000,
   })
-  const accountName = currentUser?.user.display_name?.trim() || currentUser?.user.email || '当前账号'
+  const accountName =
+    currentUser?.user.display_name?.trim() ||
+    currentUser?.user.email ||
+    '当前账号'
   const accountEmail = currentUser?.user.email
   const accountInitial = getAccountInitial(accountName)
 
@@ -113,7 +146,11 @@ export function TopBar() {
         <p className="workspace-subtitle">{meta.subtitle}</p>
       </div>
       <div className="workspace-actions">
-        <form className="workspace-search-hint" role="search" onSubmit={handleSearchSubmit}>
+        <form
+          className="workspace-search-hint"
+          role="search"
+          onSubmit={handleSearchSubmit}
+        >
           <SearchIcon />
           <input
             value={searchValue}
@@ -146,16 +183,40 @@ export function TopBar() {
               setAccountMenuOpen((open) => !open)
             }}
           >
-            {accountInitial}
+            {currentUser?.avatar_url ? (
+              <img src={currentUser.avatar_url} alt="" />
+            ) : (
+              accountInitial
+            )}
           </button>
           {accountMenuOpen && (
-            <div className="account-menu" id="account-menu" role="menu" aria-label="账号菜单">
+            <div
+              className="account-menu"
+              id="account-menu"
+              role="menu"
+              aria-label="账号菜单"
+            >
               <div className="account-menu-header">
                 <span>当前账号</span>
                 <strong>{accountName}</strong>
-                {accountEmail && accountEmail !== accountName && <em>{accountEmail}</em>}
-                {currentUser?.must_change_password && <small>需要修改密码</small>}
+                {accountEmail && accountEmail !== accountName && (
+                  <em>{accountEmail}</em>
+                )}
+                {currentUser?.must_change_password && (
+                  <small>需要修改密码</small>
+                )}
               </div>
+              <button
+                className="account-menu-item"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAccountMenuOpen(false)
+                  navigate('/settings')
+                }}
+              >
+                用户设置
+              </button>
               <button
                 className="account-menu-item is-danger"
                 type="button"

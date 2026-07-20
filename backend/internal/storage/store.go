@@ -91,6 +91,11 @@ type AuthRepository interface {
 	RevokeUserSessionsExcept(context.Context, string, string) error
 	RecordAuditEvent(context.Context, *model.AuditEvent) error
 	LockActiveAdmins(context.Context) ([]model.User, error)
+	GetUserProfile(context.Context, string) (*model.UserProfile, error)
+	UpsertUserProfile(context.Context, *model.UserProfile) error
+	GetUserAvatar(context.Context, string) (*model.UserAvatar, error)
+	UpsertUserAvatar(context.Context, *model.UserAvatar) error
+	DeleteUserAvatar(context.Context, string) error
 }
 
 type NoteRepository interface {

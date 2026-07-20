@@ -140,11 +140,18 @@ func Me(store storage.Store) gin.HandlerFunc {
 			return
 		}
 		workspace := loadAuthWorkspace(c.Request.Context(), store, identity.WorkspaceID)
-		success(c, model.CurrentUser{
+		currentUser := model.CurrentUser{
 			User:               *user,
 			Workspace:          workspace,
 			MustChangePassword: user.MustChangePassword,
-		})
+		}
+		if avatar, err := store.Auth().GetUserAvatar(c.Request.Context(), identity.UserID); err == nil {
+			currentUser.AvatarURL = avatarURL(avatar.UpdatedAt)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			errorResponse(c, http.StatusInternalServerError, "AUTH_FAILED", "authentication failed")
+			return
+		}
+		success(c, currentUser)
 	}
 }
 

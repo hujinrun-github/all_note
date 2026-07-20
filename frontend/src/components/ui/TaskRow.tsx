@@ -8,6 +8,7 @@ export interface TaskData {
   planned_date?: string
   priority: number
   done: number
+  status?: 'open' | 'active' | 'blocked' | 'done' | string
   scope: string
   execution_type?: 'single' | 'recurring'
   occurrence_date?: string
@@ -22,12 +23,14 @@ export function TaskRow({
   onOccurrenceToggle,
   onSelect,
   isSelected = false,
+  showExecutionStatus = false,
 }: {
   task: TaskData
   onToggle: (id: string) => void
   onOccurrenceToggle?: (id: string, date: string, currentStatus: string) => void
   onSelect?: (id: string) => void
   isSelected?: boolean
+  showExecutionStatus?: boolean
 }) {
   const isRecurring = task.execution_type === 'recurring'
   const isOccurrenceDone = isRecurring && task.occurrence_status === 'done'
@@ -37,6 +40,7 @@ export function TaskRow({
   const dateLabel =
     task.occurrence_date || task.planned_date || formatDueDate(task.due)
   const taskColor = getTaskColor(task.id, task.color)
+  const executionStatus = getExecutionStatus(task, showDone)
 
   function handleToggle() {
     if (isRecurring && task.occurrence_date && onOccurrenceToggle) {
@@ -107,14 +111,26 @@ export function TaskRow({
               {task.project}
             </span>
           )}
-          {showDone && !isRecurring && (
-            <span className="task-done-badge">已完成</span>
+          {showExecutionStatus && (
+            <span
+              className={`task-execution-status task-execution-status-${executionStatus.key}`}
+              aria-label={`执行状态：${executionStatus.label}`}
+            >
+              {executionStatus.label}
+            </span>
           )}
         </small>
       </button>
       {task.priority === 1 && <span className="priority-mark">高</span>}
     </div>
   )
+}
+
+function getExecutionStatus(task: TaskData, showDone: boolean) {
+  if (showDone || task.status === 'done') return { key: 'done', label: '完成' }
+  if (task.status === 'active') return { key: 'active', label: '进行中' }
+  if (task.status === 'blocked') return { key: 'blocked', label: '阻塞' }
+  return { key: 'open', label: '未开始' }
 }
 
 function formatDueDate(due?: number) {

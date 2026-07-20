@@ -5,7 +5,8 @@ function flattenedPaths() {
   return router.routes.flatMap((route) => [
     route.path,
     ...(route.children ?? []).map((child) => {
-      if (!route.path || route.path === '/') return `/${child.path ?? ''}`.replace(/\/$/, '') || '/'
+      if (!route.path || route.path === '/')
+        return `/${child.path ?? ''}`.replace(/\/$/, '') || '/'
       return `${route.path}/${child.path ?? ''}`
     }),
   ])
@@ -17,5 +18,6 @@ describe('router', () => {
 
     expect(paths).toContain('/change-password')
     expect(paths).toContain('/admin/users')
+    expect(paths).toContain('/settings')
   })
 })

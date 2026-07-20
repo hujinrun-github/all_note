@@ -14,6 +14,7 @@ const Search = lazy(() => import('./routes/Search'))
 const DailySummary = lazy(() => import('./routes/DailySummary'))
 const AccountAdmin = lazy(() => import('./routes/AccountAdmin'))
 const ChangePassword = lazy(() => import('./routes/ChangePassword'))
+const Settings = lazy(() => import('./routes/Settings'))
 
 export const router = createBrowserRouter(
   [
@@ -30,10 +31,18 @@ export const router = createBrowserRouter(
         { path: 'inbox', element: <Inbox /> },
         { path: 'search', element: <Search /> },
         { path: 'summary', element: <DailySummary /> },
-        { path: 'admin/users', element: <RequireAdmin><AccountAdmin /></RequireAdmin> },
+        {
+          path: 'admin/users',
+          element: (
+            <RequireAdmin>
+              <AccountAdmin />
+            </RequireAdmin>
+          ),
+        },
         { path: 'change-password', element: <ChangePassword /> },
+        { path: 'settings', element: <Settings /> },
       ],
     },
   ],
-  { basename: import.meta.env.BASE_URL },
+  { basename: import.meta.env.BASE_URL }
 )

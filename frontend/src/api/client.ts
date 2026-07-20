@@ -5,18 +5,30 @@ export interface APIResponse<T> {
 }
 
 class APIClient {
-  private basePath = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '')
+  private basePath =
+    import.meta.env.BASE_URL === '/'
+      ? ''
+      : import.meta.env.BASE_URL.replace(/\/$/, '')
 
-  async get<T>(path: string, params?: Record<string, string>): Promise<APIResponse<T>> {
+  async get<T>(
+    path: string,
+    params?: Record<string, string>
+  ): Promise<APIResponse<T>> {
     const url = new URL(`${this.basePath}${path}`, window.location.origin)
     if (params) {
-      Object.entries(params).forEach(([k, v]) => { if (v) url.searchParams.set(k, v) })
+      Object.entries(params).forEach(([k, v]) => {
+        if (v) url.searchParams.set(k, v)
+      })
     }
     const res = await fetch(url.toString(), { credentials: 'include' })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       this.redirectAfterAuthError(path, res.status, body?.error?.code)
-      throw new APIError(res.status, body?.error?.code ?? 'UNKNOWN', body?.error?.message ?? 'Request failed')
+      throw new APIError(
+        res.status,
+        body?.error?.code ?? 'UNKNOWN',
+        body?.error?.message ?? 'Request failed'
+      )
     }
     if (res.status === 204) return { data: undefined as T }
     return res.json()
@@ -32,7 +44,11 @@ class APIClient {
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
       this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
-      throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
+      throw new APIError(
+        res.status,
+        errBody?.error?.code ?? 'UNKNOWN',
+        errBody?.error?.message ?? 'Request failed'
+      )
     }
     if (res.status === 204) return { data: undefined as T }
     return res.json()
@@ -48,7 +64,11 @@ class APIClient {
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
       this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
-      throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
+      throw new APIError(
+        res.status,
+        errBody?.error?.code ?? 'UNKNOWN',
+        errBody?.error?.message ?? 'Request failed'
+      )
     }
     if (res.status === 204) return { data: undefined as T }
     return res.json()
@@ -64,7 +84,11 @@ class APIClient {
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
       this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
-      throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Request failed')
+      throw new APIError(
+        res.status,
+        errBody?.error?.code ?? 'UNKNOWN',
+        errBody?.error?.message ?? 'Request failed'
+      )
     }
     return res.json()
   }
@@ -73,14 +97,38 @@ class APIClient {
     const res = await fetch(`${this.basePath}${path}`, {
       method: 'DELETE',
       credentials: 'include',
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers:
+        body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
       this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
-      throw new APIError(res.status, errBody?.error?.code ?? 'UNKNOWN', errBody?.error?.message ?? 'Delete failed')
+      throw new APIError(
+        res.status,
+        errBody?.error?.code ?? 'UNKNOWN',
+        errBody?.error?.message ?? 'Delete failed'
+      )
     }
+  }
+
+  async putBlob<T>(path: string, body: Blob): Promise<APIResponse<T>> {
+    const res = await fetch(`${this.basePath}${path}`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': body.type || 'application/octet-stream' },
+      body,
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
+      throw new APIError(
+        res.status,
+        errBody?.error?.code ?? 'UNKNOWN',
+        errBody?.error?.message ?? 'Upload failed'
+      )
+    }
+    return res.json()
   }
 
   private redirectAfterAuthError(path: string, status: number, code?: string) {
@@ -89,13 +137,24 @@ class APIClient {
   }
 
   private redirectToLoginOnUnauthorized(path: string, status: number) {
-    if (status !== 401 || path === '/api/auth/login' || window.location.pathname === '/login') return
+    if (
+      status !== 401 ||
+      path === '/api/auth/login' ||
+      window.location.pathname === '/login'
+    )
+      return
 
     const next = `${window.location.pathname}${window.location.search}${window.location.hash}`
-    window.location.assign(`${this.basePath}/login?next=${encodeURIComponent(next)}`)
+    window.location.assign(
+      `${this.basePath}/login?next=${encodeURIComponent(next)}`
+    )
   }
 
-  private redirectToPasswordChangeOnRequired(path: string, status: number, code?: string) {
+  private redirectToPasswordChangeOnRequired(
+    path: string,
+    status: number,
+    code?: string
+  ) {
     if (status !== 403 || code !== 'PASSWORD_CHANGE_REQUIRED') return
     if (path.startsWith('/api/auth/')) return
 
@@ -107,7 +166,11 @@ class APIClient {
 }
 
 export class APIError extends Error {
-  constructor(public status: number, public code: string, message: string) {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string
+  ) {
     super(message)
   }
 }

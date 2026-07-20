@@ -73,6 +73,25 @@ type CurrentUser struct {
 	User               User      `json:"user"`
 	Workspace          Workspace `json:"workspace"`
 	MustChangePassword bool      `json:"must_change_password"`
+	AvatarURL          string    `json:"avatar_url,omitempty"`
+}
+
+type UserProfile struct {
+	UserID    string `json:"user_id"`
+	Locale    string `json:"locale"`
+	TimeZone  string `json:"time_zone"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type UserAvatar struct {
+	UserID    string `json:"-"`
+	MIMEType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+	SHA256    string `json:"sha256"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Content   []byte `json:"-"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 type LoginRequest struct {

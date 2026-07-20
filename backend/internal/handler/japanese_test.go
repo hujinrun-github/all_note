@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,8 +9,35 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 )
+
+type recordingWorkspaceChat struct{ workspaceID string }
+
+func (r *recordingWorkspaceChat) Generate(_ context.Context, workspaceID, _, _ string) (string, error) {
+	r.workspaceID = workspaceID
+	return `{"segments":[{"text":"近","reading":"ちか"},{"text":"く"}]}`, nil
+}
+
+func TestJapaneseFuriganaUsesRequestWorkspaceAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	chat := &recordingWorkspaceChat{}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		ctx := auth.ContextWithIdentity(c.Request.Context(), auth.RequestIdentity{UserID: "u1", WorkspaceID: "workspace-one"})
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	})
+	router.POST("/api/japanese/furigana", JapaneseFuriganaWithAI(chat))
+	request := httptest.NewRequest(http.MethodPost, "/api/japanese/furigana", strings.NewReader(`{"text":"近く"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || chat.workspaceID != "workspace-one" || !strings.Contains(response.Body.String(), `"source":"ai"`) {
+		t.Fatalf("status=%d workspace=%q body=%s", response.Code, chat.workspaceID, response.Body.String())
+	}
+}
 
 func TestJapaneseFuriganaReturnsStructuredSegments(t *testing.T) {
 	t.Setenv("AI_API_KEY", "")

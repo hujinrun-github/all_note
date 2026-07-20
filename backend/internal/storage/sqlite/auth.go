@@ -17,6 +17,43 @@ type authRepository struct {
 	db sqliteRunner
 }
 
+func (r authRepository) GetUserProfile(ctx context.Context, userID string) (*model.UserProfile, error) {
+	profile := &model.UserProfile{UserID: userID}
+	err := r.db.QueryRowContext(ctx, `SELECT locale,time_zone,updated_at FROM user_profiles WHERE user_id=?`, userID).Scan(&profile.Locale, &profile.TimeZone, &profile.UpdatedAt)
+	return profile, err
+}
+
+func (r authRepository) UpsertUserProfile(ctx context.Context, profile *model.UserProfile) error {
+	if profile == nil || strings.TrimSpace(profile.UserID) == "" {
+		return fmt.Errorf("user profile is invalid")
+	}
+	now := nowUnix()
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_profiles(user_id,locale,time_zone,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET locale=excluded.locale,time_zone=excluded.time_zone,updated_at=excluded.updated_at`, profile.UserID, profile.Locale, profile.TimeZone, now, now)
+	profile.UpdatedAt = now
+	return err
+}
+
+func (r authRepository) GetUserAvatar(ctx context.Context, userID string) (*model.UserAvatar, error) {
+	avatar := &model.UserAvatar{UserID: userID}
+	err := r.db.QueryRowContext(ctx, `SELECT mime_type,size_bytes,sha256,width,height,content,updated_at FROM user_avatar_blobs WHERE user_id=?`, userID).Scan(&avatar.MIMEType, &avatar.SizeBytes, &avatar.SHA256, &avatar.Width, &avatar.Height, &avatar.Content, &avatar.UpdatedAt)
+	return avatar, err
+}
+
+func (r authRepository) UpsertUserAvatar(ctx context.Context, avatar *model.UserAvatar) error {
+	if avatar == nil || strings.TrimSpace(avatar.UserID) == "" {
+		return fmt.Errorf("user avatar is invalid")
+	}
+	now := nowUnix()
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_avatar_blobs(user_id,mime_type,size_bytes,sha256,width,height,content,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET mime_type=excluded.mime_type,size_bytes=excluded.size_bytes,sha256=excluded.sha256,width=excluded.width,height=excluded.height,content=excluded.content,updated_at=excluded.updated_at`, avatar.UserID, avatar.MIMEType, avatar.SizeBytes, avatar.SHA256, avatar.Width, avatar.Height, avatar.Content, now)
+	avatar.UpdatedAt = now
+	return err
+}
+
+func (r authRepository) DeleteUserAvatar(ctx context.Context, userID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM user_avatar_blobs WHERE user_id=?`, userID)
+	return err
+}
+
 func (r authRepository) CreateUser(ctx context.Context, user *model.User) error {
 	if user == nil {
 		return fmt.Errorf("user is nil")

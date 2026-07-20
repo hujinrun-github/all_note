@@ -64,6 +64,41 @@ func TestHTTPTranscriberSendsAudioAndParsesText(t *testing.T) {
 	}
 }
 
+func TestHTTPTranscriberParsesSenseVoiceAndFunASRResponses(t *testing.T) {
+	tests := []struct {
+		name, provider, response, want string
+	}{
+		{name: "sensevoice", provider: "sensevoice", response: `{"result":{"text":"SenseVoice 结果"}}`, want: "SenseVoice 结果"},
+		{name: "funasr", provider: "funasr", response: `{"result":[{"text":"FunASR 结果"}]}`, want: "FunASR 结果"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+					t.Fatalf("parse multipart: %v", err)
+				}
+				if _, _, err := r.FormFile("file"); err != nil {
+					t.Fatalf("audio file: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.response)
+			}))
+			defer server.Close()
+
+			client := NewProviderHTTPTranscriber(ProviderHTTPConfig{
+				Provider: test.provider, URL: server.URL, Model: "speech-model", Timeout: time.Second,
+			}, server.Client())
+			text, err := client.Transcribe(context.Background(), Input{Audio: stringsReader("audio"), Filename: "note.wav", ContentType: "audio/wav", Language: "zh"})
+			if err != nil {
+				t.Fatalf("transcribe: %v", err)
+			}
+			if text != test.want {
+				t.Fatalf("text = %q, want %q", text, test.want)
+			}
+		})
+	}
+}
+
 type stringReader struct {
 	value  string
 	offset int
