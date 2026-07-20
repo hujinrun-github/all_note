@@ -1618,6 +1618,7 @@ function WeekTaskView({
                   key={task.id}
                   task={task}
                   isSelected={task.id === selectedTaskID}
+                  showExecutionStatus
                   onSelect={onSelectTask}
                   onToggle={() => onToggle(task)}
                 />
@@ -3654,6 +3655,7 @@ function RecurringTaskView({
                     key={task.id}
                     task={task}
                     isSelected={task.id === selectedTaskID}
+                    showExecutionStatus
                     onSelect={onSelectTask}
                     onToggle={() => onToggle(task)}
                   />
@@ -3670,6 +3672,7 @@ function RecurringTaskView({
                     key={task.id}
                     task={task}
                     isSelected={task.id === selectedTaskID}
+                    showExecutionStatus
                     onSelect={onSelectTask}
                     onToggle={() => onToggle(task)}
                   />

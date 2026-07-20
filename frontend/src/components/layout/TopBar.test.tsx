@@ -25,9 +25,10 @@ function renderTopBar(initialPath = '/') {
         <Routes>
           <Route path="*" element={<TopBar />} />
           <Route path="/login" element={<span>登录页</span>} />
+          <Route path="/settings" element={<span>设置页面</span>} />
         </Routes>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
@@ -81,5 +82,13 @@ describe('TopBar account menu', () => {
 
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1))
     expect(await screen.findByText('登录页')).toBeVisible()
+  })
+
+  it('opens user settings from the avatar menu', async () => {
+    const user = userEvent.setup()
+    renderTopBar()
+    await user.click(screen.getByRole('button', { name: '打开账号菜单' }))
+    await user.click(screen.getByRole('menuitem', { name: '用户设置' }))
+    expect(await screen.findByText('设置页面')).toBeVisible()
   })
 })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +13,87 @@ import (
 )
 
 type Provider struct{}
+
+func (p Provider) OpenControl(ctx context.Context, cfg storage.Config) (storage.Store, error) {
+	db, err := p.openWithoutMigrations(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := requirePostgresMigrationTable(ctx, db, "control_schema_migrations", ""); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrControlSchemaNotReady, err)
+	}
+	return newStore(db), nil
+}
+
+func (p Provider) OpenTenant(ctx context.Context, cfg storage.Config, expectedSchemaVersion string) (storage.Store, error) {
+	db, err := p.openWithoutMigrations(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := requirePostgresMigrationTable(ctx, db, "tenant_schema_migrations", expectedSchemaVersion); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrTenantSchemaNotReady, err)
+	}
+	if err := verifyPostgresTenantMigrationChecksum(ctx, db, expectedSchemaVersion); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrTenantSchemaNotReady, err)
+	}
+	return newStore(db), nil
+}
+
+func (Provider) AdoptExistingTenant(context.Context, storage.Config, storage.AdoptManifest) error {
+	return storage.ErrNotImplemented
+}
+
+func (p Provider) openWithoutMigrations(ctx context.Context, cfg storage.Config) (*sql.DB, error) {
+	if err := p.Validate(cfg); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("pgx", cfg.URL)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func requirePostgresMigrationTable(ctx context.Context, db *sql.DB, tableName, expectedVersion string) error {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, tableName).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%s is missing", tableName)
+	}
+	if expectedVersion == "" {
+		return nil
+	}
+	var count int
+	var query string
+	switch tableName {
+	case "control_schema_migrations":
+		query = `SELECT COUNT(*) FROM control_schema_migrations WHERE version = $1`
+	case "tenant_schema_migrations":
+		query = `SELECT COUNT(*) FROM tenant_schema_migrations WHERE version = $1`
+	default:
+		return fmt.Errorf("unsupported migration table %q", tableName)
+	}
+	if err := db.QueryRowContext(ctx, query, expectedVersion).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("%s does not contain expected version %s", tableName, expectedVersion)
+	}
+	return nil
+}
 
 func (Provider) Driver() storage.Driver {
 	return storage.DriverPostgres
@@ -60,6 +142,8 @@ func (p Provider) Migrate(ctx context.Context, cfg storage.Config) error {
 type store struct {
 	db *sql.DB
 }
+
+func (s *store) SQLDB() *sql.DB { return s.db }
 
 func newStore(db *sql.DB) storage.Store {
 	return &store{db: db}

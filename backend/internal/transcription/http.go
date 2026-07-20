@@ -19,22 +19,41 @@ import (
 const maxTranscriptionResponseBytes = 1024 * 1024
 
 type HTTPTranscriber struct {
-	url    string
-	apiKey string
-	model  string
-	client *http.Client
+	provider string
+	url      string
+	apiKey   string
+	model    string
+	client   *http.Client
+}
+
+type ProviderHTTPConfig struct {
+	Provider string
+	URL      string
+	APIKey   string
+	Model    string
+	Timeout  time.Duration
 }
 
 func NewHTTPTranscriber(cfg config.TranscriptionConfig) *HTTPTranscriber {
+	return NewProviderHTTPTranscriber(ProviderHTTPConfig{
+		Provider: "openai_compatible", URL: cfg.URL, APIKey: cfg.APIKey, Model: cfg.Model, Timeout: cfg.Timeout,
+	}, nil)
+}
+
+func NewProviderHTTPTranscriber(cfg ProviderHTTPConfig, client *http.Client) *HTTPTranscriber {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
 	return &HTTPTranscriber{
-		url:    cfg.URL,
-		apiKey: cfg.APIKey,
-		model:  cfg.Model,
-		client: &http.Client{Timeout: timeout},
+		provider: strings.TrimSpace(cfg.Provider),
+		url:      cfg.URL,
+		apiKey:   cfg.APIKey,
+		model:    cfg.Model,
+		client:   client,
 	}
 }
 
@@ -83,17 +102,50 @@ func (t *HTTPTranscriber) Transcribe(ctx context.Context, input Input) (string, 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", fmt.Errorf("transcription service returned HTTP %d", response.StatusCode)
 	}
-	var payload struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	text, err := transcriptionText(body)
+	if err != nil {
 		return "", fmt.Errorf("decode transcription response: %w", err)
 	}
-	payload.Text = strings.TrimSpace(payload.Text)
-	if payload.Text == "" {
+	text = strings.TrimSpace(text)
+	if text == "" {
 		return "", errors.New("transcription response did not contain text")
 	}
-	return payload.Text, nil
+	return text, nil
+}
+
+func transcriptionText(body []byte) (string, error) {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	return findTranscriptionText(payload), nil
+}
+
+func findTranscriptionText(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"text", "transcript", "sentence"} {
+			if text, ok := typed[key].(string); ok && strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+		for _, key := range []string{"result", "data", "output"} {
+			if nested, ok := typed[key]; ok {
+				if text := findTranscriptionText(nested); text != "" {
+					return text
+				}
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if text := findTranscriptionText(item); text != "" {
+				return text
+			}
+		}
+	case string:
+		return typed
+	}
+	return ""
 }
 
 func writeTranscriptionMultipart(writer *multipart.Writer, input Input, model string) error {

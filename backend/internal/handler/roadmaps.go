@@ -6,19 +6,28 @@ import (
 	"io"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/service"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
 func GenerateLearningRoadmap(store storage.Store) gin.HandlerFunc {
+	return GenerateLearningRoadmapWithAI(store, nil)
+}
+
+func GenerateLearningRoadmapWithAI(store storage.Store, chat WorkspaceChatService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.GenerateLearningRoadmapRequest
 		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 			badRequest(c, "invalid roadmap generation prompt")
 			return
 		}
-		roadmap, err := service.GenerateLearningRoadmapWithPrompt(c.Request.Context(), store, c.Param("id"), req.Prompt)
+		var generator service.TextGenerator
+		if identity, ok := auth.IdentityFromContext(c.Request.Context()); ok && chat != nil {
+			generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+		}
+		roadmap, err := service.GenerateLearningRoadmapWithPromptAndAI(c.Request.Context(), store, c.Param("id"), req.Prompt, generator)
 		if err != nil {
 			internalError(c, err.Error())
 			return

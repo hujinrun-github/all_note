@@ -17,6 +17,75 @@ import (
 
 type Provider struct{}
 
+func (p Provider) OpenControl(ctx context.Context, cfg storage.Config) (storage.Store, error) {
+	db, err := p.openWithoutMigrations(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSQLiteMigrationTable(ctx, db, "control_schema_migrations", ""); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrControlSchemaNotReady, err)
+	}
+	return newStore(db), nil
+}
+
+func (p Provider) OpenTenant(ctx context.Context, cfg storage.Config, expectedSchemaVersion string) (storage.Store, error) {
+	db, err := p.openWithoutMigrations(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSQLiteMigrationTable(ctx, db, "tenant_schema_migrations", expectedSchemaVersion); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrTenantSchemaNotReady, err)
+	}
+	if err := verifySQLiteTenantMigrationChecksum(ctx, db, expectedSchemaVersion); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrTenantSchemaNotReady, err)
+	}
+	return newStore(db), nil
+}
+
+func (p Provider) openWithoutMigrations(ctx context.Context, cfg storage.Config) (*sql.DB, error) {
+	if err := p.Validate(cfg); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", cfg.SQLitePath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func requireSQLiteMigrationTable(ctx context.Context, db *sql.DB, tableName, expectedVersion string) error {
+	var count int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = ?
+	`, tableName).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("%s is missing", tableName)
+	}
+	if expectedVersion == "" {
+		return nil
+	}
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %q WHERE version = ?`, tableName)
+	if err := db.QueryRowContext(ctx, query, expectedVersion).Scan(&count); err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("%s does not contain expected version %s", tableName, expectedVersion)
+	}
+	return nil
+}
+
 func (Provider) Driver() storage.Driver {
 	return storage.DriverSQLite
 }
@@ -32,7 +101,7 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 	if err := p.Validate(cfg); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", cfg.SQLitePath+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON")
+	db, err := sql.Open("sqlite", cfg.SQLitePath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +195,8 @@ func legacySchemaPath() (string, error) {
 type store struct {
 	db *sql.DB
 }
+
+func (s *store) SQLDB() *sql.DB { return s.db }
 
 func newStore(db *sql.DB) storage.Store {
 	return &store{db: db}

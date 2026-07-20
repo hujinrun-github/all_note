@@ -399,6 +399,28 @@ describe('Tasks long task tracking', () => {
     expect(titles).toEqual(['待处理任务', '已完成任务'])
   })
 
+  it('shows all four execution states in the weekly task list', async () => {
+    vi.mocked(tasksApi.getTasks).mockImplementation(async (params) => {
+      if (params.horizon === 'long') return { tasks: [], pagination }
+      return {
+        tasks: [
+          task({ id: 'week-open', title: '未开始任务', status: 'open', planned_date: todayDateInputValue() }),
+          task({ id: 'week-active', title: '进行中任务', status: 'active', planned_date: todayDateInputValue() }),
+          task({ id: 'week-blocked', title: '阻塞任务', status: 'blocked', planned_date: todayDateInputValue() }),
+          task({ id: 'week-done', title: '完成任务', status: 'done', done: 1, planned_date: todayDateInputValue() }),
+        ],
+        pagination,
+      }
+    })
+
+    renderTasks()
+
+    expect(await screen.findByLabelText('执行状态：未开始')).toBeVisible()
+    expect(screen.getByLabelText('执行状态：进行中')).toBeVisible()
+    expect(screen.getByLabelText('执行状态：阻塞')).toBeVisible()
+    expect(screen.getByLabelText('执行状态：完成')).toBeVisible()
+  })
+
   it('groups projects by matching task views and creates typed projects from group controls', async () => {
     vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([
       ...projects,

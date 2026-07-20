@@ -16,9 +16,14 @@ export interface LoginResponse {
 
 export interface CurrentUserResponse extends LoginResponse {
   must_change_password: boolean
+  avatar_url?: string
 }
 
-export async function login(body: { email: string; password: string; remember_me: boolean }) {
+export async function login(body: {
+  email: string
+  password: string
+  remember_me: boolean
+}) {
   const res = await api.post<LoginResponse>('/api/auth/login', body)
   return res.data
 }
@@ -31,11 +36,16 @@ export async function getCurrentUser() {
 export type AuthProvider = 'github'
 
 export async function listAuthProviders() {
-  const res = await api.get<{ providers: AuthProvider[] }>('/api/auth/providers')
+  const res = await api.get<{ providers: AuthProvider[] }>(
+    '/api/auth/providers'
+  )
   return res.data.providers
 }
 
-export async function changePassword(body: { current_password: string; new_password: string }) {
+export async function changePassword(body: {
+  current_password: string
+  new_password: string
+}) {
   await api.post<void>('/api/auth/change-password', body)
 }
 

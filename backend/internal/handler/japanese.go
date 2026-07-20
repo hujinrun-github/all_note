@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/service"
 )
@@ -16,6 +17,14 @@ type japaneseFuriganaRequest struct {
 }
 
 func JapaneseFurigana(c *gin.Context) {
+	japaneseFuriganaWithChat(c, nil)
+}
+
+func JapaneseFuriganaWithAI(chat WorkspaceChatService) gin.HandlerFunc {
+	return func(c *gin.Context) { japaneseFuriganaWithChat(c, chat) }
+}
+
+func japaneseFuriganaWithChat(c *gin.Context, chat WorkspaceChatService) {
 	var req japaneseFuriganaRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "invalid request")
@@ -30,7 +39,11 @@ func JapaneseFurigana(c *gin.Context) {
 		return
 	}
 
-	segments, source, err := service.AnnotateJapaneseWithAI(c.Request.Context(), req.Text)
+	var generator service.TextGenerator
+	if identity, ok := auth.IdentityFromContext(c.Request.Context()); ok && chat != nil {
+		generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+	}
+	segments, source, err := service.AnnotateJapaneseWithTextGenerator(c.Request.Context(), req.Text, generator)
 	if err != nil {
 		internalError(c, "failed to annotate Japanese text")
 		return

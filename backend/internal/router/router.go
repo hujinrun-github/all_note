@@ -23,6 +23,9 @@ type Config struct {
 	MobileSyncV1Enabled  bool
 	VoiceUploadEnabled   bool
 	TranscriptionEnabled bool
+	WorkspaceSettings    handler.WorkspaceSettingsService
+	CodexSubscription    handler.CodexSubscriptionService
+	AIChat               handler.WorkspaceChatService
 }
 
 func Setup(cfg Config) *gin.Engine {
@@ -93,6 +96,19 @@ func Setup(cfg Config) *gin.Engine {
 		admin.POST("/users/:id/disable", handler.DisableUser(cfg.Store))
 		admin.POST("/users/:id/enable", handler.EnableUser(cfg.Store))
 
+		protected.GET("/settings/profile", handler.GetSettingsProfile(cfg.Store))
+		protected.PATCH("/settings/profile", handler.UpdateSettingsProfile(cfg.Store))
+		protected.GET("/settings/profile/avatar", handler.GetSettingsAvatar(cfg.Store))
+		protected.PUT("/settings/profile/avatar", handler.PutSettingsAvatar(cfg.Store))
+		protected.DELETE("/settings/profile/avatar", handler.DeleteSettingsAvatar(cfg.Store))
+		protected.GET("/settings/runtime", handler.GetRuntimeSettings(cfg.WorkspaceSettings))
+		protected.POST("/settings/profiles/test", handler.TestServiceProfile(cfg.WorkspaceSettings))
+		protected.POST("/settings/profiles", handler.SaveServiceProfile(cfg.WorkspaceSettings))
+		protected.POST("/settings/profiles/:kind/:versionID/verify", handler.VerifyServiceProfile(cfg.WorkspaceSettings))
+		protected.PUT("/settings/bindings/:kind", handler.SetServiceBinding(cfg.WorkspaceSettings))
+		protected.POST("/settings/ai/codex/device/start", handler.StartCodexSubscription(cfg.CodexSubscription))
+		protected.POST("/settings/ai/codex/device/:flowID/poll", handler.PollCodexSubscription(cfg.CodexSubscription))
+
 		protected.GET("/notes", handler.GetNotes(cfg.Store))
 		protected.GET("/notes/:id", handler.GetNote(cfg.Store))
 		protected.POST("/notes", handler.CreateNote(cfg.Store))
@@ -145,7 +161,7 @@ func Setup(cfg Config) *gin.Engine {
 		protected.POST("/task-projects", handler.CreateTaskProject(cfg.Store))
 		protected.PATCH("/task-projects/:id", handler.UpdateTaskProject(cfg.Store))
 		protected.DELETE("/task-projects/:id", handler.DeleteTaskProject(cfg.Store))
-		protected.POST("/task-projects/:id/roadmap/generate", handler.GenerateLearningRoadmap(cfg.Store))
+		protected.POST("/task-projects/:id/roadmap/generate", handler.GenerateLearningRoadmapWithAI(cfg.Store, cfg.AIChat))
 		protected.GET("/task-projects/:id/roadmap", handler.GetLearningRoadmap(cfg.Store))
 		protected.POST("/roadmaps/:id/nodes", handler.CreateRoadmapNode(cfg.Store))
 		protected.PATCH("/roadmap-nodes/:id", handler.UpdateRoadmapNode(cfg.Store))
@@ -171,7 +187,7 @@ func Setup(cfg Config) *gin.Engine {
 		protected.DELETE("/inbox/:id", handler.DeleteInboxItem(cfg.Store))
 
 		protected.GET("/search", handler.Search(cfg.Store))
-		protected.POST("/japanese/furigana", handler.JapaneseFurigana)
+		protected.POST("/japanese/furigana", handler.JapaneseFuriganaWithAI(cfg.AIChat))
 		protected.GET("/today", handler.GetToday(cfg.Store))
 		protected.GET("/summary", handler.GetSummary(cfg.Store))
 	}

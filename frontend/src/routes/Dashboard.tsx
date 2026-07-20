@@ -17,7 +17,7 @@ interface TodayData {
   recentNotes: NoteData[]
 }
 
-type TaskFlowTab = 'now' | 'next' | 'done'
+type TaskFlowTab = 'overdue' | 'next' | 'done'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -100,24 +100,24 @@ export default function Dashboard() {
   if (!data) return null
 
   const isTaskDone = (task: TaskData) => task.done === 1 || task.occurrence_status === 'done'
-  const nowTasks = data.overdueTasks.filter((task) => !isTaskDone(task))
+  const overdueTasks = data.overdueTasks.filter((task) => !isTaskDone(task))
   const nextTasks = data.todayTasks.filter((task) => !isTaskDone(task))
   const completedTasks = data.todayTasks.filter(isTaskDone)
-  const activeTasks = taskFilter === 'now' ? nowTasks : taskFilter === 'next' ? nextTasks : completedTasks
+  const activeTasks = taskFilter === 'overdue' ? overdueTasks : taskFilter === 'next' ? nextTasks : completedTasks
   const doneToday = completedTasks.length
   const projectLabel = selectedTaskProject ? formatTaskProjectOption(selectedTaskProject) : 'Personal'
   const emptyCopy =
-    taskFilter === 'now'
-      ? '暂无需要立刻处理的任务'
+    taskFilter === 'overdue'
+      ? '暂无未完成的逾期任务'
       : taskFilter === 'done'
         ? '暂无已完成任务'
         : '今天还没有待推进任务'
-  const sectionLabel = taskFilter === 'now' ? '现在做' : taskFilter === 'done' ? '已完成' : '接下来'
+  const sectionLabel = taskFilter === 'overdue' ? '已逾期' : taskFilter === 'done' ? '已完成' : '接下来'
 
   return (
     <div className="dashboard-grid">
       <section className="metric-strip">
-        <Metric label="逾期任务" value={String(nowTasks.length)} hint="需要处理" tone="danger" />
+        <Metric label="逾期任务" value={String(overdueTasks.length)} hint="需要处理" tone="danger" />
         <Metric label="今日任务" value={String(nextTasks.length)} hint="待完成" />
         <Metric label="今日日程" value={String(data.events.length)} hint="待安排" />
         <Metric label="最近笔记" value={String(data.recentNotes.length)} hint="可继续整理" />
@@ -129,8 +129,8 @@ export default function Dashboard() {
             <h2>任务流</h2>
           </div>
           <div className="segmented-tabs">
-            <button type="button" className={taskFilter === 'now' ? 'is-active' : ''} onClick={() => setTaskFilter('now')}>
-              现在做 {nowTasks.length}
+            <button type="button" className={taskFilter === 'overdue' ? 'is-active' : ''} onClick={() => setTaskFilter('overdue')}>
+              已逾期 {overdueTasks.length}
             </button>
             <button type="button" className={taskFilter === 'next' ? 'is-active' : ''} onClick={() => setTaskFilter('next')}>
               接下来 {nextTasks.length}
@@ -164,7 +164,7 @@ export default function Dashboard() {
                 />
               ))}
             </div>
-            {taskFilter === 'now' && (
+            {taskFilter === 'overdue' && (
               <p className="dashboard-advice">建议：先重新评估截止日期，或拆分为 30 分钟内可完成的小任务。</p>
             )}
           </div>

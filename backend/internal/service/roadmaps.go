@@ -79,6 +79,14 @@ func GenerateLearningRoadmap(ctx context.Context, store storage.Store, projectID
 }
 
 func GenerateLearningRoadmapWithPrompt(ctx context.Context, store storage.Store, projectID string, customPrompt string) (*model.LearningRoadmap, error) {
+	return GenerateLearningRoadmapWithPromptAndAI(ctx, store, projectID, customPrompt, nil)
+}
+
+type TextGenerator interface {
+	Generate(context.Context, string, string) (string, error)
+}
+
+func GenerateLearningRoadmapWithPromptAndAI(ctx context.Context, store storage.Store, projectID string, customPrompt string, generator TextGenerator) (*model.LearningRoadmap, error) {
 	project, err := store.Tasks().GetProjectByID(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -87,7 +95,12 @@ func GenerateLearningRoadmapWithPrompt(ctx context.Context, store storage.Store,
 		return nil, fmt.Errorf("project is not a learning project")
 	}
 
-	draft, err := generateRoadmapDraft(*project, customPrompt)
+	var draft *roadmapDraft
+	if generator != nil {
+		draft, err = generateRoadmapWithGenerator(ctx, *project, customPrompt, generator)
+	} else {
+		draft, err = generateRoadmapDraft(*project, customPrompt)
+	}
 	if err != nil {
 		if !shouldUseFallbackRoadmapDraft(err) {
 			_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
@@ -114,6 +127,35 @@ func GenerateLearningRoadmapWithPrompt(ctx context.Context, store storage.Store,
 	}
 	normalizeRoadmapDisplayLayout(saved)
 	return saved, nil
+}
+
+func generateRoadmapWithGenerator(ctx context.Context, project model.TaskProject, customPrompt string, generator TextGenerator) (*roadmapDraft, error) {
+	content, err := generator.Generate(ctx, buildRoadmapSystemPrompt(), buildRoadmapUserPrompt(project, customPrompt))
+	if err != nil {
+		return nil, err
+	}
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		if newline := strings.IndexByte(content, '\n'); newline >= 0 {
+			content = content[newline+1:]
+		}
+		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(content), "```"))
+	}
+	var draft roadmapDraft
+	if err := json.Unmarshal([]byte(content), &draft); err != nil {
+		return nil, err
+	}
+	normalizeRoadmapDraftIDs(&draft)
+	if strings.TrimSpace(draft.Title) == "" {
+		draft.Title = project.Name + " 学习路线"
+	}
+	if strings.TrimSpace(draft.Goal) == "" {
+		draft.Goal = "通过项目实战掌握 " + project.Name
+	}
+	if len(draft.Nodes) == 0 {
+		return nil, errors.New("AI response did not include roadmap nodes")
+	}
+	return &draft, nil
 }
 
 func GetLearningRoadmap(ctx context.Context, store storage.Store, projectID string) (*model.LearningRoadmap, error) {

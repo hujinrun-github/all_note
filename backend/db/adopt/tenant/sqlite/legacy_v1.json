@@ -1,0 +1,6 @@
+{
+  "id": "sqlite-mixed-v1",
+  "provider": "sqlite",
+  "role": "tenant",
+  "required_tables": ["workspaces", "folders", "notes", "task_projects", "tasks"]
+}

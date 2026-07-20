@@ -147,4 +147,64 @@ describe('Dashboard task project cache', () => {
     expect(within(row).getByText('读完故事这本书')).toBeVisible()
     expect(within(row).getByLabelText('所属项目：学习写小说')).toBeVisible()
   })
+
+  it('keeps next selected by default and shows only incomplete overdue tasks on demand', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        todayTasks: [
+          {
+            id: 'today-open',
+            title: '今天的任务',
+            priority: 0,
+            done: 0,
+            scope: 'daily',
+          },
+        ],
+        overdueTasks: [
+          {
+            id: 'overdue-open',
+            title: '补齐逾期报告',
+            planned_date: '2026-07-20',
+            priority: 0,
+            done: 0,
+            scope: 'daily',
+          },
+          {
+            id: 'overdue-done',
+            title: '已完成的旧任务',
+            planned_date: '2026-07-19',
+            priority: 0,
+            done: 1,
+            scope: 'daily',
+          },
+        ],
+        events: [],
+        recentNotes: [],
+      },
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    const user = userEvent.setup()
+
+    renderDashboard(queryClient)
+
+    const nextTab = await screen.findByRole('button', { name: '接下来 1' })
+    const overdueTab = screen.getByRole('button', { name: '已逾期 1' })
+    expect(nextTab).toHaveClass('is-active')
+    expect(overdueTab).not.toHaveClass('is-active')
+    expect(screen.getByText('今天的任务')).toBeVisible()
+    expect(screen.queryByText('补齐逾期报告')).not.toBeInTheDocument()
+    expect(screen.queryByText('已完成的旧任务')).not.toBeInTheDocument()
+
+    await user.click(overdueTab)
+
+    expect(overdueTab).toHaveClass('is-active')
+    expect(screen.getByText('补齐逾期报告')).toBeVisible()
+    expect(screen.queryByText('今天的任务')).not.toBeInTheDocument()
+    expect(screen.queryByText('已完成的旧任务')).not.toBeInTheDocument()
+  })
 })

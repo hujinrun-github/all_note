@@ -50,6 +50,28 @@ func AnnotateJapaneseWithAI(ctx context.Context, text string) ([]model.FuriganaS
 	return segments, "local", nil
 }
 
+func AnnotateJapaneseWithTextGenerator(ctx context.Context, text string, generator TextGenerator) ([]model.FuriganaSegment, string, error) {
+	if generator != nil {
+		content, err := generator.Generate(ctx,
+			"You add Japanese furigana. Return JSON only as {\"segments\":[{\"text\":\"原文\",\"reading\":\"ひらがな\"}]}. Preserve every original character and its order exactly. Split kana, punctuation, numbers and Latin text into segments without reading. Add reading only to kanji text, use contextual hiragana readings, and keep okurigana outside the annotated kanji segment.",
+			text,
+		)
+		if err == nil {
+			var draft furiganaAIDraft
+			if decodeFuriganaAIDraft(content, &draft) == nil {
+				if segments, validateErr := validateFuriganaAISegments(text, draft.Segments); validateErr == nil {
+					return segments, "ai", nil
+				}
+			}
+		}
+	}
+	segments, err := AnnotateJapanese(text)
+	if err != nil {
+		return nil, "", err
+	}
+	return segments, "local", nil
+}
+
 func AnnotateJapanese(text string) ([]model.FuriganaSegment, error) {
 	t, err := japaneseTokenizer()
 	if err != nil {
