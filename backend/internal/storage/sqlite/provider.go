@@ -26,6 +26,10 @@ func (p Provider) OpenControl(ctx context.Context, cfg storage.Config) (storage.
 		_ = db.Close()
 		return nil, fmt.Errorf("%w: %v", storage.ErrControlSchemaNotReady, err)
 	}
+	if err := verifySQLiteControlMigrations(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrControlSchemaNotReady, err)
+	}
 	return newStore(db), nil
 }
 

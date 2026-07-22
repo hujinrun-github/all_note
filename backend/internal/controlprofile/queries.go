@@ -57,3 +57,9 @@ func (r *Repository) EndpointSource(ctx context.Context, workspaceID, kind, endp
 	err := r.db.QueryRowContext(ctx, r.bind(`SELECT source_type FROM workspace_service_endpoints WHERE workspace_id=? AND kind=? AND id=?`), workspaceID, kind, endpointID).Scan(&source)
 	return source, err
 }
+
+func (r *Repository) WorkspaceOwnerID(ctx context.Context, workspaceID string) (string, error) {
+	var userID string
+	err := r.db.QueryRowContext(ctx, r.bind(`SELECT owner_user_id FROM workspaces WHERE id=?`), workspaceID).Scan(&userID)
+	return userID, err
+}

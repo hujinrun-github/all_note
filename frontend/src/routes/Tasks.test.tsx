@@ -9,6 +9,14 @@ import type { LearningRoadmap, Task, TaskProject } from '../api/tasks'
 import { dateInputToUnix, todayDateInputValue } from '../utils/taskForm'
 
 vi.mock('../api/tasks')
+vi.mock('../hooks/useTaskDomain', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useTaskDomain')>()),
+  useTaskDomainCapabilities: () => ({
+    data: { model_version: 'legacy', available: true },
+    isLoading: false,
+    isError: false,
+  }),
+}))
 
 type MockFlowNode = {
   id: string
@@ -644,6 +652,47 @@ describe('Tasks learning roadmap weekly linking', () => {
         'learning-1',
         { prompt: '优先学习推理服务，并增加三个可运行的实战项目' }
       )
+    )
+  })
+
+  it('uses the template fallback only when the generation prompt is unchanged', async () => {
+    vi.mocked(tasksApi.generateLearningRoadmap).mockResolvedValue(roadmap)
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(
+      screen.getByRole('button', { name: '重新生成完整路径' })
+    )
+
+    await waitFor(() =>
+      expect(tasksApi.generateLearningRoadmap).toHaveBeenCalledWith(
+        'learning-1',
+        { prompt: '' }
+      )
+    )
+  })
+
+  it('shows an error instead of pretending an edited prompt was applied', async () => {
+    vi.mocked(tasksApi.generateLearningRoadmap).mockRejectedValue(
+      new Error('AI request timeout')
+    )
+    renderTasks()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('tab', { name: '学习 Roadmap' }))
+    await user.click(screen.getByRole('button', { name: '编辑生成提示词' }))
+    const prompt = screen.getByRole('textbox', {
+      name: '完整路径生成提示词',
+    })
+    await user.clear(prompt)
+    await user.type(prompt, '只生成三个以口语实战为核心的阶段')
+    await user.click(
+      screen.getByRole('button', { name: '重新生成完整路径' })
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'AI request timeout'
     )
   })
 

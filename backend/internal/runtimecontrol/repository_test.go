@@ -37,7 +37,7 @@ func TestRuntimeStateCASAndAtomicBindingActivation(t *testing.T) {
 		t.Fatalf("transition to activating: state=%+v err=%v", state, err)
 	}
 	state, err = repository.ActivateBinding(context.Background(), Activation{
-		WorkspaceID: "w1", OperationID: "m1", ExpectedEpoch: 2, ExpectedBindingRevision: 1,
+		WorkspaceID: "w1", OperationID: "m1", ExpectedEpoch: 2, ExpectedBindingRowRevision: 1, ExpectedRuntimeBindingRevision: 1,
 		BindingKind: "data_store", BindingMode: "default", EndpointSourceType: "system", EndpointID: "db2", ActorUserID: "u1",
 	})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestActivationCASFailureRollsBackBinding(t *testing.T) {
 	db := createRuntimeControlFixture(t)
 	repository, _ := New(db, DialectSQLite)
 	_, err := repository.ActivateBinding(context.Background(), Activation{
-		WorkspaceID: "w1", OperationID: "m1", ExpectedEpoch: 99, ExpectedBindingRevision: 1,
+		WorkspaceID: "w1", OperationID: "m1", ExpectedEpoch: 99, ExpectedBindingRowRevision: 1, ExpectedRuntimeBindingRevision: 1,
 		BindingKind: "data_store", BindingMode: "default", EndpointSourceType: "system", EndpointID: "db2", ActorUserID: "u1",
 	})
 	if !errors.Is(err, ErrCASConflict) {

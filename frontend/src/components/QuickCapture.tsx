@@ -7,12 +7,20 @@ import { useCreateEvent } from '../hooks/useEvents'
 import { useCreateNote } from '../hooks/useNotes'
 import { useCreateTask } from '../hooks/useTasks'
 import { formatTaskProjectOption } from '../utils/taskProjects'
+import { TaskDomainGate } from './taskDomain/TaskDomainGate'
+import { QuickCaptureV2 } from './QuickCaptureV2'
 
 type Kind = 'task' | 'event' | 'note' | 'idea'
 
 const initialCaptureText = '明天晚上8点复习N2语法'
 
 export function QuickCapture() {
+  return (
+    <TaskDomainGate legacy={<LegacyQuickCapture />} v2={<QuickCaptureV2 />} />
+  )
+}
+
+export function LegacyQuickCapture() {
   const setCaptureOpen = useUIStore((s) => s.setCaptureOpen)
   const createInboxItem = useCreateInboxItem()
   const createEvent = useCreateEvent()

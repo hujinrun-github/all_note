@@ -172,12 +172,16 @@ func GitHubOAuthStart(store storage.Store, authCfg config.AuthConfig, stateStore
 }
 
 func GitHubOAuthCallback(store storage.Store, authCfg config.AuthConfig, stateStore auth.OAuthStateStore, client GitHubClient) gin.HandlerFunc {
+	return GitHubOAuthCallbackAcrossStores(store, store, nil, authCfg, stateStore, client)
+}
+
+func GitHubOAuthCallbackAcrossStores(controlStore, tenantStore storage.Store, provision ControlIdentityProvisioner, authCfg config.AuthConfig, stateStore auth.OAuthStateStore, client GitHubClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !authCfg.GitHub.Available() {
 			c.Redirect(http.StatusFound, "/login?oauth_error=github_disabled")
 			return
 		}
-		if store == nil || stateStore == nil || client == nil {
+		if controlStore == nil || tenantStore == nil || stateStore == nil || client == nil {
 			c.Redirect(http.StatusFound, "/login?oauth_error=github_state_invalid")
 			return
 		}
@@ -206,16 +210,26 @@ func GitHubOAuthCallback(store storage.Store, authCfg config.AuthConfig, stateSt
 			c.Redirect(http.StatusFound, "/login?oauth_error=github_no_verified_email")
 			return
 		}
-		user, workspaceID, err := resolveGitHubUser(c.Request.Context(), store, authCfg, profile, email)
+		user, workspaceID, err := resolveGitHubUser(c.Request.Context(), controlStore, authCfg, profile, email)
 		if err != nil {
 			c.Redirect(http.StatusFound, oauthCreateError(err))
 			return
 		}
-		if err := revokeExistingSessionFromCookie(c.Request.Context(), store, authCfg, c.Request); err != nil {
+		if provision != nil {
+			if err := provision(c.Request.Context(), *user); err != nil {
+				c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
+				return
+			}
+		}
+		if err := ensureTenantWorkspace(c.Request.Context(), tenantStore, user); err != nil {
 			c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
 			return
 		}
-		tokenValue, session, err := createOAuthSession(c, store, authCfg, user.ID, workspaceID)
+		if err := revokeExistingSessionFromCookie(c.Request.Context(), controlStore, authCfg, c.Request); err != nil {
+			c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
+			return
+		}
+		tokenValue, session, err := createOAuthSession(c, controlStore, authCfg, user.ID, workspaceID)
 		if err != nil {
 			c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
 			return
@@ -398,10 +412,6 @@ func createGitHubUser(ctx context.Context, store storage.Store, profile *GitHubP
 		if err := tx.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner"); err != nil {
 			return err
 		}
-		targetCtx := auth.ContextWithWorkspaceScope(ctx, workspace.ID)
-		if err := provisioning.EnsureDefaultWorkspaceData(targetCtx, tx); err != nil {
-			return err
-		}
 		identity.UserID = user.ID
 		if err := tx.Auth().CreateAuthIdentity(ctx, identity); err != nil {
 			return err
@@ -436,6 +446,40 @@ func createGitHubUser(ctx context.Context, store storage.Store, profile *GitHubP
 		return nil, "", err
 	}
 	return user, workspace.ID, nil
+}
+
+func ensureTenantWorkspace(ctx context.Context, tenantStore storage.Store, user *model.User) error {
+	if tenantStore == nil || user == nil || user.ID == "" || user.DefaultWorkspaceID == "" {
+		return errors.New("tenant workspace identity is incomplete")
+	}
+	return tenantStore.Transact(ctx, func(tx storage.Store) error {
+		_, err := tx.Auth().GetUserByID(ctx, user.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			copyUser := *user
+			if err := tx.Auth().CreateUser(ctx, &copyUser); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		_, err = tx.Auth().GetWorkspaceMembership(ctx, user.DefaultWorkspaceID, user.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			workspace := &model.Workspace{ID: user.DefaultWorkspaceID, Name: user.DisplayName + " Workspace", OwnerUserID: user.ID}
+			if err := tx.Auth().CreateWorkspace(ctx, workspace); err != nil {
+				return err
+			}
+			if err := tx.Auth().SetDefaultWorkspace(ctx, user.ID, workspace.ID); err != nil {
+				return err
+			}
+			if err := tx.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner"); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		targetCtx := auth.ContextWithWorkspaceScope(ctx, user.DefaultWorkspaceID)
+		return provisioning.EnsureDefaultWorkspaceData(targetCtx, tx)
+	})
 }
 
 func githubDisplayName(profile *GitHubProfile, email string) string {

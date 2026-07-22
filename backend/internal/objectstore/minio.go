@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/minio/minio-go/v7"
@@ -17,10 +18,16 @@ type MinIOStore struct {
 }
 
 func NewMinIOStore(ctx context.Context, cfg config.MinIOConfig) (*MinIOStore, error) {
+	return newMinIOStore(ctx, cfg, nil, true)
+}
+
+func NewMinIORuntimeStore(ctx context.Context, cfg config.MinIOConfig, transport http.RoundTripper) (*MinIOStore, error) {
+	return newMinIOStore(ctx, cfg, transport, false)
+}
+
+func newMinIOStore(ctx context.Context, cfg config.MinIOConfig, transport http.RoundTripper, createBucket bool) (*MinIOStore, error) {
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseSSL,
-		Region: cfg.Region,
+		Creds: credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""), Secure: cfg.UseSSL, Region: cfg.Region, Transport: transport,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create MinIO client: %w", err)
@@ -30,6 +37,9 @@ func NewMinIOStore(ctx context.Context, cfg config.MinIOConfig) (*MinIOStore, er
 		return nil, fmt.Errorf("check MinIO bucket %s: %w", cfg.Bucket, err)
 	}
 	if !exists {
+		if !createBucket {
+			return nil, fmt.Errorf("MinIO bucket %s does not exist", cfg.Bucket)
+		}
 		if err := client.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{Region: cfg.Region}); err != nil {
 			return nil, fmt.Errorf("create MinIO bucket %s: %w", cfg.Bucket, err)
 		}

@@ -839,11 +839,6 @@ export default function EditorPage() {
                   setSelectedProjectIDs((prev) => [...prev, pid])
                 }
               }}
-              style={{
-                marginTop: '0.35rem',
-                width: '100%',
-                fontSize: '0.78rem',
-              }}
             >
               <option value="">+ 添加项目</option>
               {allProjects
@@ -856,7 +851,7 @@ export default function EditorPage() {
             </select>
           </div>
           <div className="inspector-section">
-            <span>最近版本</span>
+            <h4 className="inspector-label">最近版本</h4>
             <div className="linked-note">
               今天{' '}
               {new Date().toLocaleTimeString('zh-CN', {

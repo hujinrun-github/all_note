@@ -15,6 +15,9 @@ const DailySummary = lazy(() => import('./routes/DailySummary'))
 const AccountAdmin = lazy(() => import('./routes/AccountAdmin'))
 const ChangePassword = lazy(() => import('./routes/ChangePassword'))
 const Settings = lazy(() => import('./routes/Settings'))
+const ProjectsRoute = lazy(() => import('./routes/ProjectsRoute'))
+const ProjectDetailRoute = lazy(() => import('./routes/ProjectDetailRoute'))
+const RoadmapV2Route = lazy(() => import('./routes/RoadmapV2Route'))
 
 export const router = createBrowserRouter(
   [
@@ -27,6 +30,9 @@ export const router = createBrowserRouter(
         { path: 'notes', element: <Notes /> },
         { path: 'editor/:id', element: <Editor /> },
         { path: 'tasks', element: <Tasks /> },
+        { path: 'projects', element: <ProjectsRoute /> },
+        { path: 'projects/:projectID', element: <ProjectDetailRoute /> },
+        { path: 'projects/:projectID/roadmap', element: <RoadmapV2Route /> },
         { path: 'calendar', element: <Calendar /> },
         { path: 'inbox', element: <Inbox /> },
         { path: 'search', element: <Search /> },

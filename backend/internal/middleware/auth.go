@@ -16,6 +16,7 @@ const sessionCookieName = "fs_session"
 
 type AuthMiddleware struct {
 	Store         storage.Store
+	WatchStore    storage.Store
 	SessionSecret string
 	Cookie        config.CookieConfig
 }
@@ -132,7 +133,11 @@ func (m AuthMiddleware) restore(c *gin.Context, required bool) bool {
 }
 
 func (m AuthMiddleware) restoreWatchDevice(c *gin.Context) bool {
-	if m.Store == nil {
+	watchStore := m.WatchStore
+	if watchStore == nil {
+		watchStore = m.Store
+	}
+	if m.Store == nil || watchStore == nil {
 		return false
 	}
 	header := strings.TrimSpace(c.GetHeader("Authorization"))
@@ -144,7 +149,7 @@ func (m AuthMiddleware) restoreWatchDevice(c *gin.Context) bool {
 	if err != nil {
 		return false
 	}
-	nativeStore, err := storage.NativeStoreFrom(m.Store)
+	nativeStore, err := storage.NativeStoreFrom(watchStore)
 	if err != nil {
 		return false
 	}

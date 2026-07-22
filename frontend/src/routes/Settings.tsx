@@ -90,6 +90,7 @@ export default function Settings() {
             binding={runtime.data?.bindings.find(
               (item) => item.kind === 'data_store'
             )}
+            runtimeRevision={runtime.data?.binding_revision ?? 0}
             unavailable={runtime.isError}
           />
         ) : null}
@@ -101,12 +102,14 @@ export default function Settings() {
             binding={runtime.data?.bindings.find(
               (item) => item.kind === 'object_s3'
             )}
+            runtimeRevision={runtime.data?.binding_revision ?? 0}
             unavailable={runtime.isError}
           />
         ) : null}
         {activeTab === 'ai' ? (
           <AISettings
             runtime={runtime.data?.bindings}
+            runtimeRevision={runtime.data?.binding_revision ?? 0}
             unavailable={runtime.isError}
           />
         ) : null}
@@ -294,14 +297,17 @@ function ServiceSettingsCard({
   title,
   description,
   binding,
+  runtimeRevision,
   unavailable,
 }: {
   kind: ServiceKind
   title: string
   description: string
   binding?: ServiceBinding
+  runtimeRevision: number
   unavailable: boolean
 }) {
+  const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState('')
   const [endpoint, setEndpoint] = useState('')
@@ -332,13 +338,41 @@ function ServiceSettingsCard({
     mutationFn: testServiceProfile,
     onSuccess: (result) => setMessage(result.message || '连接测试通过'),
   })
-  const save = useMutation({
-    mutationFn: saveServiceProfile,
-    onSuccess: () => {
-      setMessage('配置已保存为待验证版本')
+  const saveAndApply = useMutation({
+    mutationFn: async () => {
+      const versionId = crypto.randomUUID()
+      const saved = await saveServiceProfile({
+        ...profileInput(),
+        id: versionId,
+        family_id: crypto.randomUUID(),
+        name: name.trim(),
+      })
+      const verified = await verifyServiceProfile({ kind, versionId: saved.id })
+      if (kind === 'data_store') return { binding: undefined, verified }
+      const nextBinding = await setServiceBinding({
+        kind,
+        mode: 'custom',
+        endpoint_id: verified.endpoint_id,
+        expected_revision: binding?.revision || 1,
+        expected_runtime_revision: runtimeRevision,
+      })
+      return { binding: nextBinding, verified }
+    },
+    onSuccess: (result) => {
+      setMessage(
+        kind === 'data_store'
+          ? '配置已验证；数据库切换需要启动数据迁移。'
+          : '对象存储已验证并启用。'
+      )
       setSecret('')
       setAccessKey('')
       setObjectSecretKey('')
+      if (result.binding) {
+        setEditing(false)
+        void queryClient.invalidateQueries({
+          queryKey: ['settings', 'runtime'],
+        })
+      }
     },
   })
   const currentLabel = unavailable
@@ -348,15 +382,6 @@ function ServiceSettingsCard({
       : binding?.mode === 'disabled'
         ? '已关闭'
         : '使用平台默认配置'
-
-  function saveDraft() {
-    save.mutate({
-      ...profileInput(),
-      id: crypto.randomUUID(),
-      family_id: crypto.randomUUID(),
-      name: name.trim(),
-    })
-  }
 
   return (
     <article className="settings-card service-settings-card">
@@ -444,7 +469,9 @@ function ServiceSettingsCard({
             </label>
           )}
           <label>
-            <span>{kind === 'data_store' ? 'Schema（表命名空间）' : 'Bucket 名称'}</span>
+            <span>
+              {kind === 'data_store' ? 'Schema（表命名空间）' : 'Bucket 名称'}
+            </span>
             <input
               value={namespace}
               required
@@ -458,24 +485,42 @@ function ServiceSettingsCard({
             </small>
           </label>
           <div className="service-config-actions">
-            <span className="service-config-action-note">填写完成后可先测试连接，不会修改当前配置。</span>
+            <span className="service-config-action-note">
+              填写完成后可先测试连接，不会修改当前配置。
+            </span>
             <div className="service-config-primary-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!endpoint || (kind === 'object_s3' && (!accessKey.trim() || !objectSecretKey)) || test.isPending}
-              onClick={() => test.mutate(profileInput())}
-            >
-              {test.isPending ? '测试中…' : '测试连接'}
-            </button>
-            <button
-              type="button"
-              className="primary-action"
-              disabled={!name.trim() || !endpoint || !namespace.trim() || (kind === 'object_s3' && (!accessKey.trim() || !objectSecretKey)) || save.isPending}
-              onClick={saveDraft}
-            >
-              {save.isPending ? '保存中…' : '保存配置'}
-            </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={
+                  !endpoint ||
+                  (kind === 'object_s3' &&
+                    (!accessKey.trim() || !objectSecretKey)) ||
+                  test.isPending
+                }
+                onClick={() => test.mutate(profileInput())}
+              >
+                {test.isPending ? '测试中…' : '测试连接'}
+              </button>
+              <button
+                type="button"
+                className="primary-action"
+                disabled={
+                  !name.trim() ||
+                  !endpoint ||
+                  !namespace.trim() ||
+                  (kind === 'object_s3' &&
+                    (!accessKey.trim() || !objectSecretKey)) ||
+                  saveAndApply.isPending
+                }
+                onClick={() => saveAndApply.mutate()}
+              >
+                {saveAndApply.isPending
+                  ? '验证中…'
+                  : kind === 'data_store'
+                    ? '保存并验证'
+                    : '保存并启用'}
+              </button>
             </div>
           </div>
           {message ? (
@@ -483,7 +528,7 @@ function ServiceSettingsCard({
               {message}
             </p>
           ) : null}
-          {test.isError || save.isError ? (
+          {test.isError || saveAndApply.isError ? (
             <p className="settings-message is-error" role="alert">
               操作失败，原配置未改变。
             </p>
@@ -509,9 +554,11 @@ function ServiceSettingsCard({
 
 function AISettings({
   runtime,
+  runtimeRevision,
   unavailable,
 }: {
   runtime?: ServiceBinding[]
+  runtimeRevision: number
   unavailable: boolean
 }) {
   const chat = runtime?.find((item) => item.kind === 'llm_chat')
@@ -531,6 +578,7 @@ function AISettings({
         mode={unavailable ? '暂不可用' : modeLabel(chat)}
         kind="llm_chat"
         binding={chat}
+        runtimeRevision={runtimeRevision}
       />
       <AIServiceRow
         icon={AudioWaveform}
@@ -539,6 +587,7 @@ function AISettings({
         mode={unavailable ? '暂不可用' : modeLabel(transcription)}
         kind="llm_transcription"
         binding={transcription}
+        runtimeRevision={runtimeRevision}
       />
     </article>
   )
@@ -551,6 +600,7 @@ function AIServiceRow({
   mode,
   kind,
   binding,
+  runtimeRevision,
 }: {
   icon: typeof MessageCircleMore
   title: string
@@ -558,6 +608,7 @@ function AIServiceRow({
   mode: string
   kind: 'llm_chat' | 'llm_transcription'
   binding?: ServiceBinding
+  runtimeRevision: number
 }) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
@@ -565,14 +616,18 @@ function AIServiceRow({
   const [endpoint, setEndpoint] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setAPIKey] = useState('')
-  const [transcriptionProvider, setTranscriptionProvider] = useState<'openai_compatible' | 'sensevoice' | 'funasr'>('sensevoice')
+  const [transcriptionProvider, setTranscriptionProvider] = useState<
+    'openai_compatible' | 'sensevoice' | 'funasr'
+  >('sensevoice')
   const [message, setMessage] = useState('')
-  const [codexFlow, setCodexFlow] = useState<
-    Awaited<ReturnType<typeof startCodexSubscription>>
-  >()
+  const [codexFlow, setCodexFlow] =
+    useState<Awaited<ReturnType<typeof startCodexSubscription>>>()
   const profileInput = () => ({
     kind,
-    provider: kind === 'llm_transcription' ? transcriptionProvider : 'openai_compatible',
+    provider:
+      kind === 'llm_transcription'
+        ? transcriptionProvider
+        : 'openai_compatible',
     config: { endpoint: endpoint.trim(), model: model.trim() },
     secret: apiKey,
   })
@@ -595,6 +650,7 @@ function AIServiceRow({
         mode: 'custom',
         endpoint_id: verified.endpoint_id,
         expected_revision: binding?.revision || 1,
+        expected_runtime_revision: runtimeRevision,
       })
     },
     onSuccess: () => {
@@ -609,6 +665,7 @@ function AIServiceRow({
         kind,
         mode: nextMode,
         expected_revision: binding?.revision || 1,
+        expected_runtime_revision: runtimeRevision,
       }),
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: ['settings', 'runtime'] }),
@@ -625,6 +682,7 @@ function AIServiceRow({
       pollCodexSubscription({
         flowId: codexFlow!.flow_id,
         expectedRevision: binding?.revision || 0,
+        expectedRuntimeRevision: runtimeRevision,
       }),
     onSuccess: (result) => {
       if (result.status === 'pending') {
@@ -643,7 +701,9 @@ function AIServiceRow({
     },
   })
   return (
-    <div className={`service-status ai-service-row${editing ? ' is-expanded' : ''}`}>
+    <div
+      className={`service-status ai-service-row${editing ? ' is-expanded' : ''}`}
+    >
       <div className="service-status-icon" aria-hidden="true">
         <Icon size={23} strokeWidth={1.8} />
       </div>
@@ -651,7 +711,12 @@ function AIServiceRow({
         <strong>{title}</strong>
         <small>{description}</small>
       </div>
-      <button type="button" className="ai-mode-control" aria-label={`${title}模式：${mode}`} onClick={() => setEditing((value) => !value)}>
+      <button
+        type="button"
+        className="ai-mode-control"
+        aria-label={`${title}模式：${mode}`}
+        onClick={() => setEditing((value) => !value)}
+      >
         <span>当前模式</span>
         <strong>{mode}</strong>
         <ChevronRight aria-hidden="true" size={16} />
@@ -659,57 +724,184 @@ function AIServiceRow({
       {editing ? (
         <div className="service-config-form ai-config-form">
           {kind === 'llm_chat' ? (
-            <section className="codex-connect-panel" aria-label="连接 Codex 订阅">
+            <section
+              className="codex-connect-panel"
+              aria-label="连接 Codex 订阅"
+            >
               <div>
                 <strong>使用 Codex 订阅</strong>
                 <p>通过 OpenAI 设备授权登录，不需要填写 API Key。</p>
               </div>
               {!codexFlow ? (
-                <button type="button" className="primary-action" disabled={startCodex.isPending} onClick={() => startCodex.mutate()}>
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={startCodex.isPending}
+                  onClick={() => startCodex.mutate()}
+                >
                   {startCodex.isPending ? '正在生成授权码…' : '连接 Codex 订阅'}
                 </button>
               ) : (
                 <div className="codex-device-flow">
                   <span>授权码</span>
                   <code>{codexFlow.user_code}</code>
-                  <a className="secondary-button" href={codexFlow.verification_url} target="_blank" rel="noreferrer">
-                    打开 OpenAI 授权页 <ExternalLink size={15} aria-hidden="true" />
+                  <a
+                    className="secondary-button"
+                    href={codexFlow.verification_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    打开 OpenAI 授权页{' '}
+                    <ExternalLink size={15} aria-hidden="true" />
                   </a>
-                  <button type="button" className="primary-action" disabled={finishCodex.isPending} onClick={() => finishCodex.mutate()}>
+                  <button
+                    type="button"
+                    className="primary-action"
+                    disabled={finishCodex.isPending}
+                    onClick={() => finishCodex.mutate()}
+                  >
                     {finishCodex.isPending ? '正在确认…' : '我已完成授权'}
                   </button>
                 </div>
               )}
             </section>
           ) : null}
-          <div className="service-config-divider"><span>{kind === 'llm_transcription' ? '或直接连接语音服务' : '或使用 OpenAI 兼容服务'}</span></div>
+          <div className="service-config-divider">
+            <span>
+              {kind === 'llm_transcription'
+                ? '或直接连接语音服务'
+                : '或使用 OpenAI 兼容服务'}
+            </span>
+          </div>
           {kind === 'llm_transcription' ? (
             <label>
               <span>语音服务类型</span>
-              <select aria-label="语音服务类型" value={transcriptionProvider} onChange={(event) => setTranscriptionProvider(event.target.value as typeof transcriptionProvider)}>
+              <select
+                aria-label="语音服务类型"
+                value={transcriptionProvider}
+                onChange={(event) =>
+                  setTranscriptionProvider(
+                    event.target.value as typeof transcriptionProvider
+                  )
+                }
+              >
                 <option value="sensevoice">SenseVoice</option>
                 <option value="funasr">FunASR</option>
                 <option value="openai_compatible">OpenAI 兼容转写</option>
               </select>
             </label>
           ) : null}
-          <label><span>配置名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：我的 AI 服务" /></label>
-          <label><span>API 地址</span><input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder={kind === 'llm_transcription' && transcriptionProvider !== 'openai_compatible' ? '例如：http://speech.example.com/transcribe' : 'https://api.example.com/v1'} /></label>
-          <label><span>模型名称</span><input value={model} onChange={(event) => setModel(event.target.value)} placeholder={kind === 'llm_transcription' ? (transcriptionProvider === 'sensevoice' ? '例如：iic/SenseVoiceSmall' : transcriptionProvider === 'funasr' ? '例如：paraformer-zh' : '例如：whisper-1') : '例如：deepseek-v4-pro'} /></label>
-          <label><span>API Key</span><input type="password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} autoComplete="new-password" /></label>
-          {kind === 'llm_transcription' ? <p className="settings-hint">SenseVoice/FunASR 将音频以 multipart 的 file 字段直接发送到该地址；无需鉴权时 API Key 可以留空。</p> : null}
+          <label>
+            <span>配置名称</span>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="例如：我的 AI 服务"
+            />
+          </label>
+          <label>
+            <span>API 地址</span>
+            <input
+              value={endpoint}
+              onChange={(event) => setEndpoint(event.target.value)}
+              placeholder={
+                kind === 'llm_transcription' &&
+                transcriptionProvider !== 'openai_compatible'
+                  ? '例如：http://speech.example.com/transcribe'
+                  : 'https://api.example.com/v1'
+              }
+            />
+          </label>
+          <label>
+            <span>模型名称</span>
+            <input
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              placeholder={
+                kind === 'llm_transcription'
+                  ? transcriptionProvider === 'sensevoice'
+                    ? '例如：iic/SenseVoiceSmall'
+                    : transcriptionProvider === 'funasr'
+                      ? '例如：paraformer-zh'
+                      : '例如：whisper-1'
+                  : '例如：deepseek-v4-pro'
+              }
+            />
+          </label>
+          <label>
+            <span>API Key</span>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setAPIKey(event.target.value)}
+              autoComplete="new-password"
+            />
+          </label>
+          {kind === 'llm_transcription' ? (
+            <p className="settings-hint">
+              SenseVoice/FunASR 将音频以 multipart 的 file
+              字段直接发送到该地址；无需鉴权时 API Key 可以留空。
+            </p>
+          ) : null}
           <div className="service-config-actions">
             <div className="service-config-mode-actions">
-              <button type="button" className="text-button" disabled={changeMode.isPending} onClick={() => changeMode.mutate('disabled')}>关闭服务</button>
-              {kind === 'llm_transcription' ? <button type="button" className="text-button" disabled={changeMode.isPending} onClick={() => changeMode.mutate('reuse_chat')}>复用文本服务</button> : null}
+              <button
+                type="button"
+                className="text-button"
+                disabled={changeMode.isPending}
+                onClick={() => changeMode.mutate('disabled')}
+              >
+                关闭服务
+              </button>
+              {kind === 'llm_transcription' ? (
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={changeMode.isPending}
+                  onClick={() => changeMode.mutate('reuse_chat')}
+                >
+                  复用文本服务
+                </button>
+              ) : null}
             </div>
             <div className="service-config-primary-actions">
-              <button type="button" className="secondary-button" disabled={!endpoint.trim() || !model.trim() || test.isPending} onClick={() => test.mutate(profileInput())}>{test.isPending ? '测试中…' : '测试连接'}</button>
-              <button type="button" className="primary-action" disabled={!name.trim() || !endpoint.trim() || !model.trim() || saveAndUse.isPending} onClick={() => saveAndUse.mutate()}>{saveAndUse.isPending ? '验证并启用中…' : '保存并启用'}</button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!endpoint.trim() || !model.trim() || test.isPending}
+                onClick={() => test.mutate(profileInput())}
+              >
+                {test.isPending ? '测试中…' : '测试连接'}
+              </button>
+              <button
+                type="button"
+                className="primary-action"
+                disabled={
+                  !name.trim() ||
+                  !endpoint.trim() ||
+                  !model.trim() ||
+                  saveAndUse.isPending
+                }
+                onClick={() => saveAndUse.mutate()}
+              >
+                {saveAndUse.isPending ? '验证并启用中…' : '保存并启用'}
+              </button>
             </div>
           </div>
-          {message ? <p className="settings-message" role="status">{message}</p> : null}
-          {test.isError || saveAndUse.isError || changeMode.isError || startCodex.isError || finishCodex.isError ? <p className="settings-message is-error" role="alert">操作失败，原配置未改变。</p> : null}
+          {message ? (
+            <p className="settings-message" role="status">
+              {message}
+            </p>
+          ) : null}
+          {test.isError ||
+          saveAndUse.isError ||
+          changeMode.isError ||
+          startCodex.isError ||
+          finishCodex.isError ? (
+            <p className="settings-message is-error" role="alert">
+              操作失败，原配置未改变。
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>

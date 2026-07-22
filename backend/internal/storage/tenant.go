@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+
+	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
 
 var (
@@ -22,6 +24,20 @@ type TenantOutboxEvent struct {
 
 type TenantWriteTx interface {
 	EnqueueOutbox(context.Context, TenantOutboxEvent) error
+	TaskDomainWriter() taskdomain.TaskDomainWriter
+	ScheduleCommandWriter() taskdomain.ScheduleCommandWriter
+	GetProject(context.Context, string) (taskdomain.ProjectSnapshot, error)
+	CountNonTerminalProjectOccurrences(context.Context, string) (int, error)
+	ProjectWriter() taskdomain.ProjectWriter
+	RoadmapWriter() taskdomain.RoadmapWriter
+	GetRoadmapByProject(context.Context, string) (taskdomain.RoadmapSnapshot, error)
+	GetRoadmapByID(context.Context, string) (taskdomain.RoadmapSnapshot, error)
+	GetRoadmapNode(context.Context, string) (taskdomain.RoadmapNodeSnapshot, error)
+	CountRoadmapNodeTasks(context.Context, string) (int, error)
+	LoadRecurringCompletionState(context.Context, string) (taskdomain.RecurringCompletionCommandState, error)
+	ListGenerationTargets(context.Context) ([]taskdomain.GenerationTargetState, error)
+	InsertMissingOccurrences(context.Context, taskdomain.GenerationInsert) error
+	CompleteGeneration(context.Context, taskdomain.GenerationCompletion) error
 }
 
 type TenantFencedWriter interface {

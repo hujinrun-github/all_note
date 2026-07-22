@@ -1,6 +1,24 @@
 name: flowspace
 
 services:
+  control-migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: flowspace-backend:latest
+    command: ["flowspace-admin", "migrate-control"]
+    restart: "no"
+    environment:
+      FLOWSPACE_ENV: prod
+      FLOWSPACE_INSTANCE_MODE: ${FLOWSPACE_INSTANCE_MODE:-single}
+      FLOWSPACE_CONTROL_DATABASE_DRIVER: ${FLOWSPACE_CONTROL_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_CONTROL_DATABASE_URL: ${FLOWSPACE_CONTROL_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_CONTROL_DB:-flowspace_control}?sslmode=disable}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER: ${FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_DB:-flowspace_prod}?sslmode=disable}
+      TZ: ${TZ:-Asia/Shanghai}
+
   backend:
     build:
       context: ./backend
@@ -13,8 +31,14 @@ services:
     environment:
       FLOWSPACE_ENV: prod
       PORT: 4201
-      FLOWSPACE_DATABASE_DRIVER: postgres
-      FLOWSPACE_DATABASE_URL: ${FLOWSPACE_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_DB:-flowspace_prod}?sslmode=disable}
+      FLOWSPACE_INSTANCE_MODE: ${FLOWSPACE_INSTANCE_MODE:-single}
+      FLOWSPACE_CONTROL_DATABASE_DRIVER: ${FLOWSPACE_CONTROL_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_CONTROL_DATABASE_URL: ${FLOWSPACE_CONTROL_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_CONTROL_DB:-flowspace_control}?sslmode=disable}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER: ${FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_DB:-flowspace_prod}?sslmode=disable}
+      FLOWSPACE_CREDENTIALS_ACTIVE_KEY_ID: ${FLOWSPACE_CREDENTIALS_ACTIVE_KEY_ID:-active}
+      FLOWSPACE_CREDENTIALS_KEYRING_FILE: /run/secrets/flowspace-credentials-keyring.json
+      FLOWSPACE_ALLOWED_PRIVATE_CIDRS: ${FLOWSPACE_ALLOWED_PRIVATE_CIDRS:-}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://119.91.114.203:19000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
@@ -30,6 +54,7 @@ services:
       FLOWSPACE_MINIO_SECRET_KEY: ${FLOWSPACE_MINIO_SECRET_KEY:-}
       FLOWSPACE_MINIO_BUCKET: ${FLOWSPACE_MINIO_BUCKET:-flowspace}
       FLOWSPACE_TRANSCRIPTION_URL: ${FLOWSPACE_TRANSCRIPTION_URL:-}
+      FLOWSPACE_TRANSCRIPTION_PROVIDER: ${FLOWSPACE_TRANSCRIPTION_PROVIDER:-openai_compatible}
       FLOWSPACE_TRANSCRIPTION_API_KEY: ${FLOWSPACE_TRANSCRIPTION_API_KEY:-}
       FLOWSPACE_TRANSCRIPTION_MODEL: ${FLOWSPACE_TRANSCRIPTION_MODEL:-}
       FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL: ${FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL:-}
@@ -38,6 +63,11 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
     ports:
       - "${BACKEND_PORT:-4201}:4201"
+    volumes:
+      - ${FLOWSPACE_CREDENTIALS_KEYRING_FILE_HOST:-./secrets/credentials-keyring.json}:/run/secrets/flowspace-credentials-keyring.json:ro
+    depends_on:
+      control-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4201/api/health >/dev/null || exit 1"]
       interval: 10s

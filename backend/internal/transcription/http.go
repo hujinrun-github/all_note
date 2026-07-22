@@ -36,7 +36,7 @@ type ProviderHTTPConfig struct {
 
 func NewHTTPTranscriber(cfg config.TranscriptionConfig) *HTTPTranscriber {
 	return NewProviderHTTPTranscriber(ProviderHTTPConfig{
-		Provider: "openai_compatible", URL: cfg.URL, APIKey: cfg.APIKey, Model: cfg.Model, Timeout: cfg.Timeout,
+		Provider: cfg.Provider, URL: cfg.URL, APIKey: cfg.APIKey, Model: cfg.Model, Timeout: cfg.Timeout,
 	}, nil)
 }
 

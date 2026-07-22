@@ -13,9 +13,17 @@ import (
 	"time"
 )
 
+const aiGenerationRequestTimeout = 2 * time.Minute
+
 type Generator struct {
-	resolver *Resolver
-	http     *http.Client
+	resolver       *Resolver
+	http           *http.Client
+	codexRefresher CodexCredentialRefresher
+	now            func() time.Time
+}
+
+type CodexCredentialRefresher interface {
+	RefreshCodexCredentials(context.Context, string, ResolvedCapability) (ResolvedCapability, error)
 }
 
 func NewGenerator(resolver *Resolver, httpClient *http.Client) (*Generator, error) {
@@ -23,15 +31,52 @@ func NewGenerator(resolver *Resolver, httpClient *http.Client) (*Generator, erro
 		return nil, errors.New("AI runtime resolver is required")
 	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 90 * time.Second}
+		httpClient = &http.Client{Timeout: aiGenerationRequestTimeout}
+	} else {
+		clientCopy := *httpClient
+		if clientCopy.Timeout <= 0 || clientCopy.Timeout < aiGenerationRequestTimeout {
+			clientCopy.Timeout = aiGenerationRequestTimeout
+		}
+		if transport, ok := clientCopy.Transport.(*http.Transport); ok {
+			transportCopy := transport.Clone()
+			if transportCopy.ResponseHeaderTimeout > 0 && transportCopy.ResponseHeaderTimeout < aiGenerationRequestTimeout {
+				transportCopy.ResponseHeaderTimeout = aiGenerationRequestTimeout
+			}
+			clientCopy.Transport = transportCopy
+		}
+		httpClient = &clientCopy
 	}
-	return &Generator{resolver: resolver, http: httpClient}, nil
+	return &Generator{resolver: resolver, http: httpClient, now: time.Now}, nil
+}
+
+func (g *Generator) SetCodexCredentialRefresher(refresher CodexCredentialRefresher) {
+	g.codexRefresher = refresher
+}
+
+func (g *Generator) ResolveFeature(ctx context.Context, workspaceID, feature string) (bool, string, error) {
+	setting, err := g.resolver.ResolveFeature(ctx, workspaceID, feature)
+	if err != nil {
+		return false, "", err
+	}
+	return setting.Enabled, setting.FallbackMode, nil
 }
 
 func (g *Generator) Generate(ctx context.Context, workspaceID, systemPrompt, userPrompt string) (string, error) {
 	resolved, err := g.resolver.ResolveChat(ctx, workspaceID)
 	if err != nil {
 		return "", err
+	}
+	if resolved.Provider == "openai_codex_subscription" && codexCredentialsNeedRefresh(resolved.Secret, g.now()) {
+		if g.codexRefresher == nil {
+			clear(resolved.Secret)
+			return "", ErrConfigurationUnavailable
+		}
+		previousSecret := resolved.Secret
+		resolved, err = g.codexRefresher.RefreshCodexCredentials(ctx, workspaceID, resolved)
+		clear(previousSecret)
+		if err != nil {
+			return "", err
+		}
 	}
 	defer clear(resolved.Secret)
 	var config struct {
@@ -52,6 +97,20 @@ func (g *Generator) Generate(ctx context.Context, workspaceID, systemPrompt, use
 		return g.generateCodex(ctx, config.Endpoint, config.Model, resolved.Secret, systemPrompt, userPrompt)
 	}
 	return g.generateCompatible(ctx, config.Endpoint, config.Model, resolved.Secret, systemPrompt, userPrompt)
+}
+
+func codexCredentialsNeedRefresh(secret []byte, now time.Time) bool {
+	var credentials struct {
+		ExpiresAt string `json:"expires_at"`
+	}
+	if json.Unmarshal(secret, &credentials) != nil || strings.TrimSpace(credentials.ExpiresAt) == "" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, credentials.ExpiresAt)
+	if err != nil {
+		return true
+	}
+	return !expiresAt.After(now.Add(2 * time.Minute))
 }
 
 func (g *Generator) generateCodex(ctx context.Context, endpoint, model string, secret []byte, systemPrompt, userPrompt string) (string, error) {

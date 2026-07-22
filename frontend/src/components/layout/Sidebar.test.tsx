@@ -15,6 +15,14 @@ vi.mock('../../api/auth', () => ({
   getCurrentUser: vi.fn(),
 }))
 
+vi.mock('../../hooks/useTaskDomain', () => ({
+  useTaskDomainCapabilities: () => ({
+    data: { model_version: 'legacy', available: true },
+    isLoading: false,
+    isError: false,
+  }),
+}))
+
 function renderSidebar(
   queryClient: QueryClient,
   initialPath = '/',

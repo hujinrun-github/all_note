@@ -2,14 +2,164 @@ package postgres
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/storage"
 )
+
+func TestProviderInjectedDialContextProtectsEveryPhysicalConnection(t *testing.T) {
+	var calls atomic.Int32
+	dialContext := func(ctx context.Context, network, address string) (net.Conn, error) {
+		calls.Add(1)
+		client, server := net.Pipe()
+		go servePostgresPingConnection(server)
+		return client, nil
+	}
+	provider, err := NewProviderWithDialContext(dialContext)
+	if err != nil {
+		t.Fatalf("new protected provider: %v", err)
+	}
+
+	db, err := provider.openWithoutMigrations(context.Background(), storage.Config{
+		Env:    "test",
+		Driver: storage.DriverPostgres,
+		URL:    "postgres://user:secret@database.example:5432/tenant?sslmode=disable",
+	})
+	if err != nil {
+		t.Fatalf("open protected postgres connection: %v", err)
+	}
+	defer db.Close()
+
+	// Force database/sql to discard the initial idle connection. The next ping
+	// must create a new physical pgx connection and must not fall back to DNS.
+	db.SetMaxIdleConns(0)
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatalf("ping replacement physical connection: %v", err)
+	}
+	if got := calls.Load(); got < 2 {
+		t.Fatalf("expected every physical connection to use injected dialer, got %d calls", got)
+	}
+}
+
+func TestProviderInjectedDialContextPreservesOriginalTLSHostname(t *testing.T) {
+	var observedAddress string
+	provider, err := NewProviderWithDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
+		observedAddress = address
+		return nil, errors.New("stop before network")
+	})
+	if err != nil {
+		t.Fatalf("new protected provider: %v", err)
+	}
+
+	_, err = provider.openWithoutMigrations(context.Background(), storage.Config{
+		Env:    "test",
+		Driver: storage.DriverPostgres,
+		URL:    "postgres://user:secret@tenant-db.example:5432/tenant?sslmode=require",
+	})
+	if err == nil {
+		t.Fatal("expected injected dial failure")
+	}
+	if observedAddress != "tenant-db.example:5432" {
+		t.Fatalf("expected pgx to retain the original hostname for TLS, got %q", observedAddress)
+	}
+	config, configErr := provider.connectionConfig("postgres://user:secret@tenant-db.example:5432/tenant?sslmode=verify-full")
+	if configErr != nil {
+		t.Fatalf("parse protected TLS connection config: %v", configErr)
+	}
+	if config.TLSConfig == nil || config.TLSConfig.ServerName != "tenant-db.example" {
+		t.Fatalf("expected original TLS ServerName, got %#v", config.TLSConfig)
+	}
+}
+
+func TestNewProviderWithDialContextRejectsNil(t *testing.T) {
+	if _, err := NewProviderWithDialContext(nil); err == nil {
+		t.Fatal("expected nil protected dialer to be rejected")
+	}
+}
+
+func TestProtectedProviderTenantWriterRetainsDialContext(t *testing.T) {
+	protected, err := NewProviderWithDialContext(func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("test dial")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := protected.NewTenantWriter(storage.Config{Driver: storage.DriverPostgres, URL: "postgres://user@db.example/app"})
+	if writer == nil || writer.provider.dialContext == nil {
+		t.Fatal("tenant writer discarded the protected provider")
+	}
+}
+
+func servePostgresPingConnection(conn net.Conn) {
+	defer conn.Close()
+	if err := readPostgresStartup(conn); err != nil {
+		return
+	}
+	if err := writePostgresBackendMessage(conn, 'R', []byte{0, 0, 0, 0}); err != nil {
+		return
+	}
+	if err := writePostgresBackendMessage(conn, 'K', make([]byte, 8)); err != nil {
+		return
+	}
+	if err := writePostgresBackendMessage(conn, 'Z', []byte{'I'}); err != nil {
+		return
+	}
+	for {
+		var messageType [1]byte
+		if _, err := io.ReadFull(conn, messageType[:]); err != nil {
+			return
+		}
+		var size uint32
+		if err := binary.Read(conn, binary.BigEndian, &size); err != nil || size < 4 {
+			return
+		}
+		payload := make([]byte, size-4)
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			return
+		}
+		switch messageType[0] {
+		case 'Q':
+			if err := writePostgresBackendMessage(conn, 'C', []byte("SELECT 1\x00")); err != nil {
+				return
+			}
+			if err := writePostgresBackendMessage(conn, 'Z', []byte{'I'}); err != nil {
+				return
+			}
+		case 'X':
+			return
+		default:
+			return
+		}
+	}
+}
+
+func readPostgresStartup(conn net.Conn) error {
+	var size uint32
+	if err := binary.Read(conn, binary.BigEndian, &size); err != nil || size < 8 {
+		return errors.New("invalid PostgreSQL startup packet")
+	}
+	_, err := io.CopyN(io.Discard, conn, int64(size-4))
+	return err
+}
+
+func writePostgresBackendMessage(conn net.Conn, messageType byte, payload []byte) error {
+	if _, err := conn.Write([]byte{messageType}); err != nil {
+		return err
+	}
+	if err := binary.Write(conn, binary.BigEndian, uint32(len(payload)+4)); err != nil {
+		return err
+	}
+	_, err := conn.Write(payload)
+	return err
+}
 
 func TestProviderValidateRequiresDatabaseURL(t *testing.T) {
 	provider := Provider{}

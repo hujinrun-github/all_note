@@ -80,8 +80,85 @@ func TestMigrateControlCreatesVersionedControlSchema(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM control_schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count control migrations: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Fatalf("control migration count = %d, want 3", migrationCount)
+	if migrationCount != 4 {
+		t.Fatalf("control migration count = %d, want 4", migrationCount)
+	}
+}
+
+func TestOpenControlListsUsersWithSQLiteTimestampDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control-users.test.db")
+	cfg := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: path}
+	provider := Provider{}
+	if err := provider.MigrateControl(context.Background(), cfg); err != nil {
+		t.Fatalf("migrate control: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO users(id,email,display_name,password_hash,role,status)
+		VALUES ('u1','owner@example.test','Owner','hash','admin','active')
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed control user: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := provider.OpenControl(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("open control: %v", err)
+	}
+	defer store.Close()
+	users, total, err := store.Auth().ListUsers(context.Background(), storage.UserListFilter{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("list control users: %v", err)
+	}
+	if total != 1 || len(users) != 1 {
+		t.Fatalf("users total=%d len=%d, want 1", total, len(users))
+	}
+	if users[0].CreatedAt <= 0 || users[0].UpdatedAt <= 0 {
+		t.Fatalf("control user timestamps were not normalized: created=%d updated=%d", users[0].CreatedAt, users[0].UpdatedAt)
+	}
+}
+
+func TestOpenControlRejectsIncompleteOrTamperedMigrationHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		statement string
+	}{
+		{name: "missing latest", statement: `DELETE FROM control_schema_migrations WHERE version = '0003_codex_oauth_device_flows.sql'`},
+		{name: "tampered checksum", statement: `UPDATE control_schema_migrations SET checksum = 'tampered' WHERE version = '0001_control_baseline.sql'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "control.test.db")
+			cfg := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: path}
+			provider := Provider{}
+			if err := provider.MigrateControl(context.Background(), cfg); err != nil {
+				t.Fatalf("migrate control: %v", err)
+			}
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(tc.statement); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			_ = db.Close()
+
+			store, err := provider.OpenControl(context.Background(), cfg)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("invalid control migration history must not return a store")
+			}
+			if !errors.Is(err, storage.ErrControlSchemaNotReady) {
+				t.Fatalf("expected ErrControlSchemaNotReady, got %v", err)
+			}
+		})
 	}
 }
 

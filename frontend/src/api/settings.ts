@@ -121,6 +121,7 @@ export async function setServiceBinding(input: {
   mode: ServiceBinding['mode']
   endpoint_id?: string
   expected_revision: number
+  expected_runtime_revision: number
 }) {
   const response = await api.put<ServiceBinding>(
     `/api/settings/bindings/${input.kind}`,
@@ -128,6 +129,7 @@ export async function setServiceBinding(input: {
       mode: input.mode,
       endpoint_id: input.endpoint_id,
       expected_revision: input.expected_revision,
+      expected_runtime_revision: input.expected_runtime_revision,
     }
   )
   return response.data
@@ -152,6 +154,7 @@ export async function startCodexSubscription() {
 export async function pollCodexSubscription(input: {
   flowId: string
   expectedRevision: number
+  expectedRuntimeRevision: number
 }) {
   const response = await api.post<{
     status: 'pending' | 'connected' | 'expired' | 'failed'
@@ -159,6 +162,7 @@ export async function pollCodexSubscription(input: {
     profile_version_id?: string
   }>(`/api/settings/ai/codex/device/${input.flowId}/poll`, {
     expected_revision: input.expectedRevision,
+    expected_runtime_revision: input.expectedRuntimeRevision,
   })
   return response.data
 }

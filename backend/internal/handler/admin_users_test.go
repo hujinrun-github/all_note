@@ -99,6 +99,57 @@ func TestAdminCreateUserProvisionsWorkspaceDefaultsAndRequiresPasswordChange(t *
 	assertErrorCode(t, notesW.Body.String(), "PASSWORD_CHANGE_REQUIRED")
 }
 
+func TestAdminCreateUserUsesControlAsIdentitySourceAndProjectsTenantData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	open := func(name string) storage.Store {
+		store, err := sqlite.Provider{}.Open(t.Context(), storage.Config{
+			Env: "test", Driver: storage.DriverSQLite, SQLitePath: filepath.Join(t.TempDir(), name+".test.db"),
+		})
+		if err != nil {
+			t.Fatalf("open %s store: %v", name, err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	controlPath := filepath.Join(t.TempDir(), "control.test.db")
+	controlConfig := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: controlPath}
+	provider := sqlite.Provider{}
+	if err := provider.MigrateControl(t.Context(), controlConfig); err != nil {
+		t.Fatalf("migrate control store: %v", err)
+	}
+	controlStore, err := provider.OpenControl(t.Context(), controlConfig)
+	if err != nil {
+		t.Fatalf("open control store: %v", err)
+	}
+	t.Cleanup(func() { _ = controlStore.Close() })
+	tenantStore := open("tenant")
+	router := gin.New()
+	h := CreateUserAcrossStores(controlStore, tenantStore, nil)
+	router.POST("/api/admin/users", h)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(`{"email":"split@example.com","display_name":"Split User","temporary_password":"tempPass123","role":"user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	controlUser, err := controlStore.Auth().GetUserByEmail(t.Context(), "split@example.com")
+	if err != nil {
+		t.Fatalf("control identity missing: %v", err)
+	}
+	tenantUser, err := tenantStore.Auth().GetUserByEmail(t.Context(), "split@example.com")
+	if err != nil || tenantUser.ID != controlUser.ID {
+		t.Fatalf("tenant projection = %#v, err=%v; control=%#v", tenantUser, err, controlUser)
+	}
+	ctx := authpkg.ContextWithWorkspaceScope(t.Context(), controlUser.DefaultWorkspaceID)
+	folders, err := tenantStore.Folders().List(ctx)
+	if err != nil || len(folders) != 3 {
+		t.Fatalf("tenant defaults folders=%d err=%v", len(folders), err)
+	}
+}
+
 func TestAdminCreateUserAuditDoesNotIncludeTemporaryPasswordOrHash(t *testing.T) {
 	env := setupAdminTestEnv(t)
 	body := `{"email":"audited@example.com","display_name":"Audited User","temporary_password":"auditPass123","role":"admin"}`

@@ -7,9 +7,11 @@ import {
   getRuntimeSettings,
   getUserProfile,
   saveServiceProfile,
+  setServiceBinding,
   testServiceProfile,
   updateUserProfile,
   uploadUserAvatar,
+  verifyServiceProfile,
 } from '../api/settings'
 import Settings from './Settings'
 
@@ -108,6 +110,20 @@ describe('Settings', () => {
       state: 'draft',
       has_credentials: true,
     })
+    vi.mocked(verifyServiceProfile).mockResolvedValue({
+      endpoint_id: 'custom-v1',
+      profile_version_id: 'v1',
+      kind: 'object_s3',
+    })
+    vi.mocked(setServiceBinding).mockResolvedValue({
+      kind: 'object_s3',
+      mode: 'custom',
+      endpoint_id: 'custom-v1',
+      provider: 'minio',
+      profile_version_id: 'v1',
+      has_credentials: true,
+      revision: 2,
+    })
   })
 
   it('loads and saves the profile without a request waterfall', async () => {
@@ -157,13 +173,57 @@ describe('Settings', () => {
     await screen.findByRole('heading', { name: '个人资料' })
     await user.click(screen.getByRole('button', { name: '数据库' }))
     await user.click(screen.getByRole('button', { name: '添加自定义配置' }))
-    expect(screen.getByRole('textbox', { name: /Schema/ })).toHaveValue('public')
+    expect(screen.getByRole('textbox', { name: /Schema/ })).toHaveValue(
+      'public'
+    )
     await user.click(screen.getByRole('button', { name: '对象存储' }))
     await user.click(screen.getByRole('button', { name: '添加自定义配置' }))
-    expect(screen.getByRole('textbox', { name: /Bucket 名称/ })).toHaveValue('flowspace')
+    expect(screen.getByRole('textbox', { name: /Bucket 名称/ })).toHaveValue(
+      'flowspace'
+    )
     expect(screen.getByRole('textbox', { name: 'Access Key' })).toBeVisible()
-    expect(screen.getByLabelText('Secret Key')).toHaveAttribute('type', 'password')
+    expect(screen.getByLabelText('Secret Key')).toHaveAttribute(
+      'type',
+      'password'
+    )
     expect(screen.queryByText('凭据')).not.toBeInTheDocument()
+  })
+
+  it('verifies and binds a custom object store when saving', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await screen.findByRole('heading', { name: '个人资料' })
+    await user.click(screen.getByRole('button', { name: '对象存储' }))
+    await user.click(screen.getByRole('button', { name: '添加自定义配置' }))
+    await user.type(
+      screen.getByRole('textbox', { name: '配置名称' }),
+      '私有 MinIO'
+    )
+    await user.type(
+      screen.getByRole('textbox', { name: '服务地址' }),
+      'https://objects.example.com'
+    )
+    await user.type(
+      screen.getByRole('textbox', { name: 'Access Key' }),
+      'access'
+    )
+    await user.type(screen.getByLabelText('Secret Key'), 'secret')
+    await user.click(screen.getByRole('button', { name: '保存并启用' }))
+    await waitFor(() =>
+      expect(verifyServiceProfile).toHaveBeenCalledWith({
+        kind: 'object_s3',
+        versionId: 'v1',
+      })
+    )
+    expect(setServiceBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'object_s3',
+        mode: 'custom',
+        endpoint_id: 'custom-v1',
+        expected_revision: 1,
+        expected_runtime_revision: 1,
+      })
+    )
   })
 
   it('offers direct SenseVoice and FunASR transcription providers', async () => {
@@ -175,7 +235,9 @@ describe('Settings', () => {
 
     const provider = screen.getByRole('combobox', { name: '语音服务类型' })
     expect(provider).toHaveValue('sensevoice')
-    expect(screen.getByPlaceholderText('例如：iic/SenseVoiceSmall')).toBeVisible()
+    expect(
+      screen.getByPlaceholderText('例如：iic/SenseVoiceSmall')
+    ).toBeVisible()
 
     await user.selectOptions(provider, 'funasr')
     expect(screen.getByPlaceholderText('例如：paraformer-zh')).toBeVisible()

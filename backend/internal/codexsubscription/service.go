@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hujinrun/flowspace/internal/airuntime"
 	"github.com/hujinrun/flowspace/internal/codexoauth"
 	"github.com/hujinrun/flowspace/internal/controlprofile"
+	"github.com/hujinrun/flowspace/internal/runtimecontrol"
 )
 
 const defaultModel = "gpt-5.3-codex"
@@ -23,6 +25,7 @@ type OAuthClient interface {
 	Start(context.Context) (codexoauth.DeviceAuthorization, error)
 	Poll(context.Context, string, string) (codexoauth.AuthorizationGrant, bool, error)
 	Exchange(context.Context, codexoauth.AuthorizationGrant) (codexoauth.Tokens, error)
+	Refresh(context.Context, string) (codexoauth.Tokens, error)
 }
 
 type StartResult struct {
@@ -43,15 +46,16 @@ type Service struct {
 	oauth      OAuthClient
 	flows      *codexoauth.Repository
 	profiles   *controlprofile.Repository
+	runtime    *runtimecontrol.Repository
 	authorizer Authorizer
 	now        func() time.Time
 }
 
-func New(oauth OAuthClient, flows *codexoauth.Repository, profiles *controlprofile.Repository, authorizer Authorizer) (*Service, error) {
-	if oauth == nil || flows == nil || profiles == nil || authorizer == nil {
+func New(oauth OAuthClient, flows *codexoauth.Repository, profiles *controlprofile.Repository, runtimeRepository *runtimecontrol.Repository, authorizer Authorizer) (*Service, error) {
+	if oauth == nil || flows == nil || profiles == nil || runtimeRepository == nil || authorizer == nil {
 		return nil, errors.New("Codex subscription dependencies are required")
 	}
-	return &Service{oauth: oauth, flows: flows, profiles: profiles, authorizer: authorizer, now: time.Now}, nil
+	return &Service{oauth: oauth, flows: flows, profiles: profiles, runtime: runtimeRepository, authorizer: authorizer, now: time.Now}, nil
 }
 
 func (s *Service) Start(ctx context.Context, userID, workspaceID string) (StartResult, error) {
@@ -70,7 +74,7 @@ func (s *Service) Start(ctx context.Context, userID, workspaceID string) (StartR
 	return StartResult{FlowID: flowID, UserCode: device.UserCode, VerificationURL: device.VerificationURL, IntervalSeconds: int64(device.Interval / time.Second), ExpiresAt: device.ExpiresAt}, nil
 }
 
-func (s *Service) Poll(ctx context.Context, userID, workspaceID, flowID string, expectedRevision int64) (PollResult, error) {
+func (s *Service) Poll(ctx context.Context, userID, workspaceID, flowID string, expectedRevision, expectedRuntimeRevision int64) (PollResult, error) {
 	if err := s.authorize(ctx, userID, workspaceID); err != nil {
 		return PollResult{}, err
 	}
@@ -100,7 +104,10 @@ func (s *Service) Poll(ctx context.Context, userID, workspaceID, flowID string, 
 	if err != nil {
 		return PollResult{}, err
 	}
-	secret, err := json.Marshal(map[string]string{"access_token": tokens.AccessToken, "refresh_token": tokens.RefreshToken, "id_token": tokens.IDToken, "account_id": tokens.AccountID})
+	if tokens.ExpiresAt.IsZero() {
+		tokens.ExpiresAt = s.now().Add(time.Hour)
+	}
+	secret, err := json.Marshal(map[string]string{"access_token": tokens.AccessToken, "refresh_token": tokens.RefreshToken, "id_token": tokens.IDToken, "account_id": tokens.AccountID, "expires_at": tokens.ExpiresAt.UTC().Format(time.RFC3339Nano)})
 	if err != nil {
 		return PollResult{}, err
 	}
@@ -132,7 +139,7 @@ func (s *Service) Poll(ctx context.Context, userID, workspaceID, flowID string, 
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return PollResult{}, err
 		}
-		if _, err := s.profiles.SetBinding(ctx, controlprofile.SetBindingInput{WorkspaceID: workspaceID, Kind: "llm_chat", Mode: "custom", EndpointSourceType: "custom", EndpointID: endpointID, ExpectedRevision: expectedRevision, ActorUserID: userID}); err != nil {
+		if _, err := s.profiles.SetBinding(ctx, controlprofile.SetBindingInput{WorkspaceID: workspaceID, Kind: "llm_chat", Mode: "custom", EndpointSourceType: "custom", EndpointID: endpointID, ExpectedRevision: expectedRevision, ExpectedRuntimeRevision: expectedRuntimeRevision, ActorUserID: userID}); err != nil {
 			return PollResult{}, err
 		}
 	}
@@ -154,6 +161,85 @@ func (s *Service) ensureEndpoint(ctx context.Context, workspaceID, endpointID, v
 		return err
 	}
 	return s.profiles.CreateWorkspaceEndpoint(ctx, workspaceID, endpointID, "llm_chat", versionID)
+}
+
+func (s *Service) RefreshCodexCredentials(ctx context.Context, workspaceID string, resolved airuntime.ResolvedCapability) (airuntime.ResolvedCapability, error) {
+	if resolved.Provider != "openai_codex_subscription" || resolved.ProfileVersionID == "" || resolved.EndpointID == "" {
+		return airuntime.ResolvedCapability{}, errors.New("Codex credential refresh identity is incomplete")
+	}
+	var current struct {
+		RefreshToken string `json:"refresh_token"`
+		AccountID    string `json:"account_id"`
+	}
+	if json.Unmarshal(resolved.Secret, &current) != nil || current.RefreshToken == "" {
+		return airuntime.ResolvedCapability{}, errors.New("Codex refresh token is unavailable")
+	}
+	tokens, err := s.oauth.Refresh(ctx, current.RefreshToken)
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	if tokens.RefreshToken == "" {
+		tokens.RefreshToken = current.RefreshToken
+	}
+	if tokens.AccountID == "" {
+		tokens.AccountID = current.AccountID
+	}
+	if tokens.ExpiresAt.IsZero() {
+		tokens.ExpiresAt = s.now().Add(time.Hour)
+	}
+	secret, err := json.Marshal(map[string]string{
+		"access_token": tokens.AccessToken, "refresh_token": tokens.RefreshToken, "id_token": tokens.IDToken,
+		"account_id": tokens.AccountID, "expires_at": tokens.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	defer clear(secret)
+	currentVersion, err := s.profiles.GetVersion(ctx, workspaceID, "llm_chat", resolved.ProfileVersionID)
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	binding, err := s.profiles.GetBinding(ctx, workspaceID, "llm_chat")
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	if binding.EndpointID != resolved.EndpointID || binding.Mode != "custom" {
+		return airuntime.ResolvedCapability{}, controlprofile.ErrBindingCASConflict
+	}
+	runtimeState, err := s.runtime.Get(ctx, workspaceID)
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	actorUserID, err := s.profiles.WorkspaceOwnerID(ctx, workspaceID)
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	versionID := "codex-refresh-" + uuid.NewString()
+	version, err := s.profiles.CreateVersion(ctx, controlprofile.CreateVersionInput{
+		ID: versionID, FamilyID: currentVersion.FamilyID, WorkspaceID: workspaceID, Kind: "llm_chat",
+		Provider: currentVersion.Provider, ConfigJSON: currentVersion.ConfigJSON, Secret: secret, CreatedBy: actorUserID,
+	})
+	if err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	if err := s.profiles.MarkVerified(ctx, workspaceID, "llm_chat", version.ID); err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	endpointID := "custom-" + version.ID
+	if err := s.profiles.CreateWorkspaceEndpoint(ctx, workspaceID, endpointID, "llm_chat", version.ID); err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	if _, err := s.profiles.SetBinding(ctx, controlprofile.SetBindingInput{
+		WorkspaceID: workspaceID, Kind: "llm_chat", Mode: "custom", EndpointSourceType: "custom", EndpointID: endpointID,
+		ExpectedRevision: binding.Revision, ExpectedRuntimeRevision: runtimeState.BindingRevision, ActorUserID: actorUserID,
+	}); err != nil {
+		return airuntime.ResolvedCapability{}, err
+	}
+	refreshed := resolved
+	refreshed.EndpointID = endpointID
+	refreshed.ProfileVersionID = version.ID
+	refreshed.Secret = append([]byte(nil), secret...)
+	return refreshed, nil
 }
 
 func (s *Service) authorize(ctx context.Context, userID, workspaceID string) error {

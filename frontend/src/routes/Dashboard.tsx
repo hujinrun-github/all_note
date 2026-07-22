@@ -9,6 +9,8 @@ import { NoteCard, type NoteData } from '../components/ui/NoteCard'
 import { useUpdateTask } from '../hooks/useTasks'
 import { todayDateInputValue } from '../utils/taskForm'
 import { formatTaskProjectOption } from '../utils/taskProjects'
+import { TaskDomainGate } from '../components/taskDomain/TaskDomainGate'
+import DashboardV2 from './DashboardV2'
 
 interface TodayData {
   todayTasks: TaskData[]
@@ -20,6 +22,10 @@ interface TodayData {
 type TaskFlowTab = 'overdue' | 'next' | 'done'
 
 export default function Dashboard() {
+  return <TaskDomainGate legacy={<LegacyDashboard />} v2={<DashboardV2 />} />
+}
+
+export function LegacyDashboard() {
   const navigate = useNavigate()
   const [newTaskDate, setNewTaskDate] = useState(() => todayDateInputValue())
   const [newTaskProjectID, setNewTaskProjectID] = useState('personal')

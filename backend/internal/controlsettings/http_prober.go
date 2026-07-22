@@ -8,11 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/outbound"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/minio/minio-go/v7"
 	miniocredentials "github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -22,8 +26,8 @@ type HTTPProber struct {
 	dialer *outbound.Dialer
 }
 
-func NewHTTPProber() (*HTTPProber, error) {
-	dialer, err := outbound.NewDialer(nil, outbound.Policy{})
+func NewHTTPProber(policy outbound.Policy) (*HTTPProber, error) {
+	dialer, err := outbound.NewDialer(nil, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +48,7 @@ func (p *HTTPProber) Probe(ctx context.Context, kind, provider string, configJSO
 		return ProbeResult{}, errors.New("service endpoint is required")
 	}
 	if kind == "data_store" {
-		return ProbeResult{}, errors.New("PostgreSQL profile probe is not available yet")
+		return p.probePostgres(ctx, provider, endpoint, config, secret)
 	}
 	if err := p.dialer.ValidateURL(ctx, endpoint, "http", "https"); err != nil {
 		return ProbeResult{}, err
@@ -77,6 +81,57 @@ func (p *HTTPProber) Probe(ctx context.Context, kind, provider string, configJSO
 		return ProbeResult{}, fmt.Errorf("service returned HTTP %d", response.StatusCode)
 	}
 	return ProbeResult{Code: "OK", Message: "连接测试通过"}, nil
+}
+
+func (p *HTTPProber) probePostgres(ctx context.Context, provider, endpoint string, profile map[string]any, secret []byte) (ProbeResult, error) {
+	if provider != "postgres" {
+		return ProbeResult{}, errors.New("unsupported database provider")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || strings.TrimPrefix(parsed.Path, "/") == "" {
+		return ProbeResult{}, errors.New("invalid PostgreSQL endpoint")
+	}
+	if parsed.User != nil {
+		if _, embedded := parsed.User.Password(); embedded {
+			return ProbeResult{}, errors.New("PostgreSQL password must be supplied as a credential")
+		}
+	}
+	if _, err := p.dialer.ResolveAllowed(ctx, parsed.Hostname()); err != nil {
+		return ProbeResult{}, err
+	}
+	pgxConfig, err := pgx.ParseConfig(endpoint)
+	if err != nil {
+		return ProbeResult{}, errors.New("invalid PostgreSQL endpoint")
+	}
+	if len(secret) > 0 {
+		pgxConfig.Password = string(secret)
+	}
+	pgxConfig.ConnectTimeout = 10 * time.Second
+	pgxConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return p.dialer.DialContext(ctx, network, address)
+	}
+	db := stdlib.OpenDB(*pgxConfig)
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return ProbeResult{}, fmt.Errorf("connect PostgreSQL: %w", err)
+	}
+	schema, _ := profile["schema"].(string)
+	schema = strings.TrimSpace(schema)
+	if schema == "" {
+		schema = "public"
+	}
+	var databaseName string
+	var schemaExists bool
+	if err := db.QueryRowContext(ctx, `SELECT current_database(), to_regnamespace($1) IS NOT NULL`, schema).Scan(&databaseName, &schemaExists); err != nil {
+		return ProbeResult{}, fmt.Errorf("inspect PostgreSQL namespace: %w", err)
+	}
+	message := "PostgreSQL connection test passed"
+	if !schemaExists {
+		message = "PostgreSQL connection passed; schema will require initialization"
+	}
+	installationID := ""
+	_ = db.QueryRowContext(ctx, `SELECT installation_id::text FROM tenant_installations WHERE singleton_key=1`).Scan(&installationID)
+	return ProbeResult{Code: "OK", Message: message, InstallationID: installationID, SchemaIdentity: databaseName + "/" + schema}, nil
 }
 
 func (p *HTTPProber) probeObjectStore(ctx context.Context, endpoint string, config map[string]any, secret []byte) (ProbeResult, error) {

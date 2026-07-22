@@ -4,6 +4,7 @@ export interface TaskData {
   id: string
   title: string
   project?: string
+  project_id?: string
   due?: number
   planned_date?: string
   priority: number

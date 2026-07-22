@@ -24,10 +24,23 @@ func GenerateLearningRoadmapWithAI(store storage.Store, chat WorkspaceChatServic
 			return
 		}
 		var generator service.TextGenerator
+		allowTemplateFallback := true
 		if identity, ok := auth.IdentityFromContext(c.Request.Context()); ok && chat != nil {
-			generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+			if features, ok := chat.(WorkspaceAIFeatureService); ok {
+				enabled, fallback, err := features.ResolveFeature(c.Request.Context(), identity.WorkspaceID, "roadmap_generation")
+				if err != nil {
+					internalError(c, "unable to resolve roadmap AI settings")
+					return
+				}
+				allowTemplateFallback = fallback == "template"
+				if enabled {
+					generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+				}
+			} else {
+				generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+			}
 		}
-		roadmap, err := service.GenerateLearningRoadmapWithPromptAndAI(c.Request.Context(), store, c.Param("id"), req.Prompt, generator)
+		roadmap, err := service.GenerateLearningRoadmapWithPromptAndAIPolicy(c.Request.Context(), store, c.Param("id"), req.Prompt, generator, allowTemplateFallback)
 		if err != nil {
 			internalError(c, err.Error())
 			return

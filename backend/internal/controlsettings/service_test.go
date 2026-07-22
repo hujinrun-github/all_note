@@ -125,7 +125,7 @@ func createControlSettingsFixture(t *testing.T) (*controlprofile.Repository, *ru
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES('u1','u1@example.test','x'); INSERT INTO workspaces(id,name,owner_user_id) VALUES('w1','one','u1'); INSERT INTO workspace_members(workspace_id,user_id,role) VALUES('w1','u1','owner')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES('u1','u1@example.test','x'); INSERT INTO workspaces(id,name,owner_user_id) VALUES('w1','one','u1'); INSERT INTO workspace_members(workspace_id,user_id,role) VALUES('w1','u1','owner'); INSERT INTO workspace_runtime_state(workspace_id,mode,epoch,binding_revision,updated_by) VALUES('w1','active',1,1,'u1')`); err != nil {
 		t.Fatal(err)
 	}
 	keyring, _ := credentials.NewKeyring("active", map[string][]byte{"active": bytes.Repeat([]byte{9}, 32)})

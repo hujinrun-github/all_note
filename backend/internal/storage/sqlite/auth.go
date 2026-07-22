@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -488,6 +489,8 @@ func scanSQLiteAuthUser(row sqliteRowScanner) (*model.User, error) {
 	var passwordSet int
 	var mustChangePassword int
 	var defaultWorkspaceID sql.NullString
+	var createdAt any
+	var updatedAt any
 	var lastLoginAt sql.NullInt64
 	var passwordChangedAt sql.NullInt64
 	if err := row.Scan(
@@ -500,12 +503,21 @@ func scanSQLiteAuthUser(row sqliteRowScanner) (*model.User, error) {
 		&defaultWorkspaceID,
 		&user.Role,
 		&user.Status,
-		&user.CreatedAt,
-		&user.UpdatedAt,
+		&createdAt,
+		&updatedAt,
 		&lastLoginAt,
 		&passwordChangedAt,
 	); err != nil {
 		return nil, err
+	}
+	var err error
+	user.CreatedAt, err = sqliteUnixTimestamp(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan user created_at: %w", err)
+	}
+	user.UpdatedAt, err = sqliteUnixTimestamp(updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan user updated_at: %w", err)
 	}
 	user.PasswordSet = passwordSet == 1
 	user.MustChangePassword = mustChangePassword == 1
@@ -513,6 +525,35 @@ func scanSQLiteAuthUser(row sqliteRowScanner) (*model.User, error) {
 	user.LastLoginAt = nullInt64Ptr(lastLoginAt)
 	user.PasswordChangedAt = nullInt64Ptr(passwordChangedAt)
 	return &user, nil
+}
+
+func sqliteUnixTimestamp(value any) (int64, error) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, nil
+	case time.Time:
+		return typed.UTC().Unix(), nil
+	case []byte:
+		return parseSQLiteUnixTimestamp(string(typed))
+	case string:
+		return parseSQLiteUnixTimestamp(typed)
+	default:
+		return 0, fmt.Errorf("unsupported timestamp type %T", value)
+	}
+}
+
+func parseSQLiteUnixTimestamp(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return unix, nil
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339Nano} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC().Unix(), nil
+		}
+	}
+	return 0, fmt.Errorf("unsupported timestamp value %q", value)
 }
 
 func sqliteAuthIdentitySelectSQL() string {

@@ -12,10 +12,11 @@ import (
 const defaultMaxVoiceAudioBytes int64 = 50 * 1024 * 1024
 
 type NativeConfig struct {
-	MaxVoiceAudioBytes  int64
-	MobileSyncV1Enabled bool
-	MinIO               MinIOConfig
-	Transcription       TranscriptionConfig
+	MaxVoiceAudioBytes         int64
+	MobileSyncV1Enabled        bool
+	TaskDomainV2RoutingEnabled bool
+	MinIO                      MinIOConfig
+	Transcription              TranscriptionConfig
 }
 
 type MinIOConfig struct {
@@ -32,10 +33,11 @@ func (c MinIOConfig) Enabled() bool {
 }
 
 type TranscriptionConfig struct {
-	URL     string
-	APIKey  string
-	Model   string
-	Timeout time.Duration
+	Provider string
+	URL      string
+	APIKey   string
+	Model    string
+	Timeout  time.Duration
 }
 
 func (c TranscriptionConfig) Enabled() bool {
@@ -44,6 +46,10 @@ func (c TranscriptionConfig) Enabled() bool {
 
 func LoadNativeConfig() (NativeConfig, error) {
 	mobileSyncV1Enabled, err := envBool("FLOWSPACE_ENABLE_MOBILE_SYNC_V1", false)
+	if err != nil {
+		return NativeConfig{}, err
+	}
+	taskDomainV2RoutingEnabled, err := envBool("FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING", false)
 	if err != nil {
 		return NativeConfig{}, err
 	}
@@ -65,10 +71,11 @@ func LoadNativeConfig() (NativeConfig, error) {
 		return NativeConfig{}, err
 	}
 	return NativeConfig{
-		MaxVoiceAudioBytes:  maxBytes,
-		MobileSyncV1Enabled: mobileSyncV1Enabled,
-		MinIO:               minioCfg,
-		Transcription:       transcriptionCfg,
+		MaxVoiceAudioBytes:         maxBytes,
+		MobileSyncV1Enabled:        mobileSyncV1Enabled,
+		TaskDomainV2RoutingEnabled: taskDomainV2RoutingEnabled,
+		MinIO:                      minioCfg,
+		Transcription:              transcriptionCfg,
 	}, nil
 }
 
@@ -105,6 +112,7 @@ func loadMinIOConfig() (MinIOConfig, error) {
 }
 
 func loadTranscriptionConfig() (TranscriptionConfig, error) {
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("FLOWSPACE_TRANSCRIPTION_PROVIDER")))
 	endpoint := strings.TrimSpace(os.Getenv("FLOWSPACE_TRANSCRIPTION_URL"))
 	apiKey := strings.TrimSpace(os.Getenv("FLOWSPACE_TRANSCRIPTION_API_KEY"))
 	model := strings.TrimSpace(os.Getenv("FLOWSPACE_TRANSCRIPTION_MODEL"))
@@ -112,6 +120,12 @@ func loadTranscriptionConfig() (TranscriptionConfig, error) {
 		return TranscriptionConfig{}, errors.New("FLOWSPACE_TRANSCRIPTION_URL is required when transcription credentials or model are configured")
 	}
 	if endpoint != "" {
+		if provider == "" {
+			provider = "openai_compatible"
+		}
+		if provider != "openai_compatible" && provider != "sensevoice" && provider != "funasr" {
+			return TranscriptionConfig{}, errors.New("FLOWSPACE_TRANSCRIPTION_PROVIDER must be openai_compatible, sensevoice, or funasr")
+		}
 		parsed, err := url.Parse(endpoint)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return TranscriptionConfig{}, errors.New("FLOWSPACE_TRANSCRIPTION_URL must be an http or https URL")
@@ -126,9 +140,10 @@ func loadTranscriptionConfig() (TranscriptionConfig, error) {
 		timeout = time.Duration(seconds) * time.Second
 	}
 	return TranscriptionConfig{
-		URL:     endpoint,
-		APIKey:  apiKey,
-		Model:   model,
-		Timeout: timeout,
+		Provider: provider,
+		URL:      endpoint,
+		APIKey:   apiKey,
+		Model:    model,
+		Timeout:  timeout,
 	}, nil
 }

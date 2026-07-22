@@ -108,6 +108,38 @@ func TestProtectedBusinessRouteRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestAuthAndUserSettingsUseControlStoreWhenTenantIsUnavailable(t *testing.T) {
+	env := setupRouterAuthEnv(t, false)
+	controlPath := filepath.Join(t.TempDir(), "control-router.test.db")
+	provider := sqlite.Provider{}
+	controlConfig := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: controlPath}
+	if err := provider.MigrateControl(t.Context(), controlConfig); err != nil {
+		t.Fatal(err)
+	}
+	controlStore, err := provider.OpenControl(t.Context(), controlConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = controlStore.Close() })
+	seedRouterAuthUser(t, controlStore)
+	token := "control-store-session-token"
+	createSessionInStore(t, controlStore, env.auth, token)
+	env.config.ControlStore = controlStore
+	router := Setup(env.config)
+	if err := env.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/auth/me", "/api/settings/profile"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: token})
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestLocalDirectoryBrowserRouteRegistrationFollowsConfig(t *testing.T) {
 	disabled := setupRouterAuthEnv(t, false)
 	if registeredRoutes(Setup(disabled.config))["GET /api/system/directories"] {
@@ -338,7 +370,12 @@ func seedRouterAuthUser(t *testing.T, store storage.Store, opts ...routerUserOpt
 
 func createRouterSession(t *testing.T, env *routerAuthEnv, token string) {
 	t.Helper()
-	hash, err := authpkg.HashSessionToken(env.auth.SessionSecret, token)
+	createSessionInStore(t, env.store, env.auth, token)
+}
+
+func createSessionInStore(t *testing.T, store storage.Store, authConfig config.AuthConfig, token string) {
+	t.Helper()
+	hash, err := authpkg.HashSessionToken(authConfig.SessionSecret, token)
 	if err != nil {
 		t.Fatalf("hash session token: %v", err)
 	}
@@ -351,7 +388,7 @@ func createRouterSession(t *testing.T, env *routerAuthEnv, token string) {
 		IPAddress:   "127.0.0.1",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}
-	if err := env.store.Auth().CreateSession(t.Context(), session); err != nil {
+	if err := store.Auth().CreateSession(t.Context(), session); err != nil {
 		t.Fatalf("create router session: %v", err)
 	}
 }

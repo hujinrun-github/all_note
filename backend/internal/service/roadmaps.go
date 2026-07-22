@@ -87,6 +87,15 @@ type TextGenerator interface {
 }
 
 func GenerateLearningRoadmapWithPromptAndAI(ctx context.Context, store storage.Store, projectID string, customPrompt string, generator TextGenerator) (*model.LearningRoadmap, error) {
+	return generateLearningRoadmapWithPolicy(ctx, store, projectID, customPrompt, generator, true, true)
+}
+
+func GenerateLearningRoadmapWithPromptAndAIPolicy(ctx context.Context, store storage.Store, projectID string, customPrompt string, generator TextGenerator, allowTemplateFallback bool) (*model.LearningRoadmap, error) {
+	return generateLearningRoadmapWithPolicy(ctx, store, projectID, customPrompt, generator, allowTemplateFallback, false)
+}
+
+func generateLearningRoadmapWithPolicy(ctx context.Context, store storage.Store, projectID string, customPrompt string, generator TextGenerator, allowTemplateFallback, useLegacyEnvironment bool) (*model.LearningRoadmap, error) {
+	customPrompt = strings.TrimSpace(customPrompt)
 	project, err := store.Tasks().GetProjectByID(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -98,11 +107,20 @@ func GenerateLearningRoadmapWithPromptAndAI(ctx context.Context, store storage.S
 	var draft *roadmapDraft
 	if generator != nil {
 		draft, err = generateRoadmapWithGenerator(ctx, *project, customPrompt, generator)
+	} else if !useLegacyEnvironment && customPrompt != "" {
+		err = errors.New("an available AI service is required for an edited roadmap prompt")
+	} else if !useLegacyEnvironment && allowTemplateFallback {
+		draft = mockRoadmapDraft(*project)
+	} else if !useLegacyEnvironment {
+		err = errors.New("roadmap AI capability is disabled")
 	} else {
 		draft, err = generateRoadmapDraft(*project, customPrompt)
 	}
 	if err != nil {
-		if !shouldUseFallbackRoadmapDraft(err) {
+		if customPrompt != "" {
+			return nil, fmt.Errorf("custom roadmap prompt could not be applied: %w", err)
+		}
+		if (!useLegacyEnvironment && !allowTemplateFallback) || (useLegacyEnvironment && !shouldUseFallbackRoadmapDraft(err)) {
 			_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
 			return nil, err
 		}

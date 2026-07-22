@@ -27,7 +27,10 @@ type DeviceAuthorization struct {
 	ExpiresAt                               time.Time
 }
 type AuthorizationGrant struct{ Code, Verifier string }
-type Tokens struct{ AccessToken, RefreshToken, IDToken, AccountID string }
+type Tokens struct {
+	AccessToken, RefreshToken, IDToken, AccountID string
+	ExpiresAt                                     time.Time
+}
 type Client struct {
 	http             *http.Client
 	issuer, tokenURL string
@@ -129,14 +132,19 @@ func (c *Client) tokenRequest(ctx context.Context, form url.Values) (Tokens, err
 		return Tokens{}, fmt.Errorf("Codex token exchange returned HTTP %d", response.StatusCode)
 	}
 	var payload struct {
-		Access  string `json:"access_token"`
-		Refresh string `json:"refresh_token"`
-		IDToken string `json:"id_token"`
+		Access    string `json:"access_token"`
+		Refresh   string `json:"refresh_token"`
+		IDToken   string `json:"id_token"`
+		ExpiresIn int64  `json:"expires_in"`
 	}
 	if json.NewDecoder(response.Body).Decode(&payload) != nil || payload.Access == "" {
 		return Tokens{}, errors.New("invalid Codex token response")
 	}
-	return Tokens{AccessToken: payload.Access, RefreshToken: payload.Refresh, IDToken: payload.IDToken, AccountID: accountIDFromJWT(payload.IDToken)}, nil
+	expiresIn := payload.ExpiresIn
+	if expiresIn <= 0 || expiresIn > 24*60*60 {
+		expiresIn = 60 * 60
+	}
+	return Tokens{AccessToken: payload.Access, RefreshToken: payload.Refresh, IDToken: payload.IDToken, AccountID: accountIDFromJWT(payload.IDToken), ExpiresAt: time.Now().Add(time.Duration(expiresIn) * time.Second)}, nil
 }
 
 func accountIDFromJWT(token string) string {
