@@ -30,15 +30,16 @@ type State struct {
 }
 
 type Activation struct {
-	WorkspaceID             string
-	OperationID             string
-	ExpectedEpoch           int64
-	ExpectedBindingRevision int64
-	BindingKind             string
-	BindingMode             string
-	EndpointSourceType      string
-	EndpointID              string
-	ActorUserID             string
+	WorkspaceID                    string
+	OperationID                    string
+	ExpectedEpoch                  int64
+	ExpectedBindingRowRevision     int64
+	ExpectedRuntimeBindingRevision int64
+	BindingKind                    string
+	BindingMode                    string
+	EndpointSourceType             string
+	EndpointID                     string
+	ActorUserID                    string
 }
 
 type Repository struct {
@@ -106,7 +107,7 @@ func (r *Repository) ActivateBinding(ctx context.Context, activation Activation)
 	}
 	result, err := tx.ExecContext(ctx, r.bind(`UPDATE workspace_service_bindings
 		SET mode=?,endpoint_source_type=?,endpoint_id=?,revision=revision+1,updated_by=?,updated_at=CURRENT_TIMESTAMP
-		WHERE workspace_id=? AND kind=? AND revision=?`), activation.BindingMode, source, endpoint, activation.ActorUserID, activation.WorkspaceID, activation.BindingKind, activation.ExpectedBindingRevision)
+		WHERE workspace_id=? AND kind=? AND revision=?`), activation.BindingMode, source, endpoint, activation.ActorUserID, activation.WorkspaceID, activation.BindingKind, activation.ExpectedBindingRowRevision)
 	if err != nil {
 		return State{}, err
 	}
@@ -115,7 +116,7 @@ func (r *Repository) ActivateBinding(ctx context.Context, activation Activation)
 	}
 	result, err = tx.ExecContext(ctx, r.bind(`UPDATE workspace_runtime_state
 		SET mode='active',binding_revision=binding_revision+1,storage_operation_kind=NULL,storage_operation_id=NULL,updated_by=?,updated_at=CURRENT_TIMESTAMP
-		WHERE workspace_id=? AND mode='activating' AND epoch=? AND binding_revision=? AND storage_operation_id=?`), activation.ActorUserID, activation.WorkspaceID, activation.ExpectedEpoch, activation.ExpectedBindingRevision, activation.OperationID)
+		WHERE workspace_id=? AND mode='activating' AND epoch=? AND binding_revision=? AND storage_operation_id=?`), activation.ActorUserID, activation.WorkspaceID, activation.ExpectedEpoch, activation.ExpectedRuntimeBindingRevision, activation.OperationID)
 	if err != nil {
 		return State{}, err
 	}

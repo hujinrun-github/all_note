@@ -12,6 +12,7 @@ RUN go mod download
 
 COPY . .
 RUN GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux go build -p 1 -o /out/flowspace-server ./cmd/server
+RUN GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux go build -p 1 -o /out/flowspace-admin ./cmd/flowspace-admin
 
 FROM alpine:3.22
 
@@ -24,6 +25,7 @@ ENV PORT=4201
 ENV TZ=Asia/Shanghai
 
 COPY --from=builder /out/flowspace-server /usr/local/bin/flowspace-server
+COPY --from=builder /out/flowspace-admin /usr/local/bin/flowspace-admin
 COPY db ./db
 
 EXPOSE 4201

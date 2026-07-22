@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { getCurrentUser } from '../../api/auth'
 import { useInboxList } from '../../hooks/useInbox'
+import { useTaskDomainCapabilities } from '../../hooks/useTaskDomain'
 
 const navGroups = [
   {
@@ -10,6 +11,7 @@ const navGroups = [
     items: [
       { to: '/', label: '今日', icon: TodayIcon },
       { to: '/tasks', label: '任务', icon: CheckIcon },
+      { to: '/projects', label: '项目', icon: ProjectIcon, v2Only: true },
       { to: '/calendar', label: '日历', icon: CalendarIcon },
       { to: '/inbox', label: '收件箱', icon: InboxIcon },
     ],
@@ -47,6 +49,7 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
     retry: false,
     staleTime: 5 * 60_000,
   })
+  const taskDomainCapability = useTaskDomainCapabilities()
   const visibleGroups = navGroups.filter((group) => group.title !== '系统' || currentUser.data?.user.role === 'admin')
 
   return (
@@ -75,7 +78,13 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
         {visibleGroups.map((group) => (
           <div className="sidebar-group" key={group.title}>
             <span className="sidebar-group-title">{group.title}</span>
-            {group.items.map(({ to, label, icon: Icon }) => {
+            {group.items
+              .filter(
+                (item) =>
+                  !('v2Only' in item) ||
+                  taskDomainCapability.data?.model_version === 'v2'
+              )
+              .map(({ to, label, icon: Icon }) => {
               const showInboxBadge = to === '/inbox' && inboxCount > 0
 
               return (
@@ -143,6 +152,15 @@ function CheckIcon() {
   return (
     <IconFrame>
       <path d="M4.2 9.2 7.4 12.4 14.2 5.6" />
+    </IconFrame>
+  )
+}
+
+function ProjectIcon() {
+  return (
+    <IconFrame>
+      <path d="M3.8 5.2h4l1.2 1.6h5.2v7.1H3.8z" />
+      <path d="M3.8 7h10.4" />
     </IconFrame>
   )
 }

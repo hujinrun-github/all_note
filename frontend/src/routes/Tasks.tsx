@@ -69,6 +69,8 @@ import {
   todayDateInputValue,
 } from '../utils/taskForm'
 import { getTaskColor } from '../utils/taskColors'
+import { TaskDomainGate } from '../components/taskDomain/TaskDomainGate'
+import TaskOccurrenceWorkspace from './TaskOccurrenceWorkspace'
 
 type TaskTab = 'week' | 'long' | 'recurring' | 'roadmap'
 type LongTaskStatus = 'active' | 'blocked' | 'open' | 'done'
@@ -326,6 +328,12 @@ function monthDayFromDateInput(value: string) {
 }
 
 export default function Tasks() {
+  return (
+    <TaskDomainGate legacy={<LegacyTasks />} v2={<TaskOccurrenceWorkspace />} />
+  )
+}
+
+export function LegacyTasks() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TaskTab>('week')
@@ -538,6 +546,8 @@ export default function Tasks() {
     onSuccess: (task) => {
       setSelectedTaskID(task.id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      queryClient.invalidateQueries({ queryKey: ['today'] })
+      queryClient.invalidateQueries({ queryKey: ['calendar-task-schedule'] })
     },
   })
 
@@ -548,6 +558,8 @@ export default function Tasks() {
       setSelectedTaskID(task.id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['learning-roadmap'] })
+      queryClient.invalidateQueries({ queryKey: ['today'] })
+      queryClient.invalidateQueries({ queryKey: ['calendar-task-schedule'] })
     },
   })
 
@@ -914,6 +926,7 @@ export default function Tasks() {
     }
     queryClient.invalidateQueries({ queryKey: ['tasks', 'recurring'] })
     queryClient.invalidateQueries({ queryKey: ['today'] })
+    queryClient.invalidateQueries({ queryKey: ['calendar-task-schedule'] })
   }
 
   const toggleRecurringWeekday = (day: number) => {
@@ -1415,6 +1428,11 @@ export default function Tasks() {
             articleSearchSources={articleSearchSources}
             articleSearchSourceOptions={availableArticleSearchSourceOptions}
             isGenerating={generateRoadmapMutation.isPending}
+            generationError={
+              generateRoadmapMutation.error instanceof Error
+                ? generateRoadmapMutation.error.message
+                : ''
+            }
             isSearching={searchResourcesMutation.isPending}
             isAddingResource={addResourceMutation.isPending}
             deletingResourceID={
@@ -1425,6 +1443,7 @@ export default function Tasks() {
             isOptimizingLayout={optimizeRoadmapLayoutMutation.isPending}
             isCreatingNode={createRoadmapNodeMutation.isPending}
             onSelectProject={(projectID) => {
+              generateRoadmapMutation.reset()
               setSelectedLearningProjectID(projectID)
               setSelectedNodeID('')
               setIsNodeDialogOpen(false)
@@ -2077,6 +2096,7 @@ function RoadmapTaskView({
   articleSearchSources,
   articleSearchSourceOptions,
   isGenerating,
+  generationError,
   isSearching,
   isAddingResource,
   deletingResourceID,
@@ -2113,6 +2133,7 @@ function RoadmapTaskView({
   articleSearchSources: string[]
   articleSearchSourceOptions: ArticleSearchSourceOption[]
   isGenerating: boolean
+  generationError: string
   isSearching: boolean
   isAddingResource: boolean
   deletingResourceID: string
@@ -2241,7 +2262,13 @@ function RoadmapTaskView({
           <button
             className="roadmap-generate-button"
             type="button"
-            onClick={() => onGenerate(generationPrompt.trim())}
+            onClick={() =>
+              onGenerate(
+                generationPrompt === defaultGenerationPrompt
+                  ? ''
+                  : generationPrompt.trim()
+              )
+            }
             disabled={
               !selectedProjectID || isGenerating || !generationPrompt.trim()
             }
@@ -2255,6 +2282,16 @@ function RoadmapTaskView({
           </button>
         </div>
       </div>
+
+      {generationError && (
+        <div className="roadmap-generation-error" role="alert">
+          <strong>自定义提示词未能应用</strong>
+          <span>{generationError}</span>
+          <small>
+            已保留当前 Roadmap，没有使用固定模板覆盖。请检查用户设置中的文本 AI 服务后重试。
+          </small>
+        </div>
+      )}
 
       {selectedProject && isGenerationPromptOpen && (
         <section

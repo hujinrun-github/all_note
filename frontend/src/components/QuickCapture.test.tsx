@@ -12,6 +12,14 @@ vi.mock('../api/events')
 vi.mock('../api/inbox')
 vi.mock('../api/notes')
 vi.mock('../api/tasks')
+vi.mock('../hooks/useTaskDomain', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useTaskDomain')>()),
+  useTaskDomainCapabilities: () => ({
+    data: { model_version: 'legacy', available: true },
+    isLoading: false,
+    isError: false,
+  }),
+}))
 
 const projects: tasksApi.TaskProject[] = [
   {

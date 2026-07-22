@@ -92,7 +92,45 @@ func TestMigrateControlCreatesVersionedControlSchema(t *testing.T) {
 			t.Errorf("expected table %s", table)
 		}
 	}
-	assertRowCount(t, db, `SELECT COUNT(*) FROM control_schema_migrations`, 2)
+	assertRowCount(t, db, `SELECT COUNT(*) FROM control_schema_migrations`, 4)
+}
+
+func TestOpenControlRejectsIncompleteOrTamperedMigrationHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		schema    string
+		statement string
+	}{
+		{name: "missing latest", schema: "fs_test_control_missing_latest", statement: `DELETE FROM control_schema_migrations WHERE version = '0003_codex_oauth_device_flows.sql'`},
+		{name: "tampered checksum", schema: "fs_test_control_bad_checksum", statement: `UPDATE control_schema_migrations SET checksum = 'tampered' WHERE version = '0001_control_baseline.sql'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rawURL := createPostgresTestSchema(t, tc.schema)
+			cfg := storage.Config{Env: "test", Driver: storage.DriverPostgres, URL: rawURL}
+			provider := Provider{}
+			if err := provider.MigrateControl(context.Background(), cfg); err != nil {
+				t.Fatalf("migrate control: %v", err)
+			}
+			db, err := sql.Open("pgx", rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(tc.statement); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			_ = db.Close()
+
+			store, err := provider.OpenControl(context.Background(), cfg)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("invalid control migration history must not return a store")
+			}
+			if !errors.Is(err, storage.ErrControlSchemaNotReady) {
+				t.Fatalf("expected ErrControlSchemaNotReady, got %v", err)
+			}
+		})
+	}
 }
 
 func TestPostgresTenantBaselineKeepsInstallationIdentity(t *testing.T) {

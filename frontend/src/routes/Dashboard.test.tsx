@@ -14,6 +14,14 @@ vi.mock('../api/client', () => ({
 }))
 
 vi.mock('../api/tasks')
+vi.mock('../hooks/useTaskDomain', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useTaskDomain')>()),
+  useTaskDomainCapabilities: () => ({
+    data: { model_version: 'legacy', available: true },
+    isLoading: false,
+    isError: false,
+  }),
+}))
 
 function renderDashboard(queryClient: QueryClient) {
   return render(

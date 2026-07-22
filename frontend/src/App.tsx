@@ -9,7 +9,9 @@ export function App() {
   const captureOpen = useUIStore((s) => s.captureOpen)
   const location = useLocation()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const isTaskRoute = location.pathname.startsWith('/tasks')
+  const isTaskRoute =
+    location.pathname.startsWith('/tasks') ||
+    location.pathname.startsWith('/projects')
 
   return (
     <div className={`workspace-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>

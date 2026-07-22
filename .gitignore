@@ -4,6 +4,9 @@
 .playwright-mcp/
 .superpowers/
 .codex-run/
+/tmp/
+/secrets/*.json
+/secrets/*.key
 
 node_modules/
 frontend/node_modules/

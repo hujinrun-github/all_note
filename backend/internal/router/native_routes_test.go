@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	authpkg "github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/mobilecontract"
 	"github.com/hujinrun/flowspace/internal/mobilesync"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/objectstore"
@@ -353,7 +354,7 @@ func TestMobileCapabilitiesReportsPinnedContractAndActualFeatures(t *testing.T) 
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.SchemaVersion != "mobile-v1" || body.ContractSHA256 != "4342beb03eb11a919d4139cd1723083d4f0acb9e62dff928788be292c306b3a6" {
+	if body.SchemaVersion != mobilecontract.SchemaVersion || body.ContractSHA256 != mobilecontract.ContractSHA256 {
 		t.Fatalf("capabilities contract = %+v", body)
 	}
 	if !body.Features.Sync || !body.Features.VoiceUpload || body.Features.TranscriptionJobs || !body.Features.WatchPairing {

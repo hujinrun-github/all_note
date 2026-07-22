@@ -1,35 +1,52 @@
 package router
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/middleware"
+	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/objectstore"
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/hujinrun/flowspace/internal/taskapp"
 	"github.com/hujinrun/flowspace/internal/transcription"
 )
 
 type Config struct {
-	Store                storage.Store
-	Auth                 config.AuthConfig
-	OAuthStateStore      auth.OAuthStateStore
-	GitHubClient         handler.GitHubClient
-	VoiceObjects         objectstore.Store
-	Transcriber          transcription.Transcriber
-	MaxVoiceBytes        int64
-	MobileSyncV1Enabled  bool
-	VoiceUploadEnabled   bool
-	TranscriptionEnabled bool
-	WorkspaceSettings    handler.WorkspaceSettingsService
-	CodexSubscription    handler.CodexSubscriptionService
-	AIChat               handler.WorkspaceChatService
+	Store                    storage.Store
+	ControlStore             storage.Store
+	ProvisionControlIdentity func(context.Context, model.User) error
+	Auth                     config.AuthConfig
+	OAuthStateStore          auth.OAuthStateStore
+	GitHubClient             handler.GitHubClient
+	VoiceObjects             objectstore.Store
+	Transcriber              transcription.Transcriber
+	MaxVoiceBytes            int64
+	MobileSyncV1Enabled      bool
+	VoiceUploadEnabled       bool
+	TranscriptionEnabled     bool
+	WorkspaceSettings        handler.WorkspaceSettingsService
+	CodexSubscription        handler.CodexSubscriptionService
+	AIChat                   handler.WorkspaceChatService
+	// Task-domain model-aware routing is intentionally opt-in. With both values
+	// nil the existing legacy Web routes remain unchanged. Once configured, the
+	// selector must prove legacy or v2 from durable workspace state on every
+	// request; runtime failures never imply a legacy fallback. cmd/server wiring
+	// remains a later deployment decision after cutover gates pass.
+	TaskDomainV2Runtime     taskapp.RuntimeResolver
+	TaskDomainModelSelector taskapp.ModelSelector
 }
 
 func Setup(cfg Config) *gin.Engine {
 	repository.SetStore(cfg.Store)
+	identityStore := cfg.ControlStore
+	if identityStore == nil {
+		identityStore = cfg.Store
+	}
 
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS(cfg.Auth.AllowedOrigins))
@@ -38,15 +55,15 @@ func Setup(cfg Config) *gin.Engine {
 	{
 		api.GET("/health", handler.Health)
 
-		authMiddleware := middleware.AuthMiddleware{Store: cfg.Store, SessionSecret: cfg.Auth.SessionSecret, Cookie: cfg.Auth.Cookie}
+		authMiddleware := middleware.AuthMiddleware{Store: identityStore, WatchStore: cfg.Store, SessionSecret: cfg.Auth.SessionSecret, Cookie: cfg.Auth.Cookie}
 		authRoutes := api.Group("/auth")
-		authRoutes.POST("/login", handler.Login(cfg.Store, cfg.Auth))
-		authRoutes.POST("/logout", authMiddleware.Optional(), handler.Logout(cfg.Store, cfg.Auth.Cookie))
-		authRoutes.GET("/me", authMiddleware.Required(), handler.Me(cfg.Store))
-		authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(cfg.Store))
+		authRoutes.POST("/login", handler.Login(identityStore, cfg.Auth))
+		authRoutes.POST("/logout", authMiddleware.Optional(), handler.Logout(identityStore, cfg.Auth.Cookie))
+		authRoutes.GET("/me", authMiddleware.Required(), handler.Me(identityStore))
+		authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(identityStore))
 		authRoutes.GET("/providers", handler.AuthProviders(cfg.Auth))
-		authRoutes.GET("/github/start", handler.GitHubOAuthStart(cfg.Store, cfg.Auth, cfg.OAuthStateStore))
-		authRoutes.GET("/github/callback", handler.GitHubOAuthCallback(cfg.Store, cfg.Auth, cfg.OAuthStateStore, cfg.GitHubClient))
+		authRoutes.GET("/github/start", handler.GitHubOAuthStart(identityStore, cfg.Auth, cfg.OAuthStateStore))
+		authRoutes.GET("/github/callback", handler.GitHubOAuthCallbackAcrossStores(identityStore, cfg.Store, cfg.ProvisionControlIdentity, cfg.Auth, cfg.OAuthStateStore, cfg.GitHubClient))
 
 		protected := api.Group("")
 		protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
@@ -89,18 +106,18 @@ func Setup(cfg Config) *gin.Engine {
 		}
 		admin := protected.Group("/admin")
 		admin.Use(authMiddleware.RequireAdmin())
-		admin.GET("/users", handler.ListUsers(cfg.Store))
-		admin.POST("/users", handler.CreateUser(cfg.Store))
-		admin.PATCH("/users/:id", handler.UpdateUser(cfg.Store))
-		admin.POST("/users/:id/reset-password", handler.ResetUserPassword(cfg.Store))
-		admin.POST("/users/:id/disable", handler.DisableUser(cfg.Store))
-		admin.POST("/users/:id/enable", handler.EnableUser(cfg.Store))
+		admin.GET("/users", handler.ListUsers(identityStore))
+		admin.POST("/users", handler.CreateUserAcrossStores(identityStore, cfg.Store, cfg.ProvisionControlIdentity))
+		admin.PATCH("/users/:id", handler.UpdateUser(identityStore))
+		admin.POST("/users/:id/reset-password", handler.ResetUserPassword(identityStore))
+		admin.POST("/users/:id/disable", handler.DisableUser(identityStore))
+		admin.POST("/users/:id/enable", handler.EnableUser(identityStore))
 
-		protected.GET("/settings/profile", handler.GetSettingsProfile(cfg.Store))
-		protected.PATCH("/settings/profile", handler.UpdateSettingsProfile(cfg.Store))
-		protected.GET("/settings/profile/avatar", handler.GetSettingsAvatar(cfg.Store))
-		protected.PUT("/settings/profile/avatar", handler.PutSettingsAvatar(cfg.Store))
-		protected.DELETE("/settings/profile/avatar", handler.DeleteSettingsAvatar(cfg.Store))
+		protected.GET("/settings/profile", handler.GetSettingsProfile(identityStore))
+		protected.PATCH("/settings/profile", handler.UpdateSettingsProfile(identityStore))
+		protected.GET("/settings/profile/avatar", handler.GetSettingsAvatar(identityStore))
+		protected.PUT("/settings/profile/avatar", handler.PutSettingsAvatar(identityStore))
+		protected.DELETE("/settings/profile/avatar", handler.DeleteSettingsAvatar(identityStore))
 		protected.GET("/settings/runtime", handler.GetRuntimeSettings(cfg.WorkspaceSettings))
 		protected.POST("/settings/profiles/test", handler.TestServiceProfile(cfg.WorkspaceSettings))
 		protected.POST("/settings/profiles", handler.SaveServiceProfile(cfg.WorkspaceSettings))
@@ -148,37 +165,7 @@ func Setup(cfg Config) *gin.Engine {
 		protected.POST("/sync/notion/deletions/:note_id/confirm", handler.ConfirmNotionDeletion(cfg.Store))
 		protected.POST("/sync/notion/deletions/:note_id/restore", handler.RestoreNotionDeletion(cfg.Store))
 
-		protected.GET("/tasks", handler.GetTasks(cfg.Store))
-		protected.GET("/tasks/projects", handler.GetTaskProjects(cfg.Store))
-		protected.POST("/tasks", handler.CreateTask(cfg.Store))
-		protected.PATCH("/tasks/:id", handler.UpdateTask(cfg.Store))
-		protected.DELETE("/tasks/:id", handler.DeleteTask(cfg.Store))
-		protected.POST("/tasks/:id/occurrences/:date/complete", handler.CompleteOccurrence(cfg.Store))
-		protected.POST("/tasks/:id/occurrences/:date/reopen", handler.ReopenOccurrence(cfg.Store))
-		protected.POST("/tasks/:id/occurrences/:date/skip", handler.SkipOccurrence(cfg.Store))
-		protected.GET("/task-occurrences", handler.GetTaskOccurrences(cfg.Store))
-		protected.GET("/task-projects", handler.ListTaskProjects(cfg.Store))
-		protected.POST("/task-projects", handler.CreateTaskProject(cfg.Store))
-		protected.PATCH("/task-projects/:id", handler.UpdateTaskProject(cfg.Store))
-		protected.DELETE("/task-projects/:id", handler.DeleteTaskProject(cfg.Store))
-		protected.POST("/task-projects/:id/roadmap/generate", handler.GenerateLearningRoadmapWithAI(cfg.Store, cfg.AIChat))
-		protected.GET("/task-projects/:id/roadmap", handler.GetLearningRoadmap(cfg.Store))
-		protected.POST("/roadmaps/:id/nodes", handler.CreateRoadmapNode(cfg.Store))
-		protected.PATCH("/roadmap-nodes/:id", handler.UpdateRoadmapNode(cfg.Store))
-		protected.DELETE("/roadmap-nodes/:id", handler.DeleteRoadmapNode(cfg.Store))
-		protected.POST("/roadmap-nodes/:id/resources/search", handler.SearchRoadmapNodeResources(cfg.Store))
-		protected.POST("/roadmap-nodes/:id/resources", handler.AddRoadmapNodeResource(cfg.Store))
-		protected.PATCH("/roadmaps/:id/layout", handler.UpdateRoadmapLayout(cfg.Store))
-		protected.POST("/roadmaps/:id/layout/optimize", handler.OptimizeRoadmapLayout(cfg.Store))
-		protected.DELETE("/roadmap-resources/:id", handler.DeleteRoadmapResource(cfg.Store))
-
-		protected.GET("/events", handler.GetEvents(cfg.Store))
-		protected.POST("/events", handler.CreateEvent(cfg.Store))
-		protected.PATCH("/events/:id", handler.UpdateEvent(cfg.Store))
-		protected.DELETE("/events/:id", handler.DeleteEvent(cfg.Store))
-
-		protected.GET("/calendar/project-sources", handler.GetCalendarProjectSources(cfg.Store))
-		protected.PUT("/calendar/project-sources", handler.SaveCalendarProjectSources(cfg.Store))
+		registerTaskDomainRoutes(protected, cfg)
 
 		protected.GET("/inbox", handler.GetInbox(cfg.Store))
 		protected.POST("/inbox", handler.CreateInboxItem(cfg.Store))
@@ -188,8 +175,6 @@ func Setup(cfg Config) *gin.Engine {
 
 		protected.GET("/search", handler.Search(cfg.Store))
 		protected.POST("/japanese/furigana", handler.JapaneseFuriganaWithAI(cfg.AIChat))
-		protected.GET("/today", handler.GetToday(cfg.Store))
-		protected.GET("/summary", handler.GetSummary(cfg.Store))
 	}
 
 	return r

@@ -25,6 +25,8 @@ import {
   type TaskOccurrence,
 } from '../api/tasks'
 import { getTaskColor } from '../utils/taskColors'
+import { TaskDomainGate } from '../components/taskDomain/TaskDomainGate'
+import CalendarV2 from './CalendarV2'
 
 type CalendarView = 'month' | 'week' | 'day'
 
@@ -156,6 +158,19 @@ function occurrenceToCalendarTask(occurrence: TaskOccurrence): CalendarTask {
   }
 }
 
+function taskProjectionToCalendarTask(task: TaskData): CalendarTask | null {
+  const date = task.occurrence_date ?? task.planned_date
+  if (!date) return null
+  return {
+    ...task,
+    calendar_key: `${task.id}:${date}`,
+  }
+}
+
+function getCalendarTaskIdentity(task: CalendarTask) {
+  return `${task.id}:${task.occurrence_date ?? task.planned_date ?? ''}`
+}
+
 async function getTasksByDateRange(from: string, to: string) {
   const pageSize = 100
   const firstPage = await getTasks({
@@ -263,6 +278,10 @@ function CalendarAgendaList({ entries }: { entries: CalendarAgendaEntry[] }) {
 }
 
 export default function Calendar() {
+  return <TaskDomainGate legacy={<LegacyCalendar />} v2={<CalendarV2 />} />
+}
+
+export function LegacyCalendar() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [currentDate, setCurrentDate] = useState(new Date())
@@ -348,6 +367,27 @@ export default function Calendar() {
   const [newEventEndTime, setNewEventEndTime] = useState('10:00')
   const events = data?.events ?? emptyEvents
   const calendarTasks = calendarTasksQuery.data ?? emptyCalendarTasks
+  const todayTasks = todayData?.todayTasks ?? emptyTaskData
+  const overdueTasks = todayData?.overdueTasks ?? emptyTaskData
+  const projectedCalendarTasks = useMemo(() => {
+    const tasksByIdentity = new Map<string, CalendarTask>()
+    calendarTasks.forEach((task) => {
+      tasksByIdentity.set(getCalendarTaskIdentity(task), task)
+    })
+    ;[...todayTasks, ...overdueTasks].forEach((task) => {
+      const projected = taskProjectionToCalendarTask(task)
+      if (!projected) return
+      const identity = getCalendarTaskIdentity(projected)
+      const existing = tasksByIdentity.get(identity)
+      tasksByIdentity.set(identity, {
+        ...existing,
+        ...projected,
+        project_id: projected.project_id ?? existing?.project_id,
+        color: projected.color ?? existing?.color,
+      })
+    })
+    return Array.from(tasksByIdentity.values())
+  }, [calendarTasks, overdueTasks, todayTasks])
   const projectSources = projectSourcesData?.sources ?? emptyProjectSources
   const configurableSources = useMemo(
     () =>
@@ -359,7 +399,7 @@ export default function Calendar() {
   )
   const hasUnassignedItems =
     events.some((event) => !event.project_id) ||
-    calendarTasks.some((task) => !task.project_id)
+    projectedCalendarTasks.some((task) => !task.project_id)
   const visibleSources = useMemo(
     () =>
       hasUnassignedItems
@@ -418,13 +458,13 @@ export default function Calendar() {
   const visibleTasks = useMemo(
     () =>
       selectedVisibleSource
-        ? calendarTasks.filter((task) =>
+        ? projectedCalendarTasks.filter((task) =>
             selectedVisibleSource.project_id === unassignedSourceId
               ? !task.project_id
               : task.project_id === selectedVisibleSource.project_id
           )
         : emptyCalendarTasks,
-    [calendarTasks, selectedVisibleSource]
+    [projectedCalendarTasks, selectedVisibleSource]
   )
   const eventsByDay = useMemo(() => {
     const grouped = new Map<number, Event[]>()
@@ -451,8 +491,6 @@ export default function Calendar() {
     selectedDay === today.getDate() &&
     month === today.getMonth() &&
     year === today.getFullYear()
-  const todayTasks = todayData?.todayTasks ?? emptyTaskData
-  const overdueTasks = todayData?.overdueTasks ?? emptyTaskData
   const selectedDateInput = selectedDay
     ? dateToInputValue(new Date(year, month, selectedDay))
     : ''

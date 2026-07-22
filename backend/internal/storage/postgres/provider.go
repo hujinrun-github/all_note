@@ -5,14 +5,34 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/storage"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
-type Provider struct{}
+// DialContextFunc is invoked by pgx for every new physical PostgreSQL
+// connection. A user-configurable tenant endpoint must use a Provider created
+// by NewProviderWithDialContext so hostname resolution and address policy are
+// enforced at the same point as the network connection.
+type DialContextFunc func(context.Context, string, string) (net.Conn, error)
+
+type Provider struct {
+	dialContext DialContextFunc
+}
+
+// NewProviderWithDialContext creates a PostgreSQL provider for untrusted,
+// user-configurable endpoints. The zero-value Provider remains available for
+// trusted deployment-owned control and platform databases.
+func NewProviderWithDialContext(dialContext DialContextFunc) (Provider, error) {
+	if dialContext == nil {
+		return Provider{}, errors.New("PostgreSQL dial context is required")
+	}
+	return Provider{dialContext: dialContext}, nil
+}
 
 func (p Provider) OpenControl(ctx context.Context, cfg storage.Config) (storage.Store, error) {
 	db, err := p.openWithoutMigrations(ctx, cfg)
@@ -20,6 +40,10 @@ func (p Provider) OpenControl(ctx context.Context, cfg storage.Config) (storage.
 		return nil, err
 	}
 	if err := requirePostgresMigrationTable(ctx, db, "control_schema_migrations", ""); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", storage.ErrControlSchemaNotReady, err)
+	}
+	if err := verifyPostgresControlMigrations(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("%w: %v", storage.ErrControlSchemaNotReady, err)
 	}
@@ -50,7 +74,7 @@ func (p Provider) openWithoutMigrations(ctx context.Context, cfg storage.Config)
 	if err := p.Validate(cfg); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("pgx", cfg.URL)
+	db, err := p.openDatabase(cfg.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +87,35 @@ func (p Provider) openWithoutMigrations(ctx context.Context, cfg storage.Config)
 		return nil, err
 	}
 	return db, nil
+}
+
+func (p Provider) openDatabase(databaseURL string) (*sql.DB, error) {
+	if p.dialContext == nil {
+		return sql.Open("pgx", databaseURL)
+	}
+	connConfig, err := p.connectionConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	return stdlib.OpenDB(*connConfig), nil
+}
+
+func (p Provider) connectionConfig(databaseURL string) (*pgx.ConnConfig, error) {
+	connConfig, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// pgx normally resolves DNS before DialFunc. Returning the unchanged host
+	// keeps resolution inside the injected dial-and-validate operation on every
+	// connection, while pgx's TLS config retains the original hostname for SNI
+	// and certificate verification.
+	connConfig.LookupFunc = func(_ context.Context, host string) ([]string, error) {
+		return []string{host}, nil
+	}
+	connConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return p.dialContext(ctx, network, address)
+	}
+	return connConfig, nil
 }
 
 func requirePostgresMigrationTable(ctx context.Context, db *sql.DB, tableName, expectedVersion string) error {
@@ -111,7 +164,7 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		return nil, err
 	}
 
-	db, err := sql.Open("pgx", cfg.URL)
+	db, err := p.openDatabase(cfg.URL)
 	if err != nil {
 		return nil, err
 	}

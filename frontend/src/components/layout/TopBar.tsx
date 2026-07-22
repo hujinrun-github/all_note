@@ -21,6 +21,10 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
     title: '任务工作台',
     subtitle: '按项目、状态和节奏推进每天要完成的事情',
   },
+  '/projects': {
+    title: '项目中心',
+    subtitle: '按目标、类型和周期组织任务定义与每次实际执行',
+  },
   '/calendar': {
     title: '日历',
     subtitle: '查看月份安排，连接任务、提醒和关联笔记',
@@ -77,7 +81,9 @@ export function TopBar() {
 
   const meta = pathname.startsWith('/editor/')
     ? { title: '编辑器', subtitle: '专注写作，并把内容连接到任务和日程' }
-    : (pageMeta[pathname] ?? pageMeta['/'])
+    : pathname.startsWith('/projects/')
+      ? { title: '项目详情', subtitle: '在一个目标下查看任务定义与执行实例' }
+      : (pageMeta[pathname] ?? pageMeta['/'])
   const { data: currentUser } = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: getCurrentUser,

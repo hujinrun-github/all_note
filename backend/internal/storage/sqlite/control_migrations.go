@@ -118,6 +118,48 @@ func loadSQLiteControlMigrations(dir string) ([]controlMigration, error) {
 	return migrations, nil
 }
 
+func verifySQLiteControlMigrations(ctx context.Context, db *sql.DB) error {
+	dir, err := findSQLiteControlMigrationsDir()
+	if err != nil {
+		return err
+	}
+	migrations, err := loadSQLiteControlMigrations(dir)
+	if err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT version, checksum FROM control_schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("read control migration history: %w", err)
+	}
+	defer rows.Close()
+	applied := make(map[string]string, len(migrations))
+	for rows.Next() {
+		var version, checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return fmt.Errorf("scan control migration history: %w", err)
+		}
+		applied[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate control migration history: %w", err)
+	}
+	if len(applied) != len(migrations) {
+		return fmt.Errorf("control migration count is %d, expected %d", len(applied), len(migrations))
+	}
+	for _, migration := range migrations {
+		sum := sha256.Sum256(migration.sql)
+		want := hex.EncodeToString(sum[:])
+		got, ok := applied[migration.version]
+		if !ok {
+			return fmt.Errorf("control migration %s is missing", migration.version)
+		}
+		if got != want {
+			return fmt.Errorf("control migration %s checksum mismatch", migration.version)
+		}
+	}
+	return nil
+}
+
 func findSQLiteControlMigrationsDir() (string, error) {
 	candidates := []string{
 		filepath.Join("db", "migrations", "control", "sqlite"),

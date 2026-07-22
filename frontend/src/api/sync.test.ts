@@ -26,7 +26,7 @@ describe('notion sync api', () => {
   beforeEach(() => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      vi.fn(async () => {
         return new Response(
           JSON.stringify({
             data: {

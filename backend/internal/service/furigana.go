@@ -51,6 +51,10 @@ func AnnotateJapaneseWithAI(ctx context.Context, text string) ([]model.FuriganaS
 }
 
 func AnnotateJapaneseWithTextGenerator(ctx context.Context, text string, generator TextGenerator) ([]model.FuriganaSegment, string, error) {
+	return AnnotateJapaneseWithTextGeneratorPolicy(ctx, text, generator, true)
+}
+
+func AnnotateJapaneseWithTextGeneratorPolicy(ctx context.Context, text string, generator TextGenerator, allowLocalFallback bool) ([]model.FuriganaSegment, string, error) {
 	if generator != nil {
 		content, err := generator.Generate(ctx,
 			"You add Japanese furigana. Return JSON only as {\"segments\":[{\"text\":\"原文\",\"reading\":\"ひらがな\"}]}. Preserve every original character and its order exactly. Split kana, punctuation, numbers and Latin text into segments without reading. Add reading only to kanji text, use contextual hiragana readings, and keep okurigana outside the annotated kanji segment.",
@@ -64,6 +68,9 @@ func AnnotateJapaneseWithTextGenerator(ctx context.Context, text string, generat
 				}
 			}
 		}
+	}
+	if !allowLocalFallback {
+		return nil, "", errors.New("Japanese furigana AI failed and local fallback is disabled")
 	}
 	segments, err := AnnotateJapanese(text)
 	if err != nil {

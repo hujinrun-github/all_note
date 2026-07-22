@@ -104,7 +104,7 @@ func applyPostgresControlMigration(ctx context.Context, conn *sql.Conn, migratio
 	if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("check control migration %s: %w", migration.version, err)
 	}
-	if _, err := tx.ExecContext(ctx, string(migration.sql)); err != nil {
+	if _, err := tx.ExecContext(ctx, postgresControlMigrationExecutionSQL(migration.sql)); err != nil {
 		return fmt.Errorf("apply control migration %s: %w", migration.version, err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO control_schema_migrations(version, checksum) VALUES ($1, $2)`, migration.version, checksum); err != nil {
@@ -115,6 +115,15 @@ func applyPostgresControlMigration(ctx context.Context, conn *sql.Conn, migratio
 	}
 	committed = true
 	return nil
+}
+
+// postgresControlMigrationExecutionSQL preserves the checked migration bytes
+// while translating trigger invocation syntax for PostgreSQL 10. EXECUTE
+// PROCEDURE remains accepted by newer PostgreSQL versions as the trigger
+// compatibility spelling, so one migration history works across supported
+// servers without changing an already-recorded checksum.
+func postgresControlMigrationExecutionSQL(raw []byte) string {
+	return strings.ReplaceAll(string(raw), "EXECUTE FUNCTION", "EXECUTE PROCEDURE")
 }
 
 func loadPostgresControlMigrations(dir string) ([]controlMigration, error) {
@@ -138,6 +147,48 @@ func loadPostgresControlMigrations(dir string) ([]controlMigration, error) {
 		result = append(result, controlMigration{version: name, sql: contents})
 	}
 	return result, nil
+}
+
+func verifyPostgresControlMigrations(ctx context.Context, db *sql.DB) error {
+	dir, err := findPostgresControlMigrationsDir()
+	if err != nil {
+		return err
+	}
+	migrations, err := loadPostgresControlMigrations(dir)
+	if err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT version, checksum FROM control_schema_migrations`)
+	if err != nil {
+		return fmt.Errorf("read control migration history: %w", err)
+	}
+	defer rows.Close()
+	applied := make(map[string]string, len(migrations))
+	for rows.Next() {
+		var version, checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			return fmt.Errorf("scan control migration history: %w", err)
+		}
+		applied[version] = checksum
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate control migration history: %w", err)
+	}
+	if len(applied) != len(migrations) {
+		return fmt.Errorf("control migration count is %d, expected %d", len(applied), len(migrations))
+	}
+	for _, migration := range migrations {
+		sum := sha256.Sum256(migration.sql)
+		want := hex.EncodeToString(sum[:])
+		got, ok := applied[migration.version]
+		if !ok {
+			return fmt.Errorf("control migration %s is missing", migration.version)
+		}
+		if got != want {
+			return fmt.Errorf("control migration %s checksum mismatch", migration.version)
+		}
+	}
+	return nil
 }
 
 func findPostgresControlMigrationsDir() (string, error) {

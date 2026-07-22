@@ -58,7 +58,23 @@ func ListUsers(store storage.Store) gin.HandlerFunc {
 	}
 }
 
+type ControlIdentityProvisioner func(context.Context, model.User) error
+
 func CreateUser(store storage.Store) gin.HandlerFunc {
+	return CreateUserWithControlProvisioning(store, nil)
+}
+
+func CreateUserWithControlProvisioning(store storage.Store, provision ControlIdentityProvisioner) gin.HandlerFunc {
+	return createUserAcrossStores(store, nil, provision)
+}
+
+// CreateUserAcrossStores makes the control store the identity source of truth
+// and projects the newly created workspace into the current tenant data store.
+func CreateUserAcrossStores(controlStore, tenantStore storage.Store, provision ControlIdentityProvisioner) gin.HandlerFunc {
+	return createUserAcrossStores(controlStore, tenantStore, provision)
+}
+
+func createUserAcrossStores(store, tenantProjection storage.Store, provision ControlIdentityProvisioner) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if store == nil {
 			internalError(c, "create user failed")
@@ -117,9 +133,11 @@ func CreateUser(store storage.Store) gin.HandlerFunc {
 			if err := tx.Auth().AddWorkspaceMember(c.Request.Context(), workspace.ID, user.ID, "owner"); err != nil {
 				return err
 			}
-			targetCtx := auth.ContextWithWorkspaceScope(c.Request.Context(), workspace.ID)
-			if err := provisioning.EnsureDefaultWorkspaceData(targetCtx, tx); err != nil {
-				return err
+			if tenantProjection == nil {
+				targetCtx := auth.ContextWithWorkspaceScope(c.Request.Context(), workspace.ID)
+				if err := provisioning.EnsureDefaultWorkspaceData(targetCtx, tx); err != nil {
+					return err
+				}
 			}
 			return tx.Auth().RecordAuditEvent(c.Request.Context(), &model.AuditEvent{
 				ActorUserID:  stringPtr(identity.UserID),
@@ -135,6 +153,18 @@ func CreateUser(store storage.Store) gin.HandlerFunc {
 		if err != nil {
 			handleAdminUserError(c, err, "create user failed")
 			return
+		}
+		if provision != nil {
+			if err := provision(c.Request.Context(), *user); err != nil {
+				internalError(c, "create user control provisioning failed")
+				return
+			}
+		}
+		if tenantProjection != nil {
+			if err := ensureTenantWorkspace(c.Request.Context(), tenantProjection, user); err != nil {
+				internalError(c, "create user tenant provisioning failed")
+				return
+			}
 		}
 		created(c, gin.H{"user": user, "workspace": workspace})
 	}

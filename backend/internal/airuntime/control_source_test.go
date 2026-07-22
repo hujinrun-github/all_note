@@ -25,7 +25,7 @@ func TestControlSourceResolvesConcreteEncryptedProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES('u1','u1@example.test','x'); INSERT INTO workspaces(id,name,owner_user_id) VALUES('w1','one','u1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES('u1','u1@example.test','x'); INSERT INTO workspaces(id,name,owner_user_id) VALUES('w1','one','u1'); INSERT INTO workspace_runtime_state(workspace_id,mode,epoch,binding_revision,updated_by) VALUES('w1','active',1,1,'u1')`); err != nil {
 		t.Fatal(err)
 	}
 	keyring, _ := credentials.NewKeyring("active", map[string][]byte{"active": bytes.Repeat([]byte{4}, 32)})
@@ -40,7 +40,7 @@ func TestControlSourceResolvesConcreteEncryptedProfile(t *testing.T) {
 	if err := profiles.CreateSystemEndpoint(context.Background(), "w1", "chat-default", "llm_chat", version.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := profiles.SetBinding(context.Background(), controlprofile.SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ActorUserID: "u1"}); err != nil {
+	if _, err := profiles.SetBinding(context.Background(), controlprofile.SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRuntimeRevision: 1, ActorUserID: "u1"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO workspace_ai_feature_settings(workspace_id,feature,enabled,fallback_mode,updated_by) VALUES('w1','roadmap_generation',1,'template','u1')`); err != nil {

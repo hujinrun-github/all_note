@@ -75,9 +75,10 @@ type VerifiedServiceProfileDTO struct {
 }
 
 type SetServiceBindingRequest struct {
-	Mode             string `json:"mode" binding:"required"`
-	EndpointID       string `json:"endpoint_id"`
-	ExpectedRevision int64  `json:"expected_revision" binding:"required"`
+	Mode                    string `json:"mode" binding:"required"`
+	EndpointID              string `json:"endpoint_id"`
+	ExpectedRevision        int64  `json:"expected_revision" binding:"required"`
+	ExpectedRuntimeRevision int64  `json:"expected_runtime_revision" binding:"required"`
 }
 
 type WorkspaceSettingsService interface {

@@ -9,7 +9,7 @@ import {
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import Calendar from './Calendar'
+import { LegacyCalendar } from './Calendar'
 import { api } from '../api/client'
 import { useCreateEvent, useEventsList } from '../hooks/useEvents'
 import {
@@ -56,7 +56,7 @@ function renderCalendar(queryClient = createTestQueryClient()) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Calendar />
+        <LegacyCalendar />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -278,6 +278,41 @@ describe('Calendar today task flow', () => {
 
     expect(await screen.findByLabelText('任务：月历彩色任务')).toBeVisible()
     expect(await screen.findByLabelText('任务颜色：月历彩色任务')).toBeVisible()
+  })
+
+  it('keeps the current-day month cell consistent with the today task projection', async () => {
+    const currentDate = new Date()
+    const plannedDate = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
+    vi.mocked(tasksApi.getTasks).mockResolvedValue({
+      tasks: [],
+      pagination: { page: 1, page_size: 100, total: 0 },
+    })
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        todayTasks: [
+          {
+            id: 'task-from-today-projection',
+            title: '今日投影任务',
+            project: 'Personal',
+            project_id: 'personal',
+            planned_date: plannedDate,
+            priority: 0,
+            done: 0,
+            scope: 'daily',
+          },
+        ],
+        overdueTasks: [],
+        events: [],
+        recentNotes: [],
+      },
+    })
+
+    renderCalendar()
+
+    const monthGrid = await screen.findByRole('grid')
+    expect(
+      await within(monthGrid).findByLabelText('任务：今日投影任务')
+    ).toBeVisible()
   })
 
   it('loads only the current month task range and prefetches nearby months', async () => {

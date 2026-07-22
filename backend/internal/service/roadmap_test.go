@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,12 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage"
 	_ "modernc.org/sqlite"
 )
+
+type unavailableRoadmapGenerator struct{}
+
+func (unavailableRoadmapGenerator) Generate(context.Context, string, string) (string, error) {
+	return "", errors.New("AI unavailable")
+}
 
 func openRoadmapServiceTestDB(t *testing.T) {
 	t.Helper()
@@ -636,6 +643,48 @@ func TestGenerateLearningRoadmapFallsBackToLocalDraftWhenAIUnavailable(t *testin
 	}
 	if roadmap.Status != "ready" || len(roadmap.Nodes) == 0 {
 		t.Fatalf("expected ready fallback roadmap with nodes, got %+v", roadmap)
+	}
+}
+
+func TestGenerateLearningRoadmapPolicyControlsTemplateFallback(t *testing.T) {
+	openRoadmapServiceTestDB(t)
+	t.Setenv("ARTICLE_SEARCH_PROVIDER", "none")
+
+	allowed := createLearningProjectForTest(t, "Template allowed")
+	roadmap, err := GenerateLearningRoadmapWithPromptAndAIPolicy(roadmapTestContext(t), roadmapTestStore(t), allowed.ID, "", unavailableRoadmapGenerator{}, true)
+	if err != nil || roadmap.Status != "ready" || len(roadmap.Nodes) == 0 {
+		t.Fatalf("explicit template fallback: roadmap=%+v err=%v", roadmap, err)
+	}
+
+	denied := createLearningProjectForTest(t, "Template denied")
+	if _, err := GenerateLearningRoadmapWithPromptAndAIPolicy(roadmapTestContext(t), roadmapTestStore(t), denied.ID, "", unavailableRoadmapGenerator{}, false); err == nil {
+		t.Fatal("disabled template fallback silently generated a roadmap")
+	}
+	failed, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), denied.ID)
+	if err != nil || failed.Status != "failed" {
+		t.Fatalf("failed roadmap=%+v err=%v", failed, err)
+	}
+
+	custom := createLearningProjectForTest(t, "Custom prompt must be honored")
+	previous, err := GenerateLearningRoadmapWithPromptAndAIPolicy(
+		roadmapTestContext(t), roadmapTestStore(t), custom.ID, "", unavailableRoadmapGenerator{}, true,
+	)
+	if err != nil {
+		t.Fatalf("seed custom prompt roadmap: %v", err)
+	}
+	if _, err := GenerateLearningRoadmapWithPromptAndAIPolicy(
+		roadmapTestContext(t),
+		roadmapTestStore(t),
+		custom.ID,
+		"只生成三个以口语实战为核心的阶段",
+		unavailableRoadmapGenerator{},
+		true,
+	); err == nil || !strings.Contains(err.Error(), "custom roadmap prompt") {
+		t.Fatalf("custom prompt silently fell back to a template: %v", err)
+	}
+	preserved, err := GetLearningRoadmap(roadmapTestContext(t), roadmapTestStore(t), custom.ID)
+	if err != nil || preserved.ID != previous.ID || len(preserved.Nodes) != len(previous.Nodes) {
+		t.Fatalf("custom prompt failure replaced the previous roadmap: previous=%+v preserved=%+v err=%v", previous, preserved, err)
 	}
 }
 

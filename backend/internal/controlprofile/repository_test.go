@@ -99,20 +99,28 @@ func TestBindingModesAndRevisionCAS(t *testing.T) {
 	if err := repository.CreateSystemEndpoint(context.Background(), "w1", "chat-default", "llm_chat", system.ID); err != nil {
 		t.Fatal(err)
 	}
-	binding, err := repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRevision: 0, ActorUserID: "u1"})
+	binding, err := repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRevision: 0, ExpectedRuntimeRevision: 1, ActorUserID: "u1"})
 	if err != nil || binding.Revision != 1 {
 		t.Fatalf("initial binding=%+v err=%v", binding, err)
 	}
-	binding, err = repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "disabled", ExpectedRevision: 1, ActorUserID: "u1"})
+	binding, err = repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "disabled", ExpectedRevision: 1, ExpectedRuntimeRevision: 2, ActorUserID: "u1"})
 	if err != nil || binding.Revision != 2 || binding.EndpointID != "" {
 		t.Fatalf("disabled binding=%+v err=%v", binding, err)
 	}
-	_, err = repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRevision: 1, ActorUserID: "u1"})
+	_, err = repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRevision: 1, ExpectedRuntimeRevision: 3, ActorUserID: "u1"})
 	if !errors.Is(err, ErrBindingCASConflict) {
 		t.Fatalf("stale binding revision error=%v", err)
 	}
-	if _, err := repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_transcription", Mode: "reuse_chat", EndpointSourceType: "system", EndpointID: "chat-default", ActorUserID: "u1"}); err == nil {
+	if _, err := repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_transcription", Mode: "reuse_chat", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRuntimeRevision: 3, ActorUserID: "u1"}); err == nil {
 		t.Fatal("reuse_chat accepted an endpoint")
+	}
+	_, err = repository.SetBinding(context.Background(), SetBindingInput{WorkspaceID: "w1", Kind: "llm_chat", Mode: "default", EndpointSourceType: "system", EndpointID: "chat-default", ExpectedRevision: 2, ExpectedRuntimeRevision: 2, ActorUserID: "u1"})
+	if !errors.Is(err, ErrBindingCASConflict) {
+		t.Fatalf("stale runtime revision error=%v", err)
+	}
+	binding, err = repository.GetBinding(context.Background(), "w1", "llm_chat")
+	if err != nil || binding.Revision != 2 || binding.Mode != "disabled" {
+		t.Fatalf("runtime CAS failure did not roll back binding: binding=%+v err=%v", binding, err)
 	}
 }
 
@@ -186,6 +194,9 @@ func createProfileFixture(t *testing.T) (*Repository, *sql.DB) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO workspaces(id,name,owner_user_id) VALUES('w1','one','u1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO workspace_runtime_state(workspace_id,mode,epoch,binding_revision,updated_by) VALUES('w1','active',1,1,'u1')`); err != nil {
 		t.Fatal(err)
 	}
 	keyring, err := credentials.NewKeyring("active", map[string][]byte{"active": bytes.Repeat([]byte{7}, 32)})

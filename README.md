@@ -1,5 +1,8 @@
 # FlowSpace / all_note
 
+Deployment of the split control/data stores, credential keyring, and private
+endpoint allowlist is documented in [Runtime settings deployment](docs/runtime-settings-deployment.md).
+
 轻量 All-in-one 效率工具 — 笔记 + 任务 + 日历自然打通的日常效率中枢。
 
 用户使用与服务配置说明见[用户设置指南](docs/user-settings.md)，其中包含 FunASR / SenseVoice 语音转写配置示例。

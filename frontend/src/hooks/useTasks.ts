@@ -26,6 +26,7 @@ export function useCreateTask() {
       qc.invalidateQueries({ queryKey: ['task-projects'] })
       qc.invalidateQueries({ queryKey: ['task-project-names'] })
       qc.invalidateQueries({ queryKey: ['today'] })
+      qc.invalidateQueries({ queryKey: ['calendar-task-schedule'] })
     },
   })
 }
@@ -37,6 +38,7 @@ export function useUpdateTask() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] })
       qc.invalidateQueries({ queryKey: ['today'] })
+      qc.invalidateQueries({ queryKey: ['calendar-task-schedule'] })
     },
   })
 }
@@ -45,6 +47,10 @@ export function useDeleteTask() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: tasksApi.deleteTask,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      qc.invalidateQueries({ queryKey: ['today'] })
+      qc.invalidateQueries({ queryKey: ['calendar-task-schedule'] })
+    },
   })
 }

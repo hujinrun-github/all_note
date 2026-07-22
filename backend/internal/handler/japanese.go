@@ -40,10 +40,23 @@ func japaneseFuriganaWithChat(c *gin.Context, chat WorkspaceChatService) {
 	}
 
 	var generator service.TextGenerator
+	allowLocalFallback := true
 	if identity, ok := auth.IdentityFromContext(c.Request.Context()); ok && chat != nil {
-		generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+		if features, ok := chat.(WorkspaceAIFeatureService); ok {
+			enabled, fallback, err := features.ResolveFeature(c.Request.Context(), identity.WorkspaceID, "japanese_furigana")
+			if err != nil {
+				internalError(c, "unable to resolve Japanese furigana settings")
+				return
+			}
+			allowLocalFallback = fallback == "local"
+			if enabled {
+				generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+			}
+		} else {
+			generator = workspaceTextGenerator{service: chat, workspaceID: identity.WorkspaceID}
+		}
 	}
-	segments, source, err := service.AnnotateJapaneseWithTextGenerator(c.Request.Context(), req.Text, generator)
+	segments, source, err := service.AnnotateJapaneseWithTextGeneratorPolicy(c.Request.Context(), req.Text, generator, allowLocalFallback)
 	if err != nil {
 		internalError(c, "failed to annotate Japanese text")
 		return

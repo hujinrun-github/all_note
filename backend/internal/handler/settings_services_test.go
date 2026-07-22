@@ -77,7 +77,7 @@ func TestProfileTestIsSeparateFromSave(t *testing.T) {
 func TestBindingRevisionConflictReturns409(t *testing.T) {
 	service := &fakeWorkspaceSettingsService{bindingErr: ErrSettingsRevisionConflict}
 	router := settingsServiceTestRouter(service)
-	request := httptest.NewRequest(http.MethodPut, "/api/settings/bindings/llm_chat", strings.NewReader(`{"mode":"disabled","expected_revision":2}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/settings/bindings/llm_chat", strings.NewReader(`{"mode":"disabled","expected_revision":2,"expected_runtime_revision":7}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)

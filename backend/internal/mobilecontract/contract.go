@@ -2,5 +2,5 @@ package mobilecontract
 
 const (
 	SchemaVersion  = "mobile-v1"
-	ContractSHA256 = "4342beb03eb11a919d4139cd1723083d4f0acb9e62dff928788be292c306b3a6"
+	ContractSHA256 = "2f549bd0dde3796f83567f4232f8465d558cb242a38002063d1e90f12271d7a1"
 )

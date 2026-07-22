@@ -210,7 +210,7 @@ func (s *Service) SetBinding(ctx context.Context, userID, workspaceID, kind stri
 			return handler.ServiceBindingDTO{}, err
 		}
 	}
-	binding, err := s.profiles.SetBinding(ctx, controlprofile.SetBindingInput{WorkspaceID: workspaceID, Kind: kind, Mode: request.Mode, EndpointSourceType: source, EndpointID: request.EndpointID, ExpectedRevision: request.ExpectedRevision, ActorUserID: userID})
+	binding, err := s.profiles.SetBinding(ctx, controlprofile.SetBindingInput{WorkspaceID: workspaceID, Kind: kind, Mode: request.Mode, EndpointSourceType: source, EndpointID: request.EndpointID, ExpectedRevision: request.ExpectedRevision, ExpectedRuntimeRevision: request.ExpectedRuntimeRevision, ActorUserID: userID})
 	if errors.Is(err, controlprofile.ErrBindingCASConflict) {
 		return handler.ServiceBindingDTO{}, handler.ErrSettingsRevisionConflict
 	}
