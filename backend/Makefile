@@ -1,5 +1,14 @@
 PORT ?= 4201
 TEST_PORT ?= 4101
+RACE_TIMEOUT ?= 15m
+RACE_SHARD_TARGETS := \
+	test-race-other \
+	test-race-handler-a-c \
+	test-race-handler-d-g \
+	test-race-handler-h-o \
+	test-race-handler-p-r \
+	test-race-handler-s-z \
+	test-race-handler-other
 FORMAT_PATHS := \
 	cmd/checkfmt \
 	cmd/server/main.go \
@@ -77,7 +86,7 @@ FORMAT_PATHS := \
 	internal/storage/postgres/testdb_test.go \
 	internal/migration/sqlite_to_pg_test.go
 
-.PHONY: dev dev-test dev-prod build test lint seed format-check test-unit test-race test-contract-postgres test-object-minio test-openapi test-phase0
+.PHONY: dev dev-test dev-prod build test lint seed format-check test-unit test-race test-race-other test-race-handler-a-c test-race-handler-d-g test-race-handler-h-o test-race-handler-p-r test-race-handler-s-z test-race-handler-other test-contract-postgres test-object-minio test-openapi test-phase0
 
 dev: dev-test
 
@@ -99,7 +108,30 @@ test-unit:
 	go test ./internal/... -cover -count=1
 
 test-race:
-	go test -race ./internal/...
+	$(MAKE) --no-print-directory -j 7 $(RACE_SHARD_TARGETS)
+
+test-race-other:
+	@packages="$$(go list ./internal/... | grep -v '/internal/handler$$')"; \
+	test -n "$$packages"; \
+	go test -race -timeout=$(RACE_TIMEOUT) $$packages
+
+test-race-handler-a-c:
+	go test -race -timeout=$(RACE_TIMEOUT) ./internal/handler -run '^Test[A-C]'
+
+test-race-handler-d-g:
+	go test -race -timeout=$(RACE_TIMEOUT) ./internal/handler -run '^Test[D-G]'
+
+test-race-handler-h-o:
+	go test -race -timeout=$(RACE_TIMEOUT) ./internal/handler -run '^Test[H-O]'
+
+test-race-handler-p-r:
+	go test -race -timeout=$(RACE_TIMEOUT) ./internal/handler -run '^Test[P-R]'
+
+test-race-handler-s-z:
+	go test -race -timeout=$(RACE_TIMEOUT) ./internal/handler -run '^Test[S-Z]'
+
+test-race-handler-other:
+	go test -race -timeout=$(RACE_TIMEOUT) ./internal/handler -run '^Test[^A-Z]'
 
 test-contract-postgres:
 	FLOWSPACE_REQUIRE_POSTGRES_TESTS=true go test -p 1 ./internal/storage/postgres ./internal/migration -count=1

@@ -348,11 +348,29 @@ func obsidianExternalKey(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	canonical := filepath.Clean(absPath)
-	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
-		canonical = filepath.Clean(realPath)
-	}
+	canonical := canonicalizeExistingPathPrefix(absPath)
 	return "obsidian:" + strings.ToLower(canonical), nil
+}
+
+func canonicalizeExistingPathPrefix(path string) string {
+	cleanPath := filepath.Clean(path)
+	current := cleanPath
+	missingComponents := make([]string, 0)
+	for {
+		if realPath, err := filepath.EvalSymlinks(current); err == nil {
+			canonical := filepath.Clean(realPath)
+			for index := len(missingComponents) - 1; index >= 0; index-- {
+				canonical = filepath.Join(canonical, missingComponents[index])
+			}
+			return filepath.Clean(canonical)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return cleanPath
+		}
+		missingComponents = append(missingComponents, filepath.Base(current))
+		current = parent
+	}
 }
 
 func reserveObsidianFileClaim(note *model.Note, target *model.SyncTarget, externalPath string, externalKey string) error {

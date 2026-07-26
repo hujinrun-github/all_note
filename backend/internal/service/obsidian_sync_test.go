@@ -45,6 +45,27 @@ func TestSanitizeMarkdownFileNameHandlesWindowsUnsafeNames(t *testing.T) {
 	}
 }
 
+func TestObsidianExternalKeyIsStableBeforeAndAfterFileCreation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "Note.md")
+	before, err := obsidianExternalKey(path)
+	if err != nil {
+		t.Fatalf("external key before create: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("body"), 0644); err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	after, err := obsidianExternalKey(path)
+	if err != nil {
+		t.Fatalf("external key after create: %v", err)
+	}
+	if before != after {
+		t.Fatalf("external key changed after create: before=%q after=%q", before, after)
+	}
+}
+
 func TestRenderObsidianMarkdownIncludesFrontmatter(t *testing.T) {
 	note := &model.Note{
 		ID:        "n01",

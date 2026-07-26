@@ -60,7 +60,9 @@ func createPostgresTestSchema(t *testing.T, schema string) string {
 		t.Fatalf("create test schema: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = adminDB.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+quotedSchema+` CASCADE`)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = adminDB.ExecContext(cleanupCtx, `DROP SCHEMA IF EXISTS `+quotedSchema+` CASCADE`)
 		_ = adminDB.Close()
 	})
 
