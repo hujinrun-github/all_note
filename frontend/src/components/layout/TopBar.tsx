@@ -30,8 +30,8 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
     subtitle: '查看月份安排，连接任务、提醒和关联笔记',
   },
   '/inbox': {
-    title: '未整理捕获',
-    subtitle: '把临时想法转为笔记、任务或日程，先捕获，再整理成具体对象',
+    title: '任务收件箱',
+    subtitle: '集中处理快速捕获的任务，再把它们归入明确项目',
   },
   '/search': {
     title: '全局搜索',
@@ -68,7 +68,7 @@ function getAccountInitial(value: string) {
   return (ascii ?? Array.from(trimmed)[0]).toUpperCase()
 }
 
-export function TopBar() {
+export function TopBar({ compact = false }: { compact?: boolean }) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -146,10 +146,20 @@ export function TopBar() {
   }, [accountMenuOpen])
 
   return (
-    <div className="workspace-topbar">
+    <div className={`workspace-topbar ${compact ? 'is-compact' : ''}`}>
       <div className="min-w-0">
-        <h1 className="page-title">{meta.title}</h1>
-        <p className="workspace-subtitle">{meta.subtitle}</p>
+        {compact ? (
+          <div className="workspace-breadcrumb" aria-label="当前位置">
+            <span>FlowSpace</span>
+            <i aria-hidden="true">/</i>
+            <strong>{meta.title}</strong>
+          </div>
+        ) : (
+          <>
+            <h1 className="page-title">{meta.title}</h1>
+            <p className="workspace-subtitle">{meta.subtitle}</p>
+          </>
+        )}
       </div>
       <div className="workspace-actions">
         <form

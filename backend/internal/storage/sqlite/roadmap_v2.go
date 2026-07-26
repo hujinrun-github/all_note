@@ -30,37 +30,46 @@ func getSQLiteRoadmap(ctx context.Context, q sqliteTaskDomainV2Queryer, workspac
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		n, err := scanSQLiteRoadmapV2Node(rows)
 		if err != nil {
+			_ = rows.Close()
 			return out, err
 		}
-		p, err := sqliteRoadmapProgress(ctx, q, workspaceID, n.Node.ID)
-		if err != nil {
-			return out, err
-		}
-		n.Progress = p
 		out.Nodes = append(out.Nodes, n)
 	}
 	if err = rows.Err(); err != nil {
+		_ = rows.Close()
 		return out, err
+	}
+	if err = rows.Close(); err != nil {
+		return out, err
+	}
+	for index := range out.Nodes {
+		out.Nodes[index].Progress, err = sqliteRoadmapProgress(ctx, q, workspaceID, out.Nodes[index].Node.ID)
+		if err != nil {
+			return out, err
+		}
 	}
 	edges, err := q.QueryContext(ctx, `SELECT workspace_id,id,project_id,roadmap_id,from_node_id,to_node_id,edge_type,revision FROM domain_roadmap_edges_v2 WHERE workspace_id=? AND roadmap_id=? ORDER BY id`, workspaceID, out.Roadmap.ID)
 	if err != nil {
 		return out, err
 	}
-	defer edges.Close()
 	for edges.Next() {
 		var e taskdomain.RoadmapEdge
 		var typ string
 		if err = edges.Scan(&e.WorkspaceID, &e.ID, &e.ProjectID, &e.RoadmapID, &e.FromNodeID, &e.ToNodeID, &typ, &e.Revision); err != nil {
+			_ = edges.Close()
 			return out, err
 		}
 		e.Type = taskdomain.RoadmapEdgeType(typ)
 		out.Edges = append(out.Edges, e)
 	}
-	return out, edges.Err()
+	if err = edges.Err(); err != nil {
+		_ = edges.Close()
+		return out, err
+	}
+	return out, edges.Close()
 }
 func (r *sqliteTaskDomainV2ProjectReader) GetRoadmapNode(ctx context.Context, id string) (taskdomain.RoadmapNodeSnapshot, error) {
 	return getSQLiteRoadmapNode(ctx, r.queryer, r.workspaceID, id)

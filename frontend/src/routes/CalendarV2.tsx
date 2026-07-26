@@ -1,4 +1,5 @@
 import { useMemo, useState, type CSSProperties, type DragEvent } from 'react'
+import { ChevronLeft, ChevronRight, Globe2 } from 'lucide-react'
 
 import {
   TaskDomainAPIError,
@@ -14,10 +15,12 @@ import {
 } from '../hooks/useTaskDomain'
 
 type ScheduleScope = 'only-this' | 'this-and-following'
+type CalendarView = 'week' | 'month' | 'year'
 
 interface CalendarV2Props {
   initialDate?: string
   initialTimezone?: string
+  initialView?: CalendarView
 }
 
 interface ScheduleDraft {
@@ -34,6 +37,22 @@ interface ScheduleDraft {
 }
 
 const weekHours = Array.from({ length: 15 }, (_, index) => index + 7)
+const calendarWeekdays = [
+  '周一',
+  '周二',
+  '周三',
+  '周四',
+  '周五',
+  '周六',
+  '周日',
+]
+const commonTimezones = [
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Europe/London',
+  'America/New_York',
+  'UTC',
+]
 
 function localDateValue(date = new Date()) {
   const year = date.getFullYear()
@@ -52,6 +71,19 @@ function addDays(value: string, days: number) {
   return localDateValue(date)
 }
 
+function addMonths(value: string, months: number) {
+  const date = parseLocalDate(value)
+  date.setDate(1)
+  date.setMonth(date.getMonth() + months)
+  return localDateValue(date)
+}
+
+function addYears(value: string, years: number) {
+  const date = parseLocalDate(value)
+  date.setFullYear(date.getFullYear() + years, 0, 1)
+  return localDateValue(date)
+}
+
 function daysBetween(from: string, to: string) {
   return Math.round(
     (parseLocalDate(to).getTime() - parseLocalDate(from).getTime()) / 86_400_000
@@ -63,6 +95,40 @@ function mondayOf(value: string) {
   const weekday = date.getDay()
   date.setDate(date.getDate() - (weekday === 0 ? 6 : weekday - 1))
   return localDateValue(date)
+}
+
+function monthStartOf(value: string) {
+  const date = parseLocalDate(value)
+  date.setDate(1)
+  return localDateValue(date)
+}
+
+function yearStartOf(value: string) {
+  const date = parseLocalDate(value)
+  date.setMonth(0, 1)
+  return localDateValue(date)
+}
+
+function datesInRange(from: string, to: string) {
+  return Array.from({ length: daysBetween(from, to) }, (_, index) =>
+    addDays(from, index)
+  )
+}
+
+function scrollPageToTop() {
+  if (typeof document === 'undefined') return
+  document.documentElement.scrollTop = 0
+  document.body.scrollTop = 0
+  const workspaceMain = document.querySelector<HTMLElement>('.workspace-main')
+  if (workspaceMain) workspaceMain.scrollTop = 0
+}
+
+function monthGridRange(value: string) {
+  const monthStart = monthStartOf(value)
+  const nextMonthStart = addMonths(monthStart, 1)
+  const from = mondayOf(monthStart)
+  const to = addDays(mondayOf(addDays(nextMonthStart, -1)), 7)
+  return { from, to }
 }
 
 function defaultTimezone() {
@@ -80,6 +146,35 @@ function formatWeekday(value: string) {
   )
 }
 
+function formatWeekTitle(from: string, to: string) {
+  const start = parseLocalDate(from)
+  const end = parseLocalDate(addDays(to, -1))
+  const startYear = start.getFullYear()
+  const endYear = end.getFullYear()
+  if (startYear !== endYear) {
+    return `${startYear}年${formatDate(from)}–${endYear}年${formatDate(
+      addDays(to, -1)
+    )}`
+  }
+  if (start.getMonth() === end.getMonth()) {
+    return `${startYear}年${start.getMonth() + 1}月${start.getDate()}日–${end.getDate()}日`
+  }
+  return `${startYear}年${formatDate(from)}–${formatDate(addDays(to, -1))}`
+}
+
+function formatMonthTitle(value: string) {
+  const date = parseLocalDate(value)
+  return `${date.getFullYear()}年${date.getMonth() + 1}月`
+}
+
+function formatYearTitle(value: string) {
+  return `${parseLocalDate(value).getFullYear()}年`
+}
+
+function dayNumber(value: string) {
+  return parseLocalDate(value).getDate()
+}
+
 function formatTime(value: string, timezone: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     timeZone: timezone,
@@ -87,6 +182,20 @@ function formatTime(value: string, timezone: string) {
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(new Date(value))
+}
+
+function timezoneOffsetLabel(timezone: string, dateValue: string) {
+  try {
+    const part = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      timeZoneName: 'longOffset',
+    })
+      .formatToParts(parseLocalDate(dateValue))
+      .find((candidate) => candidate.type === 'timeZoneName')?.value
+    return (part ?? timezone).replace('GMT', 'UTC')
+  } catch {
+    return timezone
+  }
 }
 
 function minuteOfDay(value: string, timezone: string) {
@@ -152,11 +261,14 @@ function draftForEntry(entry: CalendarEntryV2): ScheduleDraft {
 export default function CalendarV2({
   initialDate = localDateValue(),
   initialTimezone = defaultTimezone(),
+  initialView = 'week',
 }: CalendarV2Props) {
-  const [weekAnchor, setWeekAnchor] = useState(initialDate)
+  const [anchorDate, setAnchorDate] = useState(initialDate)
+  const [calendarView, setCalendarView] = useState<CalendarView>(initialView)
   const [timezone, setTimezone] = useState(initialTimezone)
-  const [selectedEntry, setSelectedEntry] =
-    useState<CalendarEntryV2 | null>(null)
+  const [selectedEntry, setSelectedEntry] = useState<CalendarEntryV2 | null>(
+    null
+  )
   const [draft, setDraft] = useState<ScheduleDraft | null>(null)
   const [offsetCandidates, setOffsetCandidates] = useState<
     Array<{ offset_seconds: number; utc: string }>
@@ -166,30 +278,125 @@ export default function CalendarV2({
   const onlyThis = useRescheduleOccurrenceMutation()
   const thisAndFollowing = useRescheduleThisAndFollowingMutation()
   const reopen = useReopenOccurrenceMutation()
-  const weekStart = mondayOf(weekAnchor)
+  const todayValue = localDateValue()
+  const weekStart = mondayOf(anchorDate)
   const weekEnd = addDays(weekStart, 7)
   const weekDates = useMemo(
     () => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)),
     [weekStart]
   )
+  const monthStart = monthStartOf(anchorDate)
+  const monthRange = useMemo(() => monthGridRange(anchorDate), [anchorDate])
+  const monthDates = useMemo(
+    () => datesInRange(monthRange.from, monthRange.to),
+    [monthRange.from, monthRange.to]
+  )
+  const yearStart = yearStartOf(anchorDate)
+  const yearEnd = addYears(yearStart, 1)
+  const yearMonths = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, monthIndex) =>
+        addMonths(yearStart, monthIndex)
+      ),
+    [yearStart]
+  )
+  const yearMonthGrids = useMemo(
+    () =>
+      yearMonths.map((month) => {
+        const from = mondayOf(month)
+        return {
+          month,
+          dates: Array.from({ length: 42 }, (_, index) => addDays(from, index)),
+        }
+      }),
+    [yearMonths]
+  )
+  const queryRange =
+    calendarView === 'week'
+      ? { from: weekStart, to: weekEnd }
+      : calendarView === 'month'
+        ? monthRange
+        : { from: yearStart, to: yearEnd }
   const entriesQuery = useCalendarEntries({
-    from: weekStart,
-    to: weekEnd,
+    from: queryRange.from,
+    to: queryRange.to,
     timezone,
   })
-  const visibleEntries = (entriesQuery.data ?? []).filter(
-    (entry) => entry.timing_type !== 'unscheduled'
+  const visibleEntries = useMemo(
+    () =>
+      (entriesQuery.data ?? []).filter(
+        (entry) => entry.timing_type !== 'unscheduled'
+      ),
+    [entriesQuery.data]
   )
-  const dateEntries = visibleEntries.filter(
-    (entry) => entry.timing_type === 'date' && entry.planned_date
+  const dateEntries = useMemo(
+    () =>
+      visibleEntries.filter(
+        (entry) => entry.timing_type === 'date' && entry.planned_date
+      ),
+    [visibleEntries]
   )
-  const timeEntries = visibleEntries.filter(
-    (entry) =>
-      entry.timing_type === 'time_block' &&
-      entry.planned_date &&
-      entry.planned_start_at &&
-      entry.planned_end_at
+  const timeEntries = useMemo(
+    () =>
+      visibleEntries.filter(
+        (entry) =>
+          entry.timing_type === 'time_block' &&
+          entry.planned_date &&
+          entry.planned_start_at &&
+          entry.planned_end_at
+      ),
+    [visibleEntries]
   )
+  const entriesByDate = useMemo(() => {
+    const grouped = new Map<string, CalendarEntryV2[]>()
+    for (const entry of visibleEntries) {
+      if (!entry.planned_date) continue
+      const exclusiveEnd =
+        entry.timing_type === 'date'
+          ? entry.all_day_end_date || addDays(entry.planned_date, 1)
+          : addDays(entry.planned_date, 1)
+      let date = entry.planned_date
+      let safety = 0
+      while (date < exclusiveEnd && safety < 370) {
+        const dayEntries = grouped.get(date)
+        if (dayEntries) dayEntries.push(entry)
+        else grouped.set(date, [entry])
+        date = addDays(date, 1)
+        safety += 1
+      }
+    }
+    for (const dayEntries of grouped.values()) {
+      dayEntries.sort((left, right) => {
+        if (left.timing_type !== right.timing_type) {
+          return left.timing_type === 'date' ? -1 : 1
+        }
+        return (left.planned_start_at ?? '').localeCompare(
+          right.planned_start_at ?? ''
+        )
+      })
+    }
+    return grouped
+  }, [visibleEntries])
+  const entryCountByMonth = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const entry of visibleEntries) {
+      if (!entry.planned_date) continue
+      const monthKey = entry.planned_date.slice(0, 7)
+      counts.set(monthKey, (counts.get(monthKey) ?? 0) + 1)
+    }
+    return counts
+  }, [visibleEntries])
+  const periodTitle =
+    calendarView === 'week'
+      ? formatWeekTitle(weekStart, weekEnd)
+      : calendarView === 'month'
+        ? formatMonthTitle(monthStart)
+        : formatYearTitle(yearStart)
+  const periodName =
+    calendarView === 'week' ? '周' : calendarView === 'month' ? '月' : '年'
+  const timezoneOptions = commonTimezones.includes(timezone)
+    ? commonTimezones
+    : [timezone, ...commonTimezones]
 
   function openEditor(entry: CalendarEntryV2, plannedDate?: string) {
     const nextDraft = draftForEntry(entry)
@@ -322,199 +529,430 @@ export default function CalendarV2({
     closeEditor()
   }
 
-  function navigateWeek(direction: -1 | 1) {
-    setWeekAnchor((current) => addDays(current, direction * 7))
+  function changeCalendarView(nextView: CalendarView) {
+    setCalendarView(nextView)
+    closeEditor()
+  }
+
+  function navigatePeriod(direction: -1 | 1) {
+    setAnchorDate((current) => {
+      if (calendarView === 'week') return addDays(current, direction * 7)
+      if (calendarView === 'month') return addMonths(current, direction)
+      return addYears(current, direction)
+    })
+    closeEditor()
+  }
+
+  function drillIntoMonth(month: string) {
+    setAnchorDate(month)
+    setCalendarView('month')
+    closeEditor()
+    scrollPageToTop()
+  }
+
+  function drillIntoWeek(date: string) {
+    setAnchorDate(date)
+    setCalendarView('week')
+    closeEditor()
+    scrollPageToTop()
   }
 
   return (
-    <div className="calendar-v2-page">
-      <header className="calendar-v2-heading">
+    <section className="td-page td-calendar-page calendar-v2-page">
+      <header className="td-page-header calendar-v2-heading">
         <div>
-          <span className="calendar-v2-kicker">统一任务日历</span>
-          <h1>日历</h1>
+          <div className="td-title-line">
+            <h1>日历</h1>
+            <span>统一任务安排</span>
+          </div>
           <p>全天安排与时间块都来自任务实例；未安排任务不会出现在日历中。</p>
         </div>
-        <label className="calendar-v2-timezone">
-          <span>显示时区</span>
-          <input
-            value={timezone}
-            onChange={(event) => setTimezone(event.target.value)}
-            aria-label="显示时区"
-          />
-        </label>
-      </header>
-
-      <section className="surface-panel calendar-v2-shell">
-        <div className="calendar-v2-toolbar">
-          <div>
-            <button type="button" onClick={() => navigateWeek(-1)}>
-              上一周
-            </button>
-            <button type="button" onClick={() => setWeekAnchor(localDateValue())}>
-              今天
-            </button>
-            <button type="button" onClick={() => navigateWeek(1)}>
-              下一周
-            </button>
-          </div>
-          <strong>
-            {formatDate(weekStart)}–{formatDate(addDays(weekEnd, -1))}
-          </strong>
-          {entriesQuery.isFetching ? <span role="status">正在更新…</span> : null}
-        </div>
-
-        {entriesQuery.isError ? (
-          <div className="domain-unavailable" role="alert">
-            日历加载失败，请稍后重试。
-          </div>
-        ) : (
-          <>
-            <div className="calendar-v2-week-head" aria-hidden="true">
-              <span />
-              {weekDates.map((date) => (
-                <strong key={date}>
-                  <span>{formatWeekday(date)}</span>
-                  {formatDate(date)}
-                </strong>
+        <aside className="calendar-v2-controls" aria-label="日历显示设置">
+          <div className="calendar-v2-view-setting">
+            <span className="calendar-v2-control-label">
+              <strong>显示方式</strong>
+              <small>切换时间尺度</small>
+            </span>
+            <div
+              className="calendar-v2-view-switch"
+              role="group"
+              aria-label="日历视图"
+            >
+              {(
+                [
+                  ['week', '周'],
+                  ['month', '月'],
+                  ['year', '年'],
+                ] as const
+              ).map(([view, label]) => (
+                <button
+                  key={view}
+                  type="button"
+                  className={calendarView === view ? 'is-active' : undefined}
+                  aria-pressed={calendarView === view}
+                  onClick={() => changeCalendarView(view)}
+                >
+                  {label}
+                </button>
               ))}
             </div>
-
-            <section
-              className="calendar-v2-all-day"
-              role="region"
-              aria-label="全天安排"
+          </div>
+          <label className="calendar-v2-timezone">
+            <span>
+              <Globe2 size={14} aria-hidden="true" />
+              显示时区
+            </span>
+            <select
+              value={timezone}
+              onChange={(event) => setTimezone(event.target.value)}
+              aria-label="显示时区"
             >
-              <strong className="calendar-v2-lane-label">全天</strong>
-              <div className="calendar-v2-all-day-grid">
+              {timezoneOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+        </aside>
+      </header>
+
+      <div
+        className={`calendar-v2-workspace ${selectedEntry ? 'has-editor' : ''}`}
+      >
+        <section className={`calendar-v2-shell is-${calendarView}-view`}>
+          <div className="calendar-v2-toolbar">
+            <div className="calendar-v2-navigation">
+              <button
+                type="button"
+                className="is-icon"
+                onClick={() => navigatePeriod(-1)}
+                aria-label={`上一${periodName}`}
+                title={`上一${periodName}`}
+              >
+                <ChevronLeft size={16} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="calendar-v2-today"
+                onClick={() => setAnchorDate(todayValue)}
+              >
+                今天
+              </button>
+              <button
+                type="button"
+                className="is-icon"
+                onClick={() => navigatePeriod(1)}
+                aria-label={`下一${periodName}`}
+                title={`下一${periodName}`}
+              >
+                <ChevronRight size={16} aria-hidden="true" />
+              </button>
+            </div>
+            <strong aria-live="polite">{periodTitle}</strong>
+            {entriesQuery.isFetching ? (
+              <span className="calendar-v2-period-status" role="status">
+                正在更新…
+              </span>
+            ) : (
+              <span className="calendar-v2-period-status">
+                {visibleEntries.length} 项安排
+                <i aria-hidden="true" />
+                {timezoneOffsetLabel(timezone, anchorDate)}
+              </span>
+            )}
+          </div>
+
+          {entriesQuery.isError ? (
+            <div className="td-inline-error" role="alert">
+              日历加载失败，请稍后重试。
+            </div>
+          ) : calendarView === 'week' ? (
+            <>
+              <div className="calendar-v2-week-head" aria-hidden="true">
+                <span />
                 {weekDates.map((date) => (
-                  <div
+                  <strong
+                    className={date === todayValue ? 'is-today' : undefined}
                     key={date}
-                    className="calendar-v2-drop-day"
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => handleDrop(event, date)}
-                    aria-hidden="true"
-                  />
+                  >
+                    <span>{formatWeekday(date)}</span>
+                    {formatDate(date)}
+                  </strong>
                 ))}
-                {dateEntries.map((entry) => {
-                  const startIndex = Math.max(
-                    0,
-                    Math.min(6, daysBetween(weekStart, entry.planned_date!))
-                  )
-                  const exclusiveEnd =
-                    entry.all_day_end_date || addDays(entry.planned_date!, 1)
-                  const endIndex = Math.min(
-                    7,
-                    Math.max(
-                      startIndex + 1,
-                      daysBetween(weekStart, exclusiveEnd)
-                    )
-                  )
-                  return (
-                    <button
-                      key={entry.occurrence_id}
-                      type="button"
-                      className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
-                      style={
-                        {
-                          '--calendar-column-start': startIndex + 1,
-                          '--calendar-column-end': endIndex + 1,
-                        } as CSSProperties
-                      }
-                      data-exclusive-end={exclusiveEnd}
-                      draggable={entry.execution_status !== 'done'}
-                      onDragStart={(event) => handleDragStart(event, entry)}
-                      onClick={() => openEditor(entry)}
-                      aria-label={`编辑日程：${entry.task_title}`}
-                    >
-                      <strong>{entry.task_title}</strong>
-                      <span>{allDayRangeLabel(entry)}</span>
-                    </button>
-                  )
-                })}
-                {dateEntries.length === 0 ? (
-                  <p className="calendar-v2-empty-lane">本周没有全天安排</p>
-                ) : null}
               </div>
-            </section>
 
-            <section
-              className="calendar-v2-time-section"
-              role="region"
-              aria-label="时间安排"
-            >
-              <div className="calendar-v2-time-grid">
-                <div className="calendar-v2-hour-axis" aria-hidden="true">
-                  {weekHours.map((hour) => (
-                    <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
+              <section
+                className="calendar-v2-all-day"
+                role="region"
+                aria-label="全天安排"
+              >
+                <strong className="calendar-v2-lane-label">全天</strong>
+                <div className="calendar-v2-all-day-grid">
+                  {weekDates.map((date) => (
+                    <div
+                      key={date}
+                      className="calendar-v2-drop-day"
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleDrop(event, date)}
+                      aria-hidden="true"
+                    />
+                  ))}
+                  {dateEntries.map((entry) => {
+                    const startIndex = Math.max(
+                      0,
+                      Math.min(6, daysBetween(weekStart, entry.planned_date!))
+                    )
+                    const exclusiveEnd =
+                      entry.all_day_end_date || addDays(entry.planned_date!, 1)
+                    const endIndex = Math.min(
+                      7,
+                      Math.max(
+                        startIndex + 1,
+                        daysBetween(weekStart, exclusiveEnd)
+                      )
+                    )
+                    return (
+                      <button
+                        key={entry.occurrence_id}
+                        type="button"
+                        className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
+                        style={
+                          {
+                            '--calendar-column-start': startIndex + 1,
+                            '--calendar-column-end': endIndex + 1,
+                          } as CSSProperties
+                        }
+                        data-exclusive-end={exclusiveEnd}
+                        draggable={entry.execution_status !== 'done'}
+                        onDragStart={(event) => handleDragStart(event, entry)}
+                        onClick={() => openEditor(entry)}
+                        aria-label={`编辑日程：${entry.task_title}`}
+                      >
+                        <strong>{entry.task_title}</strong>
+                        <span>{allDayRangeLabel(entry)}</span>
+                      </button>
+                    )
+                  })}
+                  {dateEntries.length === 0 ? (
+                    <p className="calendar-v2-empty-lane">本周没有全天安排</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section
+                className="calendar-v2-time-section"
+                role="region"
+                aria-label="时间安排"
+              >
+                <div className="calendar-v2-time-grid">
+                  <div className="calendar-v2-hour-axis" aria-hidden="true">
+                    {weekHours.map((hour) => (
+                      <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
+                    ))}
+                  </div>
+                  {weekDates.map((date) => (
+                    <div
+                      key={date}
+                      className={`calendar-v2-time-column ${
+                        date === todayValue ? 'is-today' : ''
+                      }`}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleDrop(event, date)}
+                    >
+                      {weekHours.map((hour) => (
+                        <i key={hour} aria-hidden="true" />
+                      ))}
+                      {timeEntries
+                        .filter((entry) => entry.planned_date === date)
+                        .map((entry) => (
+                          <button
+                            key={entry.occurrence_id}
+                            type="button"
+                            className={`calendar-v2-entry is-time-block is-${entry.execution_status}`}
+                            style={
+                              {
+                                '--calendar-start-minute': Math.max(
+                                  0,
+                                  minuteOfDay(
+                                    entry.planned_start_at!,
+                                    timezone
+                                  ) -
+                                    7 * 60
+                                ),
+                                '--calendar-duration-minute': Math.max(
+                                  30,
+                                  durationInMinutes(entry)
+                                ),
+                              } as CSSProperties
+                            }
+                            draggable={entry.execution_status !== 'done'}
+                            onDragStart={(event) =>
+                              handleDragStart(event, entry)
+                            }
+                            onClick={() => openEditor(entry)}
+                            aria-label={`编辑日程：${entry.task_title}`}
+                          >
+                            <time>
+                              {formatTime(entry.planned_start_at!, timezone)}–
+                              {formatTime(entry.planned_end_at!, timezone)}
+                            </time>
+                            <strong>{entry.task_title}</strong>
+                          </button>
+                        ))}
+                    </div>
                   ))}
                 </div>
-                {weekDates.map((date) => (
-                  <div
-                    key={date}
-                    className="calendar-v2-time-column"
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => handleDrop(event, date)}
-                  >
-                    {weekHours.map((hour) => (
-                      <i key={hour} aria-hidden="true" />
-                    ))}
-                    {timeEntries
-                      .filter((entry) => entry.planned_date === date)
-                      .map((entry) => (
-                        <button
-                          key={entry.occurrence_id}
-                          type="button"
-                          className={`calendar-v2-entry is-time-block is-${entry.execution_status}`}
-                          style={
-                            {
-                              '--calendar-start-minute': Math.max(
-                                0,
-                                minuteOfDay(entry.planned_start_at!, timezone) -
-                                  7 * 60
-                              ),
-                              '--calendar-duration-minute': Math.max(
-                                30,
-                                durationInMinutes(entry)
-                              ),
-                            } as CSSProperties
-                          }
-                          draggable={entry.execution_status !== 'done'}
-                          onDragStart={(event) =>
-                            handleDragStart(event, entry)
-                          }
-                          onClick={() => openEditor(entry)}
-                          aria-label={`编辑日程：${entry.task_title}`}
-                        >
-                          <time>
-                            {formatTime(entry.planned_start_at!, timezone)}–
-                            {formatTime(entry.planned_end_at!, timezone)}
-                          </time>
-                          <strong>{entry.task_title}</strong>
-                        </button>
-                      ))}
-                  </div>
+              </section>
+            </>
+          ) : calendarView === 'month' ? (
+            <section
+              className="calendar-v2-month-view"
+              role="grid"
+              aria-label={`${periodTitle}日历`}
+            >
+              <div className="calendar-v2-month-weekdays" role="row">
+                {calendarWeekdays.map((weekday) => (
+                  <span key={weekday} role="columnheader">
+                    {weekday}
+                  </span>
                 ))}
               </div>
+              <div className="calendar-v2-month-grid">
+                {monthDates.map((date) => {
+                  const dayEntries = entriesByDate.get(date) ?? []
+                  const isCurrentMonth =
+                    date.slice(0, 7) === monthStart.slice(0, 7)
+                  const isToday = date === todayValue
+                  return (
+                    <div
+                      key={date}
+                      className={`calendar-v2-month-day ${
+                        isCurrentMonth ? '' : 'is-outside'
+                      } ${isToday ? 'is-today' : ''}`}
+                      role="gridcell"
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => handleDrop(event, date)}
+                    >
+                      <header>
+                        <time dateTime={date}>{dayNumber(date)}</time>
+                        {dayEntries.length > 0 ? (
+                          <span>{dayEntries.length} 项</span>
+                        ) : null}
+                      </header>
+                      <div className="calendar-v2-month-entries">
+                        {dayEntries.slice(0, 3).map((entry) => (
+                          <button
+                            key={`${date}-${entry.occurrence_id}`}
+                            type="button"
+                            className={`calendar-v2-month-entry is-${entry.timing_type} is-${entry.execution_status}`}
+                            draggable={entry.execution_status !== 'done'}
+                            onDragStart={(event) =>
+                              handleDragStart(event, entry)
+                            }
+                            onClick={() => openEditor(entry)}
+                            aria-label={`编辑日程：${entry.task_title}`}
+                          >
+                            {entry.timing_type === 'time_block' &&
+                            entry.planned_start_at ? (
+                              <time>
+                                {formatTime(entry.planned_start_at, timezone)}
+                              </time>
+                            ) : (
+                              <i aria-hidden="true" />
+                            )}
+                            <span>{entry.task_title}</span>
+                          </button>
+                        ))}
+                        {dayEntries.length > 3 ? (
+                          <span className="calendar-v2-more">
+                            还有 {dayEntries.length - 3} 项
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </section>
-          </>
-        )}
-      </section>
+          ) : (
+            <section
+              className="calendar-v2-year-view"
+              aria-label={`${periodTitle}总览`}
+            >
+              {yearMonthGrids.map(({ month, dates }) => (
+                <article className="calendar-v2-year-month" key={month}>
+                  <button
+                    type="button"
+                    className="calendar-v2-year-month-title"
+                    onClick={() => drillIntoMonth(month)}
+                    aria-label={`查看${formatMonthTitle(month)}`}
+                  >
+                    <strong>{parseLocalDate(month).getMonth() + 1}月</strong>
+                    <span>
+                      {entryCountByMonth.get(month.slice(0, 7)) ?? 0} 项
+                    </span>
+                  </button>
+                  <div className="calendar-v2-year-weekdays" aria-hidden="true">
+                    {calendarWeekdays.map((weekday) => (
+                      <span key={weekday}>{weekday.slice(1)}</span>
+                    ))}
+                  </div>
+                  <div className="calendar-v2-year-days">
+                    {dates.map((date) => {
+                      const isCurrentMonth =
+                        date.slice(0, 7) === month.slice(0, 7)
+                      const dayEntries = entriesByDate.get(date) ?? []
+                      if (!isCurrentMonth) {
+                        return <span key={date} aria-hidden="true" />
+                      }
+                      return (
+                        <button
+                          key={date}
+                          type="button"
+                          className={`${date === todayValue ? 'is-today' : ''} ${
+                            dayEntries.length > 0 ? 'has-entries' : ''
+                          }`}
+                          onClick={() => drillIntoWeek(date)}
+                          aria-label={`${formatMonthTitle(date)}${dayNumber(
+                            date
+                          )}日，${dayEntries.length}项安排`}
+                          title={
+                            dayEntries.length > 0
+                              ? dayEntries
+                                  .map((entry) => entry.task_title)
+                                  .join('、')
+                              : undefined
+                          }
+                        >
+                          {dayNumber(date)}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </article>
+              ))}
+            </section>
+          )}
+        </section>
 
-      {selectedEntry && draft ? (
-        <div className="calendar-v2-editor-backdrop" onMouseDown={closeEditor}>
+        {selectedEntry && draft ? (
           <section
             className="calendar-v2-editor"
             role="dialog"
-            aria-modal="true"
+            aria-modal="false"
             aria-label={`编辑日程：${selectedEntry.task_title}`}
-            onMouseDown={(event) => event.stopPropagation()}
           >
             <header>
               <div>
-                <span>日程设置</span>
+                <span>安排本次执行</span>
                 <h2>{selectedEntry.task_title}</h2>
               </div>
-              <button type="button" onClick={closeEditor} aria-label="关闭日程设置">
+              <button
+                type="button"
+                onClick={closeEditor}
+                aria-label="关闭日程设置"
+              >
                 ×
               </button>
             </header>
@@ -566,7 +1004,8 @@ export default function CalendarV2({
                   value={draft.timingType}
                   onChange={(event) =>
                     updateDraft({
-                      timingType: event.target.value as ScheduleDraft['timingType'],
+                      timingType: event.target
+                        .value as ScheduleDraft['timingType'],
                     })
                   }
                 >
@@ -619,7 +1058,9 @@ export default function CalendarV2({
                       aria-label="时长（分钟）"
                       value={draft.durationMinutes}
                       onChange={(event) =>
-                        updateDraft({ durationMinutes: Number(event.target.value) })
+                        updateDraft({
+                          durationMinutes: Number(event.target.value),
+                        })
                       }
                     />
                   </label>
@@ -696,7 +1137,9 @@ export default function CalendarV2({
               </fieldset>
             ) : null}
 
-            {editorError ? <p className="calendar-v2-error">{editorError}</p> : null}
+            {editorError ? (
+              <p className="calendar-v2-error">{editorError}</p>
+            ) : null}
             <footer>
               <button type="button" onClick={closeEditor}>
                 取消
@@ -717,8 +1160,8 @@ export default function CalendarV2({
               </button>
             </footer>
           </section>
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </section>
   )
 }

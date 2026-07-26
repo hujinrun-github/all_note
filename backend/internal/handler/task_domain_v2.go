@@ -23,8 +23,12 @@ import (
 type TaskDomainV2Application interface {
 	CreateProject(context.Context, taskapp.CreateProjectRequest) (taskapp.ProjectCommandOutcome, error)
 	PatchProject(context.Context, taskapp.PatchProjectRequest) (taskapp.ProjectCommandOutcome, error)
+	ActivateProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
+	PauseProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
+	ResumeProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
 	CompleteProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
 	ArchiveProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
+	RestoreProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
 	DeleteProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
 	CreateTask(context.Context, taskapp.CreateTaskRequest) (taskapp.CreateTaskResult, error)
 	ExecuteTaskLifecycle(context.Context, taskapp.TaskLifecycleRequest) (taskapp.TaskCommandOutcome, error)
@@ -84,16 +88,28 @@ type taskDomainScheduleCommandResponse struct {
 // RegisterTaskDomainV2Routes registers only on the supplied isolated group.
 // The production router never calls this function until a later cutover task.
 func RegisterTaskDomainV2Routes(routes *gin.RouterGroup, application TaskDomainV2Application) {
+	RegisterTaskDomainV2RoutesWithAI(routes, application, nil)
+}
+
+func RegisterTaskDomainV2RoutesWithAI(
+	routes *gin.RouterGroup,
+	application TaskDomainV2Application,
+	chat WorkspaceChatService,
+) {
 	if routes == nil {
 		return
 	}
-	handler := taskDomainV2Handler{application: application}
+	handler := taskDomainV2Handler{application: application, chat: chat}
 	routes.GET("/projects", handler.listProjects)
 	routes.POST("/projects", handler.createProject)
 	routes.GET("/projects/:projectID", handler.getProject)
 	routes.PATCH("/projects/:projectID", handler.patchProject)
+	routes.POST("/projects/:projectID/activate", handler.projectCommand(taskdomain.ProjectCommandActivate))
+	routes.POST("/projects/:projectID/pause", handler.projectCommand(taskdomain.ProjectCommandPause))
+	routes.POST("/projects/:projectID/resume", handler.projectCommand(taskdomain.ProjectCommandResume))
 	routes.POST("/projects/:projectID/complete", handler.projectCommand(taskdomain.ProjectCommandComplete))
 	routes.POST("/projects/:projectID/archive", handler.projectCommand(taskdomain.ProjectCommandArchive))
+	routes.POST("/projects/:projectID/restore", handler.projectCommand(taskdomain.ProjectCommandRestore))
 	routes.DELETE("/projects/:projectID", handler.deleteProject)
 
 	routes.GET("/tasks", handler.listTasks)
@@ -124,12 +140,16 @@ func RegisterTaskDomainV2Routes(routes *gin.RouterGroup, application TaskDomainV
 	routes.GET("/calendar/entries", handler.calendarEntries)
 	routes.GET("/projects/:projectID/roadmap", handler.getRoadmap)
 	routes.POST("/projects/:projectID/roadmap", handler.createRoadmap)
+	routes.POST("/projects/:projectID/roadmap/generate", handler.generateRoadmap)
 	routes.POST("/roadmaps/:id/nodes", handler.createRoadmapNode)
 	routes.PATCH("/roadmaps/:id/nodes/:nodeID", handler.updateRoadmapNode)
 	routes.DELETE("/roadmaps/:id/nodes/:nodeID", handler.deleteRoadmapNode)
 }
 
-type taskDomainV2Handler struct{ application TaskDomainV2Application }
+type taskDomainV2Handler struct {
+	application TaskDomainV2Application
+	chat        WorkspaceChatService
+}
 
 func (handler taskDomainV2Handler) listProjects(c *gin.Context) {
 	identity, ok := taskDomainAuthenticatedIdentity(c)
@@ -195,6 +215,10 @@ func (handler taskDomainV2Handler) patchProject(c *gin.Context) {
 	if !decodeTaskDomainRequest(c, &request) {
 		return
 	}
+	if request.Status != nil {
+		writeTaskDomainError(c, taskdomain.ErrProjectLifecycleCommandRequired)
+		return
+	}
 	outcome, err := handler.application.PatchProject(c.Request.Context(), taskapp.PatchProjectRequest{
 		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, ProjectID: c.Param("projectID"),
 		ExpectedProjectRevision: request.ExpectedProjectRevision, Name: request.Name, Kind: request.Kind,
@@ -217,14 +241,29 @@ func (handler taskDomainV2Handler) projectCommand(command taskdomain.ProjectComm
 		if !decodeTaskDomainRequest(c, &request) {
 			return
 		}
-		applicationRequest := taskapp.ExistingProjectRequest{WorkspaceID: identity.workspaceID, ActorID: identity.actorID, ProjectID: c.Param("projectID"), ExpectedProjectRevision: request.ExpectedProjectRevision}
+		if command != taskdomain.ProjectCommandRestore && request.RestoreTo != nil {
+			writeTaskDomainError(c, taskdomain.ErrInvalidProjectCommand)
+			return
+		}
+		applicationRequest := taskapp.ExistingProjectRequest{
+			WorkspaceID: identity.workspaceID, ActorID: identity.actorID, ProjectID: c.Param("projectID"),
+			ExpectedProjectRevision: request.ExpectedProjectRevision, RestoreTo: request.RestoreTo,
+		}
 		var outcome taskapp.ProjectCommandOutcome
 		var err error
 		switch command {
+		case taskdomain.ProjectCommandActivate:
+			outcome, err = handler.application.ActivateProject(c.Request.Context(), applicationRequest)
+		case taskdomain.ProjectCommandPause:
+			outcome, err = handler.application.PauseProject(c.Request.Context(), applicationRequest)
+		case taskdomain.ProjectCommandResume:
+			outcome, err = handler.application.ResumeProject(c.Request.Context(), applicationRequest)
 		case taskdomain.ProjectCommandComplete:
 			outcome, err = handler.application.CompleteProject(c.Request.Context(), applicationRequest)
 		case taskdomain.ProjectCommandArchive:
 			outcome, err = handler.application.ArchiveProject(c.Request.Context(), applicationRequest)
+		case taskdomain.ProjectCommandRestore:
+			outcome, err = handler.application.RestoreProject(c.Request.Context(), applicationRequest)
 		default:
 			err = taskapp.ErrInvalidRequest
 		}
@@ -564,12 +603,13 @@ func writeTaskDomainError(c *gin.Context, err error) {
 
 func projectV2DTO(outcome taskapp.ProjectCommandOutcome) ProjectV2DTO {
 	return ProjectV2DTO{ID: outcome.Project.ID, Name: outcome.Project.Name, Kind: outcome.Project.Kind, Horizon: outcome.Project.Horizon,
-		Status: outcome.Project.Status, SystemRole: outcome.Project.SystemRole, Revision: outcome.Revision}
+		Status: outcome.Project.Status, ArchivedFromStatus: outcome.Project.ArchivedFromStatus, SystemRole: outcome.Project.SystemRole, Revision: outcome.Revision}
 }
 
 func projectSnapshotV2DTO(snapshot taskdomain.ProjectSnapshot) ProjectV2DTO {
 	return ProjectV2DTO{ID: snapshot.Project.ID, Name: snapshot.Project.Name, Kind: snapshot.Project.Kind,
-		Horizon: snapshot.Project.Horizon, Status: snapshot.Project.Status, SystemRole: snapshot.Project.SystemRole, Revision: snapshot.Revision}
+		Horizon: snapshot.Project.Horizon, Status: snapshot.Project.Status, ArchivedFromStatus: snapshot.Project.ArchivedFromStatus,
+		SystemRole: snapshot.Project.SystemRole, Revision: snapshot.Revision}
 }
 
 func taskReadModelV2DTO(model taskdomain.TaskDefinitionSnapshot) TaskV2DTO {

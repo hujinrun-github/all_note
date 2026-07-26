@@ -86,6 +86,68 @@ type TextGenerator interface {
 	Generate(context.Context, string, string) (string, error)
 }
 
+// GeneratedRoadmapPlan is the storage-neutral result of Roadmap generation.
+// The legacy task domain persists the richer graph directly, while task-domain
+// v2 maps this plan to its own Roadmap and RoadmapNode commands.
+type GeneratedRoadmapPlan struct {
+	Title       string
+	Description string
+	Nodes       []GeneratedRoadmapPlanNode
+}
+
+type GeneratedRoadmapPlanNode struct {
+	Title       string
+	Description string
+	Type        string
+	Position    float64
+}
+
+func GenerateLearningRoadmapPlan(
+	ctx context.Context,
+	projectName string,
+	customPrompt string,
+	generator TextGenerator,
+	allowTemplateFallback bool,
+) (*GeneratedRoadmapPlan, error) {
+	project := model.TaskProject{
+		Name: strings.TrimSpace(projectName),
+		Type: "learning",
+	}
+	if project.Name == "" {
+		return nil, errors.New("project name is required")
+	}
+	draft, err := buildGeneratedRoadmapDraft(
+		ctx,
+		project,
+		customPrompt,
+		generator,
+		allowTemplateFallback,
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	plan := &GeneratedRoadmapPlan{
+		Title:       draft.Title,
+		Description: draft.Goal,
+		Nodes:       make([]GeneratedRoadmapPlanNode, 0, len(draft.Nodes)),
+	}
+	for index, node := range draft.Nodes {
+		descriptionParts := nonEmptyStrings([]string{
+			node.Description,
+			prefixedRoadmapDetail("交付物", node.Deliverable),
+			prefixedRoadmapDetail("验收标准", node.AcceptanceCriteria),
+		})
+		plan.Nodes = append(plan.Nodes, GeneratedRoadmapPlanNode{
+			Title:       node.Title,
+			Description: strings.Join(descriptionParts, "\n\n"),
+			Type:        generatedRoadmapV2NodeType(node.Type, index, len(draft.Nodes)),
+			Position:    float64(index),
+		})
+	}
+	return plan, nil
+}
+
 func GenerateLearningRoadmapWithPromptAndAI(ctx context.Context, store storage.Store, projectID string, customPrompt string, generator TextGenerator) (*model.LearningRoadmap, error) {
 	return generateLearningRoadmapWithPolicy(ctx, store, projectID, customPrompt, generator, true, true)
 }
@@ -104,32 +166,13 @@ func generateLearningRoadmapWithPolicy(ctx context.Context, store storage.Store,
 		return nil, fmt.Errorf("project is not a learning project")
 	}
 
-	var draft *roadmapDraft
-	if generator != nil {
-		draft, err = generateRoadmapWithGenerator(ctx, *project, customPrompt, generator)
-	} else if !useLegacyEnvironment && customPrompt != "" {
-		err = errors.New("an available AI service is required for an edited roadmap prompt")
-	} else if !useLegacyEnvironment && allowTemplateFallback {
-		draft = mockRoadmapDraft(*project)
-	} else if !useLegacyEnvironment {
-		err = errors.New("roadmap AI capability is disabled")
-	} else {
-		draft, err = generateRoadmapDraft(*project, customPrompt)
-	}
+	draft, err := buildGeneratedRoadmapDraft(ctx, *project, customPrompt, generator, allowTemplateFallback, useLegacyEnvironment)
 	if err != nil {
-		if customPrompt != "" {
-			return nil, fmt.Errorf("custom roadmap prompt could not be applied: %w", err)
-		}
-		if (!useLegacyEnvironment && !allowTemplateFallback) || (useLegacyEnvironment && !shouldUseFallbackRoadmapDraft(err)) {
+		if strings.TrimSpace(customPrompt) == "" {
 			_, _ = store.Roadmaps().SaveFailedLearningRoadmap(ctx, project.ID, project.Name+" 学习路线", project.Description)
-			return nil, err
 		}
-		draft = mockRoadmapDraft(*project)
+		return nil, err
 	}
-
-	sanitizeGeneratedRoadmapDraft(draft)
-	ensureGeneratedRoadmapDepthAndDetail(draft, *project)
-	normalizeGeneratedRoadmapToLinearPath(draft)
 
 	roadmap := &model.LearningRoadmap{
 		ProjectID: project.ID,
@@ -145,6 +188,63 @@ func generateLearningRoadmapWithPolicy(ctx context.Context, store storage.Store,
 	}
 	normalizeRoadmapDisplayLayout(saved)
 	return saved, nil
+}
+
+func buildGeneratedRoadmapDraft(
+	ctx context.Context,
+	project model.TaskProject,
+	customPrompt string,
+	generator TextGenerator,
+	allowTemplateFallback bool,
+	useLegacyEnvironment bool,
+) (*roadmapDraft, error) {
+	var draft *roadmapDraft
+	var err error
+	customPrompt = strings.TrimSpace(customPrompt)
+	if generator != nil {
+		draft, err = generateRoadmapWithGenerator(ctx, project, customPrompt, generator)
+	} else if !useLegacyEnvironment && customPrompt != "" {
+		err = errors.New("an available AI service is required for an edited roadmap prompt")
+	} else if !useLegacyEnvironment && allowTemplateFallback {
+		draft = mockRoadmapDraft(project)
+	} else if !useLegacyEnvironment {
+		err = errors.New("roadmap AI capability is disabled")
+	} else {
+		draft, err = generateRoadmapDraft(project, customPrompt)
+	}
+	if err != nil {
+		if customPrompt != "" {
+			return nil, fmt.Errorf("custom roadmap prompt could not be applied: %w", err)
+		}
+		if (!useLegacyEnvironment && !allowTemplateFallback) || (useLegacyEnvironment && !shouldUseFallbackRoadmapDraft(err)) {
+			return nil, err
+		}
+		draft = mockRoadmapDraft(project)
+	}
+
+	sanitizeGeneratedRoadmapDraft(draft)
+	ensureGeneratedRoadmapDepthAndDetail(draft, project)
+	normalizeGeneratedRoadmapToLinearPath(draft)
+	return draft, nil
+}
+
+func prefixedRoadmapDetail(label, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return label + "：" + value
+}
+
+func generatedRoadmapV2NodeType(nodeType string, index, total int) string {
+	switch {
+	case index == total-1 || nodeType == "task":
+		return "milestone"
+	case nodeType == "phase":
+		return "stage"
+	default:
+		return "topic"
+	}
 }
 
 func generateRoadmapWithGenerator(ctx context.Context, project model.TaskProject, customPrompt string, generator TextGenerator) (*roadmapDraft, error) {

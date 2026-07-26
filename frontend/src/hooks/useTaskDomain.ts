@@ -4,6 +4,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query'
+import { useMemo } from 'react'
 
 import * as taskDomainAPI from '../api/taskDomain'
 
@@ -18,15 +19,7 @@ export interface TaskListParams {
   lifecycle_status?: taskDomainAPI.TaskLifecycleStatus
 }
 
-export interface OccurrenceListParams {
-  task_id?: string
-  project_id?: string
-  execution_status?: taskDomainAPI.ExecutionStatus
-  from?: string
-  to?: string
-  scope?: taskDomainAPI.OccurrenceListScope
-  recurring?: boolean
-}
+export type OccurrenceListParams = taskDomainAPI.OccurrenceListParams
 
 export interface CalendarEntriesParams {
   from: string
@@ -77,6 +70,7 @@ export const taskDomainQueryKeys = {
       params.execution_status ?? null,
       params.from ?? null,
       params.to ?? null,
+      params.timezone ?? null,
       params.scope ?? null,
       params.recurring ?? null,
     ] as const,
@@ -133,10 +127,27 @@ export function useTaskDefinition(taskID: string) {
   })
 }
 
-export function useOccurrences(params: OccurrenceListParams = {}) {
+export function useOccurrences(
+  params: OccurrenceListParams = {},
+  options: { enabled?: boolean } = {}
+) {
+  const resolvedParams = useMemo(
+    () => taskDomainAPI.resolveOccurrenceListParams(params),
+    [
+      params.task_id,
+      params.project_id,
+      params.execution_status,
+      params.from,
+      params.to,
+      params.timezone,
+      params.scope,
+      params.recurring,
+    ]
+  )
   return useQuery({
-    queryKey: taskDomainQueryKeys.occurrenceList(params),
-    queryFn: () => taskDomainAPI.listOccurrences(params),
+    queryKey: taskDomainQueryKeys.occurrenceList(resolvedParams),
+    queryFn: () => taskDomainAPI.listOccurrences(resolvedParams),
+    enabled: options.enabled ?? true,
   })
 }
 
@@ -202,6 +213,10 @@ function useProjectCommandMutation(command: ProjectCommand) {
 
 export function useCompleteProjectMutation() {
   return useProjectCommandMutation(taskDomainAPI.completeProject)
+}
+
+export function useActivateProjectMutation() {
+  return useProjectCommandMutation(taskDomainAPI.activateProject)
 }
 
 export function useArchiveProjectMutation() {
@@ -279,9 +294,7 @@ export function useCreateTaskMutation() {
         taskDomainQueryKeys.calendar(),
       ]
       await Promise.all(
-        queryKeys.map((queryKey) =>
-          queryClient.invalidateQueries({ queryKey })
-        )
+        queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
       )
     },
   })
@@ -334,9 +347,7 @@ export function useRescheduleThisAndFollowingMutation() {
         taskDomainQueryKeys.calendar(),
       ]
       await Promise.all(
-        queryKeys.map((queryKey) =>
-          queryClient.invalidateQueries({ queryKey })
-        )
+        queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
       )
     },
   })
@@ -461,7 +472,10 @@ async function invalidateUpdatedTaskDefinition(
   variables: UpdateTaskDefinitionVariables
 ) {
   const projectIDs = new Set([variables.projectID])
-  if (variables.input.project_id !== undefined && variables.input.project_id !== '') {
+  if (
+    variables.input.project_id !== undefined &&
+    variables.input.project_id !== ''
+  ) {
     projectIDs.add(variables.input.project_id)
   }
   const queryKeys: ReadonlyArray<readonly unknown[]> = [

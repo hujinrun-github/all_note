@@ -32,6 +32,17 @@ export type OccurrenceListScope =
   | 'unscheduled'
   | 'completed'
 
+export interface OccurrenceListParams {
+  task_id?: string
+  project_id?: string
+  execution_status?: ExecutionStatus
+  from?: string
+  to?: string
+  timezone?: string
+  scope?: OccurrenceListScope
+  recurring?: boolean
+}
+
 export interface TaskDomainCapabilities {
   model_version: 'legacy' | 'v2' | 'unknown'
   available: boolean
@@ -177,8 +188,7 @@ export interface TaskDefinitionExpectedRevisions {
   expected_schedule_revision: number
 }
 
-export interface UpdateTaskDefinitionInput
-  extends TaskDefinitionExpectedRevisions {
+export interface UpdateTaskDefinitionInput extends TaskDefinitionExpectedRevisions {
   title?: string
   description?: string
   priority?: number
@@ -188,8 +198,7 @@ export interface UpdateTaskDefinitionInput
   task_note_id?: string
 }
 
-export interface TaskDomainExpectedRevisions
-  extends TaskDefinitionExpectedRevisions {
+export interface TaskDomainExpectedRevisions extends TaskDefinitionExpectedRevisions {
   expected_occurrence_revisions: Record<string, number>
 }
 
@@ -364,6 +373,13 @@ export async function updateProject(
   return data.project
 }
 
+export function activateProject(
+  projectID: string,
+  expectedRevision: ProjectExpectedRevision
+) {
+  return projectCommand(projectID, 'activate', expectedRevision)
+}
+
 export function completeProject(
   projectID: string,
   expectedRevision: ProjectExpectedRevision
@@ -409,23 +425,53 @@ export async function getTaskDefinition(taskID: string) {
   return data.task
 }
 
-export async function listOccurrences(
-  params: {
-    task_id?: string
-    project_id?: string
-    execution_status?: ExecutionStatus
-    from?: string
-    to?: string
-    scope?: OccurrenceListScope
-    recurring?: boolean
-  } = {}
-) {
+export function resolveOccurrenceListParams(
+  params: OccurrenceListParams = {},
+  now = new Date(),
+  browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+): OccurrenceListParams {
+  if (
+    params.scope !== 'today' &&
+    params.scope !== 'upcoming' &&
+    params.scope !== 'overdue' &&
+    params.scope !== 'completed'
+  ) {
+    return params
+  }
+
+  const startOfToday = new Date(now)
+  startOfToday.setHours(0, 0, 0, 0)
+  const startOfTomorrow = new Date(startOfToday)
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1)
+  const result = { ...params, timezone: params.timezone ?? browserTimezone }
+
+  if (params.scope === 'today') {
+    result.from ??= startOfToday.toISOString()
+    result.to ??= startOfTomorrow.toISOString()
+  } else if (params.scope === 'upcoming') {
+    const endOfUpcoming = new Date(startOfTomorrow)
+    endOfUpcoming.setDate(endOfUpcoming.getDate() + 7)
+    result.from ??= startOfTomorrow.toISOString()
+    result.to ??= endOfUpcoming.toISOString()
+  } else if (params.scope === 'overdue') {
+    result.from ??= now.toISOString()
+  } else {
+    const completedFrom = new Date(startOfToday)
+    completedFrom.setDate(completedFrom.getDate() - 30)
+    result.from ??= completedFrom.toISOString()
+    result.to ??= startOfTomorrow.toISOString()
+  }
+  return result
+}
+
+export async function listOccurrences(params: OccurrenceListParams = {}) {
   const query: Record<string, string | undefined> = {
     task_id: params.task_id,
     project_id: params.project_id,
     execution_status: params.execution_status,
     from: params.from,
     to: params.to,
+    timezone: params.timezone,
     scope: params.scope,
     recurring:
       params.recurring === undefined ? undefined : String(params.recurring),
@@ -474,7 +520,9 @@ export function rescheduleOccurrence(
     !Number.isSafeInteger(input.expected_occurrence_revision) ||
     input.expected_occurrence_revision < 1
   ) {
-    throw new TypeError('expected_occurrence_revision must be a positive integer')
+    throw new TypeError(
+      'expected_occurrence_revision must be a positive integer'
+    )
   }
   const expectedRevisions: TaskDomainExpectedRevisions = {
     expected_task_revision: input.expected_task_revision,
@@ -628,7 +676,7 @@ type TaskLifecycleCommand =
   | 'restore'
   | 'archive'
 
-type ProjectCommand = 'complete' | 'archive'
+type ProjectCommand = 'activate' | 'complete' | 'archive'
 
 function projectCommand(
   projectID: string,

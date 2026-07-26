@@ -1,21 +1,56 @@
+import { CalendarDays, CalendarPlus, Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
+import type { OccurrenceV2, TaskV2 } from '../api/taskDomain'
 import {
+  OccurrenceInspector,
+  OccurrenceRow,
+} from '../components/taskDomain/TaskDomainWorkspace'
+import { ScheduleCreateDialog } from '../components/taskDomain/ScheduleCreateDialog'
+import {
+  useBlockOccurrenceMutation,
   useCompleteOccurrenceMutation,
   useOccurrences,
+  useProjects,
+  useReopenOccurrenceMutation,
+  useStartOccurrenceMutation,
   useTaskDefinitions,
+  useUnblockOccurrenceMutation,
 } from '../hooks/useTaskDomain'
+import { useUIStore } from '../stores/ui'
 
 type TodayTab = 'today' | 'overdue' | 'done'
 
+const todayTabs: Array<{ id: TodayTab; label: string }> = [
+  { id: 'today', label: '今天' },
+  { id: 'overdue', label: '已逾期' },
+  { id: 'done', label: '已完成' },
+]
+
 export default function DashboardV2() {
-  const [activeTab, setActiveTab] = useState<TodayTab>('today')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [scheduleCreateOpen, setScheduleCreateOpen] = useState(false)
+  const navigate = useNavigate()
+  const setCaptureOpen = useUIStore((state) => state.setCaptureOpen)
+  const requestedTab = searchParams.get('view')
+  const activeTab: TodayTab =
+    requestedTab === 'overdue' || requestedTab === 'done'
+      ? requestedTab
+      : 'today'
+  const selectedOccurrenceID = searchParams.get('occurrence_id') ?? ''
+
   const todayQuery = useOccurrences({ scope: 'today' })
   const overdueQuery = useOccurrences({ scope: 'overdue' })
   const completedQuery = useOccurrences({ scope: 'completed' })
   const definitionsQuery = useTaskDefinitions()
+  const projectsQuery = useProjects()
   const completeOccurrence = useCompleteOccurrenceMutation()
+  const startOccurrence = useStartOccurrenceMutation()
+  const blockOccurrence = useBlockOccurrenceMutation()
+  const unblockOccurrence = useUnblockOccurrenceMutation()
+  const reopenOccurrence = useReopenOccurrenceMutation()
+
   const definitions = useMemo(
     () =>
       new Map(
@@ -26,133 +61,305 @@ export default function DashboardV2() {
       ),
     [definitionsQuery.data]
   )
+  const projects = useMemo(
+    () =>
+      new Map(
+        (projectsQuery.data ?? []).map((project) => [project.id, project])
+      ),
+    [projectsQuery.data]
+  )
   const queries = {
     today: todayQuery,
     overdue: overdueQuery,
     done: completedQuery,
   }
   const activeQuery = queries[activeTab]
+  const activeOccurrences = activeQuery.data ?? []
+  const timedOccurrences = activeOccurrences.filter(
+    (occurrence) => occurrence.planned_start_at
+  )
+  const flexibleOccurrences = activeOccurrences.filter(
+    (occurrence) => !occurrence.planned_start_at
+  )
+  const selectedOccurrence = activeOccurrences.find(
+    (occurrence) => occurrence.id === selectedOccurrenceID
+  )
+  const selectedTask = selectedOccurrence
+    ? definitions.get(selectedOccurrence.task_id)
+    : undefined
+  const selectedProject = selectedTask
+    ? projects.get(selectedTask.project_id)
+    : undefined
+  const busy =
+    completeOccurrence.isPending ||
+    startOccurrence.isPending ||
+    blockOccurrence.isPending ||
+    unblockOccurrence.isPending ||
+    reopenOccurrence.isPending
+
+  function updateSearchParams(
+    update: Record<string, string | null>,
+    replace = false
+  ) {
+    const next = new URLSearchParams(searchParams)
+    Object.entries(update).forEach(([key, value]) => {
+      if (value === null || value === '') next.delete(key)
+      else next.set(key, value)
+    })
+    setSearchParams(next, { replace })
+  }
+
+  function expectedRevisions(task: TaskV2, occurrence: OccurrenceV2) {
+    return {
+      expected_task_revision: occurrence.task_revision ?? task.revision,
+      expected_schedule_revision:
+        occurrence.schedule_revision ?? task.schedule_revision,
+      expected_occurrence_revisions: {
+        [occurrence.id]: occurrence.revision,
+      },
+    }
+  }
+
+  function commandVariables(task: TaskV2, occurrence: OccurrenceV2) {
+    return {
+      projectID: occurrence.project_id ?? task.project_id,
+      taskID: task.id,
+      occurrenceID: occurrence.id,
+      expectedRevisions: expectedRevisions(task, occurrence),
+    }
+  }
+
+  function renderOccurrence(occurrence: OccurrenceV2) {
+    const task = definitions.get(occurrence.task_id)
+    const project = task ? projects.get(task.project_id) : undefined
+    return (
+      <OccurrenceRow
+        key={occurrence.id}
+        occurrence={occurrence}
+        task={task}
+        project={project}
+        selected={occurrence.id === selectedOccurrenceID}
+        onSelect={() =>
+          updateSearchParams({ occurrence_id: occurrence.id, task_id: null })
+        }
+        onComplete={
+          task
+            ? () =>
+                void completeOccurrence.mutateAsync(
+                  commandVariables(task, occurrence)
+                )
+            : undefined
+        }
+      />
+    )
+  }
 
   return (
-    <div className="dashboard-v2">
-      <section className="metric-strip">
-        <Metric label="已逾期" value={overdueQuery.data?.length ?? 0} />
-        <Metric label="今天" value={todayQuery.data?.length ?? 0} />
-        <Metric
-          label="进行中"
-          value={(todayQuery.data ?? []).filter((item) => item.execution_status === 'active').length}
-        />
-        <Metric label="已完成" value={completedQuery.data?.length ?? 0} />
-      </section>
-
-      <section className="surface-panel dashboard-v2-flow">
-        <header>
-          <div>
-            <span className="domain-eyebrow">TODAY</span>
-            <h2>今天的执行流</h2>
-            <p>今天和逾期保持分开，先推进你主动选择的工作。</p>
+    <section className="td-page td-today-page" aria-labelledby="today-heading">
+      <header className="td-page-header">
+        <div>
+          <div className="td-title-line">
+            <h1 id="today-heading">今天</h1>
+            <time>{formatToday()}</time>
           </div>
-          <Link to="/tasks">打开任务工作台</Link>
-        </header>
-        <div className="task-v2-tabs" role="tablist" aria-label="今日任务筛选">
+          <p>先完成今天，逾期事项不会抢占你的注意力。</p>
+        </div>
+        <div className="td-page-actions">
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === 'today'}
-            className={activeTab === 'today' ? 'is-active' : ''}
-            onClick={() => setActiveTab('today')}
+            className="td-secondary-action"
+            onClick={() => setScheduleCreateOpen(true)}
           >
-            今天 {todayQuery.data?.length ?? 0}
+            <CalendarPlus aria-hidden="true" />
+            新增日程
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === 'overdue'}
-            className={activeTab === 'overdue' ? 'is-active' : ''}
-            onClick={() => setActiveTab('overdue')}
+            className="td-primary-action"
+            onClick={() => setCaptureOpen(true)}
           >
-            已逾期 {overdueQuery.data?.length ?? 0}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'done'}
-            className={activeTab === 'done' ? 'is-active' : ''}
-            onClick={() => setActiveTab('done')}
-          >
-            已完成 {completedQuery.data?.length ?? 0}
+            <Plus aria-hidden="true" />
+            添加任务
           </button>
         </div>
+      </header>
 
-        {activeQuery.isLoading || definitionsQuery.isLoading ? (
-          <p className="domain-empty">正在加载今天的执行实例…</p>
-        ) : null}
-        {activeQuery.isError ? <p className="domain-empty">今日执行流暂时不可用。</p> : null}
-        <div className="dashboard-v2-list" role="list" aria-label="今日执行实例">
-          {(activeQuery.data ?? []).map((occurrence) => {
-            const definition = definitions.get(occurrence.task_id)
-            const title = occurrence.title ?? definition?.title ?? '未命名任务'
-            return (
-              <article role="listitem" className="dashboard-v2-row" key={occurrence.id}>
-                <button
-                  type="button"
-                  aria-label={`完成${title}`}
-                  disabled={!definition || occurrence.execution_status === 'done'}
-                  onClick={() => {
-                    if (!definition) return
-                    void completeOccurrence.mutateAsync({
-                      projectID: occurrence.project_id ?? definition.project_id,
-                      taskID: definition.id,
-                      occurrenceID: occurrence.id,
-                      expectedRevisions: {
-                        expected_task_revision:
-                          occurrence.task_revision ?? definition.revision,
-                        expected_schedule_revision:
-                          occurrence.schedule_revision ?? definition.schedule_revision,
-                        expected_occurrence_revisions: {
-                          [occurrence.id]: occurrence.revision,
-                        },
-                      },
+      <div className="td-tabs" role="tablist" aria-label="今日任务筛选">
+        {todayTabs.map((tab) => {
+          const count = queries[tab.id].data?.length ?? 0
+          return (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              className={activeTab === tab.id ? 'is-active' : ''}
+              key={tab.id}
+              onClick={() =>
+                updateSearchParams({
+                  view: tab.id === 'today' ? null : tab.id,
+                  occurrence_id: null,
+                  task_id: null,
+                })
+              }
+            >
+              {tab.label} <span>{count}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      <div
+        className={`td-workspace ${selectedOccurrence ? 'has-inspector' : ''}`}
+      >
+        <div className="td-list-canvas">
+          {activeQuery.isLoading || definitionsQuery.isLoading ? (
+            <div className="td-loading-list" aria-label="正在加载今日执行">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : null}
+          {activeQuery.isError ? (
+            <div className="td-inline-error" role="alert">
+              今日执行暂时不可用，请刷新后重试。
+            </div>
+          ) : null}
+
+          {activeTab === 'today' && timedOccurrences.length > 0 ? (
+            <>
+              <SectionHeading
+                title="固定时间"
+                count={`${timedOccurrences.length} 个安排`}
+              />
+              <div
+                className="td-occurrence-list is-timeline"
+                role="list"
+                aria-label="固定时间任务"
+              >
+                {timedOccurrences.map(renderOccurrence)}
+              </div>
+            </>
+          ) : null}
+
+          <SectionHeading
+            title={
+              activeTab === 'today'
+                ? '今天要做'
+                : activeTab === 'overdue'
+                  ? '已逾期'
+                  : '今天已完成'
+            }
+            count={`${flexibleOccurrences.length} 个行动`}
+          />
+          <div
+            className="td-occurrence-list"
+            role="list"
+            aria-label="今日执行实例"
+          >
+            {flexibleOccurrences.map(renderOccurrence)}
+          </div>
+
+          {activeOccurrences.length === 0 && !activeQuery.isLoading ? (
+            <div className="td-empty-state">
+              <CalendarDays aria-hidden="true" />
+              <strong>这里还没有执行实例</strong>
+              <span>
+                {activeTab === 'today'
+                  ? '添加一个今天要完成的任务。'
+                  : '切换视图或调整任务安排。'}
+              </span>
+            </div>
+          ) : null}
+        </div>
+
+        {selectedOccurrence ? (
+          <OccurrenceInspector
+            key={selectedOccurrence.id}
+            occurrence={selectedOccurrence}
+            task={selectedTask}
+            project={selectedProject}
+            busy={busy}
+            onClose={() =>
+              updateSearchParams({ occurrence_id: null, task_id: null }, true)
+            }
+            onStart={
+              selectedTask
+                ? () =>
+                    startOccurrence.mutateAsync(
+                      commandVariables(selectedTask, selectedOccurrence)
+                    )
+                : undefined
+            }
+            onComplete={
+              selectedTask
+                ? () =>
+                    completeOccurrence.mutateAsync(
+                      commandVariables(selectedTask, selectedOccurrence)
+                    )
+                : undefined
+            }
+            onReopen={
+              selectedTask
+                ? () =>
+                    reopenOccurrence.mutateAsync(
+                      commandVariables(selectedTask, selectedOccurrence)
+                    )
+                : undefined
+            }
+            onBlock={
+              selectedTask
+                ? (reason, nextAction) =>
+                    blockOccurrence.mutateAsync({
+                      ...commandVariables(selectedTask, selectedOccurrence),
+                      blockedReason: reason,
+                      nextAction,
                     })
-                  }}
-                >
-                  {occurrence.execution_status === 'done' ? '✓' : ''}
-                </button>
-                <div>
-                  <strong>{title}</strong>
-                  <span>执行状态：{executionLabel(occurrence.execution_status)}</span>
-                </div>
-              </article>
-            )
-          })}
-        </div>
-        {(activeQuery.data?.length ?? 0) === 0 && !activeQuery.isLoading ? (
-          <p className="domain-empty">这个视图里暂时没有执行实例。</p>
+                : undefined
+            }
+            onUnblock={
+              selectedTask
+                ? () =>
+                    unblockOccurrence.mutateAsync(
+                      commandVariables(selectedTask, selectedOccurrence)
+                    )
+                : undefined
+            }
+            onViewTask={
+              selectedTask
+                ? () =>
+                    navigate(
+                      `/tasks?task_id=${encodeURIComponent(selectedTask.id)}`
+                    )
+                : undefined
+            }
+          />
         ) : null}
-      </section>
-    </div>
+      </div>
+
+      {scheduleCreateOpen ? (
+        <ScheduleCreateDialog
+          projects={projectsQuery.data ?? []}
+          onClose={() => setScheduleCreateOpen(false)}
+        />
+      ) : null}
+    </section>
   )
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function SectionHeading({ title, count }: { title: string; count: string }) {
   return (
-    <article className="metric-tile">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <p>执行实例</p>
-    </article>
+    <header className="td-section-heading">
+      <strong>{title}</strong>
+      <span>{count}</span>
+    </header>
   )
 }
 
-function executionLabel(status: string) {
-  return (
-    {
-      open: '未开始',
-      active: '进行中',
-      blocked: '阻塞',
-      done: '已完成',
-      skipped: '已跳过',
-      cancelled: '已取消',
-    }[status] ?? status
-  )
+function formatToday() {
+  const date = new Date()
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+  }).format(date)
 }

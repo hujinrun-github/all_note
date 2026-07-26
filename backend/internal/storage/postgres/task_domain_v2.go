@@ -52,7 +52,7 @@ func (r *postgresTaskDomainV2ProjectReader) ListProjects(ctx context.Context, fi
 	if filter.Status != nil {
 		add("status", *filter.Status)
 	}
-	rows, err := r.queryer.QueryContext(ctx, `SELECT workspace_id,id,name,kind,horizon,status,system_role,revision
+	rows, err := r.queryer.QueryContext(ctx, `SELECT workspace_id,id,name,kind,horizon,status,archived_from_status,system_role,revision
 		FROM domain_projects_v2 WHERE `+strings.Join(conditions, " AND ")+` ORDER BY name,id`, args...)
 	if err != nil {
 		return nil, err
@@ -62,13 +62,14 @@ func (r *postgresTaskDomainV2ProjectReader) ListProjects(ctx context.Context, fi
 	for rows.Next() {
 		var item taskdomain.ProjectSnapshot
 		var kind, horizon, status string
-		var systemRole sql.NullString
-		if err := rows.Scan(&item.Project.WorkspaceID, &item.Project.ID, &item.Project.Name, &kind, &horizon, &status, &systemRole, &item.Revision); err != nil {
+		var archivedFromStatus, systemRole sql.NullString
+		if err := rows.Scan(&item.Project.WorkspaceID, &item.Project.ID, &item.Project.Name, &kind, &horizon, &status, &archivedFromStatus, &systemRole, &item.Revision); err != nil {
 			return nil, err
 		}
 		item.Project.Kind = taskdomain.ProjectKind(kind)
 		item.Project.Horizon = taskdomain.ProjectHorizon(horizon)
 		item.Project.Status = taskdomain.ProjectStatus(status)
+		item.Project.ArchivedFromStatus = postgresProjectStatusPointer(archivedFromStatus)
 		item.Project.SystemRole = taskdomain.ProjectSystemRole(systemRole.String)
 		items = append(items, item)
 	}
@@ -861,9 +862,10 @@ func (w *postgresTaskDomainV2ProjectWriter) EnsureSystemProjects(ctx context.Con
 		},
 	} {
 		if _, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_projects_v2
-			(workspace_id,id,name,kind,horizon,status,system_role,revision,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,1,now(),now())
-			ON CONFLICT DO NOTHING`, project.WorkspaceID, project.ID, project.Name, project.Kind, project.Horizon, project.Status, project.SystemRole); err != nil {
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,system_role,revision,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,now(),now())
+			ON CONFLICT DO NOTHING`, project.WorkspaceID, project.ID, project.Name, project.Kind, project.Horizon, project.Status,
+			nullablePostgresProjectStatus(project.ArchivedFromStatus), project.SystemRole); err != nil {
 			return err
 		}
 	}
@@ -893,9 +895,10 @@ func (w *postgresTaskDomainV2ProjectWriter) SaveProject(ctx context.Context, wri
 			return taskdomain.ErrSystemProjectImmutable
 		}
 		result, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_projects_v2
-			(workspace_id,id,name,kind,horizon,status,system_role,revision,created_at,updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,NULL,1,now(),now())
-			ON CONFLICT DO NOTHING`, write.Project.WorkspaceID, write.Project.ID, write.Project.Name, write.Project.Kind, write.Project.Horizon, write.Project.Status)
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,system_role,revision,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,1,now(),now())
+			ON CONFLICT DO NOTHING`, write.Project.WorkspaceID, write.Project.ID, write.Project.Name, write.Project.Kind, write.Project.Horizon,
+			write.Project.Status, nullablePostgresProjectStatus(write.Project.ArchivedFromStatus))
 		if err != nil {
 			return err
 		}
@@ -910,9 +913,9 @@ func (w *postgresTaskDomainV2ProjectWriter) SaveProject(ctx context.Context, wri
 		return taskdomain.ErrSystemProjectImmutable
 	}
 	result, err := w.queryer.ExecContext(ctx, `UPDATE domain_projects_v2
-		SET name=$1,kind=$2,horizon=$3,status=$4,updated_at=now(),revision=revision+1
-		WHERE workspace_id=$5 AND id=$6 AND revision=$7`,
-		write.Project.Name, write.Project.Kind, write.Project.Horizon, write.Project.Status,
+		SET name=$1,kind=$2,horizon=$3,status=$4,archived_from_status=$5,updated_at=now(),revision=revision+1
+		WHERE workspace_id=$6 AND id=$7 AND revision=$8`,
+		write.Project.Name, write.Project.Kind, write.Project.Horizon, write.Project.Status, nullablePostgresProjectStatus(write.Project.ArchivedFromStatus),
 		w.workspaceID, write.Project.ID, write.ExpectedRevision)
 	if err != nil {
 		return err
@@ -1524,10 +1527,10 @@ func (w *postgresTaskDomainV2ProjectWriter) closed() bool {
 func getPostgresTaskDomainV2Project(ctx context.Context, queryer postgresTaskDomainV2Queryer, workspaceID, projectID string) (taskdomain.ProjectSnapshot, error) {
 	var snapshot taskdomain.ProjectSnapshot
 	var kind, horizon, status string
-	var systemRole sql.NullString
-	err := queryer.QueryRowContext(ctx, `SELECT id,name,kind,horizon,status,system_role,revision
+	var archivedFromStatus, systemRole sql.NullString
+	err := queryer.QueryRowContext(ctx, `SELECT id,name,kind,horizon,status,archived_from_status,system_role,revision
 		FROM domain_projects_v2 WHERE workspace_id=$1 AND id=$2`, workspaceID, projectID).Scan(
-		&snapshot.Project.ID, &snapshot.Project.Name, &kind, &horizon, &status, &systemRole, &snapshot.Revision,
+		&snapshot.Project.ID, &snapshot.Project.Name, &kind, &horizon, &status, &archivedFromStatus, &systemRole, &snapshot.Revision,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskdomain.ProjectSnapshot{}, taskdomain.ErrProjectNotFound
@@ -1539,10 +1542,26 @@ func getPostgresTaskDomainV2Project(ctx context.Context, queryer postgresTaskDom
 	snapshot.Project.Kind = taskdomain.ProjectKind(kind)
 	snapshot.Project.Horizon = taskdomain.ProjectHorizon(horizon)
 	snapshot.Project.Status = taskdomain.ProjectStatus(status)
+	snapshot.Project.ArchivedFromStatus = postgresProjectStatusPointer(archivedFromStatus)
 	if systemRole.Valid {
 		snapshot.Project.SystemRole = taskdomain.ProjectSystemRole(systemRole.String)
 	}
 	return snapshot, nil
+}
+
+func nullablePostgresProjectStatus(status *taskdomain.ProjectStatus) any {
+	if status == nil {
+		return nil
+	}
+	return string(*status)
+}
+
+func postgresProjectStatusPointer(status sql.NullString) *taskdomain.ProjectStatus {
+	if !status.Valid {
+		return nil
+	}
+	value := taskdomain.ProjectStatus(status.String)
+	return &value
 }
 
 func requirePostgresTaskDomainV2Changed(result sql.Result) error {

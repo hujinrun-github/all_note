@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as taskDomain from './taskDomain'
 import {
   TaskDomainRevisionConflictError,
+  activateProject,
   archiveProject,
   cancelOccurrence,
   cancelTaskDefinition,
@@ -21,6 +22,7 @@ import {
   pauseTaskDefinition,
   publishTaskDefinition,
   reopenOccurrence,
+  resolveOccurrenceListParams,
   rescheduleOccurrence,
   rescheduleThisAndFollowing,
   restoreTaskDefinition,
@@ -41,9 +43,9 @@ afterEach(() => {
 
 describe('task domain query client', () => {
   it('reads the workspace task-domain capability before v2 routes are mounted', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ model_version: 'v2', available: true })
-    )
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ model_version: 'v2', available: true }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(getTaskDomainCapabilities()).resolves.toEqual({
@@ -140,9 +142,11 @@ describe('task domain query client', () => {
   })
 
   it('round-trips decimal sort order values without coercion', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ data: { task: { ...taskFixture(), sort_order: 1.25 } } })
-    )
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ data: { task: { ...taskFixture(), sort_order: 1.25 } } })
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     const task = await getTaskDefinition('task-1')
@@ -187,9 +191,11 @@ describe('task domain query client', () => {
   })
 
   it('queries occurrence projections by scope and recurring dimension', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ data: { occurrences: [occurrenceFixture()] } })
-    )
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ data: { occurrences: [occurrenceFixture()] } })
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     await listOccurrences({
@@ -197,11 +203,38 @@ describe('task domain query client', () => {
       scope: 'upcoming',
       recurring: true,
       execution_status: 'active',
+      from: '2026-07-25T00:00:00Z',
+      to: '2026-08-01T00:00:00Z',
+      timezone: 'Asia/Shanghai',
     })
 
     expect(requestPath(fetchMock, 0)).toBe(
-      '/api/task-occurrences?project_id=project-1&execution_status=active&scope=upcoming&recurring=true'
+      '/api/task-occurrences?project_id=project-1&execution_status=active&from=2026-07-25T00%3A00%3A00Z&to=2026-08-01T00%3A00%3A00Z&timezone=Asia%2FShanghai&scope=upcoming&recurring=true'
     )
+  })
+
+  it('resolves the required occurrence windows for task workspace scopes', () => {
+    const now = new Date('2026-07-24T03:15:00.000Z')
+    for (const scope of ['today', 'upcoming', 'completed'] as const) {
+      const resolved = resolveOccurrenceListParams(
+        { scope },
+        now,
+        'Asia/Shanghai'
+      )
+      expect(resolved.timezone).toBe('Asia/Shanghai')
+      expect(resolved.from).toBeTruthy()
+      expect(resolved.to).toBeTruthy()
+      expect(new Date(resolved.to!).getTime()).toBeGreaterThan(
+        new Date(resolved.from!).getTime()
+      )
+    }
+    expect(
+      resolveOccurrenceListParams({ scope: 'overdue' }, now, 'Asia/Shanghai')
+    ).toMatchObject({
+      scope: 'overdue',
+      from: now.toISOString(),
+      timezone: 'Asia/Shanghai',
+    })
   })
 
   it('rejects task creation without a project before sending a request', async () => {
@@ -226,9 +259,9 @@ describe('task domain query client', () => {
 
 describe('occurrence reschedule client', () => {
   it('patches timing with task, schedule, and occurrence revisions', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ data: commandResultFixture() })
-    )
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ data: commandResultFixture() }))
     vi.stubGlobal('fetch', fetchMock)
 
     await rescheduleOccurrence('occurrence-1', {
@@ -354,9 +387,11 @@ describe('occurrence reschedule client', () => {
 
 describe('task definition update client', () => {
   it('patches only mutable fields and preserves decimal sort order', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ data: { task: { ...taskFixture(), sort_order: 2.75 } } })
-    )
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ data: { task: { ...taskFixture(), sort_order: 2.75 } } })
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     const task = await updateTaskDefinition('task-1', {
@@ -592,6 +627,7 @@ describe('project mutation client', () => {
   })
 
   it.each([
+    ['activate', activateProject],
     ['complete', completeProject],
     ['archive', archiveProject],
   ] as const)(

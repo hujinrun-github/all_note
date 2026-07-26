@@ -1,0 +1,722 @@
+openapi: 3.1.0
+info:
+  title: FlowSpace Mobile v2 Sync API
+  version: 2.0.0
+  description: >-
+    Contract for the mobile-v2 offline-first projection and command protocol.
+    mobile-v1 remains frozen and uses independent cursors, snapshots and receipts.
+servers:
+  - url: /
+security:
+  - sessionCookie: []
+  - watchBearer: []
+x-mobile-v1-cutover:
+  http-status: 426
+  error-code: upgrade_required
+x-command-revision-matrix:
+  project.create: none
+  project.update: project
+  project.activate: project
+  project.pause: project
+  project.resume: project
+  project.complete: project
+  project.archive: project
+  project.restore: project
+  task.create: project-or-dependency
+  task.update: task
+  task.publish: task
+  task.pause: task
+  task.resume: task
+  task.cancel: task
+  task.restore: task
+  task.archive: task
+  occurrence.start: task,occurrence
+  occurrence.block: task,occurrence
+  occurrence.unblock: task,occurrence
+  occurrence.complete: task,occurrence
+  occurrence.skip: task,occurrence
+  occurrence.cancel: task,occurrence
+  occurrence.reopen: task,occurrence
+  occurrence.reschedule-only-this: task,occurrence
+  schedule.reschedule-this-and-following: task,schedule,occurrence
+paths:
+  /api/mobile/v2/capabilities:
+    get:
+      operationId: getMobileV2Capabilities
+      responses:
+        '200':
+          description: Workspace-specific mobile-v2 capability report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileV2Capabilities'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+  /api/mobile/v2/snapshot:
+    get:
+      operationId: getMobileV2Snapshot
+      parameters:
+        - $ref: '#/components/parameters/Scope'
+        - $ref: '#/components/parameters/PageToken'
+        - $ref: '#/components/parameters/ProjectionTimeZone'
+      responses:
+        '200':
+          description: One page from a fixed snapshot session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotPage'
+        '410':
+          $ref: '#/components/responses/ResyncRequired'
+  /api/mobile/v2/changes:
+    get:
+      operationId: listMobileV2Changes
+      parameters:
+        - $ref: '#/components/parameters/Scope'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ProjectionTimeZone'
+      responses:
+        '200':
+          description: Ordered committed change batches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangePage'
+        '409':
+          $ref: '#/components/responses/ProjectionRefreshRequired'
+        '410':
+          $ref: '#/components/responses/ResyncRequired'
+  /api/mobile/v2/commands:
+    post:
+      operationId: applyMobileV2Command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandEnvelope'
+      responses:
+        '200':
+          description: Terminal receipt, including idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '409':
+          description: Stale epoch, history ambiguity, or terminal domain conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '422':
+          description: Command violates the frozen command schema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+  /api/mobile/v2/commands/{originDeviceClientID}/{commandID}/receipt:
+    get:
+      operationId: getMobileV2CommandReceipt
+      parameters:
+        - name: originDeviceClientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: commandID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Existing terminal receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '404':
+          description: Proven absent under the current complete ledger
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '409':
+          description: Receipt history completeness cannot be proven
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: fs_session
+    watchBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: watch-device-token
+  parameters:
+    Scope:
+      name: scope
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/SyncScopeName'
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    PageToken:
+      name: page_token
+      in: query
+      schema:
+        type: string
+    ProjectionTimeZone:
+      name: projection_time_zone
+      in: query
+      description: Required IANA time zone for sliding scopes and absent for stable scopes.
+      schema:
+        type: string
+  responses:
+    UpgradeRequired:
+      description: Client cannot safely operate the selected workspace contract
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    ResyncRequired:
+      description: Cursor, epoch, model version, or snapshot session is no longer valid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    ProjectionRefreshRequired:
+      description: Sliding scope generation or time boundary requires a new snapshot
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProjectionRefreshError'
+  schemas:
+    BigIntString:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)$'
+    SHA256Digest:
+      type: string
+      pattern: '^sha256:[a-f0-9]{64}$'
+    NullableString:
+      type: [string, 'null']
+    NullableInstant:
+      type: [string, 'null']
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+    LocalDate:
+      type: string
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    LocalTime:
+      type: string
+      pattern: '^[0-9]{2}:[0-9]{2}:[0-9]{2}$'
+    IANATimeZone:
+      type: string
+      pattern: '^[\x00-\x7F]+$'
+    APIError:
+      type: object
+      additionalProperties: false
+      required: [code, message, schema_version]
+      properties:
+        schema_version:
+          const: mobile-v2
+        code:
+          type: string
+          enum: [lifecycle_command_required, projection_refresh_required, receipt_history_ambiguous, resync_required, restore_target_required, stale_runtime_epoch, upgrade_required, workspace_gone, workspace_mode_forbids_command]
+        message:
+          type: string
+    WorkspaceMode:
+      type: string
+      enum: [legacy-active, v2-shadow-readonly, v2-cutover-migrating, v2-active, upgrade-required]
+    SyncScopeName:
+      type: string
+      enum: [iphone-content, iphone-task-core, iphone-occurrence-window, watch-occurrence-window]
+    ScopeMembership:
+      type: string
+      enum: [stable, sliding]
+    SyncScopeCapability:
+      type: object
+      additionalProperties: false
+      required: [membership, name, projection_time_zone_required]
+      properties:
+        name:
+          $ref: '#/components/schemas/SyncScopeName'
+        membership:
+          $ref: '#/components/schemas/ScopeMembership'
+        projection_time_zone_required:
+          type: boolean
+    MobileV2Features:
+      type: object
+      additionalProperties: false
+      required: [roadmap_read, task_commands, watch_occurrence_commands]
+      properties:
+        task_commands:
+          type: boolean
+        roadmap_read:
+          type: boolean
+        watch_occurrence_commands:
+          type: boolean
+    MobileV2Capabilities:
+      type: object
+      additionalProperties: false
+      required: [contract_sha256, features, minimum_client_build, mobile_contract_epoch, runtime_epoch, schema_version, server_cutover_epoch, sync_scopes, task_model_version, workspace_id, workspace_mode]
+      properties:
+        schema_version:
+          const: mobile-v2
+        contract_sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        workspace_id:
+          type: string
+        workspace_mode:
+          $ref: '#/components/schemas/WorkspaceMode'
+        server_cutover_epoch:
+          $ref: '#/components/schemas/BigIntString'
+        mobile_contract_epoch:
+          $ref: '#/components/schemas/BigIntString'
+        runtime_epoch:
+          $ref: '#/components/schemas/BigIntString'
+        task_model_version:
+          type: integer
+          minimum: 2
+        minimum_client_build:
+          type: integer
+          minimum: 1
+        sync_scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncScopeCapability'
+        features:
+          $ref: '#/components/schemas/MobileV2Features'
+    EntityType:
+      type: string
+      enum: [project, task, task_schedule, schedule_version, task_occurrence, learning_roadmap, roadmap_node, roadmap_edge, roadmap_node_progress]
+    IdentityMapping:
+      type: object
+      additionalProperties: false
+      required: [client_id, entity_id, entity_type]
+      properties:
+        entity_type:
+          $ref: '#/components/schemas/EntityType'
+        client_id:
+          type: [string, 'null']
+          format: uuid
+        entity_id:
+          type: [string, 'null']
+    AggregateRevisions:
+      type: object
+      additionalProperties: false
+      required: [occurrence_revision, project_revision, schedule_revision, task_revision]
+      properties:
+        project_revision:
+          oneOf:
+            - $ref: '#/components/schemas/BigIntString'
+            - type: 'null'
+        task_revision:
+          oneOf:
+            - $ref: '#/components/schemas/BigIntString'
+            - type: 'null'
+        schedule_revision:
+          oneOf:
+            - $ref: '#/components/schemas/BigIntString'
+            - type: 'null'
+        occurrence_revision:
+          oneOf:
+            - $ref: '#/components/schemas/BigIntString'
+            - type: 'null'
+    EntityEnvelope:
+      type: object
+      additionalProperties: false
+      x-local-primary-key: immutable-local-id
+      required: [aggregate_revisions, client_id, deleted_at, entity_id, entity_revision, entity_type, payload]
+      properties:
+        entity_type:
+          $ref: '#/components/schemas/EntityType'
+        entity_id:
+          type: string
+        client_id:
+          type: [string, 'null']
+          format: uuid
+        entity_revision:
+          $ref: '#/components/schemas/BigIntString'
+        aggregate_revisions:
+          $ref: '#/components/schemas/AggregateRevisions'
+        deleted_at:
+          $ref: '#/components/schemas/NullableInstant'
+        payload:
+          $ref: '#/components/schemas/EntityPayload'
+    EntityPayload:
+      oneOf:
+        - $ref: '#/components/schemas/ProjectPayload'
+        - $ref: '#/components/schemas/TaskPayload'
+        - $ref: '#/components/schemas/TaskSchedulePayload'
+        - $ref: '#/components/schemas/ScheduleVersionPayload'
+        - $ref: '#/components/schemas/TaskOccurrencePayload'
+        - $ref: '#/components/schemas/LearningRoadmapPayload'
+        - $ref: '#/components/schemas/RoadmapNodePayload'
+        - $ref: '#/components/schemas/RoadmapEdgePayload'
+        - $ref: '#/components/schemas/RoadmapNodeProgressPayload'
+    ProjectStatus:
+      type: string
+      enum: [planning, active, paused, completed, archived]
+    ProjectKind:
+      type: string
+      enum: [standard, learning]
+    ProjectHorizon:
+      type: string
+      enum: [short, long]
+    ProjectSystemRole:
+      type: string
+      enum: [inbox, personal]
+    TaskLifecycleStatus:
+      type: string
+      enum: [draft, active, paused, completed, cancelled, archived]
+    GenerationStatus:
+      type: string
+      enum: [idle, running, retry_pending, failed]
+    RecurrenceType:
+      type: string
+      enum: [none, daily, weekly, monthly]
+    TimingType:
+      type: string
+      enum: [unscheduled, date, time_block]
+    ExecutionStatus:
+      type: string
+      enum: [open, active, blocked, done, skipped, cancelled]
+    RoadmapStatus:
+      type: string
+      enum: [draft, active, completed, failed, archived]
+    RoadmapNodeType:
+      type: string
+      enum: [stage, topic, milestone]
+    RoadmapNodeStatus:
+      type: string
+      enum: [locked, available, in_progress, mastered, skipped]
+    RoadmapEdgeType:
+      type: string
+      enum: [prerequisite, related, suggested_order]
+    ProjectPayload:
+      type: object
+      additionalProperties: false
+      required: [archived_at, archived_from_status, created_at, description, horizon, kind, name, status, system_role, target_at, updated_at]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        kind: {$ref: '#/components/schemas/ProjectKind'}
+        horizon: {$ref: '#/components/schemas/ProjectHorizon'}
+        status: {$ref: '#/components/schemas/ProjectStatus'}
+        archived_from_status:
+          oneOf: [{$ref: '#/components/schemas/ProjectStatus'}, {type: 'null'}]
+        system_role:
+          oneOf: [{$ref: '#/components/schemas/ProjectSystemRole'}, {type: 'null'}]
+        target_at: {$ref: '#/components/schemas/NullableInstant'}
+        created_at: {type: string}
+        updated_at: {type: string}
+        archived_at: {$ref: '#/components/schemas/NullableInstant'}
+    TaskPayload:
+      type: object
+      additionalProperties: false
+      required: [archived_at, created_at, description, lifecycle_status, note_id, priority, project_id, roadmap_node_id, sort_order, title, updated_at]
+      properties:
+        project_id: {type: string}
+        roadmap_node_id: {$ref: '#/components/schemas/NullableString'}
+        note_id: {$ref: '#/components/schemas/NullableString'}
+        title: {type: string}
+        description: {type: string}
+        lifecycle_status: {$ref: '#/components/schemas/TaskLifecycleStatus'}
+        priority: {type: integer}
+        sort_order: {type: number}
+        created_at: {type: string}
+        updated_at: {type: string}
+        archived_at: {$ref: '#/components/schemas/NullableInstant'}
+    TaskSchedulePayload:
+      type: object
+      additionalProperties: false
+      required: [current_schedule_revision, generation_error, generation_retry_at, generation_status, generation_watermark, task_id, updated_at]
+      properties:
+        task_id: {type: string}
+        current_schedule_revision: {$ref: '#/components/schemas/BigIntString'}
+        generation_watermark:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        generation_status: {$ref: '#/components/schemas/GenerationStatus'}
+        generation_error: {$ref: '#/components/schemas/NullableString'}
+        generation_retry_at: {$ref: '#/components/schemas/NullableInstant'}
+        updated_at: {type: string}
+    ScheduleVersionPayload:
+      type: object
+      additionalProperties: false
+      required: [created_at, duration_minutes, effective_from, effective_to, ends_on, local_start_time, recurrence_type, rule, schedule_revision, starts_on, task_id, timezone, timing_type]
+      properties:
+        task_id: {type: string}
+        schedule_revision: {$ref: '#/components/schemas/BigIntString'}
+        effective_from:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        effective_to:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        recurrence_type: {$ref: '#/components/schemas/RecurrenceType'}
+        timing_type: {$ref: '#/components/schemas/TimingType'}
+        timezone: {$ref: '#/components/schemas/IANATimeZone'}
+        starts_on:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        ends_on:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        rule: {type: object}
+        local_start_time:
+          oneOf: [{$ref: '#/components/schemas/LocalTime'}, {type: 'null'}]
+        duration_minutes: {type: [integer, 'null']}
+        created_at: {type: string}
+    TaskOccurrencePayload:
+      type: object
+      additionalProperties: false
+      required: [actual_start_at, all_day_end_date, blocked_reason, calendar_kind, calendar_notes, completed_at, created_at, due_at, execution_status, generated_schedule_revision, location, next_action, note_id, occurrence_key, override_description, override_title, planned_date, planned_end_at, planned_start_at, task_id, updated_at]
+      properties:
+        task_id: {type: string}
+        occurrence_key: {type: string}
+        planned_date:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        planned_start_at: {$ref: '#/components/schemas/NullableInstant'}
+        planned_end_at: {$ref: '#/components/schemas/NullableInstant'}
+        due_at: {$ref: '#/components/schemas/NullableInstant'}
+        execution_status: {$ref: '#/components/schemas/ExecutionStatus'}
+        actual_start_at: {$ref: '#/components/schemas/NullableInstant'}
+        completed_at: {$ref: '#/components/schemas/NullableInstant'}
+        override_title: {$ref: '#/components/schemas/NullableString'}
+        override_description: {$ref: '#/components/schemas/NullableString'}
+        blocked_reason: {$ref: '#/components/schemas/NullableString'}
+        next_action: {$ref: '#/components/schemas/NullableString'}
+        location: {$ref: '#/components/schemas/NullableString'}
+        calendar_kind: {$ref: '#/components/schemas/NullableString'}
+        calendar_notes: {$ref: '#/components/schemas/NullableString'}
+        note_id: {$ref: '#/components/schemas/NullableString'}
+        all_day_end_date:
+          oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
+        generated_schedule_revision: {$ref: '#/components/schemas/BigIntString'}
+        created_at: {type: string}
+        updated_at: {type: string}
+    LearningRoadmapPayload:
+      type: object
+      additionalProperties: false
+      required: [created_at, description, project_id, status, title, updated_at]
+      properties:
+        project_id: {type: string}
+        title: {type: string}
+        description: {type: string}
+        status: {$ref: '#/components/schemas/RoadmapStatus'}
+        created_at: {type: string}
+        updated_at: {type: string}
+    RoadmapNodePayload:
+      type: object
+      additionalProperties: false
+      required: [created_at, description, legacy_metadata, node_type, parent_id, position, project_id, roadmap_id, status, title, updated_at]
+      properties:
+        project_id: {type: string}
+        roadmap_id: {type: string}
+        parent_id: {$ref: '#/components/schemas/NullableString'}
+        title: {type: string}
+        description: {type: string}
+        node_type: {$ref: '#/components/schemas/RoadmapNodeType'}
+        status: {$ref: '#/components/schemas/RoadmapNodeStatus'}
+        position: {type: number}
+        legacy_metadata: {type: object}
+        created_at: {type: string}
+        updated_at: {type: string}
+    RoadmapEdgePayload:
+      type: object
+      additionalProperties: false
+      required: [created_at, edge_type, from_node_id, project_id, roadmap_id, to_node_id]
+      properties:
+        project_id: {type: string}
+        roadmap_id: {type: string}
+        from_node_id: {type: string}
+        to_node_id: {type: string}
+        edge_type: {$ref: '#/components/schemas/RoadmapEdgeType'}
+        created_at: {type: string}
+    RoadmapNodeProgressPayload:
+      type: object
+      additionalProperties: false
+      required: [active, as_of_sequence, blocked, cancelled, done, open, roadmap_node_id, skipped, total]
+      properties:
+        roadmap_node_id: {type: string}
+        as_of_sequence: {$ref: '#/components/schemas/BigIntString'}
+        total: {type: integer}
+        open: {type: integer}
+        active: {type: integer}
+        blocked: {type: integer}
+        done: {type: integer}
+        skipped: {type: integer}
+        cancelled: {type: integer}
+    CommandType:
+      type: string
+      enum: [project.create, project.update, project.activate, project.pause, project.resume, project.complete, project.archive, project.restore, task.create, task.update, task.publish, task.pause, task.resume, task.cancel, task.restore, task.archive, schedule.reschedule-this-and-following, occurrence.start, occurrence.block, occurrence.unblock, occurrence.complete, occurrence.skip, occurrence.cancel, occurrence.reopen, occurrence.reschedule-only-this]
+    CommandTarget:
+      type: object
+      additionalProperties: false
+      x-exactly-one-of: [entity_id, client_id]
+      required: [client_id, entity_id]
+      properties:
+        entity_id: {type: [string, 'null']}
+        client_id: {type: [string, 'null'], format: uuid}
+    ExpectedRevisionSource:
+      type: string
+      enum: [exact, from_dependency_receipt]
+    ExpectedRevision:
+      type: object
+      additionalProperties: false
+      required: [source]
+      properties:
+        source: {$ref: '#/components/schemas/ExpectedRevisionSource'}
+        value:
+          oneOf: [{$ref: '#/components/schemas/BigIntString'}, {type: 'null'}]
+        dependency_command_id: {type: [string, 'null'], format: uuid}
+    ExpectedRevisions:
+      type: object
+      additionalProperties: false
+      properties:
+        old_project_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+        new_project_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+        project_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+        task_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+        schedule_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+        occurrence_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+    TaskCreatePayload:
+      type: object
+      additionalProperties: false
+      required: [initial_occurrence_client_id, project, task_client_id]
+      properties:
+        task_client_id: {type: string, format: uuid}
+        initial_occurrence_client_id: {type: string, format: uuid}
+        project: {$ref: '#/components/schemas/CommandTarget'}
+    ProjectUpdatePayload:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string}
+        description: {type: string}
+        kind: {type: string}
+        horizon: {type: string}
+        target_at: {$ref: '#/components/schemas/NullableInstant'}
+    CommandEnvelope:
+      type: object
+      additionalProperties: false
+      required: [command_id, command_type, created_runtime_epoch, depends_on_command_id, expected, origin_device_client_id, payload, request_digest, supersedes_command_id, target, workspace_id]
+      properties:
+        command_id: {type: string, format: uuid}
+        request_digest: {$ref: '#/components/schemas/SHA256Digest'}
+        origin_device_client_id: {type: string, format: uuid}
+        workspace_id: {type: string}
+        command_type: {$ref: '#/components/schemas/CommandType'}
+        target: {$ref: '#/components/schemas/CommandTarget'}
+        created_runtime_epoch: {$ref: '#/components/schemas/BigIntString'}
+        expected: {$ref: '#/components/schemas/ExpectedRevisions'}
+        depends_on_command_id: {type: [string, 'null'], format: uuid}
+        supersedes_command_id: {type: [string, 'null'], format: uuid}
+        payload:
+          oneOf:
+            - {$ref: '#/components/schemas/TaskCreatePayload'}
+            - {$ref: '#/components/schemas/ProjectUpdatePayload'}
+            - {type: object}
+    ReceiptStatus:
+      type: string
+      enum: [applied, no_op, conflict, rejected]
+    AffectedRevision:
+      type: object
+      additionalProperties: false
+      required: [entity_id, entity_type, revision]
+      properties:
+        entity_type: {$ref: '#/components/schemas/EntityType'}
+        entity_id: {type: string}
+        revision: {$ref: '#/components/schemas/BigIntString'}
+    CommandReceipt:
+      type: object
+      additionalProperties: false
+      required: [affected_revisions, command_id, commit_sequence, completed_at, identity_mappings, origin_device_client_id, request_digest, status, workspace_id]
+      properties:
+        workspace_id: {type: string}
+        origin_device_client_id: {type: string, format: uuid}
+        command_id: {type: string, format: uuid}
+        request_digest: {$ref: '#/components/schemas/SHA256Digest'}
+        status: {$ref: '#/components/schemas/ReceiptStatus'}
+        commit_sequence: {$ref: '#/components/schemas/BigIntString'}
+        identity_mappings:
+          type: array
+          items: {$ref: '#/components/schemas/IdentityMapping'}
+        affected_revisions:
+          type: array
+          items: {$ref: '#/components/schemas/AffectedRevision'}
+        completed_at: {type: string}
+    CommandResponse:
+      type: object
+      additionalProperties: false
+      required: [receipt, replayed, schema_version]
+      properties:
+        schema_version: {const: mobile-v2}
+        replayed: {type: boolean}
+        receipt: {$ref: '#/components/schemas/CommandReceipt'}
+    SnapshotPage:
+      type: object
+      additionalProperties: false
+      required: [as_of_sequence, entities, has_more, next_page_token, page_checksum, page_index, projection_as_of, projection_refresh_required, projection_time_zone, scope_generation, scope_valid_until, snapshot_cursor, snapshot_id, snapshot_manifest_checksum]
+      properties:
+        snapshot_id: {type: string}
+        as_of_sequence: {$ref: '#/components/schemas/BigIntString'}
+        snapshot_cursor: {type: string}
+        projection_as_of: {type: string}
+        projection_time_zone: {type: [string, 'null']}
+        scope_generation: {type: string}
+        scope_valid_until: {type: [string, 'null']}
+        projection_refresh_required: {type: boolean}
+        entities:
+          type: array
+          items: {$ref: '#/components/schemas/EntityEnvelope'}
+        page_index: {type: integer, minimum: 0}
+        page_checksum: {$ref: '#/components/schemas/SHA256Digest'}
+        snapshot_manifest_checksum: {$ref: '#/components/schemas/SHA256Digest'}
+        next_page_token: {type: [string, 'null']}
+        has_more: {type: boolean}
+    ChangeBatch:
+      type: object
+      additionalProperties: false
+      required: [caused_by_command_id, change_sequence, entities, origin_device_client_id, receipt]
+      properties:
+        change_sequence: {$ref: '#/components/schemas/BigIntString'}
+        caused_by_command_id: {type: [string, 'null'], format: uuid}
+        origin_device_client_id: {type: [string, 'null'], format: uuid}
+        receipt:
+          oneOf: [{$ref: '#/components/schemas/CommandReceipt'}, {type: 'null'}]
+        entities:
+          type: array
+          items: {$ref: '#/components/schemas/EntityEnvelope'}
+    ChangePage:
+      type: object
+      additionalProperties: false
+      required: [changes, has_more, next_cursor, projection_refresh_required, projection_time_zone, scope_generation, scope_valid_until]
+      properties:
+        changes:
+          type: array
+          items: {$ref: '#/components/schemas/ChangeBatch'}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+        projection_time_zone: {type: [string, 'null']}
+        scope_generation: {type: string}
+        scope_valid_until: {type: [string, 'null']}
+        projection_refresh_required: {type: boolean}
+    ProjectionRefreshError:
+      type: object
+      additionalProperties: false
+      required: [code, message, projection_refresh_required, projection_time_zone, scope_generation, scope_valid_until]
+      properties:
+        code: {const: projection_refresh_required}
+        message: {type: string}
+        projection_time_zone: {type: string}
+        scope_generation: {type: string}
+        scope_valid_until: {type: string}
+        projection_refresh_required: {const: true}

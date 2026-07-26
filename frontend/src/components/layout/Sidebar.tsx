@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { getCurrentUser } from '../../api/auth'
-import { useInboxList } from '../../hooks/useInbox'
+import { useTaskInbox } from '../../hooks/useTaskInbox'
 import { useTaskDomainCapabilities } from '../../hooks/useTaskDomain'
 
 const navGroups = [
@@ -13,7 +13,7 @@ const navGroups = [
       { to: '/tasks', label: '任务', icon: CheckIcon },
       { to: '/projects', label: '项目', icon: ProjectIcon, v2Only: true },
       { to: '/calendar', label: '日历', icon: CalendarIcon },
-      { to: '/inbox', label: '收件箱', icon: InboxIcon },
+      { to: '/inbox', label: '未整理', icon: InboxIcon },
     ],
   },
   {
@@ -38,10 +38,13 @@ type SidebarProps = {
   onToggleCollapsed?: () => void
 }
 
-export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) {
+export function Sidebar({
+  collapsed = false,
+  onToggleCollapsed,
+}: SidebarProps) {
   const queryClient = useQueryClient()
-  const inboxQ = useInboxList({ page_size: 1 })
-  const inboxCount = inboxQ.data?.pagination.total ?? 0
+  const { occurrencesQuery: inboxQuery } = useTaskInbox()
+  const inboxCount = inboxQuery.data?.length ?? 0
   const toggleLabel = collapsed ? '展开侧边栏' : '收起侧边栏'
   const currentUser = useQuery({
     queryKey: ['auth', 'me'],
@@ -50,7 +53,9 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
     staleTime: 5 * 60_000,
   })
   const taskDomainCapability = useTaskDomainCapabilities()
-  const visibleGroups = navGroups.filter((group) => group.title !== '系统' || currentUser.data?.user.role === 'admin')
+  const visibleGroups = navGroups.filter(
+    (group) => group.title !== '系统' || currentUser.data?.user.role === 'admin'
+  )
 
   return (
     <aside className={`workspace-sidebar ${collapsed ? 'is-collapsed' : ''}`}>
@@ -85,30 +90,35 @@ export function Sidebar({ collapsed = false, onToggleCollapsed }: SidebarProps) 
                   taskDomainCapability.data?.model_version === 'v2'
               )
               .map(({ to, label, icon: Icon }) => {
-              const showInboxBadge = to === '/inbox' && inboxCount > 0
+                const showInboxBadge = to === '/inbox' && inboxCount > 0
 
-              return (
-                <NavLink
-                  key={to}
-                  to={to}
-                  end={to === '/'}
-                  onClick={() => {
-                    void queryClient.invalidateQueries()
-                  }}
-                  className={({ isActive }) => `sidebar-link ${isActive ? 'is-active' : ''}`}
-                  aria-label={label}
-                  title={collapsed ? label : undefined}
-                >
-                  <Icon />
-                  <span className="sidebar-link-label">{label}</span>
-                  {showInboxBadge && (
-                    <span className="sidebar-badge" aria-label={`${inboxCount} 条未整理`}>
-                      {inboxCount > 99 ? '99+' : inboxCount}
-                    </span>
-                  )}
-                </NavLink>
-              )
-            })}
+                return (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    end={to === '/'}
+                    onClick={() => {
+                      void queryClient.invalidateQueries()
+                    }}
+                    className={({ isActive }) =>
+                      `sidebar-link ${isActive ? 'is-active' : ''}`
+                    }
+                    aria-label={label}
+                    title={collapsed ? label : undefined}
+                  >
+                    <Icon />
+                    <span className="sidebar-link-label">{label}</span>
+                    {showInboxBadge && (
+                      <span
+                        className="sidebar-badge"
+                        aria-label={`${inboxCount} 条未整理`}
+                      >
+                        {inboxCount > 99 ? '99+' : inboxCount}
+                      </span>
+                    )}
+                  </NavLink>
+                )
+              })}
           </div>
         ))}
       </nav>

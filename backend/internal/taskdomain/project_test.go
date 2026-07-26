@@ -111,6 +111,106 @@ func TestCompleteProjectRejectsNonTerminalOccurrences(t *testing.T) {
 	}
 }
 
+func TestProjectLifecycleTransitions(t *testing.T) {
+	t.Parallel()
+
+	project := Project{WorkspaceID: "workspace-a", ID: "project-1", Status: ProjectStatusPlanning}
+
+	active, err := ActivateProject(project)
+	if err != nil || active.Status != ProjectStatusActive {
+		t.Fatalf("ActivateProject() = %#v, %v", active, err)
+	}
+	paused, err := PauseProject(active)
+	if err != nil || paused.Status != ProjectStatusPaused {
+		t.Fatalf("PauseProject() = %#v, %v", paused, err)
+	}
+	resumed, err := ResumeProject(paused)
+	if err != nil || resumed.Status != ProjectStatusActive {
+		t.Fatalf("ResumeProject() = %#v, %v", resumed, err)
+	}
+	completed, err := CompleteProject(resumed, 0)
+	if err != nil || completed.Status != ProjectStatusCompleted {
+		t.Fatalf("CompleteProject() = %#v, %v", completed, err)
+	}
+}
+
+func TestProjectLifecycleRejectsIllegalTransitions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		project    Project
+		transition func(Project) (Project, error)
+	}{
+		{name: "activate active", project: Project{Status: ProjectStatusActive}, transition: ActivateProject},
+		{name: "pause planning", project: Project{Status: ProjectStatusPlanning}, transition: PauseProject},
+		{name: "resume active", project: Project{Status: ProjectStatusActive}, transition: ResumeProject},
+		{name: "complete planning", project: Project{Status: ProjectStatusPlanning}, transition: func(project Project) (Project, error) {
+			return CompleteProject(project, 0)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := test.transition(test.project); !errors.Is(err, ErrInvalidProjectTransition) {
+				t.Fatalf("transition error = %v, want %v", err, ErrInvalidProjectTransition)
+			}
+		})
+	}
+}
+
+func TestArchiveAndRestoreProjectPreserveExactPreviousStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []ProjectStatus{
+		ProjectStatusPlanning,
+		ProjectStatusActive,
+		ProjectStatusPaused,
+		ProjectStatusCompleted,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			project := Project{Status: status}
+			archived, err := ArchiveProject(project)
+			if err != nil {
+				t.Fatalf("ArchiveProject() error = %v", err)
+			}
+			if archived.Status != ProjectStatusArchived || archived.ArchivedFromStatus == nil || *archived.ArchivedFromStatus != status {
+				t.Fatalf("archived project = %#v", archived)
+			}
+
+			restored, err := RestoreProject(archived, nil)
+			if err != nil {
+				t.Fatalf("RestoreProject() error = %v", err)
+			}
+			if restored.Status != status || restored.ArchivedFromStatus != nil {
+				t.Fatalf("restored project = %#v", restored)
+			}
+		})
+	}
+}
+
+func TestRestoreLegacyArchivedProjectRequiresExplicitTarget(t *testing.T) {
+	t.Parallel()
+
+	legacy := Project{Status: ProjectStatusArchived}
+	if _, err := RestoreProject(legacy, nil); !errors.Is(err, ErrRestoreTargetRequired) {
+		t.Fatalf("RestoreProject() error = %v, want %v", err, ErrRestoreTargetRequired)
+	}
+
+	restoreTo := ProjectStatusPaused
+	restored, err := RestoreProject(legacy, &restoreTo)
+	if err != nil {
+		t.Fatalf("RestoreProject() error = %v", err)
+	}
+	if restored.Status != ProjectStatusPaused || restored.ArchivedFromStatus != nil {
+		t.Fatalf("restored project = %#v", restored)
+	}
+
+	invalid := ProjectStatusArchived
+	if _, err := RestoreProject(legacy, &invalid); !errors.Is(err, ErrInvalidProjectTransition) {
+		t.Fatalf("invalid restore error = %v, want %v", err, ErrInvalidProjectTransition)
+	}
+}
+
 func TestLearningProjectAllowsAtMostOneCurrentRoadmap(t *testing.T) {
 	t.Parallel()
 

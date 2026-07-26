@@ -41,13 +41,14 @@ type ProjectIdentity struct {
 }
 
 type Project struct {
-	WorkspaceID string
-	ID          string
-	Name        string
-	Kind        ProjectKind
-	Horizon     ProjectHorizon
-	Status      ProjectStatus
-	SystemRole  ProjectSystemRole
+	WorkspaceID        string
+	ID                 string
+	Name               string
+	Kind               ProjectKind
+	Horizon            ProjectHorizon
+	Status             ProjectStatus
+	ArchivedFromStatus *ProjectStatus
+	SystemRole         ProjectSystemRole
 }
 
 func (p Project) Identity() ProjectIdentity {

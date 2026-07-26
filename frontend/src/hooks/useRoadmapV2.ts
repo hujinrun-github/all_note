@@ -5,11 +5,11 @@ const keys = {
   roadmap: (projectID: string) =>
     ['task-domain', 'roadmap-v2', projectID] as const,
 }
-export function useRoadmapV2(projectID: string) {
+export function useRoadmapV2(projectID: string, enabled = true) {
   return useQuery({
     queryKey: keys.roadmap(projectID),
     queryFn: () => api.getRoadmapV2(projectID),
-    enabled: projectID !== '',
+    enabled: enabled && projectID !== '',
   })
 }
 export function useCreateRoadmapMutation(projectID: string) {
@@ -19,6 +19,15 @@ export function useCreateRoadmapMutation(projectID: string) {
       api.createRoadmapV2(projectID, input),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: keys.roadmap(projectID) }),
+  })
+}
+export function useGenerateRoadmapMutation(projectID: string) {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input: { prompt?: string }) =>
+      api.generateRoadmapV2(projectID, input),
+    onSuccess: (roadmap) =>
+      client.setQueryData(keys.roadmap(projectID), roadmap),
   })
 }
 export function useCreateRoadmapNodeMutation(projectID: string) {

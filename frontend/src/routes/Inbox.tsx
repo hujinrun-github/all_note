@@ -1,481 +1,410 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { listTaskProjects, type TaskProject } from '../api/tasks'
-import type { ConvertInboxInput, InboxItem } from '../api/inbox'
 import {
-  useInboxList,
-  useConvertInboxItem,
-  useDeleteInboxItem,
-  useBatchInbox,
-} from '../hooks/useInbox'
-import { dateInputToUnix, todayDateInputValue } from '../utils/taskForm'
-import { formatTaskProjectOption } from '../utils/taskProjects'
+  ArrowRight,
+  Check,
+  Circle,
+  Inbox as InboxIcon,
+  Plus,
+} from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 
-const kinds = ['all', 'note', 'task', 'event', 'idea'] as const
-const kindLabels: Record<(typeof kinds)[number], string> = {
-  all: '全部',
-  note: '笔记',
-  task: '任务',
-  event: '日程',
-  idea: '想法',
-}
+import type { ExecutionStatus, OccurrenceV2, TaskV2 } from '../api/taskDomain'
+import { TaskDomainRevisionConflictError } from '../api/taskDomain'
+import {
+  ExecutionStatusLabel,
+  occurrenceTitle,
+} from '../components/taskDomain/TaskDomainWorkspace'
+import {
+  useCompleteOccurrenceMutation,
+  useTaskDefinitions,
+  useUpdateTaskDefinitionMutation,
+} from '../hooks/useTaskDomain'
+import { useTaskInbox } from '../hooks/useTaskInbox'
+import { useUIStore } from '../stores/ui'
 
-function getKindLabel(kind: string) {
-  return kindLabels[kind as keyof typeof kindLabels] ?? '捕获'
-}
+type InboxFilter = 'all' | 'open' | 'active' | 'blocked'
 
-function getKindClass(kind: string) {
-  return `is-${kind === 'note' || kind === 'task' || kind === 'event' || kind === 'idea' ? kind : 'idea'}`
-}
+const filters: Array<{ id: InboxFilter; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'open', label: '待开始' },
+  { id: 'active', label: '进行中' },
+  { id: 'blocked', label: '已阻塞' },
+]
 
 export default function Inbox() {
-  const [kind, setKind] = useState<(typeof kinds)[number]>('all')
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [activeItemID, setActiveItemID] = useState('')
+  const setCaptureOpen = useUIStore((state) => state.setCaptureOpen)
+  const { inboxProject, occurrencesQuery, projectsQuery } = useTaskInbox()
+  const definitionsQuery = useTaskDefinitions()
+  const updateTask = useUpdateTaskDefinitionMutation()
+  const completeOccurrence = useCompleteOccurrenceMutation()
+  const [filter, setFilter] = useState<InboxFilter>('all')
+  const [selectedOccurrenceID, setSelectedOccurrenceID] = useState('')
+  const [targetProjectID, setTargetProjectID] = useState('')
+  const [error, setError] = useState('')
 
-  const { data, isLoading, error, refetch } = useInboxList({ page_size: 100 })
-  const {
-    data: taskProjects = [],
-    isLoading: isProjectsLoading,
-    isError: isProjectsError,
-  } = useQuery({
-    queryKey: ['task-projects'],
-    queryFn: listTaskProjects,
-  })
-  const convertItem = useConvertInboxItem()
-  const deleteItem = useDeleteInboxItem()
-  const batchInbox = useBatchInbox()
+  const tasksByID = useMemo(
+    () =>
+      new Map(
+        (definitionsQuery.data ?? []).map((task) => [task.id, task] as const)
+      ),
+    [definitionsQuery.data]
+  )
+  const occurrences = occurrencesQuery.data ?? []
+  const filteredOccurrences = occurrences.filter((occurrence) =>
+    matchesFilter(occurrence.execution_status, filter)
+  )
+  const selectedOccurrence =
+    filteredOccurrences.find(
+      (occurrence) => occurrence.id === selectedOccurrenceID
+    ) ?? filteredOccurrences[0]
+  const selectedTask = selectedOccurrence
+    ? tasksByID.get(selectedOccurrence.task_id)
+    : undefined
+  const organizeTargets = (projectsQuery.data ?? []).filter(
+    (project) =>
+      !project.system_role &&
+      project.status !== 'completed' &&
+      project.status !== 'archived'
+  )
+  const resolvedTargetProjectID =
+    organizeTargets.find((project) => project.id === targetProjectID)?.id ??
+    organizeTargets[0]?.id ??
+    ''
+  const selectedTargetProject = organizeTargets.find(
+    (project) => project.id === resolvedTargetProjectID
+  )
+  const isLoading =
+    projectsQuery.isLoading ||
+    definitionsQuery.isLoading ||
+    occurrencesQuery.isLoading
+  const hasQueryError =
+    projectsQuery.isError ||
+    definitionsQuery.isError ||
+    occurrencesQuery.isError
 
-  const items = data?.items ?? []
-  const visibleItems =
-    kind === 'all' ? items : items.filter((item) => item.kind === kind)
-  const selectedItem =
-    visibleItems.find((item) => item.id === activeItemID) ?? visibleItems[0]
-  const allVisibleSelected =
-    visibleItems.length > 0 &&
-    visibleItems.every((item) => selected.has(item.id))
-
-  function toggleSelect(id: string) {
-    setSelected((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  async function organizeSelectedTask() {
+    if (!selectedTask || !inboxProject || resolvedTargetProjectID === '') {
+      return
+    }
+    setError('')
+    try {
+      await updateTask.mutateAsync({
+        projectID: inboxProject.id,
+        taskID: selectedTask.id,
+        input: {
+          expected_task_revision: selectedTask.revision,
+          expected_schedule_revision: selectedTask.schedule_revision,
+          project_id: resolvedTargetProjectID,
+        },
+      })
+      setSelectedOccurrenceID('')
+      setTargetProjectID('')
+    } catch (caught) {
+      setError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务刚刚被其他操作更新了，请刷新后重试。'
+          : '整理失败，请稍后重试。'
+      )
+    }
   }
 
-  function toggleSelectAllVisible() {
-    setSelected((current) => {
-      const next = new Set(current)
-      if (visibleItems.every((item) => next.has(item.id))) {
-        visibleItems.forEach((item) => next.delete(item.id))
-      } else {
-        visibleItems.forEach((item) => next.add(item.id))
-      }
-      return next
-    })
-  }
-
-  async function handleConvert(
-    id: string,
-    targetKind: string,
-    input: Omit<ConvertInboxInput, 'kind'> = {}
-  ) {
-    await convertItem.mutateAsync({ id, kind: targetKind, ...input })
-    setSelected((current) => {
-      const next = new Set(current)
-      next.delete(id)
-      return next
-    })
-    if (activeItemID === id) setActiveItemID('')
-    await refetch()
-  }
-
-  async function handleDelete(id: string) {
-    await deleteItem.mutateAsync(id)
-    setSelected((current) => {
-      const next = new Set(current)
-      next.delete(id)
-      return next
-    })
-    if (activeItemID === id) setActiveItemID('')
-    await refetch()
-  }
-
-  async function handleBatch(action: 'archive' | 'delete') {
-    if (selected.size === 0) return
-    await batchInbox.mutateAsync({ ids: Array.from(selected), action })
-    setSelected(new Set())
-    setActiveItemID('')
-    await refetch()
-  }
-
-  if (isLoading) return <Skeleton />
-  if (error) {
-    return (
-      <div className="empty-state">
-        <strong>加载失败</strong>
-        <p>收件箱暂时不可用，请稍后重试。</p>
-      </div>
-    )
+  async function completeSelectedOccurrence() {
+    if (!selectedTask || !selectedOccurrence) return
+    setError('')
+    try {
+      await completeOccurrence.mutateAsync(
+        occurrenceCommandVariables(selectedTask, selectedOccurrence)
+      )
+      setSelectedOccurrenceID('')
+    } catch (caught) {
+      setError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务状态已经变化，请刷新后重试。'
+          : '完成任务失败，请稍后重试。'
+      )
+    }
   }
 
   return (
-    <div className="inbox-page">
-      <div className="inbox-workspace">
-        <aside className="surface-panel inbox-filter-panel">
-          <div className="inbox-overview">
-            <span>待处理</span>
-            <strong>{items.length}</strong>
-            <p>把零散捕获整理成下一步行动</p>
-          </div>
-          <div className="inbox-filter-heading">
-            <h2>捕获类型</h2>
-            <span>{visibleItems.length} 条</span>
-          </div>
-          <nav className="inbox-kind-list" aria-label="捕获类型">
-            {kinds.map((itemKind) => (
-              <button
-                key={itemKind}
-                type="button"
-                onClick={() => setKind(itemKind)}
-                className={kind === itemKind ? 'is-active' : ''}
-              >
-                <span>
-                  <i className={getKindClass(itemKind)} />
-                  {kindLabels[itemKind]}
-                </span>
-                <em>
-                  {itemKind === 'all'
-                    ? items.length
-                    : items.filter((item) => item.kind === itemKind).length}
-                </em>
-              </button>
-            ))}
-          </nav>
-        </aside>
+    <div className="inbox-v2-page">
+      <header className="inbox-v2-hero">
+        <div>
+          <h1>未整理</h1>
+          <p>
+            快速捕获且尚未归入具体项目的任务都会来到这里。选定项目后，任务会离开收件箱并进入对应项目。
+          </p>
+        </div>
+        <button
+          type="button"
+          className="primary-action"
+          onClick={() => setCaptureOpen(true)}
+        >
+          <Plus aria-hidden="true" />
+          快速捕获
+        </button>
+      </header>
 
-        <section className="surface-panel inbox-list-panel">
-          <div className="panel-heading inbox-list-heading">
+      <section className="inbox-v2-summary" aria-label="收件箱概览">
+        <div className="inbox-v2-summary-main">
+          <span className="inbox-v2-summary-icon">
+            <InboxIcon aria-hidden="true" />
+          </span>
+          <div>
+            <strong>{occurrences.length}</strong>
+            <span>条任务等待整理</span>
+          </div>
+        </div>
+        <p>
+          {occurrences.length === 0
+            ? '收件箱已经清空，新的快速捕获会直接出现在这里。'
+            : '每次只做一个决定：放进项目、继续执行，或者直接完成。'}
+        </p>
+      </section>
+
+      <div className="inbox-v2-workspace">
+        <section className="inbox-v2-list-panel">
+          <div className="inbox-v2-list-heading">
             <div>
-              <h2>捕获列表</h2>
-              <p>选择一条，在右侧补充任务信息</p>
+              <h2>任务收件箱</h2>
+              <span>{filteredOccurrences.length} 条</span>
             </div>
-            <button
-              type="button"
-              className="secondary-action inbox-select-all"
-              onClick={toggleSelectAllVisible}
-              disabled={visibleItems.length === 0}
-            >
-              {allVisibleSelected ? '取消全选' : '全选'}
-            </button>
-          </div>
-
-          <div className="capture-list">
-            {visibleItems.map((item) => (
-              <article
-                key={item.id}
-                className={`capture-row ${selected.has(item.id) ? 'is-selected' : ''} ${selectedItem?.id === item.id ? 'is-active' : ''}`}
-                onClick={() => setActiveItemID(item.id)}
-                aria-current={selectedItem?.id === item.id ? 'true' : undefined}
-              >
-                <input
-                  type="checkbox"
-                  aria-label={`选择 ${item.title}`}
-                  checked={selected.has(item.id)}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={() => toggleSelect(item.id)}
-                />
-                <div className="capture-row-content">
-                  <strong>{item.title}</strong>
-                  {item.body ? <span>{item.body}</span> : null}
-                  <p>
-                    <em className={getKindClass(item.kind)}>
-                      {getKindLabel(item.kind)}
-                    </em>
-                    <time>
-                      {new Date(item.created_at * 1000).toLocaleString(
-                        'zh-CN',
-                        {
-                          month: 'numeric',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        }
-                      )}
-                    </time>
-                  </p>
-                </div>
-                <div
-                  className="row-actions"
-                  onClick={(event) => event.stopPropagation()}
+            <div className="inbox-v2-filters" aria-label="收件箱筛选">
+              {filters.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={filter === item.id ? 'is-active' : ''}
+                  aria-pressed={filter === item.id}
+                  onClick={() => {
+                    setFilter(item.id)
+                    setSelectedOccurrenceID('')
+                  }}
                 >
-                  <button
-                    type="button"
-                    onClick={() => void handleConvert(item.id, 'note')}
-                    disabled={convertItem.isPending}
-                  >
-                    转笔记
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveItemID(item.id)}
-                    disabled={convertItem.isPending}
-                  >
-                    整理任务
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleConvert(item.id, 'event')}
-                    disabled={convertItem.isPending}
-                  >
-                    转日程
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-danger"
-                    aria-label={`删除 ${item.title}`}
-                    title="删除捕获"
-                    onClick={() => void handleDelete(item.id)}
-                    disabled={deleteItem.isPending}
-                  >
-                    ×
-                  </button>
-                </div>
-              </article>
-            ))}
+                  {item.label}
+                  <span>{filterCount(occurrences, item.id)}</span>
+                </button>
+              ))}
+            </div>
           </div>
 
-          {visibleItems.length === 0 ? (
-            <div className="inbox-empty-state">
-              <strong>这里已经整理干净</strong>
+          {isLoading ? (
+            <div className="inbox-v2-loading" aria-label="正在加载收件箱">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : null}
+
+          {hasQueryError ? (
+            <div className="inbox-v2-error" role="alert">
+              收件箱暂时不可用，请刷新后重试。
+            </div>
+          ) : null}
+
+          {!isLoading && !hasQueryError && filteredOccurrences.length === 0 ? (
+            <div className="inbox-v2-empty">
+              <span>
+                <Check aria-hidden="true" />
+              </span>
+              <strong>
+                {occurrences.length === 0
+                  ? '这里已经整理干净'
+                  : '这个筛选下没有任务'}
+              </strong>
               <p>
-                {kind === 'all'
-                  ? '新的快速捕获会出现在这里。'
-                  : `暂无${kindLabels[kind]}类型的捕获。`}
+                {occurrences.length === 0
+                  ? '新的快速捕获会默认进入系统收件箱。'
+                  : '切换到其他状态继续整理。'}
               </p>
             </div>
           ) : null}
 
-          {selected.size > 0 ? (
-            <div className="inbox-batch-bar">
-              <span>
-                已选择 <strong>{selected.size}</strong> 项
-              </span>
-              <div>
+          <div className="inbox-v2-task-list" role="list">
+            {filteredOccurrences.map((occurrence) => {
+              const task = tasksByID.get(occurrence.task_id)
+              const title = occurrenceTitle(occurrence, task)
+              const selected = occurrence.id === selectedOccurrence?.id
+              return (
+                <article
+                  key={occurrence.id}
+                  role="listitem"
+                  className={`inbox-v2-task-row ${
+                    selected ? 'is-selected' : ''
+                  }`}
+                  tabIndex={0}
+                  aria-current={selected ? 'true' : undefined}
+                  onClick={() => setSelectedOccurrenceID(occurrence.id)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return
+                    event.preventDefault()
+                    setSelectedOccurrenceID(occurrence.id)
+                  }}
+                >
+                  <span className="inbox-v2-task-check">
+                    <Circle aria-hidden="true" />
+                  </span>
+                  <div className="inbox-v2-task-copy">
+                    <strong>{title}</strong>
+                    <span>{task?.description || '尚未补充任务说明'}</span>
+                  </div>
+                  <span className="inbox-v2-priority">
+                    {priorityLabel(task?.priority)}
+                  </span>
+                  <ExecutionStatusLabel status={occurrence.execution_status} />
+                  <ArrowRight aria-hidden="true" />
+                </article>
+              )
+            })}
+          </div>
+        </section>
+
+        <aside className="inbox-v2-organizer" aria-label="整理任务">
+          {selectedOccurrence && selectedTask ? (
+            <>
+              <div className="inbox-v2-organizer-heading">
+                <span>整理任务</span>
+                <h2>{occurrenceTitle(selectedOccurrence, selectedTask)}</h2>
+                <p>将任务归入一个明确项目，后续安排和执行会在该项目中继续。</p>
+              </div>
+
+              <dl className="inbox-v2-task-details">
+                <div>
+                  <dt>当前归属</dt>
+                  <dd>{inboxProject?.name ?? '系统收件箱'}</dd>
+                </div>
+                <div>
+                  <dt>当前状态</dt>
+                  <dd>
+                    <ExecutionStatusLabel
+                      status={selectedOccurrence.execution_status}
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt>安排</dt>
+                  <dd>{scheduleLabel(selectedOccurrence)}</dd>
+                </div>
+              </dl>
+
+              <label className="inbox-v2-project-field">
+                <span>归入项目</span>
+                <select
+                  aria-label="归入项目"
+                  value={resolvedTargetProjectID}
+                  disabled={organizeTargets.length === 0}
+                  onChange={(event) => setTargetProjectID(event.target.value)}
+                >
+                  {organizeTargets.length === 0 ? (
+                    <option value="">暂无可用项目</option>
+                  ) : (
+                    organizeTargets.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name} ·{' '}
+                        {project.kind === 'learning' ? '学习项目' : '标准项目'}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <small>
+                  {selectedTargetProject
+                    ? `整理后进入「${selectedTargetProject.name}」`
+                    : '请先创建一个可用项目'}
+                </small>
+              </label>
+
+              {error !== '' ? (
+                <div className="inbox-v2-error" role="alert">
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="inbox-v2-organizer-actions">
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={
+                    resolvedTargetProjectID === '' || updateTask.isPending
+                  }
+                  onClick={() => void organizeSelectedTask()}
+                >
+                  {updateTask.isPending ? '正在整理…' : '归入项目'}
+                  <ArrowRight aria-hidden="true" />
+                </button>
                 <button
                   type="button"
                   className="secondary-action"
-                  onClick={() => void handleBatch('archive')}
+                  disabled={completeOccurrence.isPending}
+                  onClick={() => void completeSelectedOccurrence()}
                 >
-                  归档
-                </button>
-                <button
-                  type="button"
-                  className="danger-action"
-                  onClick={() => void handleBatch('delete')}
-                >
-                  删除
+                  <Check aria-hidden="true" />
+                  直接完成
                 </button>
               </div>
-            </div>
-          ) : null}
-        </section>
 
-        <InboxTaskInspector
-          key={selectedItem?.id ?? 'empty'}
-          item={selectedItem}
-          projects={taskProjects}
-          projectsLoading={isProjectsLoading}
-          projectsError={isProjectsError}
-          pending={convertItem.isPending}
-          onConvert={(id, input) => handleConvert(id, 'task', input)}
-        />
-      </div>
-    </div>
-  )
-}
-
-interface InboxTaskInspectorProps {
-  item?: InboxItem
-  projects: TaskProject[]
-  projectsLoading: boolean
-  projectsError: boolean
-  pending: boolean
-  onConvert: (
-    id: string,
-    input: Omit<ConvertInboxInput, 'kind'>
-  ) => Promise<void>
-}
-
-function InboxTaskInspector({
-  item,
-  projects,
-  projectsLoading,
-  projectsError,
-  pending,
-  onConvert,
-}: InboxTaskInspectorProps) {
-  const defaultProjectID =
-    projects.find((project) => project.id === 'personal')?.id ??
-    projects[0]?.id ??
-    'personal'
-  const [title, setTitle] = useState(item?.title ?? '')
-  const [projectID, setProjectID] = useState(defaultProjectID)
-  const [dueDate, setDueDate] = useState(todayDateInputValue)
-  const [priority, setPriority] = useState('1')
-  const [content, setContent] = useState(item?.body ?? '')
-
-  function resetDraft() {
-    setTitle(item?.title ?? '')
-    setProjectID(defaultProjectID)
-    setDueDate(todayDateInputValue())
-    setPriority('1')
-    setContent(item?.body ?? '')
-  }
-
-  async function submitTask() {
-    if (!item || !title.trim() || projectsLoading || projects.length === 0)
-      return
-    await onConvert(item.id, {
-      title: title.trim(),
-      content: content.trim(),
-      project_id: projectID,
-      due: dateInputToUnix(dueDate),
-      priority: Number(priority),
-    })
-  }
-
-  return (
-    <aside className="surface-panel inbox-detail-panel">
-      <div className="panel-heading is-compact inbox-detail-heading">
-        <div>
-          <h2>整理为任务</h2>
-          <p>补全归属和下一步，再放入任务工作台</p>
-        </div>
-        <span>任务</span>
-      </div>
-
-      {!item ? (
-        <div className="inbox-detail-empty">
-          <strong>选择一条捕获</strong>
-          <p>点击中间列表中的内容后，可在这里编辑并整理。</p>
-        </div>
-      ) : (
-        <form
-          className="inbox-convert-form"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void submitTask()
-          }}
-        >
-          <div className="inbox-source-context">
-            <span className={getKindClass(item.kind)}>
-              {getKindLabel(item.kind)}
-            </span>
-            <time>
-              {new Date(item.created_at * 1000).toLocaleString('zh-CN', {
-                month: 'long',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </time>
-          </div>
-          <label>
-            <span>标题</span>
-            <input
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="任务标题"
-            />
-          </label>
-          <label>
-            <span>项目</span>
-            <select
-              value={projectID}
-              onChange={(event) => setProjectID(event.target.value)}
-              disabled={projectsLoading || projects.length === 0}
-            >
-              {projects.length === 0 ? (
-                <option value="personal">
-                  {projectsLoading ? '正在加载项目...' : '暂无可用项目'}
-                </option>
-              ) : null}
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {formatTaskProjectOption(project)}
-                </option>
-              ))}
-            </select>
-            {projectsError ? (
-              <small className="form-field-error">
-                项目加载失败，请刷新后重试。
-              </small>
-            ) : null}
-          </label>
-          <div className="inbox-form-row">
-            <label>
-              <span>截止日期</span>
-              <input
-                type="date"
-                value={dueDate}
-                onChange={(event) => setDueDate(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>优先级</span>
-              <select
-                value={priority}
-                onChange={(event) => setPriority(event.target.value)}
+              <Link
+                className="inbox-v2-workbench-link"
+                to={`/tasks?view=inbox&occurrence_id=${selectedOccurrence.id}`}
               >
-                <option value="0">低</option>
-                <option value="1">中</option>
-                <option value="2">高</option>
-              </select>
-            </label>
-          </div>
-          <label>
-            <span>备注</span>
-            <textarea
-              value={content}
-              onChange={(event) => setContent(event.target.value)}
-              placeholder="补充下一步、背景或交付标准"
-            />
-          </label>
-          <div className="form-actions inbox-form-actions">
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={resetDraft}
-            >
-              重置
-            </button>
-            <button
-              type="submit"
-              className="primary-action"
-              disabled={
-                !title.trim() ||
-                projectsLoading ||
-                projects.length === 0 ||
-                pending
-              }
-            >
-              {pending ? '整理中...' : '确认整理'}
-            </button>
-          </div>
-        </form>
-      )}
-    </aside>
+                在任务工作台中查看
+                <ArrowRight aria-hidden="true" />
+              </Link>
+            </>
+          ) : (
+            <div className="inbox-v2-organizer-empty">
+              <InboxIcon aria-hidden="true" />
+              <strong>选择一条任务</strong>
+              <p>在左侧选择任务后，可将它归入项目或直接完成。</p>
+            </div>
+          )}
+        </aside>
+      </div>
+    </div>
   )
 }
 
-function Skeleton() {
-  return (
-    <div className="inbox-workspace">
-      <aside className="surface-panel inbox-filter-panel" />
-      <section className="surface-panel inbox-list-panel" />
-      <aside className="surface-panel inbox-detail-panel" />
-    </div>
-  )
+function matchesFilter(status: ExecutionStatus, filter: InboxFilter) {
+  if (filter === 'all') return true
+  return status === filter
+}
+
+function filterCount(occurrences: OccurrenceV2[], filter: InboxFilter) {
+  return occurrences.filter((occurrence) =>
+    matchesFilter(occurrence.execution_status, filter)
+  ).length
+}
+
+function priorityLabel(priority?: number) {
+  if (priority === undefined || priority <= 0) return '普通'
+  if (priority >= 3) return '紧急'
+  if (priority === 2) return '高'
+  return '中'
+}
+
+function scheduleLabel(occurrence: OccurrenceV2) {
+  if (occurrence.planned_start_at) {
+    return new Intl.DateTimeFormat('zh-CN', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(occurrence.planned_start_at))
+  }
+  if (occurrence.planned_date) return occurrence.planned_date
+  return '无日期'
+}
+
+function occurrenceCommandVariables(task: TaskV2, occurrence: OccurrenceV2) {
+  return {
+    projectID: occurrence.project_id ?? task.project_id,
+    taskID: task.id,
+    occurrenceID: occurrence.id,
+    expectedRevisions: {
+      expected_task_revision: occurrence.task_revision ?? task.revision,
+      expected_schedule_revision:
+        occurrence.schedule_revision ?? task.schedule_revision,
+      expected_occurrence_revisions: {
+        [occurrence.id]: occurrence.revision,
+      },
+    },
+  }
 }

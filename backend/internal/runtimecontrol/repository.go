@@ -61,6 +61,23 @@ func (r *Repository) Get(ctx context.Context, workspaceID string) (State, error)
 	return r.get(ctx, r.db, workspaceID)
 }
 
+// AdvanceEpoch invalidates cached request-scoped runtime resources after an
+// in-place data-model cutover which keeps the active database binding. Storage
+// migrations use BeginOperation instead because they also change endpoints.
+func (r *Repository) AdvanceEpoch(ctx context.Context, workspaceID string, expectedEpoch, expectedBindingRevision int64, actorUserID string) (State, error) {
+	result, err := r.db.ExecContext(ctx, r.bind(`UPDATE workspace_runtime_state
+		SET epoch=epoch+1,updated_by=?,updated_at=CURRENT_TIMESTAMP
+		WHERE workspace_id=? AND mode='active' AND epoch=? AND binding_revision=? AND storage_operation_id IS NULL`),
+		actorUserID, workspaceID, expectedEpoch, expectedBindingRevision)
+	if err != nil {
+		return State{}, err
+	}
+	if err := requireOneRow(result); err != nil {
+		return State{}, err
+	}
+	return r.Get(ctx, workspaceID)
+}
+
 func (r *Repository) BeginOperation(ctx context.Context, workspaceID string, expectedBindingRevision int64, operationKind, operationID, actorUserID string) (State, error) {
 	if operationKind != "migration" && operationKind != "rebind" {
 		return State{}, fmt.Errorf("invalid storage operation kind %q", operationKind)

@@ -14,7 +14,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
 
-func TestProjectMutationContractsMatchFrontendAndStrictlyRejectIdentityOrTerminalPatch(t *testing.T) {
+func TestProjectMutationContractsSeparateFieldsFromLifecycleCommands(t *testing.T) {
 	t.Parallel()
 
 	var create CreateProjectV2Request
@@ -24,14 +24,12 @@ func TestProjectMutationContractsMatchFrontendAndStrictlyRejectIdentityOrTermina
 	}
 
 	var update UpdateProjectV2Request
-	decodeTaskDomainJSON(t, `{"name":"Launch v2","status":"paused","expected_project_revision":7}`, &update)
-	if update.Name == nil || *update.Name != "Launch v2" || update.Status == nil || *update.Status != taskdomain.ProjectStatusPaused || update.ExpectedProjectRevision != 7 {
+	decodeTaskDomainJSON(t, `{"name":"Launch v2","expected_project_revision":7}`, &update)
+	if update.Name == nil || *update.Name != "Launch v2" || update.Status != nil || update.ExpectedProjectRevision != 7 {
 		t.Fatalf("update project request = %#v", update)
 	}
 
 	for _, payload := range []string{
-		`{"expected_project_revision":7,"status":"completed"}`,
-		`{"expected_project_revision":7,"status":"archived"}`,
 		`{"expected_project_revision":7,"system_role":"inbox"}`,
 		`{"expected_project_revision":7,"id":"project-2"}`,
 		`{"expected_project_revision":7,"workspace_id":"workspace-2"}`,
@@ -47,11 +45,27 @@ func TestProjectMutationContractsMatchFrontendAndStrictlyRejectIdentityOrTermina
 		}
 	}
 
-	commandWire := marshalObject(t, ProjectCommandV2Request{ExpectedProjectRevision: 7})
+	for _, status := range []taskdomain.ProjectStatus{
+		taskdomain.ProjectStatusPlanning,
+		taskdomain.ProjectStatusActive,
+		taskdomain.ProjectStatusPaused,
+		taskdomain.ProjectStatusCompleted,
+		taskdomain.ProjectStatusArchived,
+	} {
+		var lifecycleUpdate UpdateProjectV2Request
+		decodeTaskDomainJSON(t, fmt.Sprintf(`{"expected_project_revision":7,"status":%q}`, status), &lifecycleUpdate)
+		if lifecycleUpdate.Status == nil || *lifecycleUpdate.Status != status {
+			t.Fatalf("lifecycle update = %#v", lifecycleUpdate)
+		}
+	}
+
+	restoreTo := taskdomain.ProjectStatusCompleted
+	commandWire := marshalObject(t, ProjectCommandV2Request{ExpectedProjectRevision: 7, RestoreTo: &restoreTo})
 	deleteWire := marshalObject(t, DeleteProjectV2Request{ExpectedProjectRevision: 7})
 	for _, wire := range []map[string]any{commandWire, deleteWire} {
 		assertJSONNumber(t, wire, "expected_project_revision", 7)
 	}
+	assertJSONValue(t, commandWire, "restore_to", "completed")
 	responseWire := marshalObject(t, ProjectCommandV2Response{
 		ProjectID: "project-1", ProjectRevision: 8, Status: taskdomain.ProjectStatusCompleted, Deleted: true,
 	})

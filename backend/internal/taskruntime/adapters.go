@@ -88,6 +88,21 @@ func (a projectServiceAdapter) UpdateProject(ctx context.Context, request taskdo
 	return projectCommandOutcome(result), err
 }
 
+func (a projectServiceAdapter) ActivateProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	result, err := a.delegate.ActivateProject(ctx, request)
+	return projectCommandOutcome(result), err
+}
+
+func (a projectServiceAdapter) PauseProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	result, err := a.delegate.PauseProject(ctx, request)
+	return projectCommandOutcome(result), err
+}
+
+func (a projectServiceAdapter) ResumeProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	result, err := a.delegate.ResumeProject(ctx, request)
+	return projectCommandOutcome(result), err
+}
+
 func (a projectServiceAdapter) CompleteProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
 	result, err := a.delegate.CompleteProject(ctx, request)
 	return projectCommandOutcome(result), err
@@ -95,6 +110,11 @@ func (a projectServiceAdapter) CompleteProject(ctx context.Context, request task
 
 func (a projectServiceAdapter) ArchiveProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
 	result, err := a.delegate.ArchiveProject(ctx, request)
+	return projectCommandOutcome(result), err
+}
+
+func (a projectServiceAdapter) RestoreProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	result, err := a.delegate.RestoreProject(ctx, request)
 	return projectCommandOutcome(result), err
 }
 

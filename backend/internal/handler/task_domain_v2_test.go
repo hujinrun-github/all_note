@@ -34,9 +34,13 @@ func TestRegisterTaskDomainV2RoutesDispatchesCommandsWithAuthenticatedScope(t *t
 	}{
 		{"create project", http.MethodPost, "/api/projects", `{"name":"Learn","kind":"learning","horizon":"long","status":"planning"}`, http.StatusCreated, "create-project"},
 		{"update project", http.MethodPatch, "/api/projects/project-1", `{"name":"Learn Go","expected_project_revision":2}`, http.StatusOK, "patch-project"},
-		{"complete project", http.MethodPost, "/api/projects/project-1/complete", `{"expected_project_revision":2}`, http.StatusOK, "complete-project"},
-		{"archive project", http.MethodPost, "/api/projects/project-1/archive", `{"expected_project_revision":3}`, http.StatusOK, "archive-project"},
-		{"delete project", http.MethodDelete, "/api/projects/project-1", `{"expected_project_revision":4}`, http.StatusOK, "delete-project"},
+		{"activate project", http.MethodPost, "/api/projects/project-1/activate", `{"expected_project_revision":2}`, http.StatusOK, "activate-project"},
+		{"pause project", http.MethodPost, "/api/projects/project-1/pause", `{"expected_project_revision":3}`, http.StatusOK, "pause-project"},
+		{"resume project", http.MethodPost, "/api/projects/project-1/resume", `{"expected_project_revision":4}`, http.StatusOK, "resume-project"},
+		{"complete project", http.MethodPost, "/api/projects/project-1/complete", `{"expected_project_revision":5}`, http.StatusOK, "complete-project"},
+		{"archive project", http.MethodPost, "/api/projects/project-1/archive", `{"expected_project_revision":6}`, http.StatusOK, "archive-project"},
+		{"restore project", http.MethodPost, "/api/projects/project-1/restore", `{"expected_project_revision":7,"restore_to":"paused"}`, http.StatusOK, "restore-project"},
+		{"delete project", http.MethodDelete, "/api/projects/project-1", `{"expected_project_revision":8}`, http.StatusOK, "delete-project"},
 		{"create task", http.MethodPost, "/api/tasks", `{"project_id":"project-1","title":"Write tests","priority":2,"schedule":{"recurrence_type":"none","timing_type":"unscheduled","timezone":"Asia/Shanghai"}}`, http.StatusCreated, "create-task"},
 		{"patch task", http.MethodPatch, "/api/tasks/task-1", `{"expected_task_revision":2,"expected_schedule_revision":3,"title":"Updated"}`, http.StatusOK, "patch-task"},
 		{"publish task", http.MethodPost, "/api/tasks/task-1/publish", revisionsJSON("occurrence-1"), http.StatusOK, "task-publish"},
@@ -72,6 +76,24 @@ func TestRegisterTaskDomainV2RoutesDispatchesCommandsWithAuthenticatedScope(t *t
 			}
 			assertTaskDomainDataEnvelope(t, response)
 		})
+	}
+}
+
+func TestProjectUpdateStatusReturnsLifecycleCommandRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	application := &taskDomainV2ApplicationFake{}
+	router := isolatedTaskDomainV2Router(application, true)
+
+	response := performTaskDomainV2Request(router, http.MethodPatch, "/api/projects/project-1", `{"status":"paused","expected_project_revision":2}`)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusUnprocessableEntity, response.Body.String())
+	}
+	var body TaskDomainErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "lifecycle_command_required" || application.lastCall != "" {
+		t.Fatalf("response/call = %#v / %q", body, application.lastCall)
 	}
 }
 
@@ -488,6 +510,27 @@ func (fake *taskDomainV2ApplicationFake) PatchProject(_ context.Context, request
 	return projectFakeOutcome(request.ProjectID, "Learn Go", taskdomain.ProjectKindLearning, taskdomain.ProjectHorizonLong, taskdomain.ProjectStatusPlanning, request.ExpectedProjectRevision+1), nil
 }
 
+func (fake *taskDomainV2ApplicationFake) ActivateProject(_ context.Context, request taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	if err := fake.record("activate-project", request.WorkspaceID, request.ActorID); err != nil {
+		return taskapp.ProjectCommandOutcome{}, err
+	}
+	return projectFakeOutcome(request.ProjectID, "P", taskdomain.ProjectKindStandard, taskdomain.ProjectHorizonShort, taskdomain.ProjectStatusActive, request.ExpectedProjectRevision+1), nil
+}
+
+func (fake *taskDomainV2ApplicationFake) PauseProject(_ context.Context, request taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	if err := fake.record("pause-project", request.WorkspaceID, request.ActorID); err != nil {
+		return taskapp.ProjectCommandOutcome{}, err
+	}
+	return projectFakeOutcome(request.ProjectID, "P", taskdomain.ProjectKindStandard, taskdomain.ProjectHorizonShort, taskdomain.ProjectStatusPaused, request.ExpectedProjectRevision+1), nil
+}
+
+func (fake *taskDomainV2ApplicationFake) ResumeProject(_ context.Context, request taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	if err := fake.record("resume-project", request.WorkspaceID, request.ActorID); err != nil {
+		return taskapp.ProjectCommandOutcome{}, err
+	}
+	return projectFakeOutcome(request.ProjectID, "P", taskdomain.ProjectKindStandard, taskdomain.ProjectHorizonShort, taskdomain.ProjectStatusActive, request.ExpectedProjectRevision+1), nil
+}
+
 func (fake *taskDomainV2ApplicationFake) CompleteProject(_ context.Context, request taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
 	if err := fake.record("complete-project", request.WorkspaceID, request.ActorID); err != nil {
 		return taskapp.ProjectCommandOutcome{}, err
@@ -500,6 +543,17 @@ func (fake *taskDomainV2ApplicationFake) ArchiveProject(_ context.Context, reque
 		return taskapp.ProjectCommandOutcome{}, err
 	}
 	return projectFakeOutcome(request.ProjectID, "P", taskdomain.ProjectKindStandard, taskdomain.ProjectHorizonShort, taskdomain.ProjectStatusArchived, request.ExpectedProjectRevision+1), nil
+}
+
+func (fake *taskDomainV2ApplicationFake) RestoreProject(_ context.Context, request taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	if err := fake.record("restore-project", request.WorkspaceID, request.ActorID); err != nil {
+		return taskapp.ProjectCommandOutcome{}, err
+	}
+	status := taskdomain.ProjectStatusActive
+	if request.RestoreTo != nil {
+		status = *request.RestoreTo
+	}
+	return projectFakeOutcome(request.ProjectID, "P", taskdomain.ProjectKindStandard, taskdomain.ProjectHorizonShort, status, request.ExpectedProjectRevision+1), nil
 }
 
 func (fake *taskDomainV2ApplicationFake) DeleteProject(_ context.Context, request taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {

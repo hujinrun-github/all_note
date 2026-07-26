@@ -66,10 +66,6 @@ func (p Provider) OpenTenant(ctx context.Context, cfg storage.Config, expectedSc
 	return newStore(db), nil
 }
 
-func (Provider) AdoptExistingTenant(context.Context, storage.Config, storage.AdoptManifest) error {
-	return storage.ErrNotImplemented
-}
-
 func (p Provider) openWithoutMigrations(ctx context.Context, cfg storage.Config) (*sql.DB, error) {
 	if err := p.Validate(cfg); err != nil {
 		return nil, err

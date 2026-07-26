@@ -35,6 +35,9 @@ func RunTaskDomainV2SchemaSuite(t *testing.T, db *sql.DB, dialect TaskDomainV2Di
 		"domain_task_schedule_versions_v2",
 		"domain_task_occurrences_v2",
 		"domain_task_execution_logs_v2",
+		"mobile_v2_commit_heads",
+		"mobile_v2_command_receipts",
+		"mobile_v2_change_batches",
 	} {
 		t.Run("table_"+table, func(t *testing.T) {
 			if _, err := db.Exec(`SELECT 1 FROM ` + table + ` WHERE 1=0`); err != nil {
@@ -133,6 +136,18 @@ func RunTaskDomainV2SchemaSuite(t *testing.T, db *sql.DB, dialect TaskDomainV2Di
 		expectStatementRejected(t, db, `INSERT INTO domain_projects_v2
 			(workspace_id,id,name,kind,horizon,status,revision,created_at,updated_at)
 			VALUES ('schema-w1','p-bad-status','Bad status','standard','short','unknown',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+		expectStatementRejected(t, db, `INSERT INTO domain_projects_v2
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,revision,created_at,updated_at)
+			VALUES ('schema-w1','p-active-with-archive-source','Bad archive source','standard','short','active','paused',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+		expectStatementRejected(t, db, `INSERT INTO domain_projects_v2
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,revision,created_at,updated_at)
+			VALUES ('schema-w1','p-archive-invalid-source','Bad archive source','standard','short','archived','archived',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+		mustExec(t, db, `INSERT INTO domain_projects_v2
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,revision,created_at,updated_at)
+			VALUES ('schema-w1','p-archive-known-source','Archived','standard','short','archived','completed',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+		mustExec(t, db, `INSERT INTO domain_projects_v2
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,revision,created_at,updated_at)
+			VALUES ('schema-w1','p-archive-legacy','Legacy archived','standard','short','archived',NULL,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 	})
 
 	t.Run("roadmap_and_task_require_same_workspace_and_project", func(t *testing.T) {
@@ -438,9 +453,9 @@ func mustExec(t *testing.T, db *sql.DB, statement string) {
 	}
 }
 
-func expectStatementRejected(t *testing.T, db *sql.DB, statement string) {
+func expectStatementRejected(t *testing.T, db *sql.DB, statement string, args ...any) {
 	t.Helper()
-	if _, err := db.Exec(statement); err == nil {
+	if _, err := db.Exec(statement, args...); err == nil {
 		t.Fatalf("expected database to reject statement:\n%s", statement)
 	}
 }

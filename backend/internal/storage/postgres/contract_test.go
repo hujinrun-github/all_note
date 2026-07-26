@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/mobilev2command"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/contracttest"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
@@ -42,6 +43,22 @@ func TestPostgresTaskDomainV2ProjectContract(t *testing.T) {
 		NewReader: func(workspaceID string) taskdomain.ProjectReader {
 			return newTaskDomainV2ProjectReader(db, workspaceID)
 		},
+	})
+}
+
+func TestPostgresMobileV2CommandLedgerContract(t *testing.T) {
+	rawURL := createPostgresTestSchema(t, fmt.Sprintf("fs_test_mobile_v2_command_ledger_%d", time.Now().UnixNano()))
+	cfg := storage.Config{Env: "test", Driver: storage.DriverPostgres, URL: rawURL}
+	if err := (Provider{}).MigrateTenant(context.Background(), cfg); err != nil {
+		t.Fatalf("migrate tenant: %v", err)
+	}
+	db, err := sql.Open("pgx", rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	contracttest.RunMobileV2CommandLedgerSuite(t, contracttest.MobileV2CommandLedgerFixture{
+		DB: db, Dialect: mobilev2command.SQLDialectPostgres,
 	})
 }
 

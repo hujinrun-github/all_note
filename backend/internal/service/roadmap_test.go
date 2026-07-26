@@ -646,6 +646,36 @@ func TestGenerateLearningRoadmapFallsBackToLocalDraftWhenAIUnavailable(t *testin
 	}
 }
 
+func TestGenerateLearningRoadmapPlanProducesV2ReadySequentialNodes(t *testing.T) {
+	plan, err := GenerateLearningRoadmapPlan(
+		context.Background(),
+		"日语 N2",
+		"",
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("generate v2 plan: %v", err)
+	}
+	if plan.Title == "" || plan.Description == "" {
+		t.Fatalf("generated plan metadata is incomplete: %+v", plan)
+	}
+	if len(plan.Nodes) < 14 {
+		t.Fatalf("generated nodes = %d, want at least 14", len(plan.Nodes))
+	}
+	for index, node := range plan.Nodes {
+		if node.Title == "" || node.Description == "" {
+			t.Fatalf("node %d is incomplete: %+v", index, node)
+		}
+		if node.Type != "stage" && node.Type != "topic" && node.Type != "milestone" {
+			t.Fatalf("node %d has unsupported v2 type %q", index, node.Type)
+		}
+		if node.Position != float64(index) {
+			t.Fatalf("node %d position = %v", index, node.Position)
+		}
+	}
+}
+
 func TestGenerateLearningRoadmapPolicyControlsTemplateFallback(t *testing.T) {
 	openRoadmapServiceTestDB(t)
 	t.Setenv("ARTICLE_SEARCH_PROVIDER", "none")

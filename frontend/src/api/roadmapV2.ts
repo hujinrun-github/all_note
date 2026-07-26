@@ -71,6 +71,17 @@ export async function createRoadmapV2(
     )
   ).data.roadmap
 }
+export async function generateRoadmapV2(
+  projectID: string,
+  input: { prompt?: string } = {}
+) {
+  return (
+    await api.post<{ roadmap: RoadmapV2 }>(
+      `/api/projects/${encodeURIComponent(projectID)}/roadmap/generate`,
+      input
+    )
+  ).data.roadmap
+}
 export async function createRoadmapNode(
   roadmapID: string,
   input: RoadmapNodeInput

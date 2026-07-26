@@ -126,6 +126,12 @@ type DeleteRoadmapNodeRequest struct {
 	ExpectedRuntimeEpoch, ExpectedRevision             int64
 	At                                                 time.Time
 }
+type ReplaceRoadmapNodesRequest struct {
+	WorkspaceID, RoadmapID, CommandID, ActorID string
+	Nodes                                      []RoadmapNode
+	ExpectedRuntimeEpoch                       int64
+	At                                         time.Time
+}
 
 func (s *RoadmapService) CreateRoadmap(ctx context.Context, r CreateRoadmapRequest) (RoadmapSnapshot, error) {
 	if s == nil || s.fencer == nil || !validRoadmapAudit(r.WorkspaceID, r.ProjectID, r.RoadmapID, r.CommandID, r.ActorID, r.ExpectedRuntimeEpoch, r.At) || strings.TrimSpace(r.Title) == "" {
@@ -263,6 +269,115 @@ func (s *RoadmapService) DeleteNode(ctx context.Context, r DeleteRoadmapNodeRequ
 		}
 		return tx.RoadmapWriter().DeleteRoadmapNode(ctx, r.NodeID, r.ExpectedRevision)
 	})
+}
+
+// ReplaceNodes swaps an unstarted learning path in one fenced transaction.
+// Existing nodes with linked tasks are protected because they already carry
+// user execution history.
+func (s *RoadmapService) ReplaceNodes(ctx context.Context, r ReplaceRoadmapNodesRequest) (RoadmapSnapshot, error) {
+	if s == nil || s.fencer == nil ||
+		!validRoadmapAudit(r.WorkspaceID, r.RoadmapID, r.CommandID, r.ActorID, "replace-roadmap-nodes", r.ExpectedRuntimeEpoch, r.At) ||
+		len(r.Nodes) == 0 {
+		return RoadmapSnapshot{}, ErrInvalidRoadmapCommand
+	}
+	seen := make(map[string]struct{}, len(r.Nodes))
+	for index, node := range r.Nodes {
+		if node.WorkspaceID != r.WorkspaceID || node.RoadmapID != r.RoadmapID ||
+			strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Title) == "" ||
+			!validRoadmapNodeType(node.Type) || node.Revision != 1 {
+			return RoadmapSnapshot{}, ErrInvalidRoadmapCommand
+		}
+		if _, duplicate := seen[node.ID]; duplicate {
+			return RoadmapSnapshot{}, ErrInvalidRoadmapCommand
+		}
+		if node.ParentID != "" {
+			if _, parentCreatedEarlier := seen[node.ParentID]; !parentCreatedEarlier {
+				return RoadmapSnapshot{}, ErrInvalidRoadmapCommand
+			}
+		}
+		seen[node.ID] = struct{}{}
+		r.Nodes[index].Title = strings.TrimSpace(node.Title)
+		r.Nodes[index].Description = strings.TrimSpace(node.Description)
+	}
+
+	var out RoadmapSnapshot
+	err := s.fencer.BeginFencedRoadmapWrite(ctx, r.WorkspaceID, r.ExpectedRuntimeEpoch, func(tx RoadmapCommandTx) error {
+		current, err := tx.GetRoadmapByID(ctx, r.RoadmapID)
+		if err != nil {
+			return err
+		}
+		if current.Roadmap.WorkspaceID != r.WorkspaceID {
+			return ErrInvalidRoadmapCommand
+		}
+		project, err := tx.GetProject(ctx, current.Roadmap.ProjectID)
+		if err != nil {
+			return err
+		}
+		if project.Project.WorkspaceID != r.WorkspaceID || project.Project.Kind != ProjectKindLearning {
+			return ErrRoadmapRequiresLearningProject
+		}
+		for _, node := range current.Nodes {
+			count, countErr := tx.CountRoadmapNodeTasks(ctx, node.Node.ID)
+			if countErr != nil {
+				return countErr
+			}
+			if count > 0 {
+				return ErrRoadmapNodeHasTasks
+			}
+		}
+		writer := tx.RoadmapWriter()
+		for _, node := range roadmapNodesChildrenFirst(current.Nodes) {
+			if err = writer.DeleteRoadmapNode(ctx, node.Node.ID, node.Node.Revision); err != nil {
+				return err
+			}
+		}
+		replacements := make([]RoadmapNodeSnapshot, 0, len(r.Nodes))
+		for _, node := range r.Nodes {
+			node.ProjectID = current.Roadmap.ProjectID
+			if err = writer.CreateRoadmapNode(ctx, node); err != nil {
+				return err
+			}
+			replacements = append(replacements, RoadmapNodeSnapshot{Node: node})
+		}
+		out = RoadmapSnapshot{
+			Roadmap: current.Roadmap,
+			Nodes:   replacements,
+			Edges:   []RoadmapEdge{},
+		}
+		return nil
+	})
+	return out, err
+}
+
+func roadmapNodesChildrenFirst(nodes []RoadmapNodeSnapshot) []RoadmapNodeSnapshot {
+	byID := make(map[string]RoadmapNodeSnapshot, len(nodes))
+	for _, node := range nodes {
+		byID[node.Node.ID] = node
+	}
+	depth := func(node RoadmapNodeSnapshot) int {
+		seen := make(map[string]struct{}, len(nodes))
+		value := 0
+		for node.Node.ParentID != "" {
+			if _, duplicate := seen[node.Node.ID]; duplicate {
+				break
+			}
+			seen[node.Node.ID] = struct{}{}
+			parent, ok := byID[node.Node.ParentID]
+			if !ok {
+				break
+			}
+			value++
+			node = parent
+		}
+		return value
+	}
+	ordered := append([]RoadmapNodeSnapshot(nil), nodes...)
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && depth(ordered[j]) > depth(ordered[j-1]); j-- {
+			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
+		}
+	}
+	return ordered
 }
 
 func validRoadmapAudit(values ...any) bool {

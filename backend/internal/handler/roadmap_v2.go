@@ -2,11 +2,17 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/service"
 	"github.com/hujinrun/flowspace/internal/taskapp"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
@@ -17,6 +23,7 @@ type RoadmapV2Application interface {
 	CreateRoadmapNode(context.Context, taskapp.CreateRoadmapNodeRequest) (taskdomain.RoadmapNodeSnapshot, error)
 	UpdateRoadmapNode(context.Context, taskapp.UpdateRoadmapNodeRequest) (taskdomain.RoadmapNodeSnapshot, error)
 	DeleteRoadmapNode(context.Context, taskapp.DeleteRoadmapNodeRequest) error
+	ReplaceRoadmapNodes(context.Context, taskapp.ReplaceRoadmapNodesRequest) (taskdomain.RoadmapSnapshot, error)
 }
 
 var _ RoadmapV2Application = (*taskapp.Facade)(nil)
@@ -110,6 +117,157 @@ func (h taskDomainV2Handler) createRoadmap(c *gin.Context) {
 		return
 	}
 	created(c, gin.H{"roadmap": roadmapV2DTO(rm)})
+}
+
+func (h taskDomainV2Handler) generateRoadmap(c *gin.Context) {
+	id, ok := taskDomainAuthenticatedIdentity(c)
+	if !ok {
+		return
+	}
+	app, ok := h.roadmapApplication(c)
+	if !ok {
+		return
+	}
+	var body model.GenerateLearningRoadmapRequest
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		badRequest(c, "invalid roadmap generation prompt")
+		return
+	}
+
+	project, err := h.application.GetProject(
+		c.Request.Context(),
+		taskapp.EntityQueryRequest{
+			WorkspaceID: id.workspaceID,
+			ActorID:     id.actorID,
+			EntityID:    c.Param("projectID"),
+		},
+	)
+	if err != nil {
+		writeTaskDomainError(c, err)
+		return
+	}
+	if project.Project.Kind != taskdomain.ProjectKindLearning {
+		writeTaskDomainError(c, taskdomain.ErrRoadmapRequiresLearningProject)
+		return
+	}
+
+	var generator service.TextGenerator
+	allowTemplateFallback := true
+	if h.chat != nil {
+		if features, featureAware := h.chat.(WorkspaceAIFeatureService); featureAware {
+			enabled, fallback, resolveErr := features.ResolveFeature(
+				c.Request.Context(),
+				id.workspaceID,
+				"roadmap_generation",
+			)
+			if resolveErr != nil {
+				internalError(c, "unable to resolve roadmap AI settings")
+				return
+			}
+			// A configured AI route may still be temporarily unavailable. An
+			// unedited request can safely degrade to the deterministic learning
+			// template; an edited prompt is rejected by the service instead of
+			// pretending its custom requirements were applied.
+			allowTemplateFallback = fallback == "template" || enabled
+			if enabled {
+				generator = workspaceTextGenerator{
+					service:     h.chat,
+					workspaceID: id.workspaceID,
+				}
+			}
+		} else {
+			generator = workspaceTextGenerator{
+				service:     h.chat,
+				workspaceID: id.workspaceID,
+			}
+		}
+	}
+
+	generationContext, cancelGeneration := context.WithTimeout(
+		c.Request.Context(),
+		12*time.Second,
+	)
+	defer cancelGeneration()
+	plan, err := service.GenerateLearningRoadmapPlan(
+		generationContext,
+		project.Project.Name,
+		body.Prompt,
+		generator,
+		allowTemplateFallback,
+	)
+	if err != nil {
+		log.Printf("roadmap v2 generation failed workspace=%s project=%s: %v", id.workspaceID, project.Project.ID, err)
+		internalError(c, err.Error())
+		return
+	}
+
+	roadmap, err := app.GetRoadmap(
+		c.Request.Context(),
+		taskapp.EntityQueryRequest{
+			WorkspaceID: id.workspaceID,
+			ActorID:     id.actorID,
+			EntityID:    project.Project.ID,
+		},
+	)
+	switch {
+	case err == nil:
+	case errors.Is(err, taskdomain.ErrRoadmapNotFound):
+		roadmap, err = app.CreateRoadmap(
+			c.Request.Context(),
+			taskapp.CreateRoadmapRequest{
+				WorkspaceID: id.workspaceID,
+				ActorID:     id.actorID,
+				ProjectID:   project.Project.ID,
+				Title:       plan.Title,
+				Description: plan.Description,
+			},
+		)
+		if err != nil {
+			writeTaskDomainError(c, err)
+			return
+		}
+	default:
+		writeTaskDomainError(c, err)
+		return
+	}
+
+	replacements := make([]taskapp.RoadmapNodeReplacement, 0, len(plan.Nodes))
+	for index, node := range plan.Nodes {
+		parentIndex := index - 1
+		replacements = append(replacements, taskapp.RoadmapNodeReplacement{
+			Title:       node.Title,
+			Description: node.Description,
+			Type:        generatedRoadmapNodeType(node.Type),
+			Position:    node.Position,
+			ParentIndex: parentIndex,
+		})
+	}
+	generated, err := app.ReplaceRoadmapNodes(
+		c.Request.Context(),
+		taskapp.ReplaceRoadmapNodesRequest{
+			WorkspaceID: id.workspaceID,
+			ActorID:     id.actorID,
+			RoadmapID:   roadmap.Roadmap.ID,
+			Nodes:       replacements,
+		},
+	)
+	if err != nil {
+		log.Printf("roadmap v2 replacement failed workspace=%s project=%s roadmap=%s: %v", id.workspaceID, project.Project.ID, roadmap.Roadmap.ID, err)
+		writeTaskDomainError(c, err)
+		return
+	}
+	created(c, gin.H{"roadmap": roadmapV2DTO(generated)})
+}
+
+func generatedRoadmapNodeType(value string) taskdomain.RoadmapNodeType {
+	switch value {
+	case string(taskdomain.RoadmapNodeStage):
+		return taskdomain.RoadmapNodeStage
+	case string(taskdomain.RoadmapNodeMilestone):
+		return taskdomain.RoadmapNodeMilestone
+	default:
+		return taskdomain.RoadmapNodeTopic
+	}
 }
 func (h taskDomainV2Handler) createRoadmapNode(c *gin.Context) {
 	id, ok := taskDomainAuthenticatedIdentity(c)

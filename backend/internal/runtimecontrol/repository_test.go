@@ -56,6 +56,32 @@ func TestRuntimeStateCASAndAtomicBindingActivation(t *testing.T) {
 	}
 }
 
+func TestAdvanceEpochKeepsActiveBindingAndUsesCAS(t *testing.T) {
+	db := createRuntimeControlFixture(t)
+	repository, err := New(db, DialectSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := repository.AdvanceEpoch(context.Background(), "w1", 1, 1, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != "active" || state.Epoch != 2 || state.BindingRevision != 1 || state.OperationID != "" {
+		t.Fatalf("unexpected advanced state: %+v", state)
+	}
+	if _, err := repository.AdvanceEpoch(context.Background(), "w1", 1, 1, "u1"); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("stale epoch advance error=%v", err)
+	}
+	var endpointID string
+	var revision int64
+	if err := db.QueryRow(`SELECT endpoint_id,revision FROM workspace_service_bindings WHERE workspace_id='w1' AND kind='data_store'`).Scan(&endpointID, &revision); err != nil {
+		t.Fatal(err)
+	}
+	if endpointID != "db1" || revision != 1 {
+		t.Fatalf("binding changed during in-place epoch advance: endpoint=%s revision=%d", endpointID, revision)
+	}
+}
+
 func TestActivationCASFailureRollsBackBinding(t *testing.T) {
 	db := createRuntimeControlFixture(t)
 	repository, _ := New(db, DialectSQLite)

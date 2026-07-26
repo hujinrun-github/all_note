@@ -23,6 +23,22 @@ describe('QuickCaptureV2', () => {
           system_role: 'inbox',
           revision: 1,
         },
+        {
+          id: 'learning-project',
+          name: '日语学习',
+          kind: 'learning',
+          horizon: 'long',
+          status: 'planning',
+          revision: 2,
+        },
+        {
+          id: 'completed-project',
+          name: '已结束项目',
+          kind: 'standard',
+          horizon: 'short',
+          status: 'completed',
+          revision: 3,
+        },
       ],
       isLoading: false,
       isError: false,
@@ -33,19 +49,43 @@ describe('QuickCaptureV2', () => {
     } as unknown as ReturnType<typeof taskHooks.useCreateTaskMutation>)
   })
 
-  it('makes the inbox destination explicit and creates the task there', async () => {
+  it('defaults to the inbox and creates the task there', async () => {
     render(<QuickCaptureV2 />)
     const user = userEvent.setup()
 
-    expect(screen.getByText('将进入：收件箱（系统项目）')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: '归属项目' })).toHaveValue(
+      'system-inbox'
+    )
     await user.clear(screen.getByLabelText('快速捕获任务标题'))
     await user.type(screen.getByLabelText('快速捕获任务标题'), '记录评审结论')
-    await user.click(screen.getByRole('button', { name: '创建到收件箱' }))
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
 
     expect(createTask).toHaveBeenCalledWith(
       expect.objectContaining({
         project_id: 'system-inbox',
         title: '记录评审结论',
+      })
+    )
+  })
+
+  it('creates the task in the selected available project', async () => {
+    render(<QuickCaptureV2 />)
+    const user = userEvent.setup()
+    const projectSelect = screen.getByRole('combobox', { name: '归属项目' })
+
+    expect(projectSelect).toHaveDisplayValue('收件箱 · 系统收件箱')
+    expect(
+      screen.queryByRole('option', { name: /已结束项目/ })
+    ).not.toBeInTheDocument()
+    await user.selectOptions(projectSelect, 'learning-project')
+    await user.clear(screen.getByLabelText('快速捕获任务标题'))
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '完成听力练习')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_id: 'learning-project',
+        title: '完成听力练习',
       })
     )
   })

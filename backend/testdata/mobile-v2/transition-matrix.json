@@ -1,0 +1,35 @@
+{
+  "project": [
+    {"name":"activate planning","from":"planning","action":"activate","outcome":"applied","to":"active"},
+    {"name":"pause active","from":"active","action":"pause","outcome":"applied","to":"paused"},
+    {"name":"resume paused","from":"paused","action":"resume","outcome":"applied","to":"active"},
+    {"name":"complete active","from":"active","action":"complete","non_terminal_occurrences":0,"outcome":"applied","to":"completed"},
+    {"name":"archive paused","from":"paused","action":"archive","outcome":"applied","to":"archived"},
+    {"name":"restore recorded paused","from":"archived","archived_from":"paused","action":"restore","outcome":"applied","to":"paused"},
+    {"name":"pause planning","from":"planning","action":"pause","outcome":"validation","error":"invalid_project_transition"},
+    {"name":"complete with open occurrence","from":"active","action":"complete","non_terminal_occurrences":1,"outcome":"validation","error":"project_has_open_occurrences"},
+    {"name":"restore legacy without target","from":"archived","action":"restore","outcome":"validation","error":"restore_target_required"}
+  ],
+  "task": [
+    {"name":"publish draft","from":"draft","action":"publish","outcome":"applied","to":"active"},
+    {"name":"pause active","from":"active","action":"pause","outcome":"applied","to":"paused"},
+    {"name":"resume paused","from":"paused","action":"resume","outcome":"applied","to":"active"},
+    {"name":"complete active","from":"active","action":"complete","outcome":"applied","to":"completed"},
+    {"name":"cancel paused","from":"paused","action":"cancel","outcome":"applied","to":"cancelled"},
+    {"name":"restore cancelled","from":"cancelled","action":"restore","outcome":"applied","to":"active"},
+    {"name":"archive completed","from":"completed","action":"archive","outcome":"applied","to":"archived"},
+    {"name":"pause draft","from":"draft","action":"pause","outcome":"validation","error":"invalid_task_transition"}
+  ],
+  "occurrence": [
+    {"name":"start open","from":"open","action":"start","recurring":true,"outcome":"applied","to":"active"},
+    {"name":"block active","from":"active","action":"block","recurring":true,"reason":"Waiting","next_action":"Ask","outcome":"applied","to":"blocked"},
+    {"name":"unblock blocked","from":"blocked","action":"unblock","recurring":true,"reason":"Waiting","next_action":"Ask","outcome":"applied","to":"active"},
+    {"name":"complete active","from":"active","action":"complete","recurring":true,"outcome":"applied","to":"done"},
+    {"name":"skip recurring","from":"open","action":"skip","recurring":true,"outcome":"applied","to":"skipped"},
+    {"name":"cancel blocked","from":"blocked","action":"cancel","recurring":true,"reason":"Waiting","next_action":"Ask","outcome":"applied","to":"cancelled"},
+    {"name":"reopen done","from":"done","action":"reopen","recurring":true,"outcome":"applied","to":"open"},
+    {"name":"skip single","from":"open","action":"skip","recurring":false,"outcome":"validation","error":"single_occurrence_cannot_skip"},
+    {"name":"block missing reason","from":"active","action":"block","recurring":true,"reason":"","next_action":"Ask","outcome":"validation","error":"blocked_details_required"},
+    {"name":"start done","from":"done","action":"start","recurring":true,"outcome":"validation","error":"invalid_occurrence_transition"}
+  ]
+}

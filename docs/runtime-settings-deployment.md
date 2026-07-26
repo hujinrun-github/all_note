@@ -66,7 +66,7 @@ outbound SSRF policy. Permit only exact private destinations required by the
 deployment:
 
 ```text
-FLOWSPACE_ALLOWED_PRIVATE_CIDRS=192.168.1.70/32,192.168.1.20/32
+FLOWSPACE_ALLOWED_PRIVATE_CIDRS=192.168.1.13/32,192.168.1.20/32
 ```
 
 The dialer resolves and validates every physical connection. Environment proxy

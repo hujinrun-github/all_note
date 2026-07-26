@@ -17,8 +17,12 @@ type ProjectCommand string
 const (
 	ProjectCommandCreate   ProjectCommand = "create"
 	ProjectCommandUpdate   ProjectCommand = "update"
+	ProjectCommandActivate ProjectCommand = "activate"
+	ProjectCommandPause    ProjectCommand = "pause"
+	ProjectCommandResume   ProjectCommand = "resume"
 	ProjectCommandComplete ProjectCommand = "complete"
 	ProjectCommandArchive  ProjectCommand = "archive"
+	ProjectCommandRestore  ProjectCommand = "restore"
 	ProjectCommandDelete   ProjectCommand = "delete"
 )
 
@@ -69,6 +73,7 @@ type ExistingProjectRequest struct {
 	Command                 ProjectCommand
 	ExpectedRuntimeEpoch    int64
 	ExpectedProjectRevision int64
+	RestoreTo               *ProjectStatus
 	CommandID               string
 	ActorID                 string
 	At                      time.Time
@@ -145,9 +150,9 @@ func (service *ProjectService) UpdateProject(ctx context.Context, request Update
 		if current.Project.SystemRole != request.Project.SystemRole {
 			return ErrSystemProjectImmutable
 		}
-		if current.Project.Status != request.Project.Status &&
-			(request.Project.Status == ProjectStatusCompleted || request.Project.Status == ProjectStatusArchived) {
-			return ErrInvalidProjectCommand
+		if current.Project.Status != request.Project.Status ||
+			!equalOptionalProjectStatus(current.Project.ArchivedFromStatus, request.Project.ArchivedFromStatus) {
+			return ErrProjectLifecycleCommandRequired
 		}
 		if err := writer.SaveProject(ctx, ProjectWrite{Project: request.Project, ExpectedRevision: request.ExpectedProjectRevision}); err != nil {
 			return err
@@ -162,6 +167,36 @@ func (service *ProjectService) UpdateProject(ctx context.Context, request Update
 		return ProjectCommandResult{}, err
 	}
 	return result, nil
+}
+
+func (service *ProjectService) ActivateProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandResult, error) {
+	if err := validateExistingProjectRequest(service, request, ProjectCommandActivate); err != nil {
+		return ProjectCommandResult{}, err
+	}
+	return service.executeExistingProjectCommand(ctx, request, func(_ context.Context, _ ProjectCommandTx, current Project) (Project, bool, error) {
+		next, err := ActivateProject(current)
+		return next, false, err
+	})
+}
+
+func (service *ProjectService) PauseProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandResult, error) {
+	if err := validateExistingProjectRequest(service, request, ProjectCommandPause); err != nil {
+		return ProjectCommandResult{}, err
+	}
+	return service.executeExistingProjectCommand(ctx, request, func(_ context.Context, _ ProjectCommandTx, current Project) (Project, bool, error) {
+		next, err := PauseProject(current)
+		return next, false, err
+	})
+}
+
+func (service *ProjectService) ResumeProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandResult, error) {
+	if err := validateExistingProjectRequest(service, request, ProjectCommandResume); err != nil {
+		return ProjectCommandResult{}, err
+	}
+	return service.executeExistingProjectCommand(ctx, request, func(_ context.Context, _ ProjectCommandTx, current Project) (Project, bool, error) {
+		next, err := ResumeProject(current)
+		return next, false, err
+	})
 }
 
 func (service *ProjectService) CompleteProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandResult, error) {
@@ -183,11 +218,18 @@ func (service *ProjectService) ArchiveProject(ctx context.Context, request Exist
 		return ProjectCommandResult{}, err
 	}
 	return service.executeExistingProjectCommand(ctx, request, func(_ context.Context, _ ProjectCommandTx, current Project) (Project, bool, error) {
-		current.Status = ProjectStatusArchived
-		if err := ValidateProject(current); err != nil {
-			return Project{}, false, err
-		}
-		return current, false, nil
+		next, err := ArchiveProject(current)
+		return next, false, err
+	})
+}
+
+func (service *ProjectService) RestoreProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandResult, error) {
+	if err := validateExistingProjectRequest(service, request, ProjectCommandRestore); err != nil {
+		return ProjectCommandResult{}, err
+	}
+	return service.executeExistingProjectCommand(ctx, request, func(_ context.Context, _ ProjectCommandTx, current Project) (Project, bool, error) {
+		next, err := RestoreProject(current, request.RestoreTo)
+		return next, false, err
 	})
 }
 
@@ -278,6 +320,9 @@ func validateCreateProjectRequest(service *ProjectService, request CreateProject
 	if err := ValidateProject(project); err != nil {
 		return Project{}, err
 	}
+	if project.Status != ProjectStatusPlanning && project.Status != ProjectStatusActive {
+		return Project{}, ErrProjectLifecycleCommandRequired
+	}
 	return project, nil
 }
 
@@ -289,6 +334,9 @@ func validateUpdateProjectRequest(service *ProjectService, request UpdateProject
 	}
 	if request.Project.WorkspaceID != request.WorkspaceID || request.Project.ID != request.ProjectID {
 		return ErrInvalidProject
+	}
+	if request.Project.Status != ProjectStatusArchived && request.Project.ArchivedFromStatus != nil {
+		return ErrProjectLifecycleCommandRequired
 	}
 	return ValidateProject(request.Project)
 }
@@ -312,6 +360,13 @@ func projectCommandWriter(tx ProjectCommandTx) (ProjectWriter, error) {
 		return nil, ErrInvalidProjectCommand
 	}
 	return writer, nil
+}
+
+func equalOptionalProjectStatus(left, right *ProjectStatus) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func newProjectCommandResult(
