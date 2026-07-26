@@ -1,6 +1,7 @@
 package mobilecontract
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -98,6 +99,7 @@ func TestMobileV1RuntimeContractSHAIsCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != ContractSHA256 {
 		t.Fatalf("runtime contract SHA = %s, file SHA = %s", ContractSHA256, got)
 	}
