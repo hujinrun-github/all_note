@@ -9,6 +9,7 @@ func ValidateProject(project Project) error {
 		!validProjectKind(project.Kind) ||
 		!validProjectHorizon(project.Horizon) ||
 		!validProjectStatus(project.Status) ||
+		!validArchivedFromStatus(project.Status, project.ArchivedFromStatus) ||
 		!validProjectSystemRole(project.SystemRole) {
 		return ErrInvalidProject
 	}
@@ -70,10 +71,70 @@ func CompleteProject(project Project, nonTerminalOccurrences int) (Project, erro
 	if nonTerminalOccurrences < 0 {
 		return project, ErrInvalidProject
 	}
+	if project.Status != ProjectStatusActive && project.Status != ProjectStatusPaused {
+		return project, ErrInvalidProjectTransition
+	}
 	if nonTerminalOccurrences != 0 {
 		return project, ErrProjectHasOpenOccurrences
 	}
 	project.Status = ProjectStatusCompleted
+	return project, nil
+}
+
+func ActivateProject(project Project) (Project, error) {
+	if project.Status != ProjectStatusPlanning {
+		return project, ErrInvalidProjectTransition
+	}
+	project.Status = ProjectStatusActive
+	return project, nil
+}
+
+func PauseProject(project Project) (Project, error) {
+	if project.Status != ProjectStatusActive {
+		return project, ErrInvalidProjectTransition
+	}
+	project.Status = ProjectStatusPaused
+	return project, nil
+}
+
+func ResumeProject(project Project) (Project, error) {
+	if project.Status != ProjectStatusPaused {
+		return project, ErrInvalidProjectTransition
+	}
+	project.Status = ProjectStatusActive
+	return project, nil
+}
+
+func ArchiveProject(project Project) (Project, error) {
+	if !restorableProjectStatus(project.Status) {
+		return project, ErrInvalidProjectTransition
+	}
+	previous := project.Status
+	project.Status = ProjectStatusArchived
+	project.ArchivedFromStatus = &previous
+	return project, nil
+}
+
+func RestoreProject(project Project, restoreTo *ProjectStatus) (Project, error) {
+	if project.Status != ProjectStatusArchived {
+		return project, ErrInvalidProjectTransition
+	}
+
+	target := project.ArchivedFromStatus
+	if target == nil {
+		target = restoreTo
+		if target == nil {
+			return project, ErrRestoreTargetRequired
+		}
+	} else if restoreTo != nil && *restoreTo != *target {
+		return project, ErrInvalidProjectTransition
+	}
+	if !restorableProjectStatus(*target) {
+		return project, ErrInvalidProjectTransition
+	}
+
+	project.Status = *target
+	project.ArchivedFromStatus = nil
 	return project, nil
 }
 
@@ -104,6 +165,22 @@ func validProjectHorizon(horizon ProjectHorizon) bool {
 func validProjectStatus(status ProjectStatus) bool {
 	switch status {
 	case ProjectStatusPlanning, ProjectStatusActive, ProjectStatusPaused, ProjectStatusCompleted, ProjectStatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+func validArchivedFromStatus(status ProjectStatus, archivedFrom *ProjectStatus) bool {
+	if status != ProjectStatusArchived {
+		return archivedFrom == nil
+	}
+	return archivedFrom == nil || restorableProjectStatus(*archivedFrom)
+}
+
+func restorableProjectStatus(status ProjectStatus) bool {
+	switch status {
+	case ProjectStatusPlanning, ProjectStatusActive, ProjectStatusPaused, ProjectStatusCompleted:
 		return true
 	default:
 		return false

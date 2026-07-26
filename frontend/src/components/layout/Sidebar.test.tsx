@@ -7,8 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Sidebar } from './Sidebar'
 import { getCurrentUser } from '../../api/auth'
 
-vi.mock('../../hooks/useInbox', () => ({
-  useInboxList: () => ({ data: { pagination: { total: 0 } } }),
+vi.mock('../../hooks/useTaskInbox', () => ({
+  useTaskInbox: () => ({ occurrencesQuery: { data: [] } }),
 }))
 
 vi.mock('../../api/auth', () => ({
@@ -26,14 +26,14 @@ vi.mock('../../hooks/useTaskDomain', () => ({
 function renderSidebar(
   queryClient: QueryClient,
   initialPath = '/',
-  sidebarProps: Partial<ComponentProps<typeof Sidebar>> = {},
+  sidebarProps: Partial<ComponentProps<typeof Sidebar>> = {}
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Sidebar {...sidebarProps} />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
@@ -76,7 +76,9 @@ describe('Sidebar navigation refresh', () => {
 
     await userEvent.click(screen.getByRole('link', { name: '今日' }))
 
-    await waitFor(() => expect(queryClient.getQueryState(['today'])?.isInvalidated).toBe(true))
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['today'])?.isInvalidated).toBe(true)
+    )
   })
 
   it('exposes a compact sidebar toggle state', async () => {
@@ -92,7 +94,7 @@ describe('Sidebar navigation refresh', () => {
         <MemoryRouter>
           <Sidebar collapsed={false} onToggleCollapsed={onToggleCollapsed} />
         </MemoryRouter>
-      </QueryClientProvider>,
+      </QueryClientProvider>
     )
 
     const collapseButton = screen.getByRole('button', { name: '收起侧边栏' })
@@ -107,21 +109,28 @@ describe('Sidebar navigation refresh', () => {
         <MemoryRouter>
           <Sidebar collapsed onToggleCollapsed={onToggleCollapsed} />
         </MemoryRouter>
-      </QueryClientProvider>,
+      </QueryClientProvider>
     )
 
-    expect(screen.getByRole('button', { name: '展开侧边栏' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: '展开侧边栏' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
     expect(screen.getByRole('complementary')).toHaveClass('is-collapsed')
   })
 
   it('hides the entire system group from non-admin users', async () => {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
 
     renderSidebar(queryClient)
 
     expect(await screen.findByRole('link', { name: '今日' })).toBeVisible()
     expect(screen.queryByText('系统')).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '账号管理' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('link', { name: '账号管理' })
+    ).not.toBeInTheDocument()
   })
 
   it('shows account management to administrators', async () => {
@@ -146,7 +155,9 @@ describe('Sidebar navigation refresh', () => {
       },
       must_change_password: false,
     })
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
 
     renderSidebar(queryClient)
 

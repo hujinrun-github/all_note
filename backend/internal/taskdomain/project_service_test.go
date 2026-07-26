@@ -49,6 +49,24 @@ func TestProjectServiceCreateDefaultsSystemRoleAndWritesOnceInsideFence(t *testi
 	}
 }
 
+func TestProjectServiceCreateRejectsTerminalLifecycleStates(t *testing.T) {
+	for _, status := range []ProjectStatus{ProjectStatusPaused, ProjectStatusCompleted, ProjectStatusArchived} {
+		t.Run(string(status), func(t *testing.T) {
+			project := ordinaryProject(status)
+			writer := &projectServiceWriter{}
+			fencer := &projectServiceFencer{writer: writer}
+
+			result, err := NewProjectService(fencer).CreateProject(context.Background(), CreateProjectRequest{
+				WorkspaceID: "workspace-1", ExpectedRuntimeEpoch: 7, Project: project,
+				CommandID: "command-create", ActorID: "user-1", At: testProjectCommandTime(),
+			})
+			if !errors.Is(err, ErrProjectLifecycleCommandRequired) || !result.IsZero() || fencer.calls != 0 || writer.saveCalls != 0 {
+				t.Fatalf("status %s result/error/fence/write = %#v / %v / %d / %d", status, result, err, fencer.calls, writer.saveCalls)
+			}
+		})
+	}
+}
+
 func TestProjectServiceUpdateProtectsIdentityAndSystemRole(t *testing.T) {
 	current := Project{
 		WorkspaceID: "workspace-1", ID: "project-1", Name: "Old",
@@ -59,7 +77,6 @@ func TestProjectServiceUpdateProtectsIdentityAndSystemRole(t *testing.T) {
 	updated.Name = "New"
 	updated.Kind = ProjectKindLearning
 	updated.Horizon = ProjectHorizonLong
-	updated.Status = ProjectStatusActive
 
 	writer := &projectServiceWriter{}
 	fencer := &projectServiceFencer{writer: writer}
@@ -87,8 +104,14 @@ func TestProjectServiceUpdateProtectsIdentityAndSystemRole(t *testing.T) {
 		{name: "workspace", mutate: func(project *Project) { project.WorkspaceID = "workspace-2" }, want: ErrInvalidProject},
 		{name: "id", mutate: func(project *Project) { project.ID = "project-2" }, want: ErrInvalidProject},
 		{name: "system role", mutate: func(project *Project) { project.SystemRole = ProjectSystemRoleInbox }, want: ErrSystemProjectImmutable},
-		{name: "complete status bypass", mutate: func(project *Project) { project.Status = ProjectStatusCompleted }, want: ErrInvalidProjectCommand},
-		{name: "archive status bypass", mutate: func(project *Project) { project.Status = ProjectStatusArchived }, want: ErrInvalidProjectCommand},
+		{name: "activate status bypass", mutate: func(project *Project) { project.Status = ProjectStatusActive }, want: ErrProjectLifecycleCommandRequired},
+		{name: "pause status bypass", mutate: func(project *Project) { project.Status = ProjectStatusPaused }, want: ErrProjectLifecycleCommandRequired},
+		{name: "complete status bypass", mutate: func(project *Project) { project.Status = ProjectStatusCompleted }, want: ErrProjectLifecycleCommandRequired},
+		{name: "archive status bypass", mutate: func(project *Project) { project.Status = ProjectStatusArchived }, want: ErrProjectLifecycleCommandRequired},
+		{name: "archived from status bypass", mutate: func(project *Project) {
+			status := ProjectStatusPlanning
+			project.ArchivedFromStatus = &status
+		}, want: ErrProjectLifecycleCommandRequired},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,6 +127,44 @@ func TestProjectServiceUpdateProtectsIdentityAndSystemRole(t *testing.T) {
 			if !errors.Is(err, tt.want) || !result.IsZero() || writer.saveCalls != 0 || writer.deleteCalls != 0 {
 				t.Fatalf("result/error/writes = %#v / %v / %d,%d", result, err, writer.saveCalls, writer.deleteCalls)
 			}
+		})
+	}
+}
+
+func TestProjectServiceDedicatedLifecycleCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		command ProjectCommand
+		current ProjectStatus
+		want    ProjectStatus
+		execute func(*ProjectService, ExistingProjectRequest) (ProjectCommandResult, error)
+	}{
+		{name: "activate", command: ProjectCommandActivate, current: ProjectStatusPlanning, want: ProjectStatusActive, execute: func(service *ProjectService, request ExistingProjectRequest) (ProjectCommandResult, error) {
+			return service.ActivateProject(context.Background(), request)
+		}},
+		{name: "pause", command: ProjectCommandPause, current: ProjectStatusActive, want: ProjectStatusPaused, execute: func(service *ProjectService, request ExistingProjectRequest) (ProjectCommandResult, error) {
+			return service.PauseProject(context.Background(), request)
+		}},
+		{name: "resume", command: ProjectCommandResume, current: ProjectStatusPaused, want: ProjectStatusActive, execute: func(service *ProjectService, request ExistingProjectRequest) (ProjectCommandResult, error) {
+			return service.ResumeProject(context.Background(), request)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			current := ordinaryProject(test.current)
+			writer := &projectServiceWriter{}
+			fencer := &projectServiceFencer{writer: writer}
+			reader := &projectServiceReader{fencer: fencer, snapshot: ProjectSnapshot{Project: current, Revision: 5}}
+
+			result, err := test.execute(NewProjectService(fencer.bind(reader)), existingProjectRequest(test.command, 5))
+			if err != nil {
+				t.Fatalf("%s command error = %v", test.name, err)
+			}
+			if writer.saveCalls != 1 || writer.saved.Project.Status != test.want || writer.saved.ExpectedRevision != 5 ||
+				result.Project().Status != test.want || result.Revision() != 6 {
+				t.Fatalf("%s write/result = %#v / %#v", test.name, writer.saved, result)
+			}
+			assertProjectAudit(t, result, test.command, "command-"+string(test.command), "project-1", testProjectCommandTime())
 		})
 	}
 }
@@ -163,6 +224,21 @@ func TestProjectServiceArchiveAndDeleteAreExplicitCommands(t *testing.T) {
 	if archiveWriter.saveCalls != 1 || archiveWriter.saved.Project.Status != ProjectStatusArchived || archiveWriter.saved.ExpectedRevision != 3 || archived.Revision() != 4 {
 		t.Fatalf("archive write/result = %#v / %#v", archiveWriter.saved, archived)
 	}
+	if archiveWriter.saved.Project.ArchivedFromStatus == nil || *archiveWriter.saved.Project.ArchivedFromStatus != ProjectStatusCompleted {
+		t.Fatalf("archive did not preserve prior status: %#v", archiveWriter.saved.Project)
+	}
+
+	restoreWriter := &projectServiceWriter{}
+	restoreFencer := &projectServiceFencer{writer: restoreWriter}
+	restoreReader := &projectServiceReader{fencer: restoreFencer, snapshot: ProjectSnapshot{Project: archiveWriter.saved.Project, Revision: 4}}
+	restored, err := NewProjectService(restoreFencer.bind(restoreReader)).RestoreProject(context.Background(), existingProjectRequest(ProjectCommandRestore, 4))
+	if err != nil {
+		t.Fatalf("RestoreProject() error = %v", err)
+	}
+	if restoreWriter.saveCalls != 1 || restoreWriter.saved.Project.Status != ProjectStatusCompleted ||
+		restoreWriter.saved.Project.ArchivedFromStatus != nil || restored.Revision() != 5 {
+		t.Fatalf("restore write/result = %#v / %#v", restoreWriter.saved, restored)
+	}
 
 	deleteWriter := &projectServiceWriter{}
 	deleteFencer := &projectServiceFencer{writer: deleteWriter}
@@ -178,6 +254,30 @@ func TestProjectServiceArchiveAndDeleteAreExplicitCommands(t *testing.T) {
 		t.Fatalf("delete result = %#v", deleted)
 	}
 	assertProjectAudit(t, deleted, ProjectCommandDelete, "command-delete", "project-1", testProjectCommandTime())
+}
+
+func TestProjectServiceLegacyRestoreRequiresExplicitTarget(t *testing.T) {
+	legacy := ordinaryProject(ProjectStatusArchived)
+	writer := &projectServiceWriter{}
+	fencer := &projectServiceFencer{writer: writer}
+	reader := &projectServiceReader{fencer: fencer, snapshot: ProjectSnapshot{Project: legacy, Revision: 7}}
+	service := NewProjectService(fencer.bind(reader))
+
+	result, err := service.RestoreProject(context.Background(), existingProjectRequest(ProjectCommandRestore, 7))
+	if !errors.Is(err, ErrRestoreTargetRequired) || !result.IsZero() || writer.saveCalls != 0 {
+		t.Fatalf("missing target result/error/writes = %#v / %v / %d", result, err, writer.saveCalls)
+	}
+
+	restoreTo := ProjectStatusPlanning
+	request := existingProjectRequest(ProjectCommandRestore, 7)
+	request.RestoreTo = &restoreTo
+	result, err = service.RestoreProject(context.Background(), request)
+	if err != nil {
+		t.Fatalf("RestoreProject() error = %v", err)
+	}
+	if writer.saveCalls != 1 || result.Project().Status != ProjectStatusPlanning || result.Revision() != 8 {
+		t.Fatalf("restore result/write = %#v / %#v", result, writer.saved)
+	}
 }
 
 func TestProjectServiceNeverDeletesSystemProjects(t *testing.T) {
@@ -211,6 +311,18 @@ func TestProjectServiceEveryCommandValidatesEpochAndRevision(t *testing.T) {
 				Project: current, CommandID: "command-update", ActorID: "user-1", At: testProjectCommandTime(),
 			})
 		}},
+		{name: "activate", execute: func(service *ProjectService) (ProjectCommandResult, error) {
+			request := existingProjectRequest(ProjectCommandActivate, 8)
+			return service.ActivateProject(context.Background(), request)
+		}},
+		{name: "pause", execute: func(service *ProjectService) (ProjectCommandResult, error) {
+			request := existingProjectRequest(ProjectCommandPause, 8)
+			return service.PauseProject(context.Background(), request)
+		}},
+		{name: "resume", execute: func(service *ProjectService) (ProjectCommandResult, error) {
+			request := existingProjectRequest(ProjectCommandResume, 8)
+			return service.ResumeProject(context.Background(), request)
+		}},
 		{name: "complete", execute: func(service *ProjectService) (ProjectCommandResult, error) {
 			request := existingProjectRequest(ProjectCommandComplete, 8)
 			return service.CompleteProject(context.Background(), request)
@@ -218,6 +330,10 @@ func TestProjectServiceEveryCommandValidatesEpochAndRevision(t *testing.T) {
 		{name: "archive", execute: func(service *ProjectService) (ProjectCommandResult, error) {
 			request := existingProjectRequest(ProjectCommandArchive, 8)
 			return service.ArchiveProject(context.Background(), request)
+		}},
+		{name: "restore", execute: func(service *ProjectService) (ProjectCommandResult, error) {
+			request := existingProjectRequest(ProjectCommandRestore, 8)
+			return service.RestoreProject(context.Background(), request)
 		}},
 		{name: "delete", execute: func(service *ProjectService) (ProjectCommandResult, error) {
 			request := existingProjectRequest(ProjectCommandDelete, 8)

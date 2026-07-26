@@ -550,9 +550,9 @@ func (s *ReconcileStore) readV2Rows(ctx context.Context, tx *sql.Tx, workspaceID
 		}
 		digest, _ := digestCanonical(scheduleDigestRow{
 			TaskID: taskID, CurrentRevision: canonicalInt64(values[1]), GenerationStatus: canonicalString(values[2]),
-			ScheduleRevision: canonicalInt64(values[3]), EffectiveFrom: canonicalString(values[4]), EffectiveTo: canonicalString(values[5]),
+			ScheduleRevision: canonicalInt64(values[3]), EffectiveFrom: canonicalDate(values[4]), EffectiveTo: canonicalDate(values[5]),
 			RecurrenceType: canonicalString(values[6]), TimingType: canonicalString(values[7]), Timezone: canonicalString(values[8]),
-			StartsOn: canonicalString(values[9]), EndsOn: canonicalString(values[10]), RecurrenceRule: rule,
+			StartsOn: canonicalDate(values[9]), EndsOn: canonicalDate(values[10]), RecurrenceRule: rule,
 			LocalStartTime: canonicalTimeOfDay(values[12]), DurationMinutes: int(canonicalInt64(values[13])),
 		})
 		rows = append(rows, V2MappedRow{Target: key, Digest: digest})
@@ -592,10 +592,10 @@ func (s *ReconcileStore) readV2Rows(ctx context.Context, tx *sql.Tx, workspaceID
 		key := reconcileStoreKey(ReplayEntityOccurrence, canonicalString(values[0]))
 		digest, _ := digestCanonical(occurrenceDigestRow{
 			ID: canonicalString(values[0]), TaskID: canonicalString(values[1]), OccurrenceKey: canonicalString(values[2]),
-			PlannedDate: canonicalString(values[3]), PlannedStartAt: canonicalInstant(values[4]), PlannedEndAt: canonicalInstant(values[5]),
+			PlannedDate: canonicalDate(values[3]), PlannedStartAt: canonicalInstant(values[4]), PlannedEndAt: canonicalInstant(values[5]),
 			DueAt: canonicalInstant(values[6]), ExecutionStatus: canonicalString(values[7]), CompletedAt: canonicalInstant(values[8]),
 			Location: canonicalString(values[9]), CalendarKind: canonicalString(values[10]), CalendarNotes: canonicalString(values[11]),
-			NoteID: canonicalString(values[12]), AllDayEndDate: canonicalString(values[13]), BlockedReason: canonicalString(values[14]),
+			NoteID: canonicalString(values[12]), AllDayEndDate: canonicalDate(values[13]), BlockedReason: canonicalString(values[14]),
 			NextAction: canonicalString(values[15]), GeneratedScheduleRevision: canonicalInt64(values[16]),
 		})
 		rows = append(rows, V2MappedRow{Target: key, Digest: digest})
@@ -857,6 +857,26 @@ func canonicalInstant(value any) string {
 		return raw
 	}
 	return parsed.UTC().Format(time.RFC3339Nano)
+}
+
+func canonicalDate(value any) string {
+	if value == nil {
+		return ""
+	}
+	if typed, ok := value.(time.Time); ok {
+		return typed.Format("2006-01-02")
+	}
+	raw := canonicalString(value)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := time.Parse("2006-01-02", raw); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	return raw
 }
 
 func canonicalTimeOfDay(value any) string {

@@ -107,9 +107,11 @@ func TestFacadeUsesFreshRuntimeEpochOnEveryRequest(t *testing.T) {
 
 func TestFacadeProjectCommandsInjectAuditAndPreserveExpectedRevision(t *testing.T) {
 	projects := &projectServiceFake{}
-	resolver := &runtimeResolverFake{runtimes: repeatRuntime(runtimeForTestWithProjects(9, projects), 5)}
+	resolver := &runtimeResolverFake{runtimes: repeatRuntime(runtimeForTestWithProjects(9, projects), 9)}
 	clock := fixedClock{now: testFacadeNow()}
-	facade := NewFacade(resolver, clock, &idGeneratorFake{ids: []string{"project-new"}}, &commandIDGeneratorFake{ids: []string{"cmd-create", "cmd-update", "cmd-complete", "cmd-archive", "cmd-delete"}})
+	facade := NewFacade(resolver, clock, &idGeneratorFake{ids: []string{"project-new"}}, &commandIDGeneratorFake{ids: []string{
+		"cmd-create", "cmd-update", "cmd-activate", "cmd-pause", "cmd-resume", "cmd-complete", "cmd-archive", "cmd-restore", "cmd-delete",
+	}})
 
 	if _, err := facade.CreateProject(context.Background(), CreateProjectRequest{
 		WorkspaceID: "workspace-1", ActorID: "user-1", Name: "New", Kind: taskdomain.ProjectKindLearning,
@@ -123,17 +125,36 @@ func TestFacadeProjectCommandsInjectAuditAndPreserveExpectedRevision(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
+	restoreTo := taskdomain.ProjectStatusPaused
 	for _, execute := range []func() error{
 		func() error {
-			_, err := facade.CompleteProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 5})
+			_, err := facade.ActivateProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 5})
 			return err
 		},
 		func() error {
-			_, err := facade.ArchiveProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 6})
+			_, err := facade.PauseProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 6})
 			return err
 		},
 		func() error {
-			_, err := facade.DeleteProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 7})
+			_, err := facade.ResumeProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 7})
+			return err
+		},
+		func() error {
+			_, err := facade.CompleteProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 8})
+			return err
+		},
+		func() error {
+			_, err := facade.ArchiveProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 9})
+			return err
+		},
+		func() error {
+			_, err := facade.RestoreProject(context.Background(), ExistingProjectRequest{
+				WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 10, RestoreTo: &restoreTo,
+			})
+			return err
+		},
+		func() error {
+			_, err := facade.DeleteProject(context.Background(), ExistingProjectRequest{WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 11})
 			return err
 		},
 	} {
@@ -142,8 +163,8 @@ func TestFacadeProjectCommandsInjectAuditAndPreserveExpectedRevision(t *testing.
 		}
 	}
 
-	if resolver.calls != 5 {
-		t.Fatalf("resolver calls = %d, want 5", resolver.calls)
+	if resolver.calls != 9 {
+		t.Fatalf("resolver calls = %d, want 9", resolver.calls)
 	}
 	if projects.createRequest.ExpectedRuntimeEpoch != 9 || projects.createRequest.ExpectedProjectRevision != 0 ||
 		projects.createRequest.Project.ID != "project-new" || projects.createRequest.Project.SystemRole != taskdomain.ProjectSystemRoleNone ||
@@ -153,12 +174,23 @@ func TestFacadeProjectCommandsInjectAuditAndPreserveExpectedRevision(t *testing.
 	if projects.updateRequest.ExpectedRuntimeEpoch != 9 || projects.updateRequest.ExpectedProjectRevision != 4 || projects.updateRequest.Project != updated || projects.updateRequest.CommandID != "cmd-update" {
 		t.Fatalf("update project request = %#v", projects.updateRequest)
 	}
-	wantCommands := []taskdomain.ProjectCommand{taskdomain.ProjectCommandComplete, taskdomain.ProjectCommandArchive, taskdomain.ProjectCommandDelete}
-	wantRevisions := []int64{5, 6, 7}
+	wantCommands := []taskdomain.ProjectCommand{
+		taskdomain.ProjectCommandActivate,
+		taskdomain.ProjectCommandPause,
+		taskdomain.ProjectCommandResume,
+		taskdomain.ProjectCommandComplete,
+		taskdomain.ProjectCommandArchive,
+		taskdomain.ProjectCommandRestore,
+		taskdomain.ProjectCommandDelete,
+	}
+	wantRevisions := []int64{5, 6, 7, 8, 9, 10, 11}
 	for index, request := range projects.existingRequests {
 		if request.Command != wantCommands[index] || request.ExpectedProjectRevision != wantRevisions[index] || request.ExpectedRuntimeEpoch != 9 || request.ActorID != "user-1" {
 			t.Fatalf("existing request[%d] = %#v", index, request)
 		}
+	}
+	if projects.existingRequests[5].RestoreTo == nil || *projects.existingRequests[5].RestoreTo != taskdomain.ProjectStatusPaused {
+		t.Fatalf("restore target was not preserved: %#v", projects.existingRequests[5])
 	}
 }
 
@@ -412,7 +444,6 @@ func TestFacadeOccurrenceByIDStopsOnReaderError(t *testing.T) {
 
 func TestFacadePatchProjectReadsAndAppliesOnlyProvidedFields(t *testing.T) {
 	name := "Renamed"
-	status := taskdomain.ProjectStatusCompleted
 	reader := &readerFake{project: taskdomain.ProjectSnapshot{Project: taskdomain.Project{
 		WorkspaceID: "workspace-1", ID: "project-1", Name: "Original", Kind: taskdomain.ProjectKindLearning,
 		Horizon: taskdomain.ProjectHorizonLong, Status: taskdomain.ProjectStatusActive,
@@ -425,19 +456,38 @@ func TestFacadePatchProjectReadsAndAppliesOnlyProvidedFields(t *testing.T) {
 
 	_, err := facade.PatchProject(context.Background(), PatchProjectRequest{
 		WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 4,
-		Name: &name, Status: &status,
+		Name: &name,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolver.calls != 1 || reader.projectCalls != 1 || projects.updateRequest.ExpectedRuntimeEpoch != 12 ||
-		projects.updateRequest.Project.Name != "Renamed" || projects.updateRequest.Project.Status != taskdomain.ProjectStatusCompleted ||
+		projects.updateRequest.Project.Name != "Renamed" || projects.updateRequest.Project.Status != taskdomain.ProjectStatusActive ||
 		projects.updateRequest.Project.Kind != taskdomain.ProjectKindLearning || projects.updateRequest.Project.Horizon != taskdomain.ProjectHorizonLong {
 		t.Fatalf("patch boundary/request = %d/%d %#v", resolver.calls, reader.projectCalls, projects.updateRequest)
 	}
 	name = "mutated"
 	if projects.updateRequest.Project.Name != "Renamed" {
 		t.Fatal("project patch retained caller pointer")
+	}
+}
+
+func TestFacadePatchProjectRejectsLifecycleStatusBeforeRead(t *testing.T) {
+	status := taskdomain.ProjectStatusPaused
+	reader := &readerFake{}
+	projects := &projectServiceFake{}
+	runtime := runtimeForTestWithProjects(12, projects)
+	runtime.Reader = reader
+	resolver := &runtimeResolverFake{runtimes: []RuntimeSnapshot{runtime}}
+	commands := &commandIDGeneratorFake{ids: []string{"unused"}}
+	facade := NewFacade(resolver, fixedClock{now: testFacadeNow()}, &idGeneratorFake{}, commands)
+
+	result, err := facade.PatchProject(context.Background(), PatchProjectRequest{
+		WorkspaceID: "workspace-1", ActorID: "user-1", ProjectID: "project-1", ExpectedProjectRevision: 4, Status: &status,
+	})
+	if !errors.Is(err, taskdomain.ErrProjectLifecycleCommandRequired) || !reflect.DeepEqual(result, ProjectCommandOutcome{}) ||
+		resolver.calls != 0 || reader.projectCalls != 0 || commands.calls != 0 {
+		t.Fatalf("result/error/calls = %#v / %v / %d,%d,%d", result, err, resolver.calls, reader.projectCalls, commands.calls)
 	}
 }
 
@@ -940,11 +990,27 @@ func (service *projectServiceFake) UpdateProject(_ context.Context, request task
 	service.updateRequest = request
 	return ProjectCommandOutcome{}, nil
 }
+func (service *projectServiceFake) ActivateProject(_ context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	service.existingRequests = append(service.existingRequests, request)
+	return ProjectCommandOutcome{}, nil
+}
+func (service *projectServiceFake) PauseProject(_ context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	service.existingRequests = append(service.existingRequests, request)
+	return ProjectCommandOutcome{}, nil
+}
+func (service *projectServiceFake) ResumeProject(_ context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	service.existingRequests = append(service.existingRequests, request)
+	return ProjectCommandOutcome{}, nil
+}
 func (service *projectServiceFake) CompleteProject(_ context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
 	service.existingRequests = append(service.existingRequests, request)
 	return ProjectCommandOutcome{}, nil
 }
 func (service *projectServiceFake) ArchiveProject(_ context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	service.existingRequests = append(service.existingRequests, request)
+	return ProjectCommandOutcome{}, nil
+}
+func (service *projectServiceFake) RestoreProject(_ context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
 	service.existingRequests = append(service.existingRequests, request)
 	return ProjectCommandOutcome{}, nil
 }

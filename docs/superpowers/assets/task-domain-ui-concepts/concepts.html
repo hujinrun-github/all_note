@@ -1,0 +1,1999 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FlowSpace 统一任务域前端概念</title>
+  <style>
+    :root {
+      --paper: #f7f4ee;
+      --surface: #fefdf8;
+      --surface-strong: #fffefa;
+      --ink: #2c2416;
+      --ink-2: #5c4f3a;
+      --muted: #928873;
+      --faint: #b8ae9b;
+      --line: #e6e0d4;
+      --line-strong: #d4ccb8;
+      --copper: #b87333;
+      --copper-dark: #8b5e3c;
+      --copper-soft: #f3e8db;
+      --sage: #668356;
+      --sage-soft: #eaf0e6;
+      --brick: #a95747;
+      --brick-soft: #f6e7e3;
+      --blue: #546f7d;
+      --blue-soft: #e8eef0;
+      --sidebar: 218px;
+      --inspector: 370px;
+      --sans: "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      --serif: "Songti SC", "Noto Serif SC", "Source Han Serif SC", serif;
+      --mono: "Cascadia Mono", "JetBrains Mono", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #ded8cc;
+      color: var(--ink);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      color: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar) minmax(0, 1fr);
+      width: 100vw;
+      height: 100vh;
+      min-width: 1180px;
+      min-height: 760px;
+      background: var(--paper);
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border-right: 1px solid var(--line);
+      background: #f2eee6;
+      padding: 23px 17px 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 0 8px 26px;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 35px;
+      height: 35px;
+      border: 1px solid #c99a6d;
+      border-radius: 11px 11px 11px 3px;
+      background: var(--copper);
+      color: #fffaf4;
+      font-family: var(--serif);
+      font-size: 19px;
+      font-weight: 700;
+      box-shadow: 0 8px 20px rgba(99, 61, 28, 0.12);
+    }
+
+    .brand-copy {
+      display: grid;
+      gap: 2px;
+    }
+
+    .brand-copy strong {
+      font-family: var(--serif);
+      font-size: 17px;
+      letter-spacing: 0.01em;
+    }
+
+    .brand-copy span {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+    }
+
+    .nav {
+      display: grid;
+      gap: 21px;
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 4px;
+    }
+
+    .nav-label {
+      padding: 0 10px 7px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+    }
+
+    .nav-item {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      min-height: 39px;
+      border-radius: 9px;
+      padding: 0 11px;
+      color: #6f6452;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .nav-item svg {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.7;
+    }
+
+    body[data-page="today"] .nav-item[data-nav="today"],
+    body[data-page="tasks"] .nav-item[data-nav="tasks"],
+    body[data-page="project"] .nav-item[data-nav="projects"],
+    body[data-page="calendar"] .nav-item[data-nav="calendar"] {
+      background: #e9dfd1;
+      color: var(--copper-dark);
+    }
+
+    body[data-page="today"] .nav-item[data-nav="today"]::before,
+    body[data-page="tasks"] .nav-item[data-nav="tasks"]::before,
+    body[data-page="project"] .nav-item[data-nav="projects"]::before,
+    body[data-page="calendar"] .nav-item[data-nav="calendar"]::before {
+      position: absolute;
+      top: 9px;
+      bottom: 9px;
+      left: -17px;
+      width: 3px;
+      border-radius: 0 3px 3px 0;
+      background: var(--copper);
+      content: "";
+    }
+
+    .nav-count {
+      min-width: 20px;
+      margin-left: auto;
+      border-radius: 999px;
+      background: #e5ded1;
+      padding: 2px 6px;
+      color: #7f7463;
+      font-family: var(--mono);
+      font-size: 9px;
+      text-align: center;
+    }
+
+    .sidebar-foot {
+      display: grid;
+      gap: 8px;
+      margin-top: auto;
+      border-top: 1px solid var(--line);
+      padding: 17px 9px 0;
+    }
+
+    .sync-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #7c976c;
+      box-shadow: 0 0 0 3px rgba(124, 151, 108, 0.12);
+    }
+
+    .profile {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-top: 3px;
+    }
+
+    .avatar {
+      display: grid;
+      place-items: center;
+      width: 29px;
+      height: 29px;
+      border-radius: 50%;
+      background: #d5c8b6;
+      color: #5d4c39;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .profile-copy {
+      display: grid;
+      gap: 1px;
+      font-size: 10px;
+    }
+
+    .profile-copy strong {
+      font-size: 11px;
+    }
+
+    .profile-copy span {
+      color: var(--muted);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: 68px minmax(0, 1fr);
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      padding: 0 28px 0 31px;
+      background: rgba(254, 253, 248, 0.58);
+    }
+
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .breadcrumb strong {
+      color: var(--ink-2);
+      font-weight: 700;
+    }
+
+    .crumb-line {
+      width: 22px;
+      height: 1px;
+      background: var(--line-strong);
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      width: 264px;
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      padding: 0 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .search svg {
+      width: 15px;
+      height: 15px;
+      margin-right: 8px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+    }
+
+    .search kbd {
+      margin-left: auto;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #f3efe7;
+      padding: 2px 5px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+
+    .primary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      border: 1px solid var(--copper);
+      border-radius: 10px;
+      background: var(--copper);
+      padding: 0 14px;
+      color: #fffaf4;
+      font-size: 11px;
+      font-weight: 750;
+      box-shadow: 0 7px 16px rgba(126, 74, 30, 0.12);
+    }
+
+    .primary .plus {
+      margin-right: 6px;
+      font-size: 16px;
+      font-weight: 400;
+      line-height: 1;
+    }
+
+    .icon-button {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--ink-2);
+      font-size: 13px;
+    }
+
+    .page {
+      display: none;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding: 26px 29px 28px 31px;
+    }
+
+    .page.is-active {
+      display: grid;
+    }
+
+    .page-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 28px;
+      min-height: 66px;
+      margin-bottom: 18px;
+    }
+
+    .title-block {
+      display: grid;
+      gap: 5px;
+    }
+
+    .title-line {
+      display: flex;
+      align-items: baseline;
+      gap: 13px;
+    }
+
+    .title-line h1 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 31px;
+      font-weight: 680;
+      letter-spacing: -0.045em;
+      line-height: 1;
+    }
+
+    .title-line time,
+    .project-kind {
+      color: var(--copper-dark);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .title-block p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    .head-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: rgba(254, 253, 248, 0.76);
+      padding: 0 13px;
+      color: var(--ink-2);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .segmented {
+      display: flex;
+      align-items: center;
+      width: max-content;
+      border-bottom: 1px solid var(--line);
+      gap: 24px;
+      margin-bottom: 17px;
+    }
+
+    .segment {
+      position: relative;
+      border: 0;
+      background: transparent;
+      padding: 0 0 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .segment.active {
+      color: var(--ink);
+    }
+
+    .segment.active::after {
+      position: absolute;
+      right: 0;
+      bottom: -1px;
+      left: 0;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--copper);
+      content: "";
+    }
+
+    .segment b {
+      margin-left: 4px;
+      color: inherit;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+    }
+
+    .work-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) var(--inspector);
+      gap: 21px;
+      min-height: 0;
+    }
+
+    .list-canvas {
+      min-width: 0;
+      min-height: 0;
+      border-top: 1px solid var(--line-strong);
+      background: rgba(254, 253, 248, 0.28);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 38px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0.06em;
+    }
+
+    .section-head span:last-child {
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    .timeline {
+      position: relative;
+      padding-left: 59px;
+    }
+
+    .timeline::before {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 42px;
+      width: 1px;
+      background: #d4a170;
+      content: "";
+    }
+
+    .occurrence {
+      position: relative;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) 118px 82px 24px;
+      align-items: center;
+      min-height: 60px;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 3px 8px 0;
+    }
+
+    .timeline .occurrence::before {
+      position: absolute;
+      top: 50%;
+      left: -20px;
+      width: 7px;
+      height: 7px;
+      border: 2px solid var(--paper);
+      border-radius: 50%;
+      background: var(--copper);
+      box-shadow: 0 0 0 1px #c9894e;
+      content: "";
+      transform: translate(-50%, -50%);
+    }
+
+    .timeline-time {
+      position: absolute;
+      top: 50%;
+      left: -59px;
+      width: 34px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      text-align: right;
+      transform: translateY(-50%);
+    }
+
+    .occurrence.selected {
+      margin-right: -1px;
+      background: #f2e9dd;
+    }
+
+    .occurrence.selected::after {
+      position: absolute;
+      top: 0;
+      right: -22px;
+      bottom: 0;
+      width: 22px;
+      border-top: 1px solid #d9b38f;
+      border-bottom: 1px solid #d9b38f;
+      background: #f2e9dd;
+      content: "";
+    }
+
+    .check {
+      display: grid;
+      place-items: center;
+      width: 19px;
+      height: 19px;
+      border: 1.5px solid #b8aa97;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--sage);
+      font-size: 10px;
+    }
+
+    .check.done {
+      border-color: #91a586;
+      background: var(--sage-soft);
+    }
+
+    .occ-copy {
+      display: grid;
+      min-width: 0;
+      gap: 4px;
+    }
+
+    .occ-copy strong {
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 720;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .occ-copy span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .project-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--copper);
+    }
+
+    .schedule {
+      color: var(--ink-2);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      width: max-content;
+      color: var(--blue);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .status::before {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      content: "";
+    }
+
+    .status.active {
+      color: var(--copper-dark);
+    }
+
+    .status.blocked {
+      color: var(--brick);
+    }
+
+    .status.done {
+      color: var(--sage);
+    }
+
+    .more {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-align: center;
+    }
+
+    .blocked-note {
+      color: var(--brick) !important;
+    }
+
+    .inspector {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid #dfd4c4;
+      border-radius: 16px 16px 16px 5px;
+      background: var(--surface-strong);
+      box-shadow: 0 20px 48px rgba(75, 54, 32, 0.09);
+    }
+
+    .inspector::before {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 3px;
+      background: var(--copper);
+      content: "";
+    }
+
+    .inspector-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      padding: 19px 19px 15px 23px;
+    }
+
+    .inspector-head div {
+      display: grid;
+      gap: 4px;
+    }
+
+    .inspector-head span {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .inspector-head h2 {
+      margin: 0;
+      font-family: var(--serif);
+      font-size: 18px;
+      font-weight: 680;
+      letter-spacing: -0.02em;
+    }
+
+    .close {
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .inspector-body {
+      display: grid;
+      gap: 18px;
+      padding: 17px 19px 20px 23px;
+    }
+
+    .action-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+    }
+
+    .action {
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 9px;
+      background: var(--paper);
+      color: var(--ink-2);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .action.copper {
+      border-color: #d4a170;
+      background: var(--copper-soft);
+      color: var(--copper-dark);
+    }
+
+    .action.green {
+      border-color: #c7d3c0;
+      background: var(--sage-soft);
+      color: var(--sage);
+    }
+
+    .field-list {
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .field {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 12px;
+      min-height: 42px;
+      border-bottom: 1px solid var(--line);
+      padding: 11px 0;
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .field dt {
+      color: var(--muted);
+    }
+
+    .field dd {
+      margin: 0;
+      color: var(--ink-2);
+      font-weight: 650;
+    }
+
+    .field dd em {
+      color: var(--copper-dark);
+      font-style: normal;
+    }
+
+    .note-box {
+      display: grid;
+      gap: 7px;
+      border-left: 2px solid #cba276;
+      background: #f7efe5;
+      padding: 11px 12px;
+      color: var(--ink-2);
+      font-size: 9px;
+      line-height: 1.65;
+    }
+
+    .note-box strong {
+      color: var(--copper-dark);
+      font-size: 9px;
+    }
+
+    .text-link {
+      width: max-content;
+      border: 0;
+      border-bottom: 1px solid #cfa77e;
+      background: transparent;
+      padding: 0 0 2px;
+      color: var(--copper-dark);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    /* Today */
+    .today-page {
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+
+    .today-page .work-grid {
+      min-height: 0;
+    }
+
+    .today-list {
+      overflow: hidden;
+    }
+
+    .untimed .occurrence {
+      grid-template-columns: 28px minmax(0, 1fr) 118px 82px 24px;
+      padding-left: 3px;
+    }
+
+    .next-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 42px;
+      padding: 0 4px;
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .next-row strong {
+      color: var(--ink-2);
+      font-size: 10px;
+    }
+
+    /* Tasks */
+    .tasks-page {
+      grid-template-rows: auto auto auto minmax(0, 1fr);
+    }
+
+    .tasks-page .segmented {
+      width: 100%;
+      gap: 18px;
+    }
+
+    .filterbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      margin: -5px 0 12px;
+    }
+
+    .filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 29px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(254, 253, 248, 0.58);
+      padding: 0 9px;
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .filter b {
+      color: var(--ink-2);
+    }
+
+    .filterbar .result-count {
+      margin-left: auto;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+
+    .task-list-head {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) 128px 96px 24px;
+      align-items: center;
+      min-height: 32px;
+      border-bottom: 1px solid var(--line-strong);
+      color: var(--faint);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .task-list .occurrence {
+      min-height: 64px;
+      grid-template-columns: 28px minmax(0, 1fr) 128px 96px 24px;
+    }
+
+    .due {
+      color: var(--brick);
+      font-size: 8px;
+      font-weight: 700;
+    }
+
+    .repeat-mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--blue);
+      font-size: 8px;
+    }
+
+    .definition-status {
+      display: inline-flex;
+      width: max-content;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper);
+      padding: 3px 6px;
+      color: var(--muted);
+      font-size: 8px;
+    }
+
+    /* Project */
+    .project-page {
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+
+    .project-head {
+      align-items: flex-start;
+    }
+
+    .project-progress {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 5px;
+    }
+
+    .progress-track {
+      width: 142px;
+      height: 4px;
+      border-radius: 99px;
+      background: #e4ddd2;
+      overflow: hidden;
+    }
+
+    .progress-track span {
+      display: block;
+      width: 60%;
+      height: 100%;
+      background: var(--copper);
+    }
+
+    .project-progress small {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+
+    .project-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) var(--inspector);
+      gap: 21px;
+      min-height: 0;
+    }
+
+    .project-overview {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 238px;
+      gap: 19px;
+      min-height: 0;
+    }
+
+    .project-column {
+      min-width: 0;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .project-task {
+      position: relative;
+      display: grid;
+      gap: 9px;
+      min-height: 88px;
+      border-bottom: 1px solid var(--line);
+      padding: 13px 6px 12px 3px;
+    }
+
+    .project-task.selected {
+      background: #f2e9dd;
+      padding-left: 10px;
+    }
+
+    .project-task.selected::after {
+      position: absolute;
+      top: 0;
+      right: -22px;
+      bottom: 0;
+      width: 22px;
+      border-top: 1px solid #d9b38f;
+      border-bottom: 1px solid #d9b38f;
+      background: #f2e9dd;
+      content: "";
+    }
+
+    .project-task-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .project-task h3 {
+      margin: 0;
+      font-size: 12px;
+    }
+
+    .project-task-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 8px;
+    }
+
+    .mini-occurrences {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mini-occ {
+      border-left: 2px solid #c88e58;
+      background: #f6eee4;
+      padding: 5px 7px;
+      color: var(--ink-2);
+      font-size: 8px;
+    }
+
+    .agenda {
+      display: grid;
+      align-content: start;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .agenda-day {
+      display: grid;
+      grid-template-columns: 37px minmax(0, 1fr);
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 2px;
+    }
+
+    .agenda-date {
+      display: grid;
+      align-content: start;
+      gap: 1px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+
+    .agenda-date strong {
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: 17px;
+    }
+
+    .agenda-copy {
+      display: grid;
+      gap: 4px;
+    }
+
+    .agenda-copy strong {
+      font-size: 9px;
+    }
+
+    .agenda-copy span {
+      color: var(--muted);
+      font-size: 8px;
+    }
+
+    .rule-box {
+      display: grid;
+      gap: 7px;
+      border: 1px solid #e1d5c5;
+      border-radius: 11px;
+      background: var(--paper);
+      padding: 11px 12px;
+    }
+
+    .rule-box small {
+      color: var(--muted);
+      font-size: 8px;
+    }
+
+    .rule-box strong {
+      font-size: 10px;
+    }
+
+    /* Calendar */
+    .calendar-page {
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .calendar-work {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 342px;
+      gap: 18px;
+      min-height: 0;
+    }
+
+    .calendar-shell {
+      display: grid;
+      grid-template-rows: 47px 44px 57px minmax(0, 1fr);
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+    }
+
+    .calendar-toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding: 0 11px;
+    }
+
+    .calendar-toolbar .head-actions {
+      gap: 5px;
+    }
+
+    .calendar-toolbar button {
+      min-height: 27px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--paper);
+      padding: 0 8px;
+      color: var(--ink-2);
+      font-size: 8px;
+      font-weight: 650;
+    }
+
+    .calendar-toolbar strong {
+      font-family: var(--serif);
+      font-size: 13px;
+    }
+
+    .calendar-toolbar .timezone {
+      justify-self: end;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+
+    .week-head,
+    .all-day,
+    .time-grid {
+      display: grid;
+      grid-template-columns: 44px repeat(7, minmax(0, 1fr));
+    }
+
+    .week-head {
+      border-bottom: 1px solid var(--line);
+    }
+
+    .week-head div {
+      display: grid;
+      place-items: center;
+      border-left: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 7px;
+    }
+
+    .week-head div strong {
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: 14px;
+    }
+
+    .week-head div.today {
+      color: var(--copper-dark);
+    }
+
+    .week-head div.today strong {
+      display: grid;
+      place-items: center;
+      width: 25px;
+      height: 25px;
+      border-radius: 50%;
+      background: var(--copper);
+      color: white;
+    }
+
+    .all-day {
+      position: relative;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .all-day > div {
+      position: relative;
+      border-left: 1px solid var(--line);
+    }
+
+    .lane-label {
+      display: grid;
+      place-items: center;
+      border: 0 !important;
+      color: var(--muted);
+      font-size: 7px;
+    }
+
+    .all-event {
+      position: absolute !important;
+      z-index: 2;
+      top: 9px;
+      height: 27px;
+      border: 1px solid #d6b28d;
+      border-radius: 7px;
+      background: #f5e8da;
+      padding: 5px 7px;
+      color: var(--copper-dark);
+      font-size: 7px;
+      font-weight: 700;
+    }
+
+    .all-event.one {
+      right: 3px;
+      left: calc(44px + (100% - 44px) / 7 * 1 + 3px);
+      width: calc((100% - 44px) / 7 - 6px);
+    }
+
+    .all-event.two {
+      left: calc(44px + (100% - 44px) / 7 * 4 + 3px);
+      width: calc((100% - 44px) / 7 * 2 - 6px);
+    }
+
+    .time-grid {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .hour-axis {
+      position: relative;
+      border: 0 !important;
+    }
+
+    .hour-axis span {
+      position: absolute;
+      right: 6px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 6px;
+      transform: translateY(-50%);
+    }
+
+    .day-column {
+      position: relative;
+      border-left: 1px solid var(--line);
+      background-size: 100% 52px;
+      background-image: linear-gradient(to bottom, transparent 51px, var(--line) 51px);
+    }
+
+    .day-column.today {
+      background-color: #fbf6ef;
+    }
+
+    .cal-event {
+      position: absolute;
+      right: 4px;
+      left: 4px;
+      min-height: 35px;
+      overflow: hidden;
+      border-left: 3px solid var(--copper);
+      border-radius: 5px 8px 8px 5px;
+      background: #f1e2d3;
+      padding: 5px 6px;
+      color: var(--ink-2);
+      font-size: 7px;
+    }
+
+    .cal-event strong,
+    .cal-event span {
+      display: block;
+    }
+
+    .cal-event span {
+      margin-bottom: 2px;
+      color: var(--copper-dark);
+      font-family: var(--mono);
+      font-size: 6px;
+    }
+
+    .cal-event.blue {
+      border-color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .cal-event.green {
+      border-color: var(--sage);
+      background: var(--sage-soft);
+    }
+
+    .schedule-scope {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 7px;
+    }
+
+    .scope-option {
+      display: grid;
+      gap: 3px;
+      min-height: 49px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+      padding: 9px 10px;
+    }
+
+    .scope-option.active {
+      border-color: #ce9b69;
+      background: var(--copper-soft);
+    }
+
+    .scope-option strong {
+      font-size: 9px;
+    }
+
+    .scope-option span {
+      color: var(--muted);
+      font-size: 7px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .control {
+      display: grid;
+      gap: 5px;
+    }
+
+    .control.wide {
+      grid-column: 1 / -1;
+    }
+
+    .control label {
+      color: var(--muted);
+      font-size: 8px;
+      font-weight: 700;
+    }
+
+    .fake-input {
+      display: flex;
+      align-items: center;
+      min-height: 33px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 0 9px;
+      color: var(--ink-2);
+      font-size: 9px;
+    }
+
+    .inspector-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 7px;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+    }
+
+    .inspector-footer button {
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 9px;
+      background: var(--paper);
+      padding: 0 12px;
+      color: var(--ink-2);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .inspector-footer button.save {
+      border-color: var(--copper);
+      background: var(--copper);
+      color: #fffaf4;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .occurrence,
+      .project-task,
+      .nav-item {
+        transition: background-color 180ms ease, color 180ms ease;
+      }
+    }
+  </style>
+</head>
+<body data-page="today">
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">F</div>
+        <div class="brand-copy">
+          <strong>FlowSpace</strong>
+          <span>轻量效率中枢</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="主导航">
+        <div class="nav-group">
+          <span class="nav-label">工作台</span>
+          <div class="nav-item" data-nav="today">
+            <svg viewBox="0 0 18 18"><rect x="3.5" y="4.5" width="11" height="10" rx="2"/><path d="M6 2.8v3M12 2.8v3M3.8 8h10.4"/></svg>
+            <span>今日</span>
+          </div>
+          <div class="nav-item" data-nav="tasks">
+            <svg viewBox="0 0 18 18"><path d="m3.7 9.2 3.1 3.1L14.5 4.8"/><path d="M4 4.2h6"/></svg>
+            <span>任务</span>
+            <span class="nav-count">12</span>
+          </div>
+          <div class="nav-item" data-nav="projects">
+            <svg viewBox="0 0 18 18"><path d="M2.8 5.2h4.5l1.3 1.6h6.6v7.4H2.8z"/><path d="M2.8 7h12.4"/></svg>
+            <span>项目</span>
+          </div>
+          <div class="nav-item" data-nav="calendar">
+            <svg viewBox="0 0 18 18"><rect x="3.2" y="4.2" width="11.6" height="10.3" rx="1.7"/><path d="M6 2.8v3M12 2.8v3M3.5 7.5h11"/></svg>
+            <span>日历</span>
+          </div>
+          <div class="nav-item">
+            <svg viewBox="0 0 18 18"><path d="M3.4 10h3.2l1.2 1.8h2.4l1.2-1.8h3.2"/><path d="m4.8 5.7-1.4 4v4h11.2v-4l-1.4-4z"/></svg>
+            <span>未整理</span>
+            <span class="nav-count">4</span>
+          </div>
+        </div>
+
+        <div class="nav-group">
+          <span class="nav-label">知识</span>
+          <div class="nav-item">
+            <svg viewBox="0 0 18 18"><path d="M4.3 3.2h9.4v11.6H4.3z"/><path d="M6.7 6.2h4.7M6.7 8.9h4.7M6.7 11.6h2.8"/></svg>
+            <span>笔记</span>
+          </div>
+          <div class="nav-item">
+            <svg viewBox="0 0 18 18"><circle cx="7.7" cy="7.7" r="4.2"/><path d="m11 11 3.6 3.6"/></svg>
+            <span>搜索</span>
+          </div>
+        </div>
+
+        <div class="nav-group">
+          <span class="nav-label">复盘</span>
+          <div class="nav-item">
+            <svg viewBox="0 0 18 18"><path d="M3.4 4.5h11.2M3.4 8.8h11.2M3.4 13.1h7"/><path d="m12.2 12.6 1.2 1.2 2.1-2.5"/></svg>
+            <span>每日总结</span>
+          </div>
+        </div>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="sync-line"><span class="sync-dot"></span> 数据已同步</div>
+        <div class="profile">
+          <div class="avatar">胡</div>
+          <div class="profile-copy"><strong>当前工作空间</strong><span>个人效率系统</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb">
+          <strong>个人效率系统</strong>
+          <span class="crumb-line"></span>
+          <span id="crumb-page">今日执行</span>
+        </div>
+        <div class="top-actions">
+          <div class="search">
+            <svg viewBox="0 0 18 18"><circle cx="7.6" cy="7.6" r="4.4"/><path d="m11 11 3.5 3.5"/></svg>
+            搜索笔记、任务、日程
+            <kbd>⌘ K</kbd>
+          </div>
+          <button class="primary"><span class="plus">＋</span>快速捕获</button>
+          <button class="icon-button">胡</button>
+        </div>
+      </header>
+
+      <section class="page today-page" data-screen="today">
+        <header class="page-head">
+          <div class="title-block">
+            <div class="title-line">
+              <h1>今天</h1>
+              <time>7月23日　星期四</time>
+            </div>
+            <p>先完成今天，逾期事项不会抢占你的注意力。</p>
+          </div>
+          <div class="head-actions">
+            <button class="secondary">聚焦模式</button>
+            <button class="primary"><span class="plus">＋</span>添加任务</button>
+          </div>
+        </header>
+
+        <div class="segmented" role="tablist">
+          <button class="segment active">今天 <b>6</b></button>
+          <button class="segment">已逾期 <b>2</b></button>
+          <button class="segment">已完成 <b>3</b></button>
+        </div>
+
+        <div class="work-grid">
+          <div class="list-canvas today-list">
+            <div class="section-head"><span>固定时间</span><span>3 个安排</span></div>
+            <div class="timeline">
+              <div class="occurrence selected">
+                <span class="timeline-time">09:30</span>
+                <span class="check"></span>
+                <div class="occ-copy">
+                  <strong>产品方案评审</strong>
+                  <span><i class="project-dot"></i>统一任务模型 · 会议室 A</span>
+                </div>
+                <span class="schedule">09:30–10:30</span>
+                <span class="status active">进行中</span>
+                <span class="more">···</span>
+              </div>
+              <div class="occurrence">
+                <span class="timeline-time">14:00</span>
+                <span class="check"></span>
+                <div class="occ-copy">
+                  <strong>后端周会</strong>
+                  <span><i class="project-dot" style="background:#657d88"></i>平台工程</span>
+                </div>
+                <span class="schedule">14:00–15:00</span>
+                <span class="status">未开始</span>
+                <span class="more">···</span>
+              </div>
+              <div class="occurrence">
+                <span class="timeline-time">21:00</span>
+                <span class="check"></span>
+                <div class="occ-copy">
+                  <strong>晚间复盘</strong>
+                  <span><i class="project-dot" style="background:#738865"></i>个人成长 · 重复</span>
+                </div>
+                <span class="schedule">21:00–21:30</span>
+                <span class="status">未开始</span>
+                <span class="more">···</span>
+              </div>
+            </div>
+
+            <div class="section-head"><span>今天要做</span><span>3 个行动</span></div>
+            <div class="untimed">
+              <div class="occurrence">
+                <span class="check"></span>
+                <div class="occ-copy">
+                  <strong>补齐前端交互规范</strong>
+                  <span><i class="project-dot"></i>统一任务模型 · 今天处理</span>
+                </div>
+                <span class="schedule">今天</span>
+                <span class="status">未开始</span>
+                <span class="more">···</span>
+              </div>
+              <div class="occurrence">
+                <span class="check"></span>
+                <div class="occ-copy">
+                  <strong>整理迁移验收清单</strong>
+                  <span class="blocked-note"><i class="project-dot" style="background:#a95747"></i>等待测试数据 · 下一步：确认 fixture</span>
+                </div>
+                <span class="schedule">今天</span>
+                <span class="status blocked">阻塞</span>
+                <span class="more">···</span>
+              </div>
+              <div class="occurrence">
+                <span class="check"></span>
+                <div class="occ-copy">
+                  <strong>阅读 PostgreSQL 锁文档</strong>
+                  <span><i class="project-dot" style="background:#738865"></i>数据库学习</span>
+                </div>
+                <span class="schedule">今天</span>
+                <span class="status">未开始</span>
+                <span class="more">···</span>
+              </div>
+            </div>
+            <div class="section-head"><span>接下来</span><span>未来 24 小时</span></div>
+            <div class="next-row"><strong>数据迁移演练</strong><span>明天 09:00 · 统一任务模型</span></div>
+          </div>
+
+          <aside class="inspector">
+            <header class="inspector-head">
+              <div><span>执行详情</span><h2>产品方案评审</h2></div>
+              <button class="close">×</button>
+            </header>
+            <div class="inspector-body">
+              <div class="action-row">
+                <button class="action copper">开始</button>
+                <button class="action">阻塞</button>
+                <button class="action green">完成</button>
+              </div>
+              <dl class="field-list">
+                <div class="field"><dt>执行状态</dt><dd><span class="status active">进行中</span></dd></div>
+                <div class="field"><dt>所属项目</dt><dd><em>统一任务模型</em></dd></div>
+                <div class="field"><dt>任务定义</dt><dd>完成统一领域方案评审</dd></div>
+                <div class="field"><dt>本次安排</dt><dd>7月23日 09:30–10:30</dd></div>
+                <div class="field"><dt>地点</dt><dd>会议室 A</dd></div>
+                <div class="field"><dt>重复</dt><dd>不重复</dd></div>
+              </dl>
+              <div class="note-box">
+                <strong>本次备注</strong>
+                <span>确认 Task、Schedule 与 Occurrence 的页面职责，并锁定前端切换边界。</span>
+              </div>
+              <button class="text-link">查看任务定义 →</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page tasks-page" data-screen="tasks">
+        <header class="page-head">
+          <div class="title-block">
+            <div class="title-line"><h1>任务</h1><time>执行工作台</time></div>
+            <p>这里展示每一次要完成的行动；重复规则和任务定义在检查器中管理。</p>
+          </div>
+          <div class="head-actions">
+            <button class="secondary">批量选择</button>
+            <button class="primary"><span class="plus">＋</span>创建任务</button>
+          </div>
+        </header>
+
+        <div class="segmented">
+          <button class="segment">任务收件箱 <b>4</b></button>
+          <button class="segment">今天 <b>6</b></button>
+          <button class="segment active">接下来 <b>12</b></button>
+          <button class="segment">已逾期 <b>2</b></button>
+          <button class="segment">无日期 <b>5</b></button>
+          <button class="segment">重复 <b>3</b></button>
+          <button class="segment">已完成 <b>48</b></button>
+          <button class="segment">草稿 <b>2</b></button>
+        </div>
+
+        <div class="filterbar">
+          <div class="filter">项目 <b>全部</b>⌄</div>
+          <div class="filter">优先级 <b>全部</b>⌄</div>
+          <div class="filter">状态 <b>未完成</b>⌄</div>
+          <div class="filter">日期范围 <b>未来 14 天</b>⌄</div>
+          <span class="result-count">12 个执行实例</span>
+        </div>
+
+        <div class="work-grid">
+          <div class="list-canvas task-list">
+            <div class="task-list-head"><span></span><span>任务 / 项目</span><span>安排</span><span>状态</span><span></span></div>
+            <div class="occurrence selected">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>产品方案评审</strong>
+                <span><i class="project-dot"></i>统一任务模型 · 高优先级</span>
+              </div>
+              <span class="schedule">今天 09:30</span>
+              <span class="status active">进行中</span>
+              <span class="more">···</span>
+            </div>
+            <div class="occurrence">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>补齐前端交互规范</strong>
+                <span><i class="project-dot"></i>统一任务模型</span>
+              </div>
+              <span class="schedule">今天</span>
+              <span class="status">未开始</span>
+              <span class="more">···</span>
+            </div>
+            <div class="occurrence">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>数据迁移演练</strong>
+                <span><i class="project-dot"></i>统一任务模型 · <span class="repeat-mark">重复</span></span>
+              </div>
+              <span class="schedule">明天 09:00</span>
+              <span class="status">未开始</span>
+              <span class="more">···</span>
+            </div>
+            <div class="occurrence">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>审查移动端同步契约</strong>
+                <span><i class="project-dot" style="background:#657d88"></i>平台工程</span>
+              </div>
+              <span class="schedule">7月25日</span>
+              <span class="status blocked">阻塞</span>
+              <span class="more">···</span>
+            </div>
+            <div class="occurrence">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>阅读 PostgreSQL 锁文档</strong>
+                <span><i class="project-dot" style="background:#738865"></i>数据库学习 · <span class="repeat-mark">重复</span></span>
+              </div>
+              <span class="schedule">7月26日 20:00</span>
+              <span class="status">未开始</span>
+              <span class="more">···</span>
+            </div>
+            <div class="occurrence">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>整理本周技术笔记</strong>
+                <span><i class="project-dot" style="background:#738865"></i>个人成长</span>
+              </div>
+              <span class="schedule">7月27日</span>
+              <span class="status">未开始</span>
+              <span class="more">···</span>
+            </div>
+            <div class="occurrence">
+              <span class="check"></span>
+              <div class="occ-copy">
+                <strong>复核对象存储权限</strong>
+                <span><i class="project-dot" style="background:#657d88"></i>平台工程</span>
+              </div>
+              <span class="schedule">7月28日</span>
+              <span class="status">未开始</span>
+              <span class="more">···</span>
+            </div>
+          </div>
+
+          <aside class="inspector">
+            <header class="inspector-head">
+              <div><span>执行详情</span><h2>产品方案评审</h2></div>
+              <button class="close">×</button>
+            </header>
+            <div class="inspector-body">
+              <div class="action-row">
+                <button class="action copper">开始</button>
+                <button class="action">阻塞</button>
+                <button class="action green">完成</button>
+              </div>
+              <dl class="field-list">
+                <div class="field"><dt>本次状态</dt><dd><span class="status active">进行中</span></dd></div>
+                <div class="field"><dt>所属项目</dt><dd><em>统一任务模型</em></dd></div>
+                <div class="field"><dt>本次安排</dt><dd>今天 09:30–10:30</dd></div>
+                <div class="field"><dt>截止</dt><dd>今天 18:00</dd></div>
+                <div class="field"><dt>来源规则</dt><dd>单次 · 固定时间</dd></div>
+              </dl>
+              <div class="note-box">
+                <strong>这一次执行</strong>
+                <span>改期只影响本次实例，不会改变任务标题或未来安排。</span>
+              </div>
+              <button class="text-link">查看任务定义 →</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page project-page" data-screen="project">
+        <header class="page-head project-head">
+          <div class="title-block">
+            <div class="title-line"><h1>统一任务模型</h1><span class="project-kind">标准项目 · 短期</span></div>
+            <p>让项目、任务定义、执行实例和日历共享同一套清晰语义。</p>
+            <div class="project-progress">
+              <div class="progress-track"><span></span></div>
+              <small>已完成 18 / 30</small>
+            </div>
+          </div>
+          <div class="head-actions">
+            <button class="secondary">项目操作⌄</button>
+            <button class="primary"><span class="plus">＋</span>添加任务</button>
+          </div>
+        </header>
+
+        <div class="segmented">
+          <button class="segment active">概览</button>
+          <button class="segment">任务 <b>12</b></button>
+          <button class="segment">日程 <b>5</b></button>
+          <button class="segment">笔记 <b>8</b></button>
+          <button class="segment">历史 <b>36</b></button>
+        </div>
+
+        <div class="project-layout">
+          <div class="project-overview">
+            <div class="project-column">
+              <div class="section-head"><span>正在推进</span><span>4 个任务定义</span></div>
+              <article class="project-task selected">
+                <div class="project-task-top">
+                  <h3>完成统一领域方案评审</h3>
+                  <span class="definition-status">进行中</span>
+                </div>
+                <div class="project-task-meta"><span>高优先级</span><span>单次任务</span><span>2 个实例</span></div>
+                <div class="mini-occurrences">
+                  <span class="mini-occ">今天 09:30 · 产品方案评审</span>
+                  <span class="mini-occ" style="border-color:#657d88;background:#e8eef0">明天 · 修订评审结论</span>
+                </div>
+              </article>
+              <article class="project-task">
+                <div class="project-task-top">
+                  <h3>完成前端任务域重构</h3>
+                  <span class="definition-status">进行中</span>
+                </div>
+                <div class="project-task-meta"><span>高优先级</span><span>无日期</span><span>3 个实例</span></div>
+                <div class="mini-occurrences"><span class="mini-occ">今天处理 · 补齐交互规范</span></div>
+              </article>
+              <article class="project-task">
+                <div class="project-task-top">
+                  <h3>演练数据迁移与切换</h3>
+                  <span class="definition-status">进行中</span>
+                </div>
+                <div class="project-task-meta"><span>每周重复</span><span>固定时间</span><span>下一次：明天</span></div>
+                <div class="mini-occurrences"><span class="mini-occ">明天 09:00 · 数据迁移演练</span></div>
+              </article>
+              <article class="project-task">
+                <div class="project-task-top">
+                  <h3>补齐迁移验收清单</h3>
+                  <span class="status blocked">阻塞</span>
+                </div>
+                <div class="project-task-meta"><span>等待测试数据</span><span>下一步：确认 fixture</span></div>
+              </article>
+            </div>
+
+            <aside class="agenda">
+              <div class="section-head"><span>近期日程</span><span>未来 7 天</span></div>
+              <div class="agenda-day">
+                <div class="agenda-date"><strong>23</strong><span>周四</span></div>
+                <div class="agenda-copy"><strong>产品方案评审</strong><span>09:30–10:30 · 会议室 A</span></div>
+              </div>
+              <div class="agenda-day">
+                <div class="agenda-date"><strong>24</strong><span>周五</span></div>
+                <div class="agenda-copy"><strong>数据迁移演练</strong><span>09:00–10:30 · 重复</span></div>
+              </div>
+              <div class="agenda-day">
+                <div class="agenda-date"><strong>25</strong><span>周六</span></div>
+                <div class="agenda-copy"><strong>冻结领域契约</strong><span>全天</span></div>
+              </div>
+              <div class="section-head" style="margin-top:14px"><span>项目笔记</span><span>最近更新</span></div>
+              <div class="agenda-day">
+                <div class="agenda-date"><strong>08</strong><span>篇</span></div>
+                <div class="agenda-copy"><strong>领域模型评审记录</strong><span>今天 08:42 更新</span></div>
+              </div>
+            </aside>
+          </div>
+
+          <aside class="inspector">
+            <header class="inspector-head">
+              <div><span>任务定义</span><h2>完成统一领域方案评审</h2></div>
+              <button class="close">×</button>
+            </header>
+            <div class="inspector-body">
+              <div class="action-row">
+                <button class="action">暂停</button>
+                <button class="action">取消</button>
+                <button class="action green">完成</button>
+              </div>
+              <dl class="field-list">
+                <div class="field"><dt>生命周期</dt><dd><span class="status active">进行中</span></dd></div>
+                <div class="field"><dt>所属项目</dt><dd><em>统一任务模型</em></dd></div>
+                <div class="field"><dt>优先级</dt><dd>高</dd></div>
+                <div class="field"><dt>关联笔记</dt><dd>领域模型评审记录</dd></div>
+              </dl>
+              <div class="rule-box">
+                <small>当前安排</small>
+                <strong>单次 · 固定时间</strong>
+                <span class="schedule">7月23日 09:30–10:30</span>
+              </div>
+              <div class="note-box">
+                <strong>最近执行</strong>
+                <span>产品方案评审 · 进行中<br />修订评审结论 · 明天</span>
+              </div>
+              <button class="text-link">编辑任务定义 →</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page calendar-page" data-screen="calendar">
+        <header class="page-head">
+          <div class="title-block">
+            <div class="title-line"><h1>日历</h1><time>统一任务安排</time></div>
+            <p>全天任务和时间块都来自执行实例；无日期任务不会出现在这里。</p>
+          </div>
+          <div class="head-actions">
+            <button class="secondary">项目：全部⌄</button>
+            <button class="secondary">Asia/Shanghai⌄</button>
+          </div>
+        </header>
+
+        <div class="calendar-work">
+          <section class="calendar-shell">
+            <div class="calendar-toolbar">
+              <div class="head-actions">
+                <button>上一周</button><button>今天</button><button>下一周</button>
+              </div>
+              <strong>7月20日–7月26日</strong>
+              <span class="timezone">UTC+08:00</span>
+            </div>
+            <div class="week-head">
+              <span></span>
+              <div><span>周一</span><strong>20</strong></div>
+              <div><span>周二</span><strong>21</strong></div>
+              <div><span>周三</span><strong>22</strong></div>
+              <div class="today"><span>周四</span><strong>23</strong></div>
+              <div><span>周五</span><strong>24</strong></div>
+              <div><span>周六</span><strong>25</strong></div>
+              <div><span>周日</span><strong>26</strong></div>
+            </div>
+            <div class="all-day">
+              <div class="lane-label">全天</div>
+              <div></div><div></div><div></div><div></div><div></div><div></div><div></div>
+              <div class="all-event one">冻结 API 契约</div>
+              <div class="all-event two">周末技术整理</div>
+            </div>
+            <div class="time-grid">
+              <div class="hour-axis">
+                <span style="top:0%">07:00</span><span style="top:14.2%">09:00</span>
+                <span style="top:28.4%">11:00</span><span style="top:42.6%">13:00</span>
+                <span style="top:56.8%">15:00</span><span style="top:71%">17:00</span>
+                <span style="top:85.2%">19:00</span><span style="top:99%">21:00</span>
+              </div>
+              <div class="day-column">
+                <div class="cal-event blue" style="top:83px;height:55px"><span>09:00–10:00</span><strong>周计划整理</strong></div>
+              </div>
+              <div class="day-column"></div>
+              <div class="day-column">
+                <div class="cal-event green" style="top:240px;height:48px"><span>14:30–15:15</span><strong>数据库学习</strong></div>
+              </div>
+              <div class="day-column today">
+                <div class="cal-event" style="top:105px;height:66px"><span>09:30–10:30</span><strong>产品方案评审</strong></div>
+                <div class="cal-event blue" style="top:337px;height:58px"><span>14:00–15:00</span><strong>后端周会</strong></div>
+                <div class="cal-event green" style="top:548px;height:43px"><span>21:00–21:30</span><strong>晚间复盘</strong></div>
+              </div>
+              <div class="day-column">
+                <div class="cal-event" style="top:78px;height:82px"><span>09:00–10:30</span><strong>数据迁移演练</strong></div>
+              </div>
+              <div class="day-column"></div>
+              <div class="day-column">
+                <div class="cal-event green" style="top:485px;height:52px"><span>19:00–20:00</span><strong>本周复盘</strong></div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="inspector">
+            <header class="inspector-head">
+              <div><span>安排本次执行</span><h2>产品方案评审</h2></div>
+              <button class="close">×</button>
+            </header>
+            <div class="inspector-body">
+              <div>
+                <div class="section-head" style="min-height:26px;border:0"><span>修改范围</span><span>重复任务</span></div>
+                <div class="schedule-scope">
+                  <div class="scope-option active"><strong>仅本次</strong><span>只移动 7月23日</span></div>
+                  <div class="scope-option"><strong>本次及以后</strong><span>创建新的重复规则</span></div>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="control wide"><label>安排方式</label><div class="fake-input">固定时间段　⌄</div></div>
+                <div class="control"><label>日期</label><div class="fake-input">2026-07-23</div></div>
+                <div class="control"><label>开始时间</label><div class="fake-input">09:30</div></div>
+                <div class="control"><label>时长</label><div class="fake-input">60 分钟</div></div>
+                <div class="control"><label>时区</label><div class="fake-input">Asia/Shanghai</div></div>
+                <div class="control wide"><label>地点</label><div class="fake-input">会议室 A</div></div>
+              </div>
+              <div class="note-box">
+                <strong>范围提示</strong>
+                <span>保存后只改动本次执行，不会改变任务定义和未来实例。</span>
+              </div>
+              <div class="inspector-footer">
+                <button>取消</button><button class="save">保存安排</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const allowedPages = new Set(["today", "tasks", "project", "calendar"]);
+    const requested = new URLSearchParams(window.location.search).get("page") || "today";
+    const page = allowedPages.has(requested) ? requested : "today";
+    document.body.dataset.page = page;
+    document.querySelector(`[data-screen="${page}"]`)?.classList.add("is-active");
+    const labels = {
+      today: "今日执行",
+      tasks: "任务工作台",
+      project: "项目详情",
+      calendar: "日历安排",
+    };
+    document.getElementById("crumb-page").textContent = labels[page];
+  </script>
+</body>
+</html>

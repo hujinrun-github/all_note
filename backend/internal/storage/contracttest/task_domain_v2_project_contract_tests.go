@@ -105,6 +105,39 @@ func RunTaskDomainV2ProjectSuite(t *testing.T, fixture TaskDomainV2ProjectFixtur
 		}
 	})
 
+	t.Run("archived_from_status_round_trips_and_clears_on_restore", func(t *testing.T) {
+		project := normal
+		project.ID = "project-archive-restore"
+		archivedFrom := taskdomain.ProjectStatusPaused
+		project.Status = taskdomain.ProjectStatusArchived
+		project.ArchivedFromStatus = &archivedFrom
+
+		if err := fixture.Writer.BeginFencedWrite(ctx, "project-w1", 1, func(tx storage.TenantWriteTx) error {
+			return tx.TaskDomainWriter().SaveProject(ctx, taskdomain.ProjectWrite{Project: project, ExpectedRevision: 0})
+		}); err != nil {
+			t.Fatalf("create archived project: %v", err)
+		}
+		archived, err := fixture.NewReader("project-w1").GetProject(ctx, project.ID)
+		if err != nil || archived.Revision != 1 || archived.Project.ArchivedFromStatus == nil ||
+			*archived.Project.ArchivedFromStatus != taskdomain.ProjectStatusPaused {
+			t.Fatalf("archived project = %#v err=%v", archived, err)
+		}
+
+		restored := archived.Project
+		restored.Status = taskdomain.ProjectStatusPaused
+		restored.ArchivedFromStatus = nil
+		if err := fixture.Writer.BeginFencedWrite(ctx, "project-w1", 1, func(tx storage.TenantWriteTx) error {
+			return tx.TaskDomainWriter().SaveProject(ctx, taskdomain.ProjectWrite{Project: restored, ExpectedRevision: archived.Revision})
+		}); err != nil {
+			t.Fatalf("restore project: %v", err)
+		}
+		after, err := fixture.NewReader("project-w1").GetProject(ctx, project.ID)
+		if err != nil || after.Revision != 2 || after.Project.Status != taskdomain.ProjectStatusPaused ||
+			after.Project.ArchivedFromStatus != nil {
+			t.Fatalf("restored project = %#v err=%v", after, err)
+		}
+	})
+
 	t.Run("same_revision_allows_exactly_one_concurrent_update", func(t *testing.T) {
 		start := make(chan struct{})
 		results := make(chan error, 2)

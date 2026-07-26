@@ -10,6 +10,7 @@ import Projects from './Projects'
 vi.mock('../hooks/useTaskDomain')
 
 const mutateAsync = vi.fn()
+const activateProject = vi.fn()
 
 describe('Projects v2', () => {
   beforeEach(() => {
@@ -18,7 +19,13 @@ describe('Projects v2', () => {
       data: [
         project({ id: 'system-inbox', name: '收件箱', system_role: 'inbox' }),
         project({ id: 'personal', name: '个人', system_role: 'personal' }),
-        project({ id: 'learning', name: '日语学习', kind: 'learning', horizon: 'long' }),
+        project({
+          id: 'learning',
+          name: '日语学习',
+          kind: 'learning',
+          horizon: 'long',
+          status: 'planning',
+        }),
       ],
       isLoading: false,
       isError: false,
@@ -27,6 +34,10 @@ describe('Projects v2', () => {
       mutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof taskHooks.useCreateProjectMutation>)
+    vi.mocked(taskHooks.useActivateProjectMutation).mockReturnValue({
+      mutateAsync: activateProject,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useActivateProjectMutation>)
     vi.mocked(taskHooks.useDeleteProjectMutation).mockReturnValue({
       mutateAsync: vi.fn(),
       isPending: false,
@@ -49,10 +60,20 @@ describe('Projects v2', () => {
   it('marks system projects and never renders a delete action for them', () => {
     renderProjects()
 
+    expect(screen.getByRole('heading', { name: '项目列表' })).toBeVisible()
+    expect(screen.getByText('3 个项目')).toBeVisible()
     expect(screen.getByText('系统收件箱')).toBeVisible()
     expect(screen.getByText('系统个人项目')).toBeVisible()
-    expect(screen.queryByRole('button', { name: '删除收件箱' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '删除个人' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '打开收件箱' })).toHaveAttribute(
+      'href',
+      '/projects/system-inbox'
+    )
+    expect(
+      screen.queryByRole('button', { name: '删除收件箱' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '删除个人' })
+    ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '删除日语学习' })).toBeVisible()
   })
 
@@ -71,6 +92,36 @@ describe('Projects v2', () => {
       kind: 'standard',
       horizon: 'long',
       status: 'planning',
+    })
+  })
+
+  it('starts a planning project from the status column', async () => {
+    renderProjects()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '开始日语学习' }))
+
+    expect(activateProject).toHaveBeenCalledWith({
+      projectID: 'learning',
+      expectedRevision: {
+        expected_project_revision: 1,
+      },
+    })
+  })
+
+  it('resets both project filters from the compact command bar', async () => {
+    renderProjects()
+    const user = userEvent.setup()
+
+    await user.selectOptions(screen.getByLabelText('项目类型'), 'learning')
+    await user.selectOptions(screen.getByLabelText('项目周期'), 'long')
+    await user.click(screen.getByRole('button', { name: '重置' }))
+
+    expect(screen.getByLabelText('项目类型')).toHaveValue('')
+    expect(screen.getByLabelText('项目周期')).toHaveValue('')
+    expect(taskHooks.useProjects).toHaveBeenLastCalledWith({
+      kind: undefined,
+      horizon: undefined,
     })
   })
 })

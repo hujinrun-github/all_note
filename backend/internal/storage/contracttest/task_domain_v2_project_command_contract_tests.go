@@ -45,13 +45,24 @@ func RunTaskDomainV2ProjectCommandSuite(t *testing.T, fixture TaskDomainV2Projec
 		t.Fatalf("create result=%#v err=%v", created, err)
 	}
 	project.Name = "Updated command project"
-	project.Status = taskdomain.ProjectStatusActive
 	updated, err := service.UpdateProject(ctx, taskdomain.UpdateProjectRequest{
 		WorkspaceID: workspaceID, ProjectID: project.ID, ExpectedRuntimeEpoch: 1, ExpectedProjectRevision: 1,
 		Project: project, CommandID: "update-project", ActorID: "user-1", At: at,
 	})
 	if err != nil || updated.Revision() != 2 || updated.Project().Name != project.Name {
 		t.Fatalf("update result=%#v err=%v", updated, err)
+	}
+	activated, err := service.ActivateProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandActivate, 2, at))
+	if err != nil || activated.Revision() != 3 || activated.Project().Status != taskdomain.ProjectStatusActive {
+		t.Fatalf("activate result=%#v err=%v", activated, err)
+	}
+	paused, err := service.PauseProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandPause, 3, at))
+	if err != nil || paused.Revision() != 4 || paused.Project().Status != taskdomain.ProjectStatusPaused {
+		t.Fatalf("pause result=%#v err=%v", paused, err)
+	}
+	resumed, err := service.ResumeProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandResume, 4, at))
+	if err != nil || resumed.Revision() != 5 || resumed.Project().Status != taskdomain.ProjectStatusActive {
+		t.Fatalf("resume result=%#v err=%v", resumed, err)
 	}
 
 	for _, status := range []taskdomain.ExecutionStatus{
@@ -76,28 +87,34 @@ func RunTaskDomainV2ProjectCommandSuite(t *testing.T, fixture TaskDomainV2Projec
 	}); err != nil || count != 3 {
 		t.Fatalf("non-terminal count=%d err=%v", count, err)
 	}
-	blocked, err := service.CompleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandComplete, 2, at))
+	blocked, err := service.CompleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandComplete, 5, at))
 	if !errors.Is(err, taskdomain.ErrProjectHasOpenOccurrences) || !blocked.IsZero() {
 		t.Fatalf("complete with open occurrences result=%#v err=%v", blocked, err)
 	}
 	afterBlocked, err := fixture.Reader(workspaceID).GetProject(ctx, project.ID)
-	if err != nil || afterBlocked.Revision != 2 || afterBlocked.Project.Status != taskdomain.ProjectStatusActive {
+	if err != nil || afterBlocked.Revision != 5 || afterBlocked.Project.Status != taskdomain.ProjectStatusActive {
 		t.Fatalf("blocked completion changed project: %#v err=%v", afterBlocked, err)
 	}
 
 	for _, status := range []taskdomain.ExecutionStatus{taskdomain.ExecutionStatusOpen, taskdomain.ExecutionStatusActive, taskdomain.ExecutionStatusBlocked} {
 		setProjectCommandOccurrenceStatus(t, fixture, "count-"+string(status)+"-occ", taskdomain.ExecutionStatusCancelled)
 	}
-	completed, err := service.CompleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandComplete, 2, at))
-	if err != nil || completed.Revision() != 3 || completed.Project().Status != taskdomain.ProjectStatusCompleted {
+	completed, err := service.CompleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandComplete, 5, at))
+	if err != nil || completed.Revision() != 6 || completed.Project().Status != taskdomain.ProjectStatusCompleted {
 		t.Fatalf("complete result=%#v err=%v", completed, err)
 	}
-	archived, err := service.ArchiveProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandArchive, 3, at))
-	if err != nil || archived.Revision() != 4 || archived.Project().Status != taskdomain.ProjectStatusArchived {
+	archived, err := service.ArchiveProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandArchive, 6, at))
+	if err != nil || archived.Revision() != 7 || archived.Project().Status != taskdomain.ProjectStatusArchived ||
+		archived.Project().ArchivedFromStatus == nil || *archived.Project().ArchivedFromStatus != taskdomain.ProjectStatusCompleted {
 		t.Fatalf("archive result=%#v err=%v", archived, err)
 	}
+	restored, err := service.RestoreProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandRestore, 7, at))
+	if err != nil || restored.Revision() != 8 || restored.Project().Status != taskdomain.ProjectStatusCompleted ||
+		restored.Project().ArchivedFromStatus != nil {
+		t.Fatalf("restore result=%#v err=%v", restored, err)
+	}
 	mustExec(t, fixture.DB, `DELETE FROM domain_tasks_v2 WHERE workspace_id='project-command-w1' AND project_id='command-project'`)
-	deleted, err := service.DeleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandDelete, 4, at))
+	deleted, err := service.DeleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandDelete, 8, at))
 	if err != nil || !deleted.Deleted() {
 		t.Fatalf("delete result=%#v err=%v", deleted, err)
 	}

@@ -47,8 +47,12 @@ type OccurrenceService interface {
 type ProjectService interface {
 	CreateProject(context.Context, taskdomain.CreateProjectRequest) (ProjectCommandOutcome, error)
 	UpdateProject(context.Context, taskdomain.UpdateProjectRequest) (ProjectCommandOutcome, error)
+	ActivateProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
+	PauseProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
+	ResumeProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
 	CompleteProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
 	ArchiveProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
+	RestoreProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
 	DeleteProject(context.Context, taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error)
 }
 
@@ -147,6 +151,16 @@ type DeleteRoadmapNodeRequest struct {
 	WorkspaceID, ActorID, RoadmapID, NodeID string
 	ExpectedRevision                        int64
 }
+type ReplaceRoadmapNodesRequest struct {
+	WorkspaceID, ActorID, RoadmapID string
+	Nodes                           []RoadmapNodeReplacement
+}
+type RoadmapNodeReplacement struct {
+	Title, Description string
+	Type               taskdomain.RoadmapNodeType
+	Position           float64
+	ParentIndex        int
+}
 
 func (facade *Facade) GetRoadmap(ctx context.Context, request EntityQueryRequest) (taskdomain.RoadmapSnapshot, error) {
 	if !validWorkspaceActorEntity(request.WorkspaceID, request.ActorID, request.EntityID) {
@@ -220,6 +234,56 @@ func (facade *Facade) DeleteRoadmapNode(ctx context.Context, r DeleteRoadmapNode
 		return ErrInvalidRuntime
 	}
 	return runtime.Roadmaps.DeleteNode(ctx, taskdomain.DeleteRoadmapNodeRequest{WorkspaceID: r.WorkspaceID, RoadmapID: r.RoadmapID, NodeID: r.NodeID, ExpectedRevision: r.ExpectedRevision, ExpectedRuntimeEpoch: runtime.Epoch, CommandID: commandID, ActorID: r.ActorID, At: now})
+}
+
+func (facade *Facade) ReplaceRoadmapNodes(ctx context.Context, r ReplaceRoadmapNodesRequest) (taskdomain.RoadmapSnapshot, error) {
+	if !validWorkspaceActorEntity(r.WorkspaceID, r.ActorID, r.RoadmapID) || len(r.Nodes) == 0 {
+		return taskdomain.RoadmapSnapshot{}, ErrInvalidRequest
+	}
+	runtime, now, commandID, err := facade.resolveAudit(ctx, r.WorkspaceID)
+	if err != nil {
+		return taskdomain.RoadmapSnapshot{}, err
+	}
+	if runtime.Roadmaps == nil {
+		return taskdomain.RoadmapSnapshot{}, ErrInvalidRuntime
+	}
+	nodeIDs := make([]string, len(r.Nodes))
+	for index := range r.Nodes {
+		nodeIDs[index], err = facade.newEntityID(ctx)
+		if err != nil {
+			return taskdomain.RoadmapSnapshot{}, err
+		}
+	}
+	nodes := make([]taskdomain.RoadmapNode, 0, len(r.Nodes))
+	for index, replacement := range r.Nodes {
+		parentID := ""
+		if replacement.ParentIndex >= 0 {
+			if replacement.ParentIndex >= index {
+				return taskdomain.RoadmapSnapshot{}, ErrInvalidRequest
+			}
+			parentID = nodeIDs[replacement.ParentIndex]
+		}
+		nodes = append(nodes, taskdomain.RoadmapNode{
+			WorkspaceID: r.WorkspaceID,
+			ID:          nodeIDs[index],
+			RoadmapID:   r.RoadmapID,
+			ParentID:    parentID,
+			Title:       replacement.Title,
+			Description: replacement.Description,
+			Type:        replacement.Type,
+			Position:    replacement.Position,
+			Revision:    1,
+		})
+	}
+	return runtime.Roadmaps.ReplaceNodes(ctx, taskdomain.ReplaceRoadmapNodesRequest{
+		WorkspaceID:          r.WorkspaceID,
+		RoadmapID:            r.RoadmapID,
+		Nodes:                nodes,
+		ExpectedRuntimeEpoch: runtime.Epoch,
+		CommandID:            commandID,
+		ActorID:              r.ActorID,
+		At:                   now,
+	})
 }
 
 func NewFacade(runtimes RuntimeResolver, clock Clock, ids IDGenerator, commandIDs CommandIDGenerator) *Facade {
@@ -387,6 +451,9 @@ func (facade *Facade) PatchProject(ctx context.Context, request PatchProjectRequ
 		(request.Name == nil && request.Kind == nil && request.Horizon == nil && request.Status == nil) {
 		return ProjectCommandOutcome{}, ErrInvalidRequest
 	}
+	if request.Status != nil {
+		return ProjectCommandOutcome{}, taskdomain.ErrProjectLifecycleCommandRequired
+	}
 	runtime, err := facade.resolve(ctx, request.WorkspaceID)
 	if err != nil {
 		return ProjectCommandOutcome{}, err
@@ -410,9 +477,6 @@ func (facade *Facade) PatchProject(ctx context.Context, request PatchProjectRequ
 	}
 	if request.Horizon != nil {
 		after.Horizon = *request.Horizon
-	}
-	if request.Status != nil {
-		after.Status = *request.Status
 	}
 	now, err := facade.now()
 	if err != nil {
@@ -439,6 +503,19 @@ type ExistingProjectRequest struct {
 	ActorID                 string
 	ProjectID               string
 	ExpectedProjectRevision int64
+	RestoreTo               *taskdomain.ProjectStatus
+}
+
+func (facade *Facade) ActivateProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	return facade.executeProjectCommand(ctx, request, taskdomain.ProjectCommandActivate)
+}
+
+func (facade *Facade) PauseProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	return facade.executeProjectCommand(ctx, request, taskdomain.ProjectCommandPause)
+}
+
+func (facade *Facade) ResumeProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	return facade.executeProjectCommand(ctx, request, taskdomain.ProjectCommandResume)
 }
 
 func (facade *Facade) CompleteProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
@@ -447,6 +524,10 @@ func (facade *Facade) CompleteProject(ctx context.Context, request ExistingProje
 
 func (facade *Facade) ArchiveProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
 	return facade.executeProjectCommand(ctx, request, taskdomain.ProjectCommandArchive)
+}
+
+func (facade *Facade) RestoreProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	return facade.executeProjectCommand(ctx, request, taskdomain.ProjectCommandRestore)
 }
 
 func (facade *Facade) DeleteProject(ctx context.Context, request ExistingProjectRequest) (ProjectCommandOutcome, error) {
@@ -464,14 +545,26 @@ func (facade *Facade) executeProjectCommand(ctx context.Context, request Existin
 	domainRequest := taskdomain.ExistingProjectRequest{
 		WorkspaceID: request.WorkspaceID, ProjectID: request.ProjectID, Command: command,
 		ExpectedRuntimeEpoch: runtime.Epoch, ExpectedProjectRevision: request.ExpectedProjectRevision,
-		CommandID: commandID, ActorID: request.ActorID, At: now,
+		RestoreTo: request.RestoreTo, CommandID: commandID, ActorID: request.ActorID, At: now,
 	}
 	switch command {
+	case taskdomain.ProjectCommandActivate:
+		outcome, err := runtime.Projects.ActivateProject(ctx, domainRequest)
+		return projectFacadeOutcome(outcome, commandID, err)
+	case taskdomain.ProjectCommandPause:
+		outcome, err := runtime.Projects.PauseProject(ctx, domainRequest)
+		return projectFacadeOutcome(outcome, commandID, err)
+	case taskdomain.ProjectCommandResume:
+		outcome, err := runtime.Projects.ResumeProject(ctx, domainRequest)
+		return projectFacadeOutcome(outcome, commandID, err)
 	case taskdomain.ProjectCommandComplete:
 		outcome, err := runtime.Projects.CompleteProject(ctx, domainRequest)
 		return projectFacadeOutcome(outcome, commandID, err)
 	case taskdomain.ProjectCommandArchive:
 		outcome, err := runtime.Projects.ArchiveProject(ctx, domainRequest)
+		return projectFacadeOutcome(outcome, commandID, err)
+	case taskdomain.ProjectCommandRestore:
+		outcome, err := runtime.Projects.RestoreProject(ctx, domainRequest)
 		return projectFacadeOutcome(outcome, commandID, err)
 	case taskdomain.ProjectCommandDelete:
 		outcome, err := runtime.Projects.DeleteProject(ctx, domainRequest)
@@ -1322,6 +1415,30 @@ func (adapter DomainProjectServiceAdapter) UpdateProject(ctx context.Context, re
 	return projectOutcome(result, err)
 }
 
+func (adapter DomainProjectServiceAdapter) ActivateProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	if adapter.Service == nil {
+		return ProjectCommandOutcome{}, ErrInvalidRuntime
+	}
+	result, err := adapter.Service.ActivateProject(ctx, request)
+	return projectOutcome(result, err)
+}
+
+func (adapter DomainProjectServiceAdapter) PauseProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	if adapter.Service == nil {
+		return ProjectCommandOutcome{}, ErrInvalidRuntime
+	}
+	result, err := adapter.Service.PauseProject(ctx, request)
+	return projectOutcome(result, err)
+}
+
+func (adapter DomainProjectServiceAdapter) ResumeProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	if adapter.Service == nil {
+		return ProjectCommandOutcome{}, ErrInvalidRuntime
+	}
+	result, err := adapter.Service.ResumeProject(ctx, request)
+	return projectOutcome(result, err)
+}
+
 func (adapter DomainProjectServiceAdapter) CompleteProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
 	if adapter.Service == nil {
 		return ProjectCommandOutcome{}, ErrInvalidRuntime
@@ -1335,6 +1452,14 @@ func (adapter DomainProjectServiceAdapter) ArchiveProject(ctx context.Context, r
 		return ProjectCommandOutcome{}, ErrInvalidRuntime
 	}
 	result, err := adapter.Service.ArchiveProject(ctx, request)
+	return projectOutcome(result, err)
+}
+
+func (adapter DomainProjectServiceAdapter) RestoreProject(ctx context.Context, request taskdomain.ExistingProjectRequest) (ProjectCommandOutcome, error) {
+	if adapter.Service == nil {
+		return ProjectCommandOutcome{}, ErrInvalidRuntime
+	}
+	result, err := adapter.Service.RestoreProject(ctx, request)
 	return projectOutcome(result, err)
 }
 

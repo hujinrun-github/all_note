@@ -1,0 +1,6 @@
+{
+  "id": "postgres-mixed-v1",
+  "provider": "postgres",
+  "role": "tenant",
+  "required_tables": ["workspaces", "folders", "notes", "task_projects", "tasks"]
+}

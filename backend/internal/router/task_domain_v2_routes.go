@@ -36,7 +36,7 @@ func registerTaskDomainRoutes(routes *gin.RouterGroup, cfg Config) {
 		selector: cfg.TaskDomainModelSelector,
 		runtime:  cfg.TaskDomainV2Runtime,
 		legacy:   legacyTaskDomainDelegate(cfg),
-		v2:       taskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime)),
+		v2:       taskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime), cfg.AIChat),
 	}
 	dispatcher.compat = legacyWebTaskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime))
 	registerModelAwareTaskDomainRoutes(routes, dispatcher)
@@ -84,9 +84,12 @@ func legacyTaskDomainDelegate(cfg Config) http.Handler {
 	return router
 }
 
-func taskDomainV2Delegate(application handler.TaskDomainV2Application) http.Handler {
+func taskDomainV2Delegate(
+	application handler.TaskDomainV2Application,
+	chat handler.WorkspaceChatService,
+) http.Handler {
 	router := gin.New()
-	handler.RegisterTaskDomainV2Routes(router.Group("/api"), application)
+	handler.RegisterTaskDomainV2RoutesWithAI(router.Group("/api"), application, chat)
 	return router
 }
 
@@ -138,8 +141,16 @@ func registerModelAwareTaskDomainRoutes(routes *gin.RouterGroup, dispatcher task
 	routes.POST("/projects", v2Only)
 	routes.GET("/projects/:projectID", v2Only)
 	routes.PATCH("/projects/:projectID", v2Only)
-	routes.POST("/projects/:projectID/complete", v2Only)
-	routes.POST("/projects/:projectID/archive", v2Only)
+	for _, command := range []taskdomain.ProjectCommand{
+		taskdomain.ProjectCommandActivate,
+		taskdomain.ProjectCommandPause,
+		taskdomain.ProjectCommandResume,
+		taskdomain.ProjectCommandComplete,
+		taskdomain.ProjectCommandArchive,
+		taskdomain.ProjectCommandRestore,
+	} {
+		routes.POST("/projects/:projectID/"+string(command), v2Only)
+	}
 	routes.DELETE("/projects/:projectID", v2Only)
 	routes.GET("/tasks/:taskID", v2Only)
 	for _, command := range []taskdomain.TaskLifecycleCommand{
@@ -162,6 +173,7 @@ func registerModelAwareTaskDomainRoutes(routes *gin.RouterGroup, dispatcher task
 	routes.GET("/calendar/entries", v2Only)
 	routes.GET("/projects/:projectID/roadmap", v2Only)
 	routes.POST("/projects/:projectID/roadmap", v2Only)
+	routes.POST("/projects/:projectID/roadmap/generate", v2Only)
 	routes.PATCH("/roadmaps/:id/nodes/:nodeID", v2Only)
 	routes.DELETE("/roadmaps/:id/nodes/:nodeID", v2Only)
 }

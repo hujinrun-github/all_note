@@ -64,7 +64,8 @@ type UpdateProjectV2Request struct {
 }
 
 type ProjectCommandV2Request struct {
-	ExpectedProjectRevision int64 `json:"expected_project_revision"`
+	ExpectedProjectRevision int64                     `json:"expected_project_revision"`
+	RestoreTo               *taskdomain.ProjectStatus `json:"restore_to,omitempty"`
 }
 
 type DeleteProjectV2Request struct {
@@ -173,7 +174,7 @@ func (request *UpdateProjectV2Request) validateTaskDomainRequest() error {
 	if request.Horizon != nil && !validProjectHorizon(*request.Horizon) {
 		return errors.New("invalid project horizon")
 	}
-	if request.Status != nil && !validProjectMutableStatus(*request.Status) {
+	if request.Status != nil && !validProjectStatus(*request.Status) {
 		return errors.New("project status requires an explicit command")
 	}
 	return nil
@@ -182,6 +183,9 @@ func (request *UpdateProjectV2Request) validateTaskDomainRequest() error {
 func (request *ProjectCommandV2Request) validateTaskDomainRequest() error {
 	if request == nil || request.ExpectedProjectRevision < 1 {
 		return errors.New("expected_project_revision must be positive")
+	}
+	if request.RestoreTo != nil && !validProjectRestoreStatus(*request.RestoreTo) {
+		return errors.New("invalid restore_to")
 	}
 	return nil
 }
@@ -319,6 +323,14 @@ func validProjectMutableStatus(status taskdomain.ProjectStatus) bool {
 	return validProjectCreateStatus(status) || status == taskdomain.ProjectStatusPaused
 }
 
+func validProjectStatus(status taskdomain.ProjectStatus) bool {
+	return validProjectMutableStatus(status) || status == taskdomain.ProjectStatusCompleted || status == taskdomain.ProjectStatusArchived
+}
+
+func validProjectRestoreStatus(status taskdomain.ProjectStatus) bool {
+	return validProjectMutableStatus(status) || status == taskdomain.ProjectStatusCompleted
+}
+
 func validRecurrenceType(recurrenceType taskdomain.RecurrenceType) bool {
 	switch recurrenceType {
 	case taskdomain.RecurrenceNone, taskdomain.RecurrenceDaily, taskdomain.RecurrenceWeekly, taskdomain.RecurrenceMonthly:
@@ -370,13 +382,14 @@ func invalidTaskDomainRequest(reason string) error {
 
 // ProjectV2DTO always carries the project's independent optimistic revision.
 type ProjectV2DTO struct {
-	ID         string                       `json:"id"`
-	Name       string                       `json:"name"`
-	Kind       taskdomain.ProjectKind       `json:"kind"`
-	Horizon    taskdomain.ProjectHorizon    `json:"horizon"`
-	Status     taskdomain.ProjectStatus     `json:"status"`
-	SystemRole taskdomain.ProjectSystemRole `json:"system_role,omitempty"`
-	Revision   int64                        `json:"revision"`
+	ID                 string                       `json:"id"`
+	Name               string                       `json:"name"`
+	Kind               taskdomain.ProjectKind       `json:"kind"`
+	Horizon            taskdomain.ProjectHorizon    `json:"horizon"`
+	Status             taskdomain.ProjectStatus     `json:"status"`
+	ArchivedFromStatus *taskdomain.ProjectStatus    `json:"archived_from_status,omitempty"`
+	SystemRole         taskdomain.ProjectSystemRole `json:"system_role,omitempty"`
+	Revision           int64                        `json:"revision"`
 }
 
 // TaskV2DTO uses task_note_id for the stable definition-level note. It must
@@ -612,6 +625,12 @@ func MapTaskDomainError(err error) TaskDomainHTTPError {
 	if errors.Is(err, taskdomain.ErrInvalidProjectCommand) {
 		return taskDomainHTTPError(http.StatusBadRequest, "invalid_project_command", "the project command is invalid", false, nil)
 	}
+	if errors.Is(err, taskdomain.ErrProjectLifecycleCommandRequired) {
+		return taskDomainHTTPError(http.StatusUnprocessableEntity, "lifecycle_command_required", "project status must be changed with a lifecycle command", false, nil)
+	}
+	if errors.Is(err, taskdomain.ErrRestoreTargetRequired) {
+		return taskDomainHTTPError(http.StatusConflict, "restore_target_required", "legacy archived project requires restore_to", false, nil)
+	}
 
 	code := taskdomain.ErrorCodeOf(err)
 	switch code {
@@ -623,7 +642,7 @@ func MapTaskDomainError(err error) TaskDomainHTTPError {
 			details = &TaskDomainErrorDetails{CurrentRevisions: &current}
 		}
 		return taskDomainHTTPError(http.StatusConflict, "revision_conflict", "the resource changed; refresh and retry", false, details)
-	case taskdomain.ErrorCodeInvalidTaskTransition, taskdomain.ErrorCodeInvalidOccurrenceTransition:
+	case taskdomain.ErrorCodeInvalidTaskTransition, taskdomain.ErrorCodeInvalidOccurrenceTransition, taskdomain.ErrorCodeInvalidProjectTransition:
 		return taskDomainHTTPError(http.StatusBadRequest, "invalid_transition", "the requested state transition is not allowed", false, nil)
 	case taskdomain.ErrorCodeInvalidSchedule, taskdomain.ErrorCodeInvalidTimezone:
 		return taskDomainHTTPError(http.StatusBadRequest, "invalid_schedule", "the schedule is invalid", false, nil)

@@ -1,6 +1,9 @@
 import { type FormEvent, useState } from 'react'
 
-import { TaskDomainRevisionConflictError } from '../api/taskDomain'
+import {
+  type ProjectV2,
+  TaskDomainRevisionConflictError,
+} from '../api/taskDomain'
 import { useCreateTaskMutation, useProjects } from '../hooks/useTaskDomain'
 import { useUIStore } from '../stores/ui'
 
@@ -9,18 +12,26 @@ export function QuickCaptureV2() {
   const projectsQuery = useProjects()
   const createTask = useCreateTaskMutation()
   const [title, setTitle] = useState('明天推进最重要的一步')
+  const [selectedProjectID, setSelectedProjectID] = useState('')
   const [error, setError] = useState('')
-  const inbox = (projectsQuery.data ?? []).find(
+  const availableProjects = (projectsQuery.data ?? []).filter(
+    (project) => project.status !== 'completed' && project.status !== 'archived'
+  )
+  const inbox = availableProjects.find(
     (project) => project.system_role === 'inbox'
   )
+  const selectedProject =
+    availableProjects.find((project) => project.id === selectedProjectID) ??
+    inbox ??
+    availableProjects[0]
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!inbox || title.trim() === '') return
+    if (!selectedProject || title.trim() === '') return
     setError('')
     try {
       await createTask.mutateAsync({
-        project_id: inbox.id,
+        project_id: selectedProject.id,
         title: title.trim(),
         priority: 0,
         schedule: {
@@ -40,7 +51,10 @@ export function QuickCaptureV2() {
   }
 
   return (
-    <div className="quick-capture-overlay" onClick={() => setCaptureOpen(false)}>
+    <div
+      className="quick-capture-overlay"
+      onClick={() => setCaptureOpen(false)}
+    >
       <form
         className="quick-capture-modal quick-capture-v2"
         role="dialog"
@@ -72,13 +86,33 @@ export function QuickCaptureV2() {
           onChange={(event) => setTitle(event.target.value)}
         />
         <div className="quick-capture-v2-destination">
-          <span>将进入：{inbox?.name ?? '收件箱'}（系统项目）</span>
-          <small>创建任务必须有项目；快速捕获固定归入系统收件箱。</small>
+          <label>
+            <span>归属项目</span>
+            <select
+              aria-label="归属项目"
+              value={selectedProject?.id ?? ''}
+              disabled={
+                projectsQuery.isLoading || availableProjects.length === 0
+              }
+              onChange={(event) => setSelectedProjectID(event.target.value)}
+            >
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {projectOptionLabel(project)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <small>
+            默认进入系统收件箱；也可以直接归入正在规划或推进的项目。
+          </small>
         </div>
         {projectsQuery.isError ? (
           <div className="quick-capture-error">无法读取系统收件箱。</div>
         ) : null}
-        {error !== '' ? <div className="quick-capture-error">{error}</div> : null}
+        {error !== '' ? (
+          <div className="quick-capture-error">{error}</div>
+        ) : null}
         <div className="quick-capture-actions">
           <button
             type="button"
@@ -90,12 +124,21 @@ export function QuickCaptureV2() {
           <button
             type="submit"
             className="primary-action"
-            disabled={!inbox || title.trim() === '' || createTask.isPending}
+            disabled={
+              !selectedProject || title.trim() === '' || createTask.isPending
+            }
           >
-            创建到收件箱
+            {createTask.isPending ? '正在创建…' : '创建任务'}
           </button>
         </div>
       </form>
     </div>
   )
+}
+
+function projectOptionLabel(project: ProjectV2) {
+  if (project.system_role === 'inbox') return `${project.name} · 系统收件箱`
+  if (project.system_role === 'personal')
+    return `${project.name} · 系统个人项目`
+  return `${project.name} · ${project.kind === 'learning' ? '学习项目' : '标准项目'}`
 }

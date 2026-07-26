@@ -80,6 +80,12 @@ func TestTaskDomainV2RouteModeDoesNotRegisterConflictingLegacyTaskPaths(t *testi
 	routes := registeredRoutes(router)
 	for _, route := range []string{
 		"GET /api/projects",
+		"POST /api/projects/:projectID/activate",
+		"POST /api/projects/:projectID/pause",
+		"POST /api/projects/:projectID/resume",
+		"POST /api/projects/:projectID/complete",
+		"POST /api/projects/:projectID/archive",
+		"POST /api/projects/:projectID/restore",
 		"GET /api/tasks",
 		"GET /api/tasks/:taskID",
 		"GET /api/task-occurrences",
@@ -527,11 +533,27 @@ func (routerTaskRuntimeServices) UpdateProject(context.Context, taskdomain.Updat
 	return taskapp.ProjectCommandOutcome{}, nil
 }
 
+func (routerTaskRuntimeServices) ActivateProject(context.Context, taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	return taskapp.ProjectCommandOutcome{}, nil
+}
+
+func (routerTaskRuntimeServices) PauseProject(context.Context, taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	return taskapp.ProjectCommandOutcome{}, nil
+}
+
+func (routerTaskRuntimeServices) ResumeProject(context.Context, taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	return taskapp.ProjectCommandOutcome{}, nil
+}
+
 func (routerTaskRuntimeServices) CompleteProject(context.Context, taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
 	return taskapp.ProjectCommandOutcome{}, nil
 }
 
 func (routerTaskRuntimeServices) ArchiveProject(context.Context, taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
+	return taskapp.ProjectCommandOutcome{}, nil
+}
+
+func (routerTaskRuntimeServices) RestoreProject(context.Context, taskdomain.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error) {
 	return taskapp.ProjectCommandOutcome{}, nil
 }
 

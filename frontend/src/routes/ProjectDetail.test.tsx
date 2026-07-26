@@ -1,19 +1,26 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProjectV2 } from '../api/taskDomain'
+import * as roadmapHooks from '../hooks/useRoadmapV2'
 import * as taskHooks from '../hooks/useTaskDomain'
 import ProjectDetail from './ProjectDetail'
 
 vi.mock('../hooks/useTaskDomain')
+vi.mock('../hooks/useRoadmapV2')
 
 const createTask = vi.fn()
+const activateProject = vi.fn()
 const completeProject = vi.fn()
 const cancelTask = vi.fn()
 const updateTask = vi.fn()
+const generateRoadmap = vi.fn()
+const updateProject = vi.fn()
+const archiveProject = vi.fn()
+const deleteProject = vi.fn()
 
 describe('Project detail v2', () => {
   beforeEach(() => {
@@ -36,10 +43,26 @@ describe('Project detail v2', () => {
       mutateAsync: createTask,
       isPending: false,
     } as unknown as ReturnType<typeof taskHooks.useCreateTaskMutation>)
+    vi.mocked(taskHooks.useActivateProjectMutation).mockReturnValue({
+      mutateAsync: activateProject,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useActivateProjectMutation>)
     vi.mocked(taskHooks.useCompleteProjectMutation).mockReturnValue({
       mutateAsync: completeProject,
       isPending: false,
     } as unknown as ReturnType<typeof taskHooks.useCompleteProjectMutation>)
+    vi.mocked(taskHooks.useUpdateProjectMutation).mockReturnValue({
+      mutateAsync: updateProject,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useUpdateProjectMutation>)
+    vi.mocked(taskHooks.useArchiveProjectMutation).mockReturnValue({
+      mutateAsync: archiveProject,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useArchiveProjectMutation>)
+    vi.mocked(taskHooks.useDeleteProjectMutation).mockReturnValue({
+      mutateAsync: deleteProject,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useDeleteProjectMutation>)
     vi.mocked(taskHooks.useCancelTaskMutation).mockReturnValue({
       mutateAsync: cancelTask,
       isPending: false,
@@ -47,11 +70,40 @@ describe('Project detail v2', () => {
     vi.mocked(taskHooks.useUpdateTaskDefinitionMutation).mockReturnValue({
       mutateAsync: updateTask,
       isPending: false,
-    } as unknown as ReturnType<typeof taskHooks.useUpdateTaskDefinitionMutation>)
+    } as unknown as ReturnType<
+      typeof taskHooks.useUpdateTaskDefinitionMutation
+    >)
     vi.mocked(taskHooks.useProjects).mockReturnValue({
-      data: [project, { ...project, id: 'project-2', name: '后续项目', kind: 'standard' }],
+      data: [
+        project,
+        { ...project, id: 'project-2', name: '后续项目', kind: 'standard' },
+      ],
       isLoading: false,
     } as ReturnType<typeof taskHooks.useProjects>)
+    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.usePublishTaskMutation>
+    )
+    vi.mocked(taskHooks.usePauseTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.usePauseTaskMutation>
+    )
+    vi.mocked(taskHooks.useResumeTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useResumeTaskMutation>
+    )
+    vi.mocked(taskHooks.useRestoreTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useRestoreTaskMutation>
+    )
+    vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useArchiveTaskMutation>
+    )
+    vi.mocked(roadmapHooks.useRoadmapV2).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof roadmapHooks.useRoadmapV2>)
+    vi.mocked(roadmapHooks.useGenerateRoadmapMutation).mockReturnValue({
+      mutateAsync: generateRoadmap,
+      isPending: false,
+    } as unknown as ReturnType<typeof roadmapHooks.useGenerateRoadmapMutation>)
   })
 
   it('creates a task in the current project and keeps definition state separate', async () => {
@@ -59,7 +111,8 @@ describe('Project detail v2', () => {
     const user = userEvent.setup()
 
     expect(screen.getByText('定义：进行中')).toBeVisible()
-    expect(screen.getByText('执行：未开始')).toBeVisible()
+    expect(screen.getByLabelText('执行状态：未开始')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '打开添加任务' }))
     await user.type(screen.getByLabelText('任务标题'), '完成领域评审')
     await user.click(screen.getByRole('button', { name: '添加任务' }))
 
@@ -71,9 +124,147 @@ describe('Project detail v2', () => {
     )
   })
 
-  it('only exposes Roadmap for learning projects', () => {
+  it('exposes Roadmap generation for learning projects without a route yet', () => {
     renderDetail()
-    expect(screen.getByRole('link', { name: '打开学习 Roadmap' })).toBeVisible()
+    expect(
+      screen.getAllByRole('button', { name: '生成学习 Roadmap' })[0]
+    ).toBeVisible()
+    expect(screen.getByRole('tab', { name: '学习路线' })).toBeVisible()
+  })
+
+  it('starts a planning project through the lifecycle command', async () => {
+    vi.mocked(taskHooks.useProject).mockReturnValue({
+      data: { ...project, status: 'planning' },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof taskHooks.useProject>)
+    activateProject.mockResolvedValue({
+      project_id: project.id,
+      project_revision: project.revision + 1,
+      status: 'active',
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    expect(
+      screen.queryByRole('button', { name: '完成项目' })
+    ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '开始项目' }))
+
+    await waitFor(() =>
+      expect(activateProject).toHaveBeenCalledWith({
+        projectID: project.id,
+        expectedRevision: {
+          expected_project_revision: project.revision,
+        },
+      })
+    )
+  })
+
+  it('submits optional generation guidance from the project page', async () => {
+    generateRoadmap.mockResolvedValue({
+      id: 'roadmap-1',
+      project_id: 'project-1',
+      title: '日语学习路线',
+      description: '',
+      status: 'active',
+      revision: 1,
+      nodes: [],
+      edges: [],
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(
+      screen.getAllByRole('button', { name: '生成学习 Roadmap' })[0]
+    )
+    const dialog = screen.getByRole('dialog', {
+      name: '生成学习 Roadmap',
+    })
+    await user.type(
+      within(dialog).getByRole('textbox', { name: '补充生成要求' }),
+      '优先口语实战'
+    )
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: '生成学习 Roadmap',
+      })
+    )
+
+    await waitFor(() =>
+      expect(generateRoadmap).toHaveBeenCalledWith({
+        prompt: '优先口语实战',
+      })
+    )
+  })
+
+  it('opens each project action from the overflow menu', async () => {
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '项目操作' }))
+    const menu = screen.getByRole('menu', { name: '项目操作菜单' })
+    expect(
+      within(menu).getByRole('menuitem', { name: /编辑项目信息/ })
+    ).toBeVisible()
+    expect(
+      within(menu).getByRole('menuitem', { name: /归档项目/ })
+    ).toBeVisible()
+    expect(
+      within(menu).getByRole('menuitem', { name: /删除项目/ })
+    ).toBeVisible()
+
+    await user.click(
+      within(menu).getByRole('menuitem', { name: /编辑项目信息/ })
+    )
+    expect(screen.getByRole('dialog', { name: '编辑项目信息' })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: '项目名称' })).toHaveValue(
+      '日语学习'
+    )
+    await user.click(screen.getByRole('button', { name: '取消' }))
+
+    await user.click(screen.getByRole('button', { name: '项目操作' }))
+    await user.click(screen.getByRole('menuitem', { name: /归档项目/ }))
+    expect(screen.getByRole('dialog', { name: '归档项目' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '取消' }))
+
+    await user.click(screen.getByRole('button', { name: '项目操作' }))
+    await user.click(screen.getByRole('menuitem', { name: /删除项目/ }))
+    expect(screen.getByRole('dialog', { name: '删除项目' })).toBeVisible()
+  })
+
+  it('updates project settings through the overflow menu', async () => {
+    updateProject.mockResolvedValue({
+      ...project,
+      name: '日语冲刺',
+      horizon: 'short',
+      revision: 4,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '项目操作' }))
+    await user.click(screen.getByRole('menuitem', { name: /编辑项目信息/ }))
+    const nameInput = screen.getByRole('textbox', { name: '项目名称' })
+    await user.clear(nameInput)
+    await user.type(nameInput, '日语冲刺')
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '项目周期' }),
+      'short'
+    )
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() =>
+      expect(updateProject).toHaveBeenCalledWith({
+        projectID: 'project-1',
+        input: {
+          name: '日语冲刺',
+          horizon: 'short',
+          expected_project_revision: 3,
+        },
+      })
+    )
   })
 
   it('requires an explicit cancel-or-move decision before completing a project with open occurrences', async () => {
@@ -82,8 +273,12 @@ describe('Project detail v2', () => {
 
     await user.click(screen.getByRole('button', { name: '完成项目' }))
 
-    expect(screen.getByRole('dialog', { name: '处理未完成执行实例' })).toBeVisible()
-    expect(screen.getByRole('button', { name: '取消未完成实例并完成' })).toBeVisible()
+    expect(
+      screen.getByRole('dialog', { name: '处理未完成执行实例' })
+    ).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: '取消未完成实例并完成' })
+    ).toBeVisible()
     expect(screen.getByRole('button', { name: '迁移到其他项目' })).toBeVisible()
     expect(completeProject).not.toHaveBeenCalled()
   })
@@ -103,7 +298,9 @@ describe('Project detail v2', () => {
     const user = userEvent.setup()
 
     await user.click(screen.getByRole('button', { name: '完成项目' }))
-    await user.click(screen.getByRole('button', { name: '取消未完成实例并完成' }))
+    await user.click(
+      screen.getByRole('button', { name: '取消未完成实例并完成' })
+    )
 
     await waitFor(() => expect(cancelTask).toHaveBeenCalled())
     expect(cancelTask).toHaveBeenCalledWith({
@@ -122,7 +319,11 @@ describe('Project detail v2', () => {
   })
 
   it('moves task definitions to the selected project before completing', async () => {
-    updateTask.mockResolvedValue({ ...taskDefinition, project_id: 'project-2', revision: 5 })
+    updateTask.mockResolvedValue({
+      ...taskDefinition,
+      project_id: 'project-2',
+      revision: 5,
+    })
     completeProject.mockResolvedValue({
       project_id: 'project-1',
       project_revision: 4,
@@ -163,6 +364,10 @@ function renderDetail() {
       </QueryClientProvider>
     </MemoryRouter>
   )
+}
+
+function idleMutation() {
+  return { mutateAsync: vi.fn(), isPending: false } as unknown
 }
 
 const project: ProjectV2 = {

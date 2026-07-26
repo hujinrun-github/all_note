@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+func TestCanonicalDateNormalizesPostgresDateValues(t *testing.T) {
+	want := "2026-07-24"
+	for _, value := range []any{
+		time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC),
+		"2026-07-24",
+		"2026-07-24T00:00:00Z",
+	} {
+		if got := canonicalDate(value); got != want {
+			t.Fatalf("canonicalDate(%v) = %q, want %q", value, got, want)
+		}
+	}
+	if got := canonicalDate(nil); got != "" {
+		t.Fatalf("canonicalDate(nil) = %q", got)
+	}
+}
+
 func TestReconcileStoreSQLiteObservesCanonicalProjectionFromRealRows(t *testing.T) {
 	db := openProjectionWriterSQLite(t, "alpha")
 	input := projectionWriterInput("alpha")

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hujinrun/flowspace/internal/mobilev2command"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/contracttest"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
@@ -148,6 +149,22 @@ func TestSQLiteTaskDomainV2ProjectCommandContract(t *testing.T) {
 		Reader: func(workspaceID string) taskdomain.ProjectReader {
 			return newTaskDomainV2ProjectReader(db, workspaceID)
 		},
+	})
+}
+
+func TestSQLiteMobileV2CommandLedgerContract(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flowspace.mobile-v2-command-ledger.test.db")
+	cfg := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: path}
+	if err := (Provider{}).MigrateTenant(context.Background(), cfg); err != nil {
+		t.Fatalf("migrate tenant: %v", err)
+	}
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	contracttest.RunMobileV2CommandLedgerSuite(t, contracttest.MobileV2CommandLedgerFixture{
+		DB: db, Dialect: mobilev2command.SQLDialectSQLite,
 	})
 }
 

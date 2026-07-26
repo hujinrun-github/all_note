@@ -176,9 +176,7 @@ describe('CalendarV2', () => {
     const user = userEvent.setup()
     renderCalendar()
 
-    await user.click(
-      screen.getByRole('button', { name: /编辑日程：发布准备/ })
-    )
+    await user.click(screen.getByRole('button', { name: /编辑日程：发布准备/ }))
     expect(screen.getByRole('radio', { name: '仅本次' })).toBeChecked()
     fireEvent.change(screen.getByLabelText('计划日期'), {
       target: { value: '2026-07-24' },
@@ -207,9 +205,7 @@ describe('CalendarV2', () => {
     const user = userEvent.setup()
     renderCalendar()
 
-    await user.click(
-      screen.getByRole('button', { name: /编辑日程：设计评审/ })
-    )
+    await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
     await user.click(screen.getByRole('radio', { name: '本次及以后' }))
     await user.selectOptions(screen.getByLabelText('重复规则'), 'daily')
     fireEvent.change(screen.getByLabelText('生效日期'), {
@@ -294,9 +290,7 @@ describe('CalendarV2', () => {
       })
     renderCalendar()
 
-    await user.click(
-      screen.getByRole('button', { name: /编辑日程：设计评审/ })
-    )
+    await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
     fireEvent.change(screen.getByLabelText('计划日期'), {
       target: { value: '2026-11-01' },
     })
@@ -325,5 +319,60 @@ describe('CalendarV2', () => {
       to: '2026-07-27',
       timezone: 'Asia/Shanghai',
     })
+  })
+
+  it('switches between real week, month, and year ranges from the display control', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    const viewControl = screen.getByRole('group', { name: '日历视图' })
+    expect(
+      within(viewControl).getByRole('button', { name: '周' })
+    ).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(within(viewControl).getByRole('button', { name: '月' }))
+
+    expect(screen.getByRole('grid', { name: '2026年7月日历' })).toBeVisible()
+    expect(useCalendarEntries).toHaveBeenLastCalledWith({
+      from: '2026-06-29',
+      to: '2026-08-03',
+      timezone: 'Asia/Shanghai',
+    })
+
+    await user.click(screen.getByRole('button', { name: '下一月' }))
+
+    expect(screen.getByText('2026年8月')).toBeVisible()
+    expect(useCalendarEntries).toHaveBeenLastCalledWith({
+      from: '2026-07-27',
+      to: '2026-09-07',
+      timezone: 'Asia/Shanghai',
+    })
+
+    await user.click(within(viewControl).getByRole('button', { name: '年' }))
+
+    expect(screen.getByRole('region', { name: '2026年总览' })).toBeVisible()
+    expect(useCalendarEntries).toHaveBeenLastCalledWith({
+      from: '2026-01-01',
+      to: '2027-01-01',
+      timezone: 'Asia/Shanghai',
+    })
+  })
+
+  it('drills down from the year overview into a month and then a week', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    await user.click(screen.getByRole('button', { name: '年' }))
+    await user.click(screen.getByRole('button', { name: '查看2026年10月' }))
+
+    expect(screen.getByRole('grid', { name: '2026年10月日历' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '年' }))
+    await user.click(
+      screen.getByRole('button', { name: '2026年10月15日，0项安排' })
+    )
+
+    expect(screen.getByText('2026年10月12日–18日')).toBeVisible()
+    expect(screen.getByRole('region', { name: '时间安排' })).toBeVisible()
   })
 })

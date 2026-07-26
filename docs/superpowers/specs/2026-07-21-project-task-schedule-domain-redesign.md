@@ -441,6 +441,7 @@ task_occurrences
   task_id
   occurrence_key       once 或 YYYY-MM-DD/规则序号
   planned_date         NULL
+  focus_date           NULL，仅无日期实例可用，表示用户选择哪天处理
   planned_start_at     NULL
   planned_end_at       NULL
   due_at               NULL
@@ -469,6 +470,7 @@ task_occurrences
 - `done` 必须有 `completed_at`，非 `done` 必须清空 `completed_at`；
 - `skipped/cancelled/done` 为终态，但允许显式 reopen；
 - `all_day_end_date` 使用 exclusive 语义，并且必须晚于 `planned_date`；为空表示单日；
+- `focus_date` 只允许用于 `timing_type=unscheduled`，不使实例进入日历；
 - `revision` 每次修改 occurrence 时递增；`generated_schedule_revision` 只表示来源规则，绝不能充当乐观锁；
 - occurrence 的 project 通过 Task 获得，不重复保存可漂移的 `project_id`。
 
@@ -536,7 +538,7 @@ flowchart TD
 ### 时间与时区语义
 
 1. PostgreSQL 中代表真实瞬间的 `planned_start_at`、`planned_end_at`、`due_at`、`actual_start_at` 和 `completed_at` 一律使用 `TIMESTAMPTZ`；SQLite 使用 UTC Unix seconds。
-2. `planned_date`、`starts_on`、`ends_on` 和 `all_day_end_date` 是用户时区中的 `DATE`；`local_start_time` 是 `TIME`，它们不是 UTC 瞬间。
+2. `planned_date`、`focus_date`、`starts_on`、`ends_on` 和 `all_day_end_date` 是用户时区中的 `DATE`；`local_start_time` 是 `TIME`，它们不是 UTC 瞬间。
 3. 非重复 `date/time_block` Task 的 `starts_on` 就是唯一实例日期。`time_block` 由 `starts_on + local_start_time + timezone + duration` 计算 UTC 起止时间。
 4. `time_block` occurrence 的 `planned_date` 必须等于 `planned_start_at` 在 Schedule timezone 中对应的本地日期，由服务端生成而非客户端独立提交。
 5. DST 跳时导致本地时间不存在时拒绝保存并返回 `nonexistent_local_time`；本地时间存在两个 offset 时返回候选 offset，要求客户端明确选择，不能静默猜测。
@@ -699,6 +701,421 @@ suggested_order   推荐顺序
 
 这是查询 DTO，不新增 `calendar_entries` 业务表。
 
+## Web 前端产品与交互设计
+
+### 改造边界
+
+本次是任务域页面重构，不是前端技术栈重写：
+
+- 继续使用 React、React Router、TanStack Query、Zustand 和现有 CSS token；
+- 保留现有工作空间侧边栏、顶部搜索、账号菜单和全局快速捕获入口；
+- 重构项目、任务、今日、日历和任务快速捕获，不顺带重做笔记、搜索、总结、设置和账号管理；
+- Web 响应式布局属于本方案范围；原生移动端和 mobile-v2 contract 仍不属于本方案；
+- 页面只能消费 v2 read model 或 legacy 页面，不能在同一个页面内混读两套任务数据。
+
+现有 `TaskDomainGate` 可以继续承担 workspace 级切换。能力判定完成后，整张页面只能进入 legacy 或 v2 分支；v2 请求失败必须显示错误，不得静默回退到 legacy。
+
+### 设计原则
+
+1. **行动优先，定义退后。** 今日、任务和日历默认展示 Occurrence；Task 定义只在创建、编辑规则、查看来源和生命周期管理时出现。
+2. **同一实例，同一行语义。** 一个 Occurrence 在今日、任务、项目和日历中使用相同的标题、项目、安排、执行状态和重复标记。
+3. **不把领域术语强塞给用户。** UI 使用“任务”“本次执行”“仅本次”“本次及以后”；`TaskOccurrence`、`ScheduleVersion` 和 revision 只出现在开发日志或冲突诊断中。
+4. **列表和时间轴优先。** 任务密集页使用开放列表、分组、时间轨和单一工作画布，不把每条任务都包装成独立大卡片。
+5. **复杂编辑集中到检查器。** 点击行或日历块打开右侧检查器；不在列表中插入会导致页面跳动的大表单。
+6. **危险范围必须显式。** 重复任务改期、取消未来实例和完成仍有未完成实例的项目，都必须先选择影响范围再提交。
+7. **URL 保存视图状态。** Tab、筛选、日期、选中实例和项目详情分区写入 query string，使刷新、返回和复制链接可恢复上下文。
+
+### 视觉系统
+
+沿用现有 FlowSpace 的温暖编辑式视觉，不另建一套品牌：
+
+| 角色 | 规范 |
+| --- | --- |
+| 页面背景 | `#F7F4EE`，不改成纯白或灰色后台模板 |
+| 主表面 | `#FEFDF8`；只用于检查器、对话框和需要边界的单一工作画布 |
+| 主文字 | `#2C2416` |
+| 次级文字 | `#5C4F3A` |
+| 边框 | `#E6E0D4`，以细分隔线代替层层卡片 |
+| 主强调 | `#B87333`，用于主操作、选中态和时间轨 |
+| 成功 | 低饱和鼠尾草绿；完成态同时使用图标或文字，不能只靠颜色 |
+| 阻塞/逾期 | 克制的砖红；阻塞和逾期使用不同图标与文案 |
+| 标题字体 | 中文衬线字体只用于页面标题和项目名称 |
+| UI 字体 | 中文无衬线字体用于导航、列表、表单、状态和时间 |
+| 圆角 | 控件 `8–12px`，检查器和对话框 `16px`；普通列表行不做悬浮卡片 |
+| 图标 | 统一 18px、约 1.75px 描边的线性图标；禁止用字符模拟箭头和状态图标 |
+
+页面标题保持 `28–36px`，不再在同一页重复顶部栏标题和内容区巨型标题。删除仅装饰性的英文 eyebrow；英文缩写只在确有产品含义时出现。
+
+动画只用于：
+
+- 检查器进入和退出，`160–220ms`；
+- 完成任务后的行收起或移动分组，`180ms`；
+- 拖动日历实例时的落点预览。
+
+必须支持 `prefers-reduced-motion`，焦点环对键盘用户始终可见。
+
+### 页面概念图
+
+以下概念图使用同一套代码原生视觉系统生成，作为页面结构、密度和组件关系的实现基准；其中示例数据不是业务 fixture。
+
+#### 今日执行
+
+![今日执行页面概念](../assets/task-domain-ui-concepts/01-today.png)
+
+#### 任务工作台
+
+![任务工作台页面概念](../assets/task-domain-ui-concepts/02-task-workbench.png)
+
+#### 项目详情
+
+![项目详情页面概念](../assets/task-domain-ui-concepts/03-project-detail.png)
+
+#### 周日历与安排检查器
+
+![周日历页面概念](../assets/task-domain-ui-concepts/04-calendar-week.png)
+
+可复用的静态概念源文件位于 `docs/superpowers/assets/task-domain-ui-concepts/concepts.html`，通过 `?page=today|tasks|project|calendar` 切换页面。该文件只用于设计评审，不进入生产前端构建。
+
+### 应用外壳与导航
+
+侧边栏继续分组，但把现有 `/inbox` 的标签改为“未整理”，避免与任务域的系统收件箱混淆：
+
+```text
+工作台
+├── 今日
+├── 任务
+├── 项目
+├── 日历
+└── 未整理       # 原 /inbox，跨笔记/任务/日程的捕获整理
+
+知识
+├── 笔记
+└── 搜索
+
+复盘
+└── 每日总结
+```
+
+“任务收件箱”是 `/tasks?view=inbox`，不是第二个一级路由。全局顶部栏保留搜索、快速捕获和账号入口。桌面端侧边栏可收起；窄屏 Web 使用顶部菜单，不复制原生移动端交互。
+
+### 共用页面骨架
+
+桌面宽度大于等于 `1180px` 时，任务域页面使用三段式骨架：
+
+```text
+┌────────侧边栏────────┬────────────────────主工作区────────────────────┐
+│ 一级导航             │ 页面标题 / 筛选 / 主操作                       │
+│                      ├───────────────────────────┬─────────────────────┤
+│                      │ 列表、时间轴或日历画布     │ 选中对象检查器       │
+│                      │                           │ 360–400px，可关闭     │
+└──────────────────────┴───────────────────────────┴─────────────────────┘
+```
+
+没有选中对象时，主内容使用全部宽度，不保留空白检查器。检查器选中状态写入 URL：
+
+- `occurrence_id`：打开执行详情；
+- `task_id`：打开任务定义；
+- 两者不能同时存在；新选择替换旧选择。
+
+`768–1179px` 的检查器作为覆盖式抽屉；小于 `768px` 的 Web 页面使用全屏 sheet。日历在小于 `900px` 时默认切换为单日议程，不能只依靠横向滚动展示桌面周视图。
+
+### 今日页面 `/`
+
+今日页是默认行动入口，不再使用四个统计卡片占据首屏。默认 Tab 为“今天”，已逾期和已完成是相邻但不抢占注意力的 Tab。
+
+```text
+今天  7月23日 星期四                         [快速添加]
+先完成今天，逾期事项不会抢占你的注意力
+
+[今天 6] [已逾期 2] [已完成 3]
+
+固定时间
+09:30 ┃ ○ 产品方案评审      统一任务模型   09:30–10:30  进行中
+14:00 ┃ ○ 后端周会          平台工程       14:00–15:00  未开始
+21:00 ┃ ○ 晚间复盘          个人成长       21:00–21:30  重复
+
+今天要做
+      ○ 补齐前端交互规范    统一任务模型   今天          未开始
+      ○ 整理迁移验收清单    统一任务模型   今天          阻塞
+
+接下来
+      明天 09:00  数据迁移演练
+```
+
+排序规则：
+
+1. 固定时间实例按 `planned_start_at`；
+2. 日期实例按 `priority DESC, sort_order ASC`；
+3. 用户显式标记“今天处理”的无日期实例；
+4. “接下来”只展示未来最近的少量未完成实例，不混入今日主列表。
+
+完成单次任务时，UI 同时反映 Occurrence 完成和 Task 定义完成；完成重复实例只移动本次实例，不能把任务定义标成 completed。阻塞行直接展示简短的 `blocked_reason` 和 `next_action`，详情在检查器中展开。
+
+### 任务工作台 `/tasks`
+
+任务工作台默认查询 Occurrence，不再让用户先选择“单次任务/重复任务”两套页面。
+
+顶部视图：
+
+```text
+[任务收件箱] [今天] [接下来] [已逾期] [无日期] [重复] [已完成] [草稿]
+```
+
+- 前七个视图查询 Occurrence；
+- “草稿”查询 `lifecycle_status=draft` 的 Task 定义，因为草稿尚无可执行实例；
+- 默认视图为“接下来”；首次进入且任务收件箱非空时，只显示非阻塞提示，不强制跳转；
+- Tab 数量来自轻量 workbench facets read model，页面只加载当前 Tab，禁止同时请求六份完整列表来计算数量。
+
+Occurrence 行固定结构：
+
+```text
+[完成框] 标题
+         项目名称 · 日期/时间 · 重复图标 · 截止提示
+         阻塞原因 / 下一步（仅 blocked）
+                                            [执行状态] [更多]
+```
+
+状态不能全部显示成胶囊标签：
+
+- `open`：空心圆 + “未开始”；
+- `active`：铜色进行图标 + “进行中”；
+- `blocked`：砖红阻塞图标 + “阻塞”；
+- `done`：绿色对勾 + “已完成”；
+- `skipped/cancelled` 只在历史视图中显示。
+
+筛选支持项目、优先级、执行状态和日期范围。筛选状态写入 URL；搜索只匹配当前任务域 read model，不在前端对已分页数据做假全量搜索。
+
+“无日期”视图提供“今天处理”操作，把该 Occurrence 的 `focus_date` 设置为当前显示时区的本地日期；“移出今天”清空该字段。它不会修改 Schedule，也不会让实例进入日历。
+
+### 项目列表 `/projects`
+
+项目列表从卡片墙改为可扫描的分组列表。顶部筛选包含：
+
+- 状态：进行中、规划中、已暂停、已完成、已归档；
+- 类型：标准、学习；
+- 周期：短期、长期。
+
+`kind + horizon + status` 可以同时生效。每行显示项目名称、目标摘要、开放实例数、下一实例、任务定义进度和状态。系统收件箱与个人项目固定在列表顶部且不可删除，但不使用醒目的营销式徽章。
+
+```text
+项目                          开放     下一步             进度      状态
+系统收件箱                    4        今天               —         进行中
+统一任务模型                  12       产品方案评审 09:30  18/30     进行中
+PostgreSQL 深入学习           6        阅读锁文档          8/20      学习
+```
+
+项目列表需要服务端提供聚合摘要，不能为每个项目分别请求任务和实例后在浏览器拼接。
+
+项目进度按 Task 定义计算：分子是 `lifecycle_status=completed` 的定义数，分母排除 cancelled/archived。存在无结束日期的 active 重复 Task 时不显示误导性的百分比，改为“持续进行”；开放、阻塞和下一步仍按 Occurrence 统计。
+
+### 项目详情 `/projects/:projectID`
+
+项目详情使用稳定的项目头和页内分区：
+
+```text
+项目名称        目标摘要                       [添加任务] [更多]
+进行中 · 短期   已完成 18 / 30
+
+[概览] [任务] [日程] [笔记] [学习路线] [历史]
+```
+
+- “学习路线”只对 `kind=learning` 显示；
+- “概览”显示下一批未完成实例、最近日程、阻塞项和关联笔记；
+- “任务”按 Task 定义分组，每个定义下只展开最近实例，不把全部重复历史一次渲染；
+- “日程”使用项目过滤后的 `CalendarEntry` 紧凑议程，不复制完整日历页面；
+- “历史”按执行时间分页；
+- 分区使用 `section` query 参数，刷新后保持当前位置。
+
+项目内快速添加默认锁定当前项目。点击 Task 标题打开“任务定义”检查器；点击某次执行打开“执行详情”检查器，二者不能混成一个表单。
+
+完成项目时：
+
+1. 若没有非终态实例，显示一次确认后执行完成命令；
+2. 若存在非终态实例，必须选择“迁移到其他项目”或“取消未完成实例并完成”；
+3. 对话框显示受影响 Task 数和 Occurrence 数；
+4. 发生 revision conflict 时保留用户选择，刷新受影响对象后要求再次确认。
+
+### 日历 `/calendar`
+
+桌面端第一版以周视图为主，包含全天区和时间网格：
+
+```text
+[上一周] [今天] [下一周]      7月20日–7月26日      [项目筛选] [时区]
+────────────────────────────────────────────────────────────────────
+全天    │ 日期任务 / 跨日任务
+07:00   │
+08:00   │          时间块
+...     │
+22:00   │
+```
+
+规则：
+
+- `timing_type=date` 进入全天区；
+- `timing_type=time_block` 进入时间网格；
+- `timing_type=unscheduled` 不进入日历，也不在日历旁造一份“待安排任务”写模型；
+- 跨日全天项使用 `[planned_date, all_day_end_date)`；
+- 项目筛选和显示时区写入 URL；
+- 已完成实例可以打开，但拖动前必须先重新打开；
+- 拖放只形成编辑预览，用户确认后才提交，避免误触即写入。
+
+点击或拖动实例打开右侧“安排”检查器。非重复实例直接编辑本次；重复实例必须选择：
+
+- **仅本次**：调用 occurrence 的 only-this 命令，保留 Task 规则；
+- **本次及以后**：展示生效日期与新规则摘要，创建新 ScheduleVersion。
+
+遇到 DST 重叠时间时，检查器显示两个明确的 UTC offset 候选；遇到不存在的本地时间时，禁止保存并给出可选择的相邻合法时间。不能把底层 offset 错误只显示成通用 toast。
+
+窄屏 Web 默认显示单日议程和日期横条；编辑使用全屏 sheet。原生移动端日历仍由 mobile-v2 单独设计。
+
+### 快速捕获与完整创建
+
+全局“快速捕获”只要求标题即可提交：
+
+```text
+标题                         必填
+项目                         默认“系统收件箱”
+安排                         默认“无日期”，可选今天/日期/时间块
+```
+
+提交使用原子的“创建并发布”命令，成功后立即产生可查询的 Occurrence。禁止客户端先 `POST /api/tasks` 创建草稿、再单独调用 publish；第二步失败会留下用户看不见的草稿。
+
+展开“更多选项”后进入完整创建：
+
+- 项目；
+- 标题与描述；
+- 优先级；
+- 安排方式：无日期、指定日期、固定时间段；
+- 重复：不重复、每天、每周、每月及对应规则；
+- 关联笔记或 Roadmap 节点。
+
+底部提供两个明确动作：
+
+- “创建任务”：原子创建并发布；
+- “保存草稿”：只创建 Task + Schedule，之后在任务工作台“草稿”视图发布。
+
+从项目详情创建时项目不可为空且默认当前项目；全局快速捕获默认系统收件箱。界面不再允许“无项目任务”。
+
+### 两类检查器
+
+#### 执行详情
+
+面向单个 Occurrence，包含：
+
+- 标题、所属项目和来源任务；
+- 本次日期或时间；
+- 执行状态与 `start/block/complete/skip/cancel/reopen` 操作；
+- 阻塞原因和下一步；
+- 本次日历元数据：地点、类别、备注、关联笔记；
+- “查看任务定义”入口。
+
+修改本次日期、时间和日历元数据只更新 Occurrence。检查器关闭后选中行保持可见，不把列表滚动位置重置到顶部。
+
+#### 任务定义
+
+面向 Task + 当前 Schedule，包含：
+
+- 标题、描述、项目、优先级和关联；
+- 生命周期状态；
+- 当前重复规则和规则生效日期；
+- 最近实例摘要；
+- `publish/pause/resume/cancel/restore/archive` 显式命令。
+
+普通字段保存使用 `PATCH /api/tasks/:taskID`；生命周期和 Schedule 不进入普通 PATCH。取消、恢复和归档操作显示影响摘要后再提交。
+
+### 前端状态与并发处理
+
+TanStack Query key 至少包含 `workspaceID + taskDomainVersion + filter`，避免切换 workspace 或 cutover 后复用旧缓存。
+
+建议按 feature 组织：
+
+```text
+frontend/src/features/task-domain/
+├── api/
+├── queries/
+├── components/
+│   ├── OccurrenceRow
+│   ├── OccurrenceInspector
+│   ├── TaskDefinitionInspector
+│   ├── TaskComposer
+│   ├── ScheduleFields
+│   └── RecurrenceScopeDialog
+├── pages/
+│   ├── TodayPage
+│   ├── TasksPage
+│   ├── ProjectsPage
+│   ├── ProjectDetailPage
+│   └── CalendarPage
+└── routes.ts
+```
+
+并发策略：
+
+- `complete/start/block/reopen` 可以先做局部乐观更新，失败时按 mutation context 回滚；
+- 改期、修改重复规则、完成项目和生命周期命令不做盲目乐观更新，等待服务端返回全部新 revision；
+- `409 revision_conflict` 保留用户输入，检查器显示“刷新服务器版本”和“比较差异”；
+- 刷新后必须用返回的新 revision 重新提交，禁止自动覆盖；
+- mutation 成功后精确更新或失效 Task、Occurrence、Calendar、Today 和 Project summary 的相关 key，不能全局 `invalidateQueries()`；
+- 页面使用骨架行保持布局，错误显示在对应工作区，不能只剩一个全页 Loading 或通用 toast。
+
+Occurrence 列表 read model 应直接返回 `task_title`、`project_name`、安排摘要、重复标志、截止状态及所需 revisions。页面不能先拉取全部 Task 定义再用 `Map` 拼接每一行。
+
+### URL 与查询契约
+
+| 页面 | URL 状态 | 主查询 |
+| --- | --- | --- |
+| 今日 | `/?view=today|overdue|done&occurrence_id=` | occurrence scope + workbench facets |
+| 任务 | `/tasks?view=&project_id=&status=&from=&to=&occurrence_id=&task_id=` | paged occurrence 或 draft Task |
+| 项目 | `/projects?status=&kind=&horizon=` | project summary list |
+| 项目详情 | `/projects/:id?section=&occurrence_id=&task_id=` | project overview + 当前分区 |
+| 日历 | `/calendar?view=week|day&date=&project_id=&timezone=&occurrence_id=` | CalendarEntry range |
+
+为这些页面补充以下只读契约：
+
+```text
+GET /api/task-workbench/facets?project_id=...&date=...&timezone=...
+GET /api/projects?include=summary&status=...&kind=...&horizon=...
+GET /api/projects/:projectID/overview
+```
+
+workbench facets 是跨 Task/Occurrence 的只读投影，不新增业务表：
+
+```json
+{
+  "inbox": 4,
+  "today": 6,
+  "upcoming": 12,
+  "overdue": 2,
+  "unscheduled": 5,
+  "recurring": 3,
+  "completed_today": 3,
+  "completed_total": 48,
+  "draft": 2
+}
+```
+
+它只返回各视图数量，不返回完整列表；其中 `today/completed_today` 以传入的本地 `date + timezone` 为边界。项目 summary 至少包含 `open_occurrence_count`、`blocked_occurrence_count`、`completed_task_count`、`total_actionable_task_count`、`has_open_ended_recurrence` 和 `next_occurrence`。
+
+### 无障碍与键盘
+
+- Tab、列表和对话框遵循 ARIA pattern；不能只写 `role=tab` 而不实现方向键切换和焦点管理；
+- 打开检查器后焦点进入标题，关闭后返回触发行；
+- 对话框支持 Escape 关闭，但有未保存输入时先确认；
+- 日历块除拖放外必须支持键盘“改期”操作；
+- 状态、重复、逾期和项目不能只用颜色区分；
+- 点击目标最小 `40×40px`，正文和次级文字对比度达到 WCAG AA；
+- 完成后的行移动通过 `aria-live=polite` 提示，不抢夺当前焦点。
+
+### 前端切换与清理
+
+1. 先实现 feature 级组件和 read model，不改现有 legacy 页面行为。
+2. 在独立 v2 route wrapper 中完成今日、任务、项目、日历和快速捕获。
+3. 用固定 workspace fixture 做页面级验收。
+4. cutover 时由 workspace capability 一次切换五个入口，不能只切日历或只切任务。
+5. 稳定一个发布周期后删除 legacy 任务页面、重复 CSS 和 adapter 专用 UI；`TaskDomainGate` 保留到 legacy workspace 全部退出。
+
+当前仓库中已有的 `Projects`、`ProjectDetail`、`TaskOccurrenceWorkspace`、`DashboardV2`、`CalendarV2` 和 `QuickCaptureV2` 可以作为行为验证基础，但需要按本节重构页面骨架、列表 read model、草稿入口、检查器、URL 状态和响应式布局，不能直接把现有验证 UI 视为最终产品设计。
+
 ## 数据库设计
 
 ### projects
@@ -854,6 +1271,7 @@ CREATE TABLE domain_task_occurrences_v2 (
   task_id TEXT NOT NULL,
   occurrence_key TEXT NOT NULL,
   planned_date DATE NULL,
+  focus_date DATE NULL,
   planned_start_at TIMESTAMPTZ NULL,
   planned_end_at TIMESTAMPTZ NULL,
   due_at TIMESTAMPTZ NULL,
@@ -901,7 +1319,7 @@ CREATE TABLE domain_task_occurrences_v2 (
 );
 ```
 
-Occurrence 的 timing 组合依赖它引用的 ScheduleVersion，无法用单表 CHECK 完整表达。PostgreSQL 使用 deferred constraint trigger，SQLite 使用 repository transaction 末尾校验，强制：`date` 不得有瞬间字段、`time_block` 必须有起止瞬间且 `planned_date` 与 timezone 一致、`unscheduled` 不得有计划日期或时间。
+Occurrence 的 timing 组合依赖它引用的 ScheduleVersion，无法用单表 CHECK 完整表达。PostgreSQL 使用 deferred constraint trigger，SQLite 使用 repository transaction 末尾校验，强制：`date` 不得有瞬间字段、`time_block` 必须有起止瞬间且 `planned_date` 与 timezone 一致、`unscheduled` 不得有计划日期或时间；`focus_date` 只允许用于 `unscheduled`，且不进入 CalendarEntry 投影。
 
 ### task_execution_logs
 
@@ -939,6 +1357,7 @@ CREATE TABLE domain_task_execution_logs_v2 (
 索引至少包括：
 
 - `(workspace_id, execution_status, planned_date)`；
+- `(workspace_id, focus_date, execution_status)`，过滤非终态；
 - `(workspace_id, planned_start_at)`；
 - `(workspace_id, due_at)`，过滤未完成状态；
 - `(workspace_id, task_id, occurrence_key)` unique；
@@ -984,7 +1403,7 @@ POST   /api/tasks/:taskID/archive
 
 所有命令必须调用同一个领域服务入口，旧 Web adapter 也不能绕过聚合事务直接更新 `lifecycle_status`。
 
-创建请求把定义与安排一次提交，后端原子创建：
+创建请求把定义与安排一次提交。`publish=true` 表示在同一聚合事务中创建、发布并生成首批实例；`publish=false` 只保存草稿。普通创建和快速捕获必须使用 `publish=true`，不能由客户端串联 create + publish：
 
 ```json
 {
@@ -992,6 +1411,7 @@ POST   /api/tasks/:taskID/archive
   "title": "每日复盘",
   "description": "记录进展与阻塞",
   "priority": 1,
+  "publish": true,
   "schedule": {
     "recurrence_type": "daily",
     "timing_type": "time_block",
@@ -1003,6 +1423,17 @@ POST   /api/tasks/:taskID/archive
   }
 }
 ```
+
+创建并发布失败时整个事务回滚，不得留下前端默认视图不可见的 draft。显式“保存草稿”才传 `publish=false`。
+
+### Schedule commands
+
+```text
+PATCH  /api/task-occurrences/:occurrenceID/schedule/only-this
+POST   /api/tasks/:taskID/schedule/this-and-following
+```
+
+`PATCH /api/task-occurrences/:occurrenceID/schedule/only-this` 只修改单个实例并记录 `manually_overridden`。`POST /api/tasks/:taskID/schedule/this-and-following` 创建新的不可变 ScheduleVersion，必须提交 `effective_from`、新的规则和 Task/Schedule expected revisions。
 
 ### Occurrences
 
@@ -1019,6 +1450,8 @@ POST   /api/task-occurrences/:occurrenceID/reopen
 ```
 
 `PATCH` 改期时要求 `expected_revision`，防止网页、后台生成器和同 workspace 的其他会话相互覆盖。
+
+无日期实例的“今天处理/移出今天”使用 `PATCH /api/task-occurrences/:occurrenceID` 更新或清空 `focus_date`，同样要求 `expected_revision`；该字段不得通过 Task 或 Schedule PATCH 修改。
 
 Project、Task 和 Schedule 的所有修改命令同样要求各自的 `expected_revision`。聚合命令需要同时返回被修改实体的新 revision；revision 不匹配统一返回 `409 revision_conflict`。Occurrence 的 `revision` 与 `generated_schedule_revision` 是两个独立字段。
 
@@ -1222,7 +1655,7 @@ flowchart LR
 1. 项目 kind 与 horizon 可以任意合法组合。
 2. 系统 inbox/personal 项目不可删除。
 3. Task 缺少 project 时拒绝创建。
-4. 单次任务恰好创建一个 `once` occurrence。
+4. 单次任务 publish 后恰好创建一个 `once` occurrence。
 5. 重复任务生成窗口幂等，不产生重复 occurrence。
 6. 完成一个重复实例不完成 Task。
 7. 完成单次唯一实例自动完成 Task。
@@ -1236,13 +1669,14 @@ flowchart LR
 15. `finish_to_start` 拒绝重复 Task。
 16. DST 不存在和重复本地时间返回明确领域错误。
 17. 生成水位未覆盖 ends_on、缺少预期 key 或存在 retry/failed job 时，重复 Task 不得自然完成。
+18. `focus_date` 只允许用于 unscheduled Occurrence，按 Schedule timezone 进入对应 Today 投影且不进入 Calendar 投影。
 
 ### Repository contract tests
 
 SQLite 和 PostgreSQL 运行同一套 contract：
 
 - Project CRUD 与系统角色唯一性；
-- Task + Schedule + Occurrence 原子创建；
+- Task + Schedule 原子保存草稿，`publish=true` 时 Task + Schedule + 首批 Occurrence 原子创建并发布；
 - Project/Task/Schedule/Occurrence 各自的 optimistic revision；
 - 日历日期范围查询；
 - 逾期查询；
@@ -1253,11 +1687,13 @@ SQLite 和 PostgreSQL 运行同一套 contract：
 - Event calendar metadata、全天与多日范围 round-trip；
 - 非法 lifecycle/execution 状态、done/completed_at、schedule 字段组合和开放版本数量被数据库拒绝；
 - blocked 状态同时保存当前 reason/next action 与不可变 ExecutionLog；
+- unscheduled Occurrence 的 `focus_date` round-trip、Today 查询和 Calendar 排除；
 - 迁移后旧 ID 映射与行数一致。
 
 ### API tests
 
 - 创建普通、日期、固定时间和重复任务；
+- `publish=true` 原子创建并发布，任一步失败不留下 draft；`publish=false` 不生成实例；
 - occurrence complete/block/reopen 的合法与非法转换；
 - publish/pause/resume/cancel/restore/archive 命令执行完整聚合副作用，PATCH lifecycle_status 返回 400；
 - 旧 `/api/events` 映射到新模型且不会双写；
@@ -1265,18 +1701,31 @@ SQLite 和 PostgreSQL 运行同一套 contract：
 - `location/kind/notes/note_id/all_day_end_date` 经旧 Web Event API 无损往返；
 - 日历 DTO 不泄漏其他 workspace 数据；
 - 两个请求使用相同旧 revision 时只有一个成功，另一个返回 409；
-- project 归档后仍可读取历史，但不能创建新任务。
+- project 归档后仍可读取历史，但不能创建新任务；
+- workbench facets 在指定 date/timezone 下返回正确 today、completed_today、completed_total 和 draft 数量；
+- `focus_date` PATCH 要求 occurrence revision，且不能用于 date/time_block 实例。
 
 ### 前端测试
 
 - 项目筛选支持 `kind + horizon` 组合；
 - 创建任务必须选择项目，快速捕获自动显示将进入 inbox；
+- 普通创建和快速捕获原子创建并发布，失败时不留下 draft；
+- 显式保存的 draft 出现在任务工作台“草稿”视图，发布后转入对应 occurrence 视图；
+- 页面只加载当前任务 Tab，Tab 数量来自 workbench facets read model；
 - 日期任务进入全天区，固定时间任务进入时间网格；
 - 日历拖动只修改对应 occurrence；
+- 日历拖动先预览再提交，重复实例必须选择“仅本次/本次及以后”；
 - 重复实例完成后下一实例仍未完成；
 - Roadmap 节点创建执行任务后，节点展示聚合进度；
 - 已逾期默认不选中，但可切换查看；
-- 四个主要执行状态在列表中可辨认。
+- 四个主要执行状态在列表中可辨认；
+- “今天处理/移出今天”只修改无日期实例的 `focus_date`，不会让它进入日历；
+- 项目、任务、今日和日历打开同一 occurrence 时使用一致的标题、项目、时间和状态；
+- `409 revision_conflict` 保留用户输入，刷新后使用新 revision 才能再次提交；
+- URL 恢复 Tab、筛选、日期和选中检查器；
+- workspace capability 切换后五个任务域入口同时使用同一模型；
+- 键盘可以切换 Tab、打开检查器、改期和完成任务；
+- 桌面、平板和窄屏 Web 不出现横向溢出；窄屏日历使用单日议程。
 
 ### 迁移测试
 
@@ -1362,9 +1811,11 @@ task_domain_migration_failures_total
 7. 实现 CalendarEntry 查询模型。
 8. 为 project/task/rule/occurrence/event 安装 DML outbox/version/fence trigger，实现 domain state，并编写和演练迁移。
 9. 按 mobile-v1 任务域关闭、旧实例下线、drain、双向差集 reconcile、CAS 协议切换为新模型唯一写源，保留旧 Web API 适配。
-10. 重构项目、任务、今日和日历页面。
-11. 移动端重设计另立 mobile-v2 方案；通过评审前不重新开放旧任务域读取或写入。
-12. 稳定运行一个发布周期后只读归档旧表，后续独立删除旧字段；不实现有损 v2→legacy 回拨。
+10. 实现 occurrence/project summary read model、facets 查询和原子 create-and-publish contract。
+11. 建立 task-domain feature 组件、检查器、URL 状态和共用视觉 token。
+12. 重构项目、任务、今日、日历和快速捕获，并完成桌面、平板和窄屏 Web 验收。
+13. 移动端重设计另立 mobile-v2 方案；通过评审前不重新开放旧任务域读取或写入。
+14. 稳定运行一个发布周期后只读归档旧表，后续独立删除旧字段；不实现有损 v2→legacy 回拨。
 
 ## 最终用户心智模型
 

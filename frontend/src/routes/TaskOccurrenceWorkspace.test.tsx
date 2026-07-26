@@ -23,6 +23,14 @@ describe('Task occurrence workspace', () => {
           system_role: 'inbox',
           revision: 1,
         },
+        {
+          id: 'work-project',
+          name: '工作项目',
+          kind: 'standard',
+          horizon: 'short',
+          status: 'active',
+          revision: 1,
+        },
       ],
       isLoading: false,
     } as ReturnType<typeof taskHooks.useProjects>)
@@ -30,11 +38,14 @@ describe('Task occurrence workspace', () => {
       data: taskDefinitions,
       isLoading: false,
     } as ReturnType<typeof taskHooks.useTaskDefinitions>)
-    vi.mocked(taskHooks.useOccurrences).mockImplementation((params) => ({
-      data: occurrencesByScope[params?.scope ?? 'all'] ?? [],
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof taskHooks.useOccurrences>))
+    vi.mocked(taskHooks.useOccurrences).mockImplementation(
+      (params) =>
+        ({
+          data: occurrencesByScope[params?.scope ?? 'all'] ?? [],
+          isLoading: false,
+          isError: false,
+        }) as ReturnType<typeof taskHooks.useOccurrences>
+    )
     vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
       mutateAsync: vi.fn(),
       isPending: false,
@@ -46,13 +57,47 @@ describe('Task occurrence workspace', () => {
     vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue({
       mutateAsync: vi.fn(),
       isPending: false,
-    } as unknown as ReturnType<typeof taskHooks.useRescheduleOccurrenceMutation>)
+    } as unknown as ReturnType<
+      typeof taskHooks.useRescheduleOccurrenceMutation
+    >)
+    vi.mocked(taskHooks.useStartOccurrenceMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useStartOccurrenceMutation>
+    )
+    vi.mocked(taskHooks.useBlockOccurrenceMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useBlockOccurrenceMutation>
+    )
+    vi.mocked(taskHooks.useUnblockOccurrenceMutation).mockReturnValue(
+      idleMutation() as ReturnType<
+        typeof taskHooks.useUnblockOccurrenceMutation
+      >
+    )
+    vi.mocked(taskHooks.useReopenOccurrenceMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useReopenOccurrenceMutation>
+    )
+    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.usePublishTaskMutation>
+    )
+    vi.mocked(taskHooks.usePauseTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.usePauseTaskMutation>
+    )
+    vi.mocked(taskHooks.useResumeTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useResumeTaskMutation>
+    )
+    vi.mocked(taskHooks.useCancelTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useCancelTaskMutation>
+    )
+    vi.mocked(taskHooks.useRestoreTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useRestoreTaskMutation>
+    )
+    vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useArchiveTaskMutation>
+    )
   })
 
   it('keeps upcoming selected by default and never mixes overdue into it', async () => {
     renderWorkspace()
 
-    const upcoming = screen.getByRole('tab', { name: '接下来 5' })
+    const upcoming = screen.getByRole('tab', { name: '接下来 6' })
     const overdue = screen.getByRole('tab', { name: '已逾期 1' })
     expect(upcoming).toHaveAttribute('aria-selected', 'true')
     expect(overdue).toHaveAttribute('aria-selected', 'false')
@@ -76,17 +121,47 @@ describe('Task occurrence workspace', () => {
     expect(within(list).getByText('下一步：周五跟进')).toBeVisible()
   })
 
+  it('filters visible occurrences by project, priority, and status', async () => {
+    renderWorkspace()
+    const user = userEvent.setup()
+
+    await user.selectOptions(
+      screen.getByLabelText('按项目筛选'),
+      'work-project'
+    )
+    expect(screen.getByText('发布版本')).toBeVisible()
+    expect(screen.queryByText('准备评审')).not.toBeInTheDocument()
+    expect(screen.getByText('1 个结果')).toBeVisible()
+
+    await user.selectOptions(screen.getByLabelText('按项目筛选'), '')
+    await user.selectOptions(screen.getByLabelText('按优先级筛选'), '2')
+    expect(screen.getByText('发布版本')).toBeVisible()
+    expect(screen.queryByText('实现接口')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('按优先级筛选'), '')
+    await user.selectOptions(screen.getByLabelText('按状态筛选'), 'blocked')
+    expect(screen.getByText('联调服务')).toBeVisible()
+    expect(screen.queryByText('发布版本')).not.toBeInTheDocument()
+    expect(screen.getByText('1 个结果')).toBeVisible()
+  })
+
   it('completing one recurring occurrence does not mark its next occurrence done', () => {
     renderWorkspace()
 
     expect(screen.getByText('每日复盘 · 7月22日')).toBeVisible()
     expect(screen.getByText('每日复盘 · 7月23日')).toBeVisible()
-    expect(screen.getByLabelText('每日复盘 · 7月22日执行状态')).toHaveTextContent('已完成')
-    expect(screen.getByLabelText('每日复盘 · 7月23日执行状态')).toHaveTextContent('未开始')
+    expect(
+      screen.getByLabelText('每日复盘 · 7月22日执行状态')
+    ).toHaveTextContent('已完成')
+    expect(
+      screen.getByLabelText('每日复盘 · 7月23日执行状态')
+    ).toHaveTextContent('未开始')
   })
 
   it('preserves the local date and offers refresh/compare when reschedule conflicts', async () => {
-    const conflict = new (await import('../api/taskDomain')).TaskDomainRevisionConflictError(
+    const conflict = new (
+      await import('../api/taskDomain')
+    ).TaskDomainRevisionConflictError(
       'occurrence changed',
       {
         expected_task_revision: 2,
@@ -99,7 +174,9 @@ describe('Task occurrence workspace', () => {
     vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue({
       mutateAsync: reschedule,
       isPending: false,
-    } as unknown as ReturnType<typeof taskHooks.useRescheduleOccurrenceMutation>)
+    } as unknown as ReturnType<
+      typeof taskHooks.useRescheduleOccurrenceMutation
+    >)
     renderWorkspace()
     const user = userEvent.setup()
 
@@ -109,7 +186,9 @@ describe('Task occurrence workspace', () => {
     await user.click(screen.getByRole('button', { name: '保存改期' }))
 
     await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('执行实例已在其他窗口更新')
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        '执行实例已在其他窗口更新'
+      )
     )
     expect(date).toHaveValue('2026-07-25')
     expect(screen.getByRole('button', { name: '刷新服务器版本' })).toBeVisible()
@@ -130,15 +209,27 @@ function renderWorkspace() {
   )
 }
 
+function idleMutation() {
+  return { mutateAsync: vi.fn(), isPending: false } as unknown
+}
+
 const taskDefinitions: import('../api/taskDomain').TaskV2[] = [
   task('open-task', '准备评审'),
   task('active-task', '实现接口'),
   task('blocked-task', '联调服务'),
   task('recurring-task', '每日复盘'),
+  {
+    ...task('release-task', '发布版本'),
+    project_id: 'work-project',
+    priority: 2,
+  },
 ]
 
 const occurrencesByScope: Partial<
-  Record<import('../api/taskDomain').OccurrenceListScope, import('../api/taskDomain').OccurrenceV2[]>
+  Record<
+    import('../api/taskDomain').OccurrenceListScope,
+    import('../api/taskDomain').OccurrenceV2[]
+  >
 > = {
   upcoming: [
     occurrence('open-occurrence', 'open-task', 'open'),
@@ -160,6 +251,7 @@ const occurrencesByScope: Partial<
       recurring: true,
       planned_date: '2026-07-23',
     },
+    occurrence('release-occurrence', 'release-task', 'active'),
   ],
   overdue: [
     { ...occurrence('overdue', 'open-task', 'open'), title: '补交周报' },

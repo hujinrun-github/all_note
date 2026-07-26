@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as taskDomainAPI from '../api/taskDomain'
 import {
   taskDomainQueryKeys,
+  useActivateProjectMutation,
   useArchiveProjectMutation,
   useBlockOccurrenceMutation,
   useCalendarEntries,
@@ -39,6 +40,7 @@ vi.mock('../api/taskDomain', async () => {
     getProject: vi.fn(),
     createProject: vi.fn(),
     updateProject: vi.fn(),
+    activateProject: vi.fn(),
     updateTaskDefinition: vi.fn(),
     createTaskDefinition: vi.fn(),
     rescheduleOccurrence: vi.fn(),
@@ -116,6 +118,7 @@ describe('task-domain query hooks', () => {
       '2026-08-01',
       null,
       null,
+      null,
     ])
   })
 
@@ -186,7 +189,10 @@ describe('task-domain query hooks', () => {
   it('deduplicates the workspace capability query across consumers', async () => {
     const { wrapper } = createQueryWrapper()
     const { result } = renderHook(
-      () => ({ first: useTaskDomainCapabilities(), second: useTaskDomainCapabilities() }),
+      () => ({
+        first: useTaskDomainCapabilities(),
+        second: useTaskDomainCapabilities(),
+      }),
       { wrapper }
     )
 
@@ -343,12 +349,14 @@ describe('task-domain mutation hooks', () => {
     })
 
     expect(taskDomainAPI.createTaskDefinition).toHaveBeenCalledWith(input)
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
-      taskDomainQueryKeys.project('project-1'),
-      taskDomainQueryKeys.taskLists(),
-      taskDomainQueryKeys.occurrenceLists(),
-      taskDomainQueryKeys.calendar(),
-    ])
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      [
+        taskDomainQueryKeys.project('project-1'),
+        taskDomainQueryKeys.taskLists(),
+        taskDomainQueryKeys.occurrenceLists(),
+        taskDomainQueryKeys.calendar(),
+      ]
+    )
   })
 
   it('reschedules an occurrence without replacing cached local editor state on conflict', async () => {
@@ -436,13 +444,15 @@ describe('task-domain mutation hooks', () => {
       'task-1',
       expect.objectContaining({ expected_schedule_revision: 5 })
     )
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
-      taskDomainQueryKeys.project('project-1'),
-      taskDomainQueryKeys.task('task-1'),
-      taskDomainQueryKeys.taskLists(),
-      taskDomainQueryKeys.occurrenceLists(),
-      taskDomainQueryKeys.calendar(),
-    ])
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      [
+        taskDomainQueryKeys.project('project-1'),
+        taskDomainQueryKeys.task('task-1'),
+        taskDomainQueryKeys.taskLists(),
+        taskDomainQueryKeys.occurrenceLists(),
+        taskDomainQueryKeys.calendar(),
+      ]
+    )
   })
 
   it('exposes unblock as an explicit occurrence command', async () => {
@@ -509,7 +519,7 @@ describe('task-domain mutation hooks', () => {
     expect(invalidate).not.toHaveBeenCalled()
   })
 
-  it('connects create, update, complete, archive, and delete project mutations', async () => {
+  it('connects create, update, activate, complete, archive, and delete project mutations', async () => {
     const expectedRevision = { expected_project_revision: 1 }
     const commandResponse: taskDomainAPI.ProjectCommandResponse = {
       project_id: 'project-1',
@@ -520,6 +530,10 @@ describe('task-domain mutation hooks', () => {
       ...projectFixture,
       name: 'Updated',
       revision: 2,
+    })
+    vi.mocked(taskDomainAPI.activateProject).mockResolvedValue({
+      ...commandResponse,
+      status: 'active',
     })
     vi.mocked(taskDomainAPI.completeProject).mockResolvedValue({
       ...commandResponse,
@@ -536,6 +550,7 @@ describe('task-domain mutation hooks', () => {
     const { wrapper } = createQueryWrapper()
     const create = renderHook(() => useCreateProjectMutation(), { wrapper })
     const update = renderHook(() => useUpdateProjectMutation(), { wrapper })
+    const activate = renderHook(() => useActivateProjectMutation(), { wrapper })
     const complete = renderHook(() => useCompleteProjectMutation(), {
       wrapper,
     })
@@ -555,6 +570,10 @@ describe('task-domain mutation hooks', () => {
           status: 'paused',
           expected_project_revision: 1,
         },
+      })
+      await activate.result.current.mutateAsync({
+        projectID: 'project-1',
+        expectedRevision,
       })
       await complete.result.current.mutateAsync({
         projectID: 'project-1',
@@ -580,6 +599,10 @@ describe('task-domain mutation hooks', () => {
       status: 'paused',
       expected_project_revision: 1,
     })
+    expect(taskDomainAPI.activateProject).toHaveBeenCalledWith(
+      'project-1',
+      expectedRevision
+    )
     expect(taskDomainAPI.completeProject).toHaveBeenCalledWith(
       'project-1',
       expectedRevision

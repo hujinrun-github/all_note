@@ -50,7 +50,7 @@ func (r *sqliteTaskDomainV2ProjectReader) ListProjects(ctx context.Context, filt
 		conditions = append(conditions, "status=?")
 		args = append(args, *filter.Status)
 	}
-	rows, err := r.queryer.QueryContext(ctx, `SELECT workspace_id,id,name,kind,horizon,status,system_role,revision
+	rows, err := r.queryer.QueryContext(ctx, `SELECT workspace_id,id,name,kind,horizon,status,archived_from_status,system_role,revision
 		FROM domain_projects_v2 WHERE `+strings.Join(conditions, " AND ")+` ORDER BY name,id`, args...)
 	if err != nil {
 		return nil, err
@@ -60,13 +60,14 @@ func (r *sqliteTaskDomainV2ProjectReader) ListProjects(ctx context.Context, filt
 	for rows.Next() {
 		var item taskdomain.ProjectSnapshot
 		var kind, horizon, status string
-		var systemRole sql.NullString
-		if err := rows.Scan(&item.Project.WorkspaceID, &item.Project.ID, &item.Project.Name, &kind, &horizon, &status, &systemRole, &item.Revision); err != nil {
+		var archivedFromStatus, systemRole sql.NullString
+		if err := rows.Scan(&item.Project.WorkspaceID, &item.Project.ID, &item.Project.Name, &kind, &horizon, &status, &archivedFromStatus, &systemRole, &item.Revision); err != nil {
 			return nil, err
 		}
 		item.Project.Kind = taskdomain.ProjectKind(kind)
 		item.Project.Horizon = taskdomain.ProjectHorizon(horizon)
 		item.Project.Status = taskdomain.ProjectStatus(status)
+		item.Project.ArchivedFromStatus = sqliteProjectStatusPointer(archivedFromStatus)
 		item.Project.SystemRole = taskdomain.ProjectSystemRole(systemRole.String)
 		items = append(items, item)
 	}
@@ -865,9 +866,10 @@ func (w *sqliteTaskDomainV2ProjectWriter) EnsureSystemProjects(ctx context.Conte
 		},
 	} {
 		if _, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_projects_v2
-			(workspace_id,id,name,kind,horizon,status,system_role,revision,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-			ON CONFLICT DO NOTHING`, project.WorkspaceID, project.ID, project.Name, project.Kind, project.Horizon, project.Status, project.SystemRole); err != nil {
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,system_role,revision,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+			ON CONFLICT DO NOTHING`, project.WorkspaceID, project.ID, project.Name, project.Kind, project.Horizon, project.Status,
+			nullableSQLiteProjectStatus(project.ArchivedFromStatus), project.SystemRole); err != nil {
 			return err
 		}
 	}
@@ -897,9 +899,10 @@ func (w *sqliteTaskDomainV2ProjectWriter) SaveProject(ctx context.Context, write
 			return taskdomain.ErrSystemProjectImmutable
 		}
 		result, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_projects_v2
-			(workspace_id,id,name,kind,horizon,status,system_role,revision,created_at,updated_at)
-			VALUES (?,?,?,?,?,?,NULL,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-			ON CONFLICT DO NOTHING`, write.Project.WorkspaceID, write.Project.ID, write.Project.Name, write.Project.Kind, write.Project.Horizon, write.Project.Status)
+			(workspace_id,id,name,kind,horizon,status,archived_from_status,system_role,revision,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,NULL,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+			ON CONFLICT DO NOTHING`, write.Project.WorkspaceID, write.Project.ID, write.Project.Name, write.Project.Kind, write.Project.Horizon,
+			write.Project.Status, nullableSQLiteProjectStatus(write.Project.ArchivedFromStatus))
 		if err != nil {
 			return err
 		}
@@ -914,9 +917,9 @@ func (w *sqliteTaskDomainV2ProjectWriter) SaveProject(ctx context.Context, write
 		return taskdomain.ErrSystemProjectImmutable
 	}
 	result, err := w.queryer.ExecContext(ctx, `UPDATE domain_projects_v2
-		SET name=?,kind=?,horizon=?,status=?,updated_at=CURRENT_TIMESTAMP,revision=revision+1
+		SET name=?,kind=?,horizon=?,status=?,archived_from_status=?,updated_at=CURRENT_TIMESTAMP,revision=revision+1
 		WHERE workspace_id=? AND id=? AND revision=?`,
-		write.Project.Name, write.Project.Kind, write.Project.Horizon, write.Project.Status,
+		write.Project.Name, write.Project.Kind, write.Project.Horizon, write.Project.Status, nullableSQLiteProjectStatus(write.Project.ArchivedFromStatus),
 		w.workspaceID, write.Project.ID, write.ExpectedRevision)
 	if err != nil {
 		return err
@@ -1530,10 +1533,10 @@ func (w *sqliteTaskDomainV2ProjectWriter) closed() bool {
 func getSQLiteTaskDomainV2Project(ctx context.Context, queryer sqliteTaskDomainV2Queryer, workspaceID, projectID string) (taskdomain.ProjectSnapshot, error) {
 	var snapshot taskdomain.ProjectSnapshot
 	var kind, horizon, status string
-	var systemRole sql.NullString
-	err := queryer.QueryRowContext(ctx, `SELECT id,name,kind,horizon,status,system_role,revision
+	var archivedFromStatus, systemRole sql.NullString
+	err := queryer.QueryRowContext(ctx, `SELECT id,name,kind,horizon,status,archived_from_status,system_role,revision
 		FROM domain_projects_v2 WHERE workspace_id=? AND id=?`, workspaceID, projectID).Scan(
-		&snapshot.Project.ID, &snapshot.Project.Name, &kind, &horizon, &status, &systemRole, &snapshot.Revision,
+		&snapshot.Project.ID, &snapshot.Project.Name, &kind, &horizon, &status, &archivedFromStatus, &systemRole, &snapshot.Revision,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskdomain.ProjectSnapshot{}, taskdomain.ErrProjectNotFound
@@ -1545,10 +1548,26 @@ func getSQLiteTaskDomainV2Project(ctx context.Context, queryer sqliteTaskDomainV
 	snapshot.Project.Kind = taskdomain.ProjectKind(kind)
 	snapshot.Project.Horizon = taskdomain.ProjectHorizon(horizon)
 	snapshot.Project.Status = taskdomain.ProjectStatus(status)
+	snapshot.Project.ArchivedFromStatus = sqliteProjectStatusPointer(archivedFromStatus)
 	if systemRole.Valid {
 		snapshot.Project.SystemRole = taskdomain.ProjectSystemRole(systemRole.String)
 	}
 	return snapshot, nil
+}
+
+func nullableSQLiteProjectStatus(status *taskdomain.ProjectStatus) any {
+	if status == nil {
+		return nil
+	}
+	return string(*status)
+}
+
+func sqliteProjectStatusPointer(status sql.NullString) *taskdomain.ProjectStatus {
+	if !status.Valid {
+		return nil
+	}
+	value := taskdomain.ProjectStatus(status.String)
+	return &value
 }
 
 func requireSQLiteTaskDomainV2Changed(result sql.Result) error {

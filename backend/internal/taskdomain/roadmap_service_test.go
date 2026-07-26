@@ -39,6 +39,65 @@ func TestRoadmapServiceUsesIndependentNodeRevision(t *testing.T) {
 	}
 }
 
+func TestRoadmapServiceReplacesUnlinkedNodesInOneFencedWrite(t *testing.T) {
+	tx := &roadmapServiceTxFake{
+		project: ProjectSnapshot{Project: Project{WorkspaceID: "w1", ID: "p1", Name: "P", Kind: ProjectKindLearning, Horizon: ProjectHorizonLong, Status: ProjectStatusActive}, Revision: 1},
+		roadmap: RoadmapSnapshot{
+			Roadmap: LearningRoadmap{WorkspaceID: "w1", ID: "r1", ProjectID: "p1", Status: RoadmapStatusActive, Title: "Path", Revision: 1},
+			Nodes: []RoadmapNodeSnapshot{
+				{Node: RoadmapNode{WorkspaceID: "w1", ID: "old-parent", ProjectID: "p1", RoadmapID: "r1", Title: "Parent", Type: RoadmapNodeStage, Revision: 1}},
+				{Node: RoadmapNode{WorkspaceID: "w1", ID: "old-child", ProjectID: "p1", RoadmapID: "r1", ParentID: "old-parent", Title: "Child", Type: RoadmapNodeTopic, Revision: 1}},
+			},
+		},
+	}
+	service := NewRoadmapService(roadmapServiceFencerFake{tx: tx})
+	result, err := service.ReplaceNodes(context.Background(), ReplaceRoadmapNodesRequest{
+		WorkspaceID: "w1",
+		RoadmapID:   "r1",
+		Nodes: []RoadmapNode{
+			{WorkspaceID: "w1", ID: "new-parent", RoadmapID: "r1", Title: "New parent", Type: RoadmapNodeStage, Revision: 1},
+			{WorkspaceID: "w1", ID: "new-child", RoadmapID: "r1", ParentID: "new-parent", Title: "New child", Type: RoadmapNodeMilestone, Revision: 1},
+		},
+		ExpectedRuntimeEpoch: 1,
+		CommandID:            "replace-1",
+		ActorID:              "u1",
+		At:                   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("ReplaceNodes() error = %v", err)
+	}
+	if len(result.Nodes) != 2 || len(tx.writer.created) != 2 {
+		t.Fatalf("result nodes=%d created=%d", len(result.Nodes), len(tx.writer.created))
+	}
+	if len(tx.writer.deleted) != 2 || tx.writer.deleted[0] != "old-child" || tx.writer.deleted[1] != "old-parent" {
+		t.Fatalf("deleted order = %v", tx.writer.deleted)
+	}
+	if result.Nodes[1].Node.ParentID != "new-parent" {
+		t.Fatalf("new child parent = %q", result.Nodes[1].Node.ParentID)
+	}
+}
+
+func TestRoadmapServiceRefusesToReplaceLinkedNodes(t *testing.T) {
+	tx := &roadmapServiceTxFake{
+		project:     ProjectSnapshot{Project: Project{WorkspaceID: "w1", ID: "p1", Name: "P", Kind: ProjectKindLearning, Horizon: ProjectHorizonLong, Status: ProjectStatusActive}, Revision: 1},
+		roadmap:     RoadmapSnapshot{Roadmap: LearningRoadmap{WorkspaceID: "w1", ID: "r1", ProjectID: "p1", Status: RoadmapStatusActive, Title: "Path", Revision: 1}, Nodes: []RoadmapNodeSnapshot{{Node: RoadmapNode{WorkspaceID: "w1", ID: "old", ProjectID: "p1", RoadmapID: "r1", Title: "Old", Type: RoadmapNodeTopic, Revision: 1}}}},
+		linkedTasks: 1,
+	}
+	service := NewRoadmapService(roadmapServiceFencerFake{tx: tx})
+	_, err := service.ReplaceNodes(context.Background(), ReplaceRoadmapNodesRequest{
+		WorkspaceID:          "w1",
+		RoadmapID:            "r1",
+		Nodes:                []RoadmapNode{{WorkspaceID: "w1", ID: "new", RoadmapID: "r1", Title: "New", Type: RoadmapNodeTopic, Revision: 1}},
+		ExpectedRuntimeEpoch: 1,
+		CommandID:            "replace-1",
+		ActorID:              "u1",
+		At:                   time.Now(),
+	})
+	if !errors.Is(err, ErrRoadmapNodeHasTasks) || len(tx.writer.deleted) != 0 || len(tx.writer.created) != 0 {
+		t.Fatalf("ReplaceNodes() error=%v deleted=%v created=%v", err, tx.writer.deleted, tx.writer.created)
+	}
+}
+
 type roadmapServiceFencerFake struct{ tx *roadmapServiceTxFake }
 
 func (f roadmapServiceFencerFake) BeginFencedRoadmapWrite(_ context.Context, _ string, _ int64, fn func(RoadmapCommandTx) error) error {
@@ -76,15 +135,21 @@ func (f *roadmapServiceTxFake) RoadmapWriter() RoadmapWriter { return &f.writer 
 type roadmapWriterFake struct {
 	saved       RoadmapNodeWrite
 	deleteCalls int
+	created     []RoadmapNode
+	deleted     []string
 }
 
 func (*roadmapWriterFake) CreateRoadmap(context.Context, LearningRoadmap) error { return nil }
-func (*roadmapWriterFake) CreateRoadmapNode(context.Context, RoadmapNode) error { return nil }
+func (f *roadmapWriterFake) CreateRoadmapNode(_ context.Context, node RoadmapNode) error {
+	f.created = append(f.created, node)
+	return nil
+}
 func (f *roadmapWriterFake) SaveRoadmapNode(_ context.Context, write RoadmapNodeWrite) error {
 	f.saved = write
 	return nil
 }
-func (f *roadmapWriterFake) DeleteRoadmapNode(context.Context, string, int64) error {
+func (f *roadmapWriterFake) DeleteRoadmapNode(_ context.Context, nodeID string, _ int64) error {
 	f.deleteCalls++
+	f.deleted = append(f.deleted, nodeID)
 	return nil
 }

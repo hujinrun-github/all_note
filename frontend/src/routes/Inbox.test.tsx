@@ -1,29 +1,33 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import Inbox from './Inbox'
-import { listTaskProjects } from '../api/tasks'
+
 import {
-  useBatchInbox,
-  useConvertInboxItem,
-  useDeleteInboxItem,
-  useInboxList,
-} from '../hooks/useInbox'
+  useCompleteOccurrenceMutation,
+  useTaskDefinitions,
+  useUpdateTaskDefinitionMutation,
+} from '../hooks/useTaskDomain'
+import { useTaskInbox } from '../hooks/useTaskInbox'
+import Inbox from './Inbox'
 
-vi.mock('../api/tasks', () => ({
-  listTaskProjects: vi.fn(),
+vi.mock('../hooks/useTaskDomain', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useTaskDomain')>()
+  return {
+    ...actual,
+    useTaskDefinitions: vi.fn(),
+    useUpdateTaskDefinitionMutation: vi.fn(),
+    useCompleteOccurrenceMutation: vi.fn(),
+  }
+})
+
+vi.mock('../hooks/useTaskInbox', () => ({
+  useTaskInbox: vi.fn(),
 }))
 
-vi.mock('../hooks/useInbox', () => ({
-  useInboxList: vi.fn(),
-  useConvertInboxItem: vi.fn(),
-  useDeleteInboxItem: vi.fn(),
-  useBatchInbox: vi.fn(),
-}))
-
-const convertItemMock = vi.fn()
-const refetchMock = vi.fn()
+const updateTaskMock = vi.fn()
+const completeOccurrenceMock = vi.fn()
 
 function renderInbox() {
   const queryClient = new QueryClient({
@@ -34,97 +38,132 @@ function renderInbox() {
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <Inbox />
+      <MemoryRouter>
+        <Inbox />
+      </MemoryRouter>
     </QueryClientProvider>
   )
 }
 
-describe('Inbox task organizer', () => {
+describe('V2 task inbox organizer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    convertItemMock.mockResolvedValue({})
-    refetchMock.mockResolvedValue({})
-    vi.mocked(listTaskProjects).mockResolvedValue([
-      {
-        id: 'personal',
-        name: 'Personal',
-        type: 'personal',
-        description: '',
-        created_at: 1,
-        updated_at: 1,
+    updateTaskMock.mockResolvedValue({})
+    completeOccurrenceMock.mockResolvedValue({})
+
+    vi.mocked(useTaskInbox).mockReturnValue({
+      inboxProject: {
+        id: 'system-inbox',
+        name: '收件箱',
+        kind: 'standard',
+        horizon: 'short',
+        status: 'active',
+        system_role: 'inbox',
+        revision: 1,
       },
-      {
-        id: 'learning-1',
-        name: '学习计划',
-        type: 'learning',
-        description: '',
-        created_at: 2,
-        updated_at: 2,
-      },
-    ])
-    vi.mocked(useInboxList).mockReturnValue({
-      data: {
-        items: [
+      projectsQuery: {
+        data: [
           {
-            id: 'capture-1',
-            kind: 'event',
-            title: '明天晚上复习 N2',
-            body: '原始备注',
-            source: 'quick-capture',
-            archived: 0,
-            created_at: 1_788_683_400,
-            updated_at: 1_788_683_400,
+            id: 'system-inbox',
+            name: '收件箱',
+            kind: 'standard',
+            horizon: 'short',
+            status: 'active',
+            system_role: 'inbox',
+            revision: 1,
+          },
+          {
+            id: 'learning-1',
+            name: '学习计划',
+            kind: 'learning',
+            horizon: 'short',
+            status: 'active',
+            revision: 2,
+          },
+          {
+            id: 'completed-1',
+            name: '已完成项目',
+            kind: 'standard',
+            horizon: 'short',
+            status: 'completed',
+            revision: 3,
           },
         ],
-        pagination: { page: 1, page_size: 100, total: 1, total_pages: 1 },
+        isLoading: false,
+        isError: false,
       },
+      occurrencesQuery: {
+        data: [
+          {
+            id: 'occurrence-1',
+            task_id: 'task-1',
+            project_id: 'system-inbox',
+            occurrence_key: 'once',
+            execution_status: 'open',
+            revision: 4,
+            generated_schedule_revision: 3,
+            task_revision: 5,
+            schedule_revision: 3,
+            timing_type: 'unscheduled',
+          },
+        ],
+        isLoading: false,
+        isError: false,
+      },
+    } as unknown as ReturnType<typeof useTaskInbox>)
+
+    vi.mocked(useTaskDefinitions).mockReturnValue({
+      data: [
+        {
+          id: 'task-1',
+          project_id: 'system-inbox',
+          title: '整理新需求',
+          description: '确认范围和下一步',
+          priority: 2,
+          sort_order: 0,
+          lifecycle_status: 'published',
+          revision: 5,
+          schedule_revision: 3,
+        },
+      ],
       isLoading: false,
-      error: null,
-      refetch: refetchMock,
-    } as unknown as ReturnType<typeof useInboxList>)
-    vi.mocked(useConvertInboxItem).mockReturnValue({
-      mutateAsync: convertItemMock,
+      isError: false,
+    } as unknown as ReturnType<typeof useTaskDefinitions>)
+
+    vi.mocked(useUpdateTaskDefinitionMutation).mockReturnValue({
+      mutateAsync: updateTaskMock,
       isPending: false,
-    } as unknown as ReturnType<typeof useConvertInboxItem>)
-    vi.mocked(useDeleteInboxItem).mockReturnValue({
-      mutateAsync: vi.fn(),
+    } as unknown as ReturnType<typeof useUpdateTaskDefinitionMutation>)
+    vi.mocked(useCompleteOccurrenceMutation).mockReturnValue({
+      mutateAsync: completeOccurrenceMock,
       isPending: false,
-    } as unknown as ReturnType<typeof useDeleteInboxItem>)
-    vi.mocked(useBatchInbox).mockReturnValue({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useBatchInbox>)
+    } as unknown as ReturnType<typeof useCompleteOccurrenceMutation>)
   })
 
-  it('selects a real task project and submits the edited organizer fields', async () => {
+  it('shows quick-captured V2 tasks and organizes one into a project', async () => {
     const user = userEvent.setup()
     renderInbox()
 
-    const projectSelect = await screen.findByLabelText('项目')
+    expect(screen.getAllByText('整理新需求')).toHaveLength(2)
+    expect(screen.getByText('确认范围和下一步')).toBeVisible()
     expect(
-      await screen.findByRole('option', { name: 'Personal · 个人' })
+      screen.getByRole('option', { name: '学习计划 · 学习项目' })
     ).toBeVisible()
     expect(
-      await screen.findByRole('option', { name: '学习计划 · 学习项目' })
-    ).toBeVisible()
+      screen.queryByRole('option', { name: /已完成项目/ })
+    ).not.toBeInTheDocument()
 
-    await user.selectOptions(projectSelect, 'learning-1')
-    await user.clear(screen.getByLabelText('标题'))
-    await user.type(screen.getByLabelText('标题'), '复习 N2 语法')
-    await user.clear(screen.getByLabelText('备注'))
-    await user.type(screen.getByLabelText('备注'), '完成第三章练习')
-    await user.selectOptions(screen.getByLabelText('优先级'), '2')
-    await user.click(screen.getByRole('button', { name: '确认整理' }))
+    await user.selectOptions(screen.getByLabelText('归入项目'), 'learning-1')
+    await user.click(screen.getByRole('button', { name: /归入项目/ }))
 
-    expect(convertItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'capture-1',
-        kind: 'task',
-        title: '复习 N2 语法',
-        content: '完成第三章练习',
+    expect(updateTaskMock).toHaveBeenCalledWith({
+      projectID: 'system-inbox',
+      taskID: 'task-1',
+      input: {
+        expected_task_revision: 5,
+        expected_schedule_revision: 3,
         project_id: 'learning-1',
-        priority: 2,
-      })
-    )
+      },
+    })
   })
 })
