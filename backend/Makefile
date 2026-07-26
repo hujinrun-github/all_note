@@ -99,7 +99,7 @@ test-unit:
 	go test ./internal/... -cover -count=1
 
 test-race:
-	go test -race ./internal/... -count=1
+	go test -race ./internal/...
 
 test-contract-postgres:
 	FLOWSPACE_REQUIRE_POSTGRES_TESTS=true go test -p 1 ./internal/storage/postgres ./internal/migration -count=1
