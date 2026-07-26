@@ -1,6 +1,7 @@
 package mobilecontract
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -18,6 +19,9 @@ func TestContractSHAIsCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Git checkouts may use CRLF on Windows and LF on Linux. Normalize line
+	// endings so the contract digest is stable across platforms.
+	contract = bytes.ReplaceAll(contract, []byte("\r\n"), []byte("\n"))
 	digest := sha256.Sum256(contract)
 	want := hex.EncodeToString(digest[:])
 	fields := strings.Fields(string(checksum))
