@@ -43,6 +43,15 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-race-${{ hashFiles('backend/go.mod', 'backend/go.sum') }}-${{ hashFiles('backend/**/*.go') }}
+          restore-keys: |
+            ${{ runner.os }}-go-race-${{ hashFiles('backend/go.mod', 'backend/go.sum') }}-
       - name: Race detector
         run: make test-race
 
