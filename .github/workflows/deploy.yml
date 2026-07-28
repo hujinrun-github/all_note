@@ -26,9 +26,13 @@ jobs:
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
           APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
           FLOWSPACE_DATABASE_URL: ${{ secrets.FLOWSPACE_DATABASE_URL }}
+          FLOWSPACE_CONTROL_DATABASE_URL: ${{ secrets.FLOWSPACE_CONTROL_DATABASE_URL }}
+          FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${{ secrets.FLOWSPACE_PLATFORM_DATA_DATABASE_URL }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           FLOWSPACE_SESSION_SECRET: ${{ secrets.FLOWSPACE_SESSION_SECRET }}
           FLOWSPACE_ALLOWED_ORIGINS: ${{ secrets.FLOWSPACE_ALLOWED_ORIGINS || vars.FLOWSPACE_ALLOWED_ORIGINS }}
+          FLOWSPACE_TENANT_ADOPT_MANIFEST_ID: ${{ vars.FLOWSPACE_TENANT_ADOPT_MANIFEST_ID }}
+          FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM: ${{ vars.FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM }}
         run: |
           set -eu
 
@@ -45,8 +49,13 @@ jobs:
             missing=1
           fi
 
-          if [ -z "${FLOWSPACE_DATABASE_URL:-}" ] && [ -z "${POSTGRES_PASSWORD:-}" ]; then
-            echo "::error title=Missing database credential::Set FLOWSPACE_DATABASE_URL or POSTGRES_PASSWORD as a GitHub Secret."
+          if [ -n "${FLOWSPACE_CONTROL_DATABASE_URL:-}" ] || [ -n "${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-}" ]; then
+            if [ -z "${FLOWSPACE_CONTROL_DATABASE_URL:-}" ] || [ -z "${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-}" ]; then
+              echo "::error title=Incomplete database roles::Set both FLOWSPACE_CONTROL_DATABASE_URL and FLOWSPACE_PLATFORM_DATA_DATABASE_URL."
+              missing=1
+            fi
+          elif [ -z "${FLOWSPACE_DATABASE_URL:-}" ] && [ -z "${POSTGRES_PASSWORD:-}" ]; then
+            echo "::error title=Missing database credential::Set both role-specific database URLs, FLOWSPACE_DATABASE_URL, or POSTGRES_PASSWORD."
             missing=1
           fi
 
@@ -56,6 +65,13 @@ jobs:
               missing=1
             fi
           done
+
+          if [ -n "${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID:-}" ] || [ -n "${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM:-}" ]; then
+            if [ -z "${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID:-}" ] || [ -z "${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM:-}" ]; then
+              echo "::error title=Incomplete tenant adoption configuration::Set both FLOWSPACE_TENANT_ADOPT_MANIFEST_ID and FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM."
+              missing=1
+            fi
+          fi
 
           if printf '%s' "${FLOWSPACE_ALLOWED_ORIGINS:-}" | grep -Eq '(^|,)[[:space:]]*https?://[^/?#[:space:],]+/[[:space:]]*(,|$)'; then
             echo "::notice title=Auth origin normalization::FLOWSPACE_ALLOWED_ORIGINS may include a root trailing slash; deploy will normalize it before writing .env."
@@ -69,6 +85,8 @@ jobs:
           APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
           DEPLOY_BRANCH: ${{ github.ref_name }}
           FLOWSPACE_DATABASE_URL: ${{ secrets.FLOWSPACE_DATABASE_URL }}
+          FLOWSPACE_CONTROL_DATABASE_URL: ${{ secrets.FLOWSPACE_CONTROL_DATABASE_URL }}
+          FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${{ secrets.FLOWSPACE_PLATFORM_DATA_DATABASE_URL }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_HOST: ${{ secrets.POSTGRES_HOST || vars.POSTGRES_HOST }}
           POSTGRES_PORT: ${{ secrets.POSTGRES_PORT || vars.POSTGRES_PORT }}
@@ -84,6 +102,10 @@ jobs:
           FLOWSPACE_SESSION_SECRET: ${{ secrets.FLOWSPACE_SESSION_SECRET }}
           FLOWSPACE_ALLOWED_ORIGINS: ${{ secrets.FLOWSPACE_ALLOWED_ORIGINS || vars.FLOWSPACE_ALLOWED_ORIGINS }}
           FLOWSPACE_COOKIE_SECURE: ${{ vars.FLOWSPACE_COOKIE_SECURE }}
+          FLOWSPACE_ENABLE_MOBILE_SYNC_V1: ${{ vars.FLOWSPACE_ENABLE_MOBILE_SYNC_V1 }}
+          FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING: ${{ vars.FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING }}
+          FLOWSPACE_TENANT_ADOPT_MANIFEST_ID: ${{ vars.FLOWSPACE_TENANT_ADOPT_MANIFEST_ID }}
+          FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM: ${{ vars.FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM }}
           FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL || vars.FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL }}
           FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD }}
           FLOWSPACE_BOOTSTRAP_ADMIN_NAME: ${{ secrets.FLOWSPACE_BOOTSTRAP_ADMIN_NAME || vars.FLOWSPACE_BOOTSTRAP_ADMIN_NAME }}
@@ -97,7 +119,7 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           port: ${{ secrets.SERVER_PORT || vars.SERVER_PORT || '22' }}
           command_timeout: 60m
-          envs: APP_DIR,DEPLOY_BRANCH,FLOWSPACE_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,POSTGRES_MAINTENANCE_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FLOWSPACE_SESSION_SECRET,FLOWSPACE_ALLOWED_ORIGINS,FLOWSPACE_COOKIE_SECURE,FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL,FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD,FLOWSPACE_BOOTSTRAP_ADMIN_NAME,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
+          envs: APP_DIR,DEPLOY_BRANCH,FLOWSPACE_DATABASE_URL,FLOWSPACE_CONTROL_DATABASE_URL,FLOWSPACE_PLATFORM_DATA_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,POSTGRES_MAINTENANCE_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FLOWSPACE_SESSION_SECRET,FLOWSPACE_ALLOWED_ORIGINS,FLOWSPACE_COOKIE_SECURE,FLOWSPACE_ENABLE_MOBILE_SYNC_V1,FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING,FLOWSPACE_TENANT_ADOPT_MANIFEST_ID,FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM,FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL,FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD,FLOWSPACE_BOOTSTRAP_ADMIN_NAME,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
           script: |
             set -eu
 
@@ -122,16 +144,42 @@ jobs:
               exit 1
             fi
 
-            if [ -z "${FLOWSPACE_DATABASE_URL:-}" ]; then
-              : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD or FLOWSPACE_DATABASE_URL is required}"
-              POSTGRES_HOST="${POSTGRES_HOST:-119.91.114.203}"
-              POSTGRES_PORT="${POSTGRES_PORT:-19588}"
-              POSTGRES_USER="${POSTGRES_USER:-postgres}"
-              POSTGRES_DB="${POSTGRES_DB:-flowspace_prod}"
-              FLOWSPACE_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
+            database_url_for_name() {
+              source_url="$1"
+              target_db="$2"
+              source_base="${source_url%%\?*}"
+              source_query=""
+              if [ "$source_base" != "$source_url" ]; then
+                source_query="${source_url#"$source_base"}"
+              fi
+              source_prefix="${source_base%/*}"
+              if [ -z "$source_prefix" ] || [ "$source_prefix" = "$source_base" ]; then
+                echo "Cannot parse PostgreSQL URL" >&2
+                return 1
+              fi
+              printf '%s/%s%s' "$source_prefix" "$target_db" "$source_query"
+            }
+
+            if [ -n "${FLOWSPACE_CONTROL_DATABASE_URL:-}" ] || [ -n "${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-}" ]; then
+              : "${FLOWSPACE_CONTROL_DATABASE_URL:?FLOWSPACE_CONTROL_DATABASE_URL is required when role-specific URLs are used}"
+              : "${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:?FLOWSPACE_PLATFORM_DATA_DATABASE_URL is required when role-specific URLs are used}"
+              FLOWSPACE_DATABASE_URL="${FLOWSPACE_DATABASE_URL:-$FLOWSPACE_PLATFORM_DATA_DATABASE_URL}"
+            else
+              if [ -z "${FLOWSPACE_DATABASE_URL:-}" ]; then
+                : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD or database URLs are required}"
+                POSTGRES_HOST="${POSTGRES_HOST:-119.91.114.203}"
+                POSTGRES_PORT="${POSTGRES_PORT:-19588}"
+                POSTGRES_USER="${POSTGRES_USER:-postgres}"
+                POSTGRES_DB="${POSTGRES_DB:-flowspace_prod}"
+                FLOWSPACE_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
+              fi
+              FLOWSPACE_PLATFORM_DATA_DATABASE_URL="$FLOWSPACE_DATABASE_URL"
+              FLOWSPACE_CONTROL_DATABASE_URL="$(database_url_for_name "$FLOWSPACE_DATABASE_URL" flowspace_control)"
             fi
 
             MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://119.91.114.203:19000}"
+            FLOWSPACE_ENABLE_MOBILE_SYNC_V1="${FLOWSPACE_ENABLE_MOBILE_SYNC_V1:-false}"
+            FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING="${FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING:-false}"
             FRONTEND_PORT="${FRONTEND_PORT:-4200}"
             BACKEND_PORT="${BACKEND_PORT:-4201}"
             VITE_APP_BASE="${VITE_APP_BASE:-/}"
@@ -152,6 +200,8 @@ jobs:
 
             {
               printf 'FLOWSPACE_DATABASE_URL=%s\n' "$FLOWSPACE_DATABASE_URL"
+              printf 'FLOWSPACE_CONTROL_DATABASE_URL=%s\n' "$FLOWSPACE_CONTROL_DATABASE_URL"
+              printf 'FLOWSPACE_PLATFORM_DATA_DATABASE_URL=%s\n' "$FLOWSPACE_PLATFORM_DATA_DATABASE_URL"
               printf 'MINIO_ENDPOINT=%s\n' "$MINIO_ENDPOINT"
               printf 'MINIO_ACCESS_KEY=%s\n' "${MINIO_ACCESS_KEY:-}"
               printf 'MINIO_SECRET_KEY=%s\n' "${MINIO_SECRET_KEY:-}"
@@ -161,6 +211,10 @@ jobs:
               printf 'FLOWSPACE_SESSION_SECRET=%s\n' "${FLOWSPACE_SESSION_SECRET:-}"
               printf 'FLOWSPACE_ALLOWED_ORIGINS=%s\n' "${FLOWSPACE_ALLOWED_ORIGINS:-}"
               printf 'FLOWSPACE_COOKIE_SECURE=%s\n' "${FLOWSPACE_COOKIE_SECURE:-true}"
+              printf 'FLOWSPACE_ENABLE_MOBILE_SYNC_V1=%s\n' "$FLOWSPACE_ENABLE_MOBILE_SYNC_V1"
+              printf 'FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=%s\n' "$FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING"
+              printf 'FLOWSPACE_TENANT_ADOPT_MANIFEST_ID=%s\n' "${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID:-}"
+              printf 'FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM=%s\n' "${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM:-}"
               printf 'FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL=%s\n' "${FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL:-}"
               printf 'FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "${FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD:-}"
               printf 'FLOWSPACE_BOOTSTRAP_ADMIN_NAME=%s\n' "${FLOWSPACE_BOOTSTRAP_ADMIN_NAME:-}"
@@ -180,7 +234,7 @@ jobs:
               target_db="${db_base##*/}"
               db_prefix="${db_base%/*}"
               if [ -z "$target_db" ] || [ "$target_db" = "$db_base" ] || [ -z "$db_prefix" ] || [ "$db_prefix" = "$db_base" ]; then
-                echo "Cannot parse PostgreSQL database name from FLOWSPACE_DATABASE_URL"
+                echo "Cannot parse PostgreSQL database name from database URL"
                 exit 1
               fi
 
@@ -197,7 +251,28 @@ jobs:
               printf "%s\n" "$create_db_sql" | psql "$maintenance_url" --set=ON_ERROR_STOP=1
             }
 
-            ensure_postgres_database "$FLOWSPACE_DATABASE_URL"
+            ensure_postgres_database "$FLOWSPACE_CONTROL_DATABASE_URL"
+            ensure_postgres_database "$FLOWSPACE_PLATFORM_DATA_DATABASE_URL"
+
+            keyring_file="secrets/credentials-keyring.json"
+            if [ -d "$keyring_file" ]; then
+              rmdir "$keyring_file" 2>/dev/null || {
+                echo "$keyring_file must be a file, but it is a non-empty directory."
+                exit 1
+              }
+            fi
+            if [ ! -f "$keyring_file" ]; then
+              command -v openssl >/dev/null 2>&1 || {
+                echo "openssl is required to create the initial credential keyring."
+                exit 1
+              }
+              mkdir -p "$(dirname "$keyring_file")"
+              umask 077
+              keyring_key="$(openssl rand -base64 32 | tr -d '\n')"
+              printf '{"version":1,"keys":{"active":"%s"}}\n' "$keyring_key" > "$keyring_file"
+              unset keyring_key
+              echo "Created initial credential keyring at $keyring_file. Back it up securely."
+            fi
 
             echo "Build images"
             docker compose -f docker-compose.yml config >/dev/null
@@ -207,6 +282,12 @@ jobs:
             if ! docker compose -f docker-compose.yml up -d --remove-orphans --wait; then
               echo "docker compose up failed. Current service status:"
               docker compose -f docker-compose.yml ps || true
+              echo "Control migration logs:"
+              docker compose -f docker-compose.yml logs --tail=200 control-migrate || true
+              echo "Tenant adoption logs:"
+              docker compose -f docker-compose.yml logs --tail=200 tenant-adopt || true
+              echo "Tenant migration logs:"
+              docker compose -f docker-compose.yml logs --tail=200 tenant-migrate || true
               echo "Backend health details:"
               docker inspect --format='{{json .State.Health}}' flowspace-backend || true
               echo "Backend logs:"

@@ -1,0 +1,115 @@
+name: Task Domain V2 Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Operator action
+        required: true
+        type: choice
+        options:
+          - status
+          - run-to-ready
+      workspace_id:
+        description: Exact workspace ID
+        required: true
+        type: string
+      migration_id:
+        description: Stable migration ID; required for run-to-ready
+        required: false
+        type: string
+      migration_timezone:
+        description: Frozen IANA timezone; required for run-to-ready
+        required: false
+        default: Asia/Shanghai
+        type: string
+      confirmation:
+        description: Enter RUN_TO_READY_AND_FENCE_WRITES for the mutating action
+        required: false
+        type: string
+
+concurrency:
+  group: task-domain-v2-${{ inputs.workspace_id }}
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate request
+        env:
+          ACTION: ${{ inputs.action }}
+          WORKSPACE_ID: ${{ inputs.workspace_id }}
+          MIGRATION_ID: ${{ inputs.migration_id }}
+          MIGRATION_TIMEZONE: ${{ inputs.migration_timezone }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST || vars.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER || vars.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
+        run: |
+          set -eu
+          : "${WORKSPACE_ID:?workspace_id is required}"
+          : "${SERVER_HOST:?SERVER_HOST is required}"
+          : "${SERVER_USER:?SERVER_USER is required}"
+          : "${APP_DIR:?APP_DIR is required}"
+          if [ -z "${SERVER_SSH_KEY:-}" ] && [ -z "${SERVER_PASSWORD:-}" ]; then
+            echo "::error title=Missing deploy credential::Set SERVER_SSH_KEY or SERVER_PASSWORD."
+            exit 1
+          fi
+          if [ "$ACTION" = "run-to-ready" ]; then
+            : "${MIGRATION_ID:?migration_id is required for run-to-ready}"
+            : "${MIGRATION_TIMEZONE:?migration_timezone is required for run-to-ready}"
+            if [ "$CONFIRMATION" != "RUN_TO_READY_AND_FENCE_WRITES" ]; then
+              echo "::error title=Confirmation required::Enter RUN_TO_READY_AND_FENCE_WRITES. This leaves the workspace at legacy/ready until a separate cutover is available."
+              exit 1
+            fi
+          fi
+
+      - name: Run task-domain migration operation
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
+          EXPECTED_SHA: ${{ github.sha }}
+          ACTION: ${{ inputs.action }}
+          WORKSPACE_ID: ${{ inputs.workspace_id }}
+          MIGRATION_ID: ${{ inputs.migration_id }}
+          MIGRATION_TIMEZONE: ${{ inputs.migration_timezone }}
+        with:
+          host: ${{ secrets.SERVER_HOST || vars.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER || vars.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: ${{ secrets.SERVER_PORT || vars.SERVER_PORT || '22' }}
+          command_timeout: 70m
+          envs: APP_DIR,EXPECTED_SHA,ACTION,WORKSPACE_ID,MIGRATION_ID,MIGRATION_TIMEZONE
+          script: |
+            set -eu
+            : "${APP_DIR:?APP_DIR is required}"
+            cd "$APP_DIR"
+
+            deployed_sha="$(git rev-parse HEAD)"
+            if [ "$deployed_sha" != "$EXPECTED_SHA" ]; then
+              echo "Refusing migration: deployed commit $deployed_sha does not match workflow commit $EXPECTED_SHA."
+              exit 1
+            fi
+
+            if [ "$ACTION" = "status" ]; then
+              docker compose run --rm --no-deps backend \
+                flowspace-admin task-migration-status \
+                --workspace-id "$WORKSPACE_ID"
+              exit 0
+            fi
+
+            docker compose run --rm --no-deps backend \
+              flowspace-admin task-migration-run-to-ready \
+              --workspace-id "$WORKSPACE_ID" \
+              --migration-id "$MIGRATION_ID" \
+              --migration-timezone "$MIGRATION_TIMEZONE" \
+              --confirm-fence-legacy-writes
+
+            docker compose run --rm --no-deps backend \
+              flowspace-admin task-migration-status \
+              --workspace-id "$WORKSPACE_ID"

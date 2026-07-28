@@ -27,6 +27,7 @@ type Config struct {
 	Transcriber              transcription.Transcriber
 	MaxVoiceBytes            int64
 	MobileSyncV1Enabled      bool
+	MobileSyncV2             handler.MobileV2Service
 	VoiceUploadEnabled       bool
 	TranscriptionEnabled     bool
 	WorkspaceSettings        handler.WorkspaceSettingsService
@@ -83,19 +84,28 @@ func Setup(cfg Config) *gin.Engine {
 
 		protected.GET("/folders", handler.GetFolders(cfg.Store))
 		if cfg.MobileSyncV1Enabled {
-			protected.GET("/mobile/capabilities", handler.GetMobileCapabilities(handler.MobileCapabilityFeatures{
+			mobileV1Gate := requireMobileV1Workspace(cfg.TaskDomainModelSelector)
+			protected.GET("/mobile/capabilities", mobileV1Gate, handler.GetMobileCapabilities(handler.MobileCapabilityFeatures{
 				Sync: true, VoiceUpload: cfg.VoiceUploadEnabled,
 				TranscriptionJobs: cfg.TranscriptionEnabled, WatchPairing: true,
 			}))
-			nativeProtected.GET("/mobile/sync/changes", handler.ListMobileChanges(cfg.Store, cfg.Auth.SessionSecret))
-			nativeProtected.GET("/mobile/sync/snapshot", handler.GetMobileSnapshot(cfg.Store, cfg.Auth.SessionSecret))
-			nativeProtected.POST("/mobile/sync/mutations", handler.ApplyMobileMutations(cfg.Store))
-			protected.GET("/mobile/sync/conflicts", handler.ListMobileConflicts(cfg.Store))
-			protected.POST("/mobile/sync/conflicts/:conflictID/resolve", handler.ResolveMobileConflict(cfg.Store))
+			nativeProtected.GET("/mobile/sync/changes", mobileV1Gate, handler.ListMobileChanges(cfg.Store, cfg.Auth.SessionSecret))
+			nativeProtected.GET("/mobile/sync/snapshot", mobileV1Gate, handler.GetMobileSnapshot(cfg.Store, cfg.Auth.SessionSecret))
+			nativeProtected.POST("/mobile/sync/mutations", mobileV1Gate, handler.ApplyMobileMutations(cfg.Store))
+			protected.GET("/mobile/sync/conflicts", mobileV1Gate, handler.ListMobileConflicts(cfg.Store))
+			protected.POST("/mobile/sync/conflicts/:conflictID/resolve", mobileV1Gate, handler.ResolveMobileConflict(cfg.Store))
 			nativeProtected.PUT("/mobile/voice-notes/:clientID/audio", handler.UploadMobileVoiceAudio(cfg.Store, cfg.VoiceObjects, cfg.MaxVoiceBytes))
 			protected.POST("/mobile/voice-notes/:clientID/transcriptions", handler.CreateMobileTranscriptionJob(cfg.Store))
 			protected.GET("/mobile/transcription-jobs/:jobID", handler.GetMobileTranscriptionJob(cfg.Store))
 			protected.POST("/mobile/transcription-jobs/:jobID/retry", handler.RetryMobileTranscriptionJob(cfg.Store))
+		}
+		if cfg.MobileSyncV2 != nil {
+			mobileV2 := nativeProtected.Group("/mobile/v2")
+			mobileV2.GET("/capabilities", handler.GetMobileV2Capabilities(cfg.MobileSyncV2))
+			mobileV2.GET("/snapshot", handler.GetMobileV2Snapshot(cfg.MobileSyncV2))
+			mobileV2.GET("/changes", handler.ListMobileV2Changes(cfg.MobileSyncV2))
+			mobileV2.POST("/commands", handler.ApplyMobileV2Command(cfg.MobileSyncV2))
+			mobileV2.GET("/commands/:originDeviceClientID/:commandID/receipt", handler.GetMobileV2CommandReceipt(cfg.MobileSyncV2))
 		}
 		protected.POST("/devices/watch/authorize", handler.AuthorizeWatchDevice(cfg.Store, cfg.Auth.SessionSecret))
 		protected.POST("/devices/watch/revoke", handler.RevokeWatchDevice(cfg.Store))

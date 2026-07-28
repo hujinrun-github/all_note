@@ -38,16 +38,23 @@ func main() {
 		log.Fatalf("register sqlite provider: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), adminCommandTimeout(os.Args[1:]))
 	defer cancel()
 	if err := runAdminCommand(ctx, os.Args[1:], runtimeStorage, registry); err != nil {
 		log.Fatal(err)
 	}
 }
 
+func adminCommandTimeout(args []string) time.Duration {
+	if len(args) != 0 && args[0] == "task-migration-run-to-ready" {
+		return 60 * time.Minute
+	}
+	return 10 * time.Minute
+}
+
 func runAdminCommand(ctx context.Context, args []string, cfg config.RuntimeStorageConfig, registry maintenanceRegistry) error {
 	if len(args) == 0 {
-		return fmt.Errorf("admin command is required: migrate-control, migrate-tenant, or adopt-tenant")
+		return fmt.Errorf("admin command is required: migrate-control, migrate-tenant, adopt-tenant, task-migration-status, or task-migration-run-to-ready")
 	}
 
 	switch args[0] {
@@ -76,6 +83,59 @@ func runAdminCommand(ctx context.Context, args []string, cfg config.RuntimeStora
 			toStorageConfig(cfg.Environment, cfg.PlatformData),
 			storage.AdoptManifest{ID: *manifestID, Checksum: *manifestChecksum},
 		)
+	case "task-migration-status":
+		flags := flag.NewFlagSet("task-migration-status", flag.ContinueOnError)
+		workspaceID := flags.String("workspace-id", "", "workspace to inspect")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *workspaceID == "" {
+			return fmt.Errorf("task-migration-status requires --workspace-id")
+		}
+		opener, ok := registry.(tenantStoreOpener)
+		if !ok {
+			return fmt.Errorf("task-migration-status requires a registry with tenant SQL access")
+		}
+		return printTaskMigrationStatus(ctx, cfg, opener, *workspaceID)
+	case "task-migration-run-to-ready":
+		flags := flag.NewFlagSet("task-migration-run-to-ready", flag.ContinueOnError)
+		workspaceID := flags.String("workspace-id", "", "workspace to migrate")
+		migrationID := flags.String("migration-id", "", "stable operator migration id")
+		migrationTimezone := flags.String("migration-timezone", "", "frozen IANA timezone for legacy interpretation")
+		ownerTimezone := flags.String("owner-timezone", "", "optional owner IANA timezone fallback")
+		deploymentTimezone := flags.String("deployment-timezone", "UTC", "optional deployment IANA timezone fallback")
+		replayPageSize := flags.Int("replay-page-size", 100, "maximum outbox events per replay page")
+		maximumSteps := flags.Int("maximum-steps", 100000, "maximum durable coordinator steps")
+		confirmFenceLegacyWrites := flags.Bool(
+			"confirm-fence-legacy-writes",
+			false,
+			"confirm that this command closes legacy task writes before stopping at legacy/ready",
+		)
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *workspaceID == "" || *migrationID == "" || *migrationTimezone == "" {
+			return fmt.Errorf("task-migration-run-to-ready requires --workspace-id, --migration-id, and --migration-timezone")
+		}
+		if *replayPageSize < 1 || *maximumSteps < 1 {
+			return fmt.Errorf("replay page size and maximum steps must be positive")
+		}
+		if !*confirmFenceLegacyWrites {
+			return fmt.Errorf("task-migration-run-to-ready requires --confirm-fence-legacy-writes")
+		}
+		opener, ok := registry.(tenantStoreOpener)
+		if !ok {
+			return fmt.Errorf("task-migration-run-to-ready requires a registry with tenant SQL access")
+		}
+		return runTaskMigrationToReady(ctx, cfg, opener, taskMigrationRunOptions{
+			WorkspaceID:        *workspaceID,
+			MigrationID:        *migrationID,
+			MigrationTimezone:  *migrationTimezone,
+			OwnerTimezone:      *ownerTimezone,
+			DeploymentTimezone: *deploymentTimezone,
+			ReplayPageSize:     *replayPageSize,
+			MaximumSteps:       *maximumSteps,
+		})
 	default:
 		return fmt.Errorf("unsupported admin command %q", args[0])
 	}

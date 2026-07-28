@@ -11,6 +11,7 @@ RACE_SHARD_TARGETS := \
 	test-race-handler-other
 FORMAT_PATHS := \
 	cmd/checkfmt \
+	cmd/flowspace-admin \
 	cmd/server/main.go \
 	internal/config/native.go \
 	internal/config/native_test.go \
@@ -18,6 +19,7 @@ FORMAT_PATHS := \
 	internal/middleware/auth.go \
 	internal/handler/mobile_conflicts.go \
 	internal/handler/mobile_capabilities.go \
+	internal/handler/mobile_v2.go \
 	internal/handler/mobile_read.go \
 	internal/handler/mobile_sync.go \
 	internal/handler/native.go \
@@ -31,6 +33,8 @@ FORMAT_PATHS := \
 	internal/model/native.go \
 	internal/model/voice_audio_cleanup.go \
 	internal/router/native_routes_test.go \
+	internal/router/mobile_routes.go \
+	internal/router/mobile_v2_routes_test.go \
 	internal/router/router.go \
 	internal/service/native.go \
 	internal/service/native_test.go \
@@ -105,7 +109,7 @@ format-check:
 	go run ./cmd/checkfmt $(FORMAT_PATHS)
 
 test-unit:
-	go test ./internal/... -cover -count=1
+	go test ./cmd/... ./internal/... -cover -count=1
 
 test-race:
 	$(MAKE) --no-print-directory -j 7 $(RACE_SHARD_TARGETS)

@@ -32,6 +32,10 @@ production cutover by itself.
 6. Enable `FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true`. This only enables
    durable per-workspace routing; it does not change any workspace model.
 
+Docker Compose performs steps 2 and 3 through the `control-migrate`,
+`tenant-adopt`, and `tenant-migrate` one-shot services. Tenant adoption is
+skipped unless both manifest environment variables are configured.
+
 ## Canary workflow
 
 Use an internal workspace with representative projects, one-time and recurring
@@ -62,6 +66,28 @@ For every transition, persist the result before starting the next step:
 8. **First write boundary**: the first successful v2 business write records
    `v2_first_write_at`. After this timestamp, data-layer rollback to legacy is
    forbidden.
+
+The operator CLI currently automates steps 1 through 5 and stops at
+`legacy/ready`:
+
+```text
+flowspace-admin task-migration-run-to-ready \
+  --workspace-id <workspace-id> \
+  --migration-id <stable-migration-id> \
+  --migration-timezone <IANA-timezone> \
+  --confirm-fence-legacy-writes
+```
+
+Use the same workspace id, migration id, and timezone when retrying. Check the
+durable result with:
+
+```text
+flowspace-admin task-migration-status --workspace-id <workspace-id>
+```
+
+The CLI does not yet expose step 6. Do not replace the missing cutover command
+with a direct `UPDATE workspace_task_domain_state`; that would bypass the final
+mobile shutdown, heartbeat, reconcile, epoch, and application capability gates.
 
 ## Required go/no-go observations
 
@@ -101,4 +127,3 @@ Keep the compatibility adapter and legacy tables for at least one complete
 release cycle. During stabilization, legacy tables remain protected by the
 database write fence. Archive/read-only conversion is a later change with its
 own migration; physical deletion and mobile-v2 are separate design efforts.
-
