@@ -169,6 +169,39 @@ func TestMobileV1NonTaskNativeRoutesRemainRegisteredAfterTaskCutover(t *testing.
 	}
 }
 
+func TestWatchTaskRoutesRetireWithMobileV1AfterV2Cutover(t *testing.T) {
+	test := func(t *testing.T, selector *routerTaskDomainModelSelector, wantStatus int) {
+		t.Helper()
+		env := setupRouterAuthEnv(t, false)
+		env.config.TaskDomainModelSelector = selector
+		token := "watch-model-session-" + http.StatusText(wantStatus)
+		createRouterSession(t, env, token)
+		router := Setup(env.config)
+
+		for _, request := range []*http.Request{
+			httptest.NewRequest(http.MethodGet, "/api/watch/snapshot", nil),
+			httptest.NewRequest(http.MethodPatch, "/api/watch/tasks/task-1", bytes.NewReader([]byte(`{}`))),
+		} {
+			request.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: token})
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != wantStatus {
+				t.Fatalf("%s %s status=%d body=%s, want=%d",
+					request.Method, request.URL.Path, response.Code, response.Body.String(), wantStatus)
+			}
+		}
+	}
+
+	t.Run("v2", func(t *testing.T) {
+		test(t, &routerTaskDomainModelSelector{models: map[string]taskapp.ModelVersion{
+			routerTestWorkspaceID: taskapp.ModelV2,
+		}}, http.StatusUpgradeRequired)
+	})
+	t.Run("routing unavailable", func(t *testing.T) {
+		test(t, &routerTaskDomainModelSelector{err: errors.New("tenant state unavailable")}, http.StatusServiceUnavailable)
+	})
+}
+
 func mobileV2RouteNames() []string {
 	return []string{
 		"GET /api/mobile/v2/capabilities",

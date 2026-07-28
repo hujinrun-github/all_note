@@ -46,7 +46,7 @@ func main() {
 }
 
 func adminCommandTimeout(args []string) time.Duration {
-	if len(args) != 0 && args[0] == "task-migration-run-to-ready" {
+	if len(args) != 0 && (args[0] == "task-migration-run-to-ready" || args[0] == "task-migration-cutover") {
 		return 60 * time.Minute
 	}
 	return 10 * time.Minute
@@ -54,7 +54,7 @@ func adminCommandTimeout(args []string) time.Duration {
 
 func runAdminCommand(ctx context.Context, args []string, cfg config.RuntimeStorageConfig, registry maintenanceRegistry) error {
 	if len(args) == 0 {
-		return fmt.Errorf("admin command is required: migrate-control, migrate-tenant, adopt-tenant, task-migration-status, or task-migration-run-to-ready")
+		return fmt.Errorf("admin command is required: migrate-control, migrate-tenant, adopt-tenant, task-migration-status, task-migration-run-to-ready, or task-migration-cutover")
 	}
 
 	switch args[0] {
@@ -135,6 +135,52 @@ func runAdminCommand(ctx context.Context, args []string, cfg config.RuntimeStora
 			DeploymentTimezone: *deploymentTimezone,
 			ReplayPageSize:     *replayPageSize,
 			MaximumSteps:       *maximumSteps,
+		})
+	case "task-migration-cutover":
+		flags := flag.NewFlagSet("task-migration-cutover", flag.ContinueOnError)
+		workspaceID := flags.String("workspace-id", "", "workspace to cut over")
+		migrationID := flags.String("migration-id", "", "stable operator migration id")
+		ownerTimezone := flags.String("owner-timezone", "", "optional owner IANA timezone fallback")
+		deploymentTimezone := flags.String("deployment-timezone", "UTC", "optional deployment IANA timezone fallback")
+		confirmBackendOffline := flags.Bool(
+			"confirm-backend-offline",
+			false,
+			"confirm that the single backend service has been stopped",
+		)
+		confirmRetireMobileV1 := flags.Bool(
+			"confirm-retire-mobile-v1-task-api",
+			false,
+			"confirm that mobile-v1 sync and watch task endpoints will return upgrade-required",
+		)
+		confirmIrreversibleCutover := flags.Bool(
+			"confirm-irreversible-cutover",
+			false,
+			"confirm the durable per-workspace switch to task-domain v2",
+		)
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *workspaceID == "" || *migrationID == "" {
+			return fmt.Errorf("task-migration-cutover requires --workspace-id and --migration-id")
+		}
+		if !*confirmBackendOffline || !*confirmRetireMobileV1 || !*confirmIrreversibleCutover {
+			return fmt.Errorf("task-migration-cutover requires --confirm-backend-offline, --confirm-retire-mobile-v1-task-api, and --confirm-irreversible-cutover")
+		}
+		opener, ok := registry.(taskCutoverStoreOpener)
+		if !ok {
+			return fmt.Errorf("task-migration-cutover requires a registry with control and tenant SQL access")
+		}
+		nativeCfg, err := config.LoadNativeConfig()
+		if err != nil {
+			return fmt.Errorf("load task-domain v2 application capability: %w", err)
+		}
+		return cutoverTaskMigration(ctx, cfg, opener, taskMigrationCutoverOptions{
+			WorkspaceID:        *workspaceID,
+			MigrationID:        *migrationID,
+			OwnerTimezone:      *ownerTimezone,
+			DeploymentTimezone: *deploymentTimezone,
+			RoutingEnabled:     nativeCfg.TaskDomainV2RoutingEnabled,
+			OfflineGate:        newSingleInstanceOfflineGate(),
 		})
 	default:
 		return fmt.Errorf("unsupported admin command %q", args[0])

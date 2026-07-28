@@ -77,14 +77,14 @@ func Setup(cfg Config) *gin.Engine {
 		nativeProtected.GET("/voice-notes/:clientID/status", handler.GetVoiceNoteStatus(cfg.Store))
 		nativeProtected.POST("/voice-notes/:clientID/transcription", handler.TranscribeVoiceNote(cfg.Store, cfg.VoiceObjects, cfg.Transcriber))
 
+		mobileV1Gate := requireMobileV1Workspace(cfg.TaskDomainModelSelector)
 		watchRoutes := api.Group("/watch")
 		watchRoutes.Use(authMiddleware.RequiredSessionOrWatch(), authMiddleware.RequirePasswordSettled())
-		watchRoutes.GET("/snapshot", handler.GetWatchSnapshot(cfg.Store))
-		watchRoutes.PATCH("/tasks/:id", handler.UpdateTask(cfg.Store))
+		watchRoutes.GET("/snapshot", mobileV1Gate, handler.GetWatchSnapshot(cfg.Store))
+		watchRoutes.PATCH("/tasks/:id", mobileV1Gate, handler.UpdateTask(cfg.Store))
 
 		protected.GET("/folders", handler.GetFolders(cfg.Store))
 		if cfg.MobileSyncV1Enabled {
-			mobileV1Gate := requireMobileV1Workspace(cfg.TaskDomainModelSelector)
 			protected.GET("/mobile/capabilities", mobileV1Gate, handler.GetMobileCapabilities(handler.MobileCapabilityFeatures{
 				Sync: true, VoiceUpload: cfg.VoiceUploadEnabled,
 				TranscriptionJobs: cfg.TranscriptionEnabled, WatchPairing: true,
