@@ -19,6 +19,17 @@ $env:FLOWSPACE_VOICE_MAX_BYTES = "52428800"
 
 `FLOWSPACE_ENABLE_MOBILE_SYNC_V1` 默认关闭。开启后会注册 `/api/mobile/...` 的 capabilities、snapshot、changes、mutation、冲突、移动音频和异步转写接口，并启动 mobile outbox publisher。旧 `/api/voice-notes/{client_id}/transcription` 在开关开启或关闭时都会保留。
 
+## mobile-v1 与 mobile-v2 共存
+
+mobile-v1 与 mobile-v2 使用独立 URL、cursor、snapshot 和 receipt，不做协议内混用：
+
+- mobile-v1 保留 `/api/mobile/capabilities`、`/api/mobile/sync/*`；
+- mobile-v2 使用 `/api/mobile/v2/capabilities`、`/api/mobile/v2/snapshot`、`/api/mobile/v2/changes`、`/api/mobile/v2/commands` 和 receipt 查询；
+- workspace 仍是 legacy task model 时，mobile-v1 同步接口继续服务；
+- workspace 切换到 task model v2 后，mobile-v1 的 capabilities、sync 和 conflict 接口返回 HTTP 426 `mobile_task_domain_upgrade_required`，不会回退读写 legacy Task/Event；
+- mobile-v1 的音频上传和转写属于非任务能力，切换后继续保留；
+- mobile-v2 路由仅在 server 注入完整的 mobile-v2 protocol service 后注册，避免把缺少固定 snapshot 或原子 receipt 的半实现暴露到生产。
+
 ## Mobile v1 同步
 
 iPhone 登录后先请求：

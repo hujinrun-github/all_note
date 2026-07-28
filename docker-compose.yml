@@ -19,6 +19,50 @@ services:
       FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_DB:-flowspace_prod}?sslmode=disable}
       TZ: ${TZ:-Asia/Shanghai}
 
+  tenant-adopt:
+    image: flowspace-backend:latest
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -n "$${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID:-}" ] || [ -n "$${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM:-}" ]; then
+          : "$${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID:?FLOWSPACE_TENANT_ADOPT_MANIFEST_ID is required}"
+          : "$${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM:?FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM is required}"
+          exec flowspace-admin adopt-tenant \
+            --manifest-id "$${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID}" \
+            --manifest-checksum "$${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM}"
+        fi
+        echo "Tenant adoption skipped; no manifest was configured."
+    restart: "no"
+    environment:
+      FLOWSPACE_ENV: prod
+      FLOWSPACE_INSTANCE_MODE: ${FLOWSPACE_INSTANCE_MODE:-single}
+      FLOWSPACE_CONTROL_DATABASE_DRIVER: ${FLOWSPACE_CONTROL_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_CONTROL_DATABASE_URL: ${FLOWSPACE_CONTROL_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_CONTROL_DB:-flowspace_control}?sslmode=disable}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER: ${FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_DB:-flowspace_prod}?sslmode=disable}
+      FLOWSPACE_TENANT_ADOPT_MANIFEST_ID: ${FLOWSPACE_TENANT_ADOPT_MANIFEST_ID:-}
+      FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM: ${FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    depends_on:
+      control-migrate:
+        condition: service_completed_successfully
+
+  tenant-migrate:
+    image: flowspace-backend:latest
+    command: ["flowspace-admin", "migrate-tenant"]
+    restart: "no"
+    environment:
+      FLOWSPACE_ENV: prod
+      FLOWSPACE_INSTANCE_MODE: ${FLOWSPACE_INSTANCE_MODE:-single}
+      FLOWSPACE_CONTROL_DATABASE_DRIVER: ${FLOWSPACE_CONTROL_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_CONTROL_DATABASE_URL: ${FLOWSPACE_CONTROL_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_CONTROL_DB:-flowspace_control}?sslmode=disable}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER: ${FLOWSPACE_PLATFORM_DATA_DATABASE_DRIVER:-postgres}
+      FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${FLOWSPACE_PLATFORM_DATA_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-}@${POSTGRES_HOST:-119.91.114.203}:${POSTGRES_PORT:-19588}/${POSTGRES_DB:-flowspace_prod}?sslmode=disable}
+      TZ: ${TZ:-Asia/Shanghai}
+    depends_on:
+      tenant-adopt:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: ./backend
@@ -49,6 +93,7 @@ services:
       FLOWSPACE_ALLOWED_ORIGINS: ${FLOWSPACE_ALLOWED_ORIGINS:-}
       FLOWSPACE_COOKIE_SECURE: ${FLOWSPACE_COOKIE_SECURE:-true}
       FLOWSPACE_ENABLE_MOBILE_SYNC_V1: ${FLOWSPACE_ENABLE_MOBILE_SYNC_V1:-false}
+      FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING: ${FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING:-false}
       FLOWSPACE_MINIO_ENDPOINT: ${FLOWSPACE_MINIO_ENDPOINT:-}
       FLOWSPACE_MINIO_ACCESS_KEY: ${FLOWSPACE_MINIO_ACCESS_KEY:-}
       FLOWSPACE_MINIO_SECRET_KEY: ${FLOWSPACE_MINIO_SECRET_KEY:-}
@@ -66,7 +111,7 @@ services:
     volumes:
       - ${FLOWSPACE_CREDENTIALS_KEYRING_FILE_HOST:-./secrets/credentials-keyring.json}:/run/secrets/flowspace-credentials-keyring.json:ro
     depends_on:
-      control-migrate:
+      tenant-migrate:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4201/api/health >/dev/null || exit 1"]

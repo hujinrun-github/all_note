@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/storage"
+	storagesqlite "github.com/hujinrun/flowspace/internal/storage/sqlite"
+	"github.com/hujinrun/flowspace/internal/taskruntime"
 )
 
 type fakeMaintenanceRegistry struct {
@@ -87,6 +91,81 @@ func TestRunAdminCommandRejectsUnknownCommand(t *testing.T) {
 	err := runAdminCommand(context.Background(), []string{"serve"}, adminTestRuntimeConfig(), &fakeMaintenanceRegistry{})
 	if err == nil {
 		t.Fatal("expected unsupported admin command to fail")
+	}
+}
+
+func TestAdminCommandTimeoutAllowsLongRunningTaskMigration(t *testing.T) {
+	if got := adminCommandTimeout([]string{"task-migration-run-to-ready"}); got != 60*time.Minute {
+		t.Fatalf("task migration timeout = %s", got)
+	}
+	if got := adminCommandTimeout([]string{"migrate-tenant"}); got != 10*time.Minute {
+		t.Fatalf("maintenance timeout = %s", got)
+	}
+}
+
+func TestRunAdminCommandInspectsAndNoopsFreshV2Workspace(t *testing.T) {
+	ctx := context.Background()
+	tenantPath := filepath.Join(t.TempDir(), "flowspace-admin-tenant-test.db")
+	cfg := config.RuntimeStorageConfig{
+		Environment:  "test",
+		InstanceMode: config.InstanceModeSingle,
+		Control: config.DatabaseConfig{
+			Role:       config.DatabaseRoleControl,
+			Driver:     config.DatabaseDriverSQLite,
+			SQLitePath: filepath.Join(t.TempDir(), "flowspace-admin-control-test.db"),
+		},
+		PlatformData: config.DatabaseConfig{
+			Role:       config.DatabaseRolePlatformData,
+			Driver:     config.DatabaseDriverSQLite,
+			SQLitePath: tenantPath,
+		},
+	}
+	registry := storage.NewRegistry()
+	if err := registry.Register(storagesqlite.Provider{}); err != nil {
+		t.Fatal(err)
+	}
+	tenantConfig := toStorageConfig(cfg.Environment, cfg.PlatformData)
+	if err := registry.MigrateTenant(ctx, tenantConfig); err != nil {
+		t.Fatal(err)
+	}
+	store, err := registry.OpenTenant(ctx, tenantConfig, taskruntime.ExpectedTenantSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlStore := store.(storage.SQLStore)
+	if _, err := sqlStore.SQLDB().ExecContext(ctx, `INSERT INTO tenant_workspaces(workspace_id) VALUES(?)`, "fresh-v2-workspace"); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runAdminCommand(ctx, []string{
+		"task-migration-status", "--workspace-id", "fresh-v2-workspace",
+	}, cfg, registry); err != nil {
+		t.Fatalf("status fresh v2 workspace: %v", err)
+	}
+	if err := runAdminCommand(ctx, []string{
+		"task-migration-run-to-ready",
+		"--workspace-id", "fresh-v2-workspace",
+		"--migration-id", "unused-for-fresh-v2",
+		"--migration-timezone", "UTC",
+		"--confirm-fence-legacy-writes",
+	}, cfg, registry); err != nil {
+		t.Fatalf("run-to-ready fresh v2 workspace: %v", err)
+	}
+}
+
+func TestRunAdminCommandRequiresLegacyWriteFenceConfirmation(t *testing.T) {
+	err := runAdminCommand(context.Background(), []string{
+		"task-migration-run-to-ready",
+		"--workspace-id", "workspace-1",
+		"--migration-id", "migration-1",
+		"--migration-timezone", "UTC",
+	}, adminTestRuntimeConfig(), &fakeMaintenanceRegistry{})
+	if err == nil || err.Error() != "task-migration-run-to-ready requires --confirm-fence-legacy-writes" {
+		t.Fatalf("error = %v", err)
 	}
 }
 

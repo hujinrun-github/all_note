@@ -19,10 +19,14 @@ FLOWSPACE_PLATFORM_DATA_DATABASE_URL=postgres://.../flowspace_prod
 profile. Changing the platform-data URL creates a new system profile version;
 it does not silently move existing workspace bindings.
 
-Docker Compose runs `flowspace-admin migrate-control` before starting the HTTP
-server. Outside Compose, run the same command explicitly after every upgrade.
-The server verifies the complete control migration history and checksums and
-refuses to start on an incomplete or modified schema.
+Docker Compose runs `flowspace-admin migrate-control`, the optional idempotent
+tenant adoption step, and `flowspace-admin migrate-tenant` before starting the
+HTTP server. Existing mixed-schema tenants must configure both
+`FLOWSPACE_TENANT_ADOPT_MANIFEST_ID` and
+`FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM`; leaving both empty skips adoption.
+Outside Compose, run the same maintenance commands explicitly after every
+upgrade. The server verifies the migration history and checksums and refuses to
+start on an incomplete or modified schema.
 
 ## Task-domain v2 routing gate
 
@@ -51,6 +55,32 @@ enabled and must continue using the v2 schema. It is not a data rollback
 switch. Disable it only before the first v2 business write or after explicitly
 returning the workspace to a stable legacy state through the migration
 recovery procedure.
+
+The schema deploy does not perform a workspace data cutover. Inspect one
+workspace with:
+
+```text
+flowspace-admin task-migration-status --workspace-id <workspace-id>
+```
+
+Run the durable snapshot/replay/drain/reconcile coordinator to `legacy/ready`
+with an explicit stable migration id and frozen IANA timezone:
+
+```text
+flowspace-admin task-migration-run-to-ready \
+  --workspace-id <workspace-id> \
+  --migration-id <migration-id> \
+  --migration-timezone Asia/Shanghai \
+  --confirm-fence-legacy-writes
+```
+
+`task-migration-run-to-ready` closes the legacy task write fence during its
+drain phase. It deliberately does not perform the final model-version CAS.
+GitHub's `Task Domain V2 Migration` workflow exposes the same operation as a
+manual, per-workspace action and requires the
+`RUN_TO_READY_AND_FENCE_WRITES` confirmation. Do not run the mutating action
+until the final cutover command and mobile-v2 service are deployed; use its
+`status` action freely for read-only inspection.
 
 ## Credential keyring
 
