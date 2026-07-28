@@ -10,26 +10,29 @@ on:
         options:
           - status
           - run-to-ready
+          - cutover-to-v2
       workspace_id:
         description: Exact workspace ID
         required: true
         type: string
       migration_id:
-        description: Stable migration ID; required for run-to-ready
+        description: Stable migration ID; required for mutating actions
         required: false
         type: string
       migration_timezone:
-        description: Frozen IANA timezone; required for run-to-ready
+        description: Frozen IANA timezone; required for mutating actions
         required: false
         default: Asia/Shanghai
         type: string
       confirmation:
-        description: Enter RUN_TO_READY_AND_FENCE_WRITES for the mutating action
+        description: Enter RUN_TO_READY_AND_FENCE_WRITES or CUTOVER_TO_V2_AND_RETIRE_MOBILE_V1
         required: false
         type: string
 
 concurrency:
-  group: task-domain-v2-${{ inputs.workspace_id }}
+  # Share the production lock with deploy.yml. A master push must never start
+  # the backend between the offline cutover probes and the tenant CAS.
+  group: deploy-production
   cancel-in-progress: false
 
 jobs:
@@ -64,6 +67,14 @@ jobs:
             : "${MIGRATION_TIMEZONE:?migration_timezone is required for run-to-ready}"
             if [ "$CONFIRMATION" != "RUN_TO_READY_AND_FENCE_WRITES" ]; then
               echo "::error title=Confirmation required::Enter RUN_TO_READY_AND_FENCE_WRITES. This leaves the workspace at legacy/ready until a separate cutover is available."
+              exit 1
+            fi
+          fi
+          if [ "$ACTION" = "cutover-to-v2" ]; then
+            : "${MIGRATION_ID:?migration_id is required for cutover-to-v2}"
+            : "${MIGRATION_TIMEZONE:?migration_timezone is required for cutover-to-v2}"
+            if [ "$CONFIRMATION" != "CUTOVER_TO_V2_AND_RETIRE_MOBILE_V1" ]; then
+              echo "::error title=Confirmation required::Enter CUTOVER_TO_V2_AND_RETIRE_MOBILE_V1. This stops the single backend, permanently switches the workspace to task-domain v2, and retires mobile-v1 task sync/watch for that workspace."
               exit 1
             fi
           fi
@@ -103,13 +114,74 @@ jobs:
               exit 0
             fi
 
-            docker compose run --rm --no-deps backend \
-              flowspace-admin task-migration-run-to-ready \
-              --workspace-id "$WORKSPACE_ID" \
-              --migration-id "$MIGRATION_ID" \
-              --migration-timezone "$MIGRATION_TIMEZONE" \
-              --confirm-fence-legacy-writes
+            run_to_ready() {
+              docker compose run --rm --no-deps backend \
+                flowspace-admin task-migration-run-to-ready \
+                --workspace-id "$WORKSPACE_ID" \
+                --migration-id "$MIGRATION_ID" \
+                --migration-timezone "$MIGRATION_TIMEZONE" \
+                --confirm-fence-legacy-writes
+            }
 
-            docker compose run --rm --no-deps backend \
-              flowspace-admin task-migration-status \
-              --workspace-id "$WORKSPACE_ID"
+            status() {
+              docker compose run --rm --no-deps backend \
+                flowspace-admin task-migration-status \
+                --workspace-id "$WORKSPACE_ID"
+            }
+
+            if [ "$ACTION" = "run-to-ready" ]; then
+              run_to_ready
+              status
+              exit 0
+            fi
+
+            services_stopped=1
+            restart_services() {
+              if [ "$services_stopped" = "1" ]; then
+                services_stopped=0
+                docker compose up -d --no-deps --wait backend frontend || true
+              fi
+            }
+            trap restart_services EXIT
+            trap 'restart_services; exit 129' HUP
+            trap 'restart_services; exit 130' INT
+            trap 'restart_services; exit 143' TERM
+
+            docker compose stop frontend backend
+
+            operation_status=0
+            run_to_ready || operation_status=$?
+            if [ "$operation_status" -eq 0 ]; then
+              docker compose run --rm --no-deps backend \
+                flowspace-admin task-migration-cutover \
+                --workspace-id "$WORKSPACE_ID" \
+                --migration-id "$MIGRATION_ID" \
+                --confirm-backend-offline \
+                --confirm-retire-mobile-v1-task-api \
+                --confirm-irreversible-cutover || operation_status=$?
+            fi
+            if [ "$operation_status" -eq 0 ]; then
+              status || operation_status=$?
+            fi
+
+            restart_status=0
+            if docker compose up -d --no-deps --wait backend frontend; then
+              services_stopped=0
+            else
+              restart_status=$?
+            fi
+            trap - HUP INT TERM
+
+            if [ "$operation_status" -ne 0 ]; then
+              echo "Task-domain v2 cutover failed with status $operation_status. Services were restarted; task routes remain fail-closed if the tenant/control epoch sync did not complete."
+              exit "$operation_status"
+            fi
+            if [ "$restart_status" -ne 0 ]; then
+              echo "Task-domain v2 cutover completed, but service restart failed with status $restart_status."
+              docker compose ps || true
+              docker compose logs --tail=200 backend || true
+              exit "$restart_status"
+            fi
+
+            trap - EXIT
+            docker compose ps

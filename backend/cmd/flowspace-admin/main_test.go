@@ -98,6 +98,9 @@ func TestAdminCommandTimeoutAllowsLongRunningTaskMigration(t *testing.T) {
 	if got := adminCommandTimeout([]string{"task-migration-run-to-ready"}); got != 60*time.Minute {
 		t.Fatalf("task migration timeout = %s", got)
 	}
+	if got := adminCommandTimeout([]string{"task-migration-cutover"}); got != 60*time.Minute {
+		t.Fatalf("task cutover timeout = %s", got)
+	}
 	if got := adminCommandTimeout([]string{"migrate-tenant"}); got != 10*time.Minute {
 		t.Fatalf("maintenance timeout = %s", got)
 	}
@@ -165,6 +168,19 @@ func TestRunAdminCommandRequiresLegacyWriteFenceConfirmation(t *testing.T) {
 		"--migration-timezone", "UTC",
 	}, adminTestRuntimeConfig(), &fakeMaintenanceRegistry{})
 	if err == nil || err.Error() != "task-migration-run-to-ready requires --confirm-fence-legacy-writes" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunAdminCommandRequiresAllCutoverConfirmations(t *testing.T) {
+	err := runAdminCommand(context.Background(), []string{
+		"task-migration-cutover",
+		"--workspace-id", "workspace-1",
+		"--migration-id", "migration-1",
+		"--confirm-backend-offline",
+		"--confirm-irreversible-cutover",
+	}, adminTestRuntimeConfig(), &fakeMaintenanceRegistry{})
+	if err == nil || err.Error() != "task-migration-cutover requires --confirm-backend-offline, --confirm-retire-mobile-v1-task-api, and --confirm-irreversible-cutover" {
 		t.Fatalf("error = %v", err)
 	}
 }

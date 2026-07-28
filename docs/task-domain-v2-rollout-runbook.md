@@ -10,9 +10,10 @@ production cutover by itself.
   installed and while legacy data is copied.
 - Run control and tenant migrations explicitly. Opening a request runtime must
   never run DDL.
-- Operate on one workspace at a time. The workspace id, migration id, source
-  watermark, write epoch, and expected state revision are mandatory command
-  inputs; do not infer them from a process cache.
+- Operate on one workspace at a time. The workspace id and migration id are
+  mandatory command inputs. Source watermark, write epoch, and expected state
+  revision must come from a fresh durable SQL read immediately before their
+  compare-and-swap; never infer them from a process cache.
 - A failed endpoint, epoch mismatch, transitional migration state, or stale
   revision is a stop condition. Never fall back to the legacy write source.
 - Do not archive legacy tables during the cutover release.
@@ -67,8 +68,7 @@ For every transition, persist the result before starting the next step:
    `v2_first_write_at`. After this timestamp, data-layer rollback to legacy is
    forbidden.
 
-The operator CLI currently automates steps 1 through 5 and stops at
-`legacy/ready`:
+The operator CLI automates steps 1 through 5 and stops at `legacy/ready`:
 
 ```text
 flowspace-admin task-migration-run-to-ready \
@@ -85,9 +85,36 @@ durable result with:
 flowspace-admin task-migration-status --workspace-id <workspace-id>
 ```
 
-The CLI does not yet expose step 6. Do not replace the missing cutover command
-with a direct `UPDATE workspace_task_domain_state`; that would bypass the final
-mobile shutdown, heartbeat, reconcile, epoch, and application capability gates.
+For a single-instance deployment, the final command performs step 6 and then
+CAS-advances the control-plane runtime epoch to match the drained tenant epoch:
+
+```text
+flowspace-admin task-migration-cutover \
+  --workspace-id <workspace-id> \
+  --migration-id <stable-migration-id> \
+  --confirm-backend-offline \
+  --confirm-retire-mobile-v1-task-api \
+  --confirm-irreversible-cutover
+```
+
+The command requires `FLOWSPACE_INSTANCE_MODE=single`,
+`FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true`, and a failed connection probe to
+the known Compose backend endpoint. Run it only after stopping the `backend`
+service. It is idempotent: a retry after the tenant cutover CAS repairs a
+still-stale control epoch without applying the tenant cutover twice. Do not
+replace it with a direct `UPDATE workspace_task_domain_state`.
+
+The manual GitHub Action exposes `cutover-to-v2`, which stops `frontend` and
+`backend`, runs the durable migration to `legacy/ready`, executes the final
+cutover, synchronizes epochs, prints status, and restarts both services. Use the
+exact confirmation `CUTOVER_TO_V2_AND_RETIRE_MOBILE_V1`. The Action verifies
+that the checked-out production commit is identical to the workflow commit.
+
+After cutover, the existing frontend bundle selects its v2 pages from
+`/api/task-domain/capabilities`; there is no separate frontend feature flag.
+Mobile-v1 task sync and Watch task endpoints return HTTP 426 for that workspace.
+Voice upload and transcription routes remain available. A production mobile-v2
+service is a separate rollout requirement.
 
 ## Required go/no-go observations
 
