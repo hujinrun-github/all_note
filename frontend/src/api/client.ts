@@ -20,7 +20,10 @@ class APIClient {
         if (v) url.searchParams.set(k, v)
       })
     }
-    const res = await fetch(url.toString(), { credentials: 'include' })
+    const res = await fetch(url.toString(), {
+      credentials: 'include',
+      cache: 'no-store',
+    })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       this.redirectAfterAuthError(path, res.status, body?.error?.code)

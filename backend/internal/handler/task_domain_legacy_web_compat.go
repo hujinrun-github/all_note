@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/legacytaskadapter"
+	"github.com/hujinrun/flowspace/internal/model"
+	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/taskapp"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
@@ -28,10 +31,26 @@ type LegacyWebTaskDomainApplication interface {
 var _ LegacyWebTaskDomainApplication = (*taskapp.Facade)(nil)
 
 func RegisterLegacyWebTaskDomainV2Routes(routes *gin.RouterGroup, application LegacyWebTaskDomainApplication) {
+	registerLegacyWebTaskDomainV2Routes(routes, application, nil)
+}
+
+func RegisterLegacyWebTaskDomainV2RoutesWithStore(
+	routes *gin.RouterGroup,
+	application LegacyWebTaskDomainApplication,
+	store storage.Store,
+) {
+	registerLegacyWebTaskDomainV2Routes(routes, application, store)
+}
+
+func registerLegacyWebTaskDomainV2Routes(
+	routes *gin.RouterGroup,
+	application LegacyWebTaskDomainApplication,
+	store storage.Store,
+) {
 	if routes == nil {
 		return
 	}
-	handler := legacyWebTaskDomainV2Handler{application: application}
+	handler := legacyWebTaskDomainV2Handler{application: application, store: store}
 	routes.GET("/tasks", handler.listTasks)
 	routes.POST("/tasks", legacyWebRevisionRequired)
 	routes.PATCH("/tasks/:taskID", legacyWebRevisionRequired)
@@ -43,10 +62,13 @@ func RegisterLegacyWebTaskDomainV2Routes(routes *gin.RouterGroup, application Le
 	routes.POST("/events", legacyWebRevisionRequired)
 	routes.PATCH("/events/:eventID", legacyWebRevisionRequired)
 	routes.DELETE("/events/:eventID", legacyWebRevisionRequired)
+	routes.GET("/today", handler.today)
+	routes.GET("/summary", handler.summary)
 }
 
 type legacyWebTaskDomainV2Handler struct {
 	application LegacyWebTaskDomainApplication
+	store       storage.Store
 }
 
 func (handler legacyWebTaskDomainV2Handler) listTasks(c *gin.Context) {
@@ -217,6 +239,292 @@ func (handler legacyWebTaskDomainV2Handler) listEvents(c *gin.Context) {
 		end = total
 	}
 	successWithPagination(c, gin.H{"events": events[start:end]}, page, pageSize, total)
+}
+
+func (handler legacyWebTaskDomainV2Handler) today(c *gin.Context) {
+	identity, ok := taskDomainAuthenticatedIdentity(c)
+	if !ok {
+		return
+	}
+	if handler.application == nil {
+		writeLegacyProjectionError(c, taskapp.ErrInvalidRuntime)
+		return
+	}
+	timezone := strings.TrimSpace(c.DefaultQuery("timezone", "Asia/Shanghai"))
+	location, err := time.LoadLocation(timezone)
+	if err != nil || timezone == "Local" {
+		badRequest(c, "invalid timezone")
+		return
+	}
+	now := time.Now().In(location)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
+	todayEnd := todayStart.AddDate(0, 0, 1)
+
+	todayOccurrences, err := handler.application.ListOccurrences(c.Request.Context(), taskapp.OccurrenceQueryRequest{
+		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, Scope: taskdomain.OccurrenceListToday,
+		From: todayStart, To: todayEnd, Timezone: timezone,
+	})
+	if err != nil {
+		writeLegacyProjectionError(c, err)
+		return
+	}
+	overdueOccurrences, err := handler.application.ListOccurrences(c.Request.Context(), taskapp.OccurrenceQueryRequest{
+		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, Scope: taskdomain.OccurrenceListOverdue,
+		From: now, Timezone: timezone,
+	})
+	if err != nil {
+		writeLegacyProjectionError(c, err)
+		return
+	}
+	overdueCutoff := todayStart.AddDate(0, 0, -7)
+	overdueOccurrences = filterLegacyWebOverdueWindow(overdueOccurrences, overdueCutoff)
+
+	todayTasks, err := handler.projectLegacyOccurrences(c.Request.Context(), identity, todayOccurrences)
+	if err != nil {
+		writeLegacyProjectionError(c, err)
+		return
+	}
+	overdueTasks, err := handler.projectLegacyOccurrences(c.Request.Context(), identity, overdueOccurrences)
+	if err != nil {
+		writeLegacyProjectionError(c, err)
+		return
+	}
+	sortLegacyWebTodayTasks(todayTasks)
+	sortLegacyWebTodayTasks(overdueTasks)
+
+	recentNotes := make([]model.Note, 0)
+	if handler.store != nil {
+		recentNotes, err = handler.store.Notes().Recent(c.Request.Context(), 5)
+		if err != nil {
+			internalError(c, "failed to get recent notes")
+			return
+		}
+	}
+	success(c, gin.H{
+		"todayTasks": todayTasks, "overdueTasks": overdueTasks,
+		"events": []model.Event{}, "recentNotes": recentNotes,
+	})
+}
+
+func (handler legacyWebTaskDomainV2Handler) summary(c *gin.Context) {
+	identity, ok := taskDomainAuthenticatedIdentity(c)
+	if !ok {
+		return
+	}
+	if handler.application == nil {
+		writeLegacyProjectionError(c, taskapp.ErrInvalidRuntime)
+		return
+	}
+	timezone := strings.TrimSpace(c.DefaultQuery("timezone", "Asia/Shanghai"))
+	location, err := time.LoadLocation(timezone)
+	if err != nil || timezone == "Local" {
+		badRequest(c, "invalid timezone")
+		return
+	}
+	from, err := time.ParseInLocation("2006-01-02", c.Query("from"), location)
+	if err != nil {
+		badRequest(c, "invalid date format, expected YYYY-MM-DD")
+		return
+	}
+	to, err := time.ParseInLocation("2006-01-02", c.Query("to"), location)
+	if err != nil {
+		badRequest(c, "invalid date format, expected YYYY-MM-DD")
+		return
+	}
+	if from.After(to) {
+		badRequest(c, "from date must be before to date")
+		return
+	}
+	toExclusive := to.AddDate(0, 0, 1)
+	occurrences, err := handler.application.ListOccurrences(c.Request.Context(), taskapp.OccurrenceQueryRequest{
+		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, Scope: taskdomain.OccurrenceListCompleted,
+		From: from, To: toExclusive, Timezone: timezone,
+	})
+	if err != nil {
+		writeLegacyProjectionError(c, err)
+		return
+	}
+
+	projectCache := make(map[string]taskdomain.ProjectSnapshot)
+	summaries := make([]model.TaskSummary, 0, len(occurrences))
+	activeDates := make(map[string]struct{})
+	projectIDs := make(map[string]struct{})
+	for _, occurrence := range occurrences {
+		if occurrence.WorkspaceID != identity.workspaceID || occurrence.CompletedAt == nil {
+			writeLegacyProjectionError(c, taskapp.ErrInvalidRuntime)
+			return
+		}
+		project, exists := projectCache[occurrence.ProjectID]
+		if !exists {
+			project, err = handler.application.GetProject(c.Request.Context(), taskapp.EntityQueryRequest{
+				WorkspaceID: identity.workspaceID, ActorID: identity.actorID, EntityID: occurrence.ProjectID,
+			})
+			if err != nil {
+				writeLegacyProjectionError(c, err)
+				return
+			}
+			projectCache[occurrence.ProjectID] = project
+		}
+		if project.Project.WorkspaceID != identity.workspaceID {
+			writeLegacyProjectionError(c, taskapp.ErrInvalidRuntime)
+			return
+		}
+		summaries = append(summaries, legacyWebSummaryTask(occurrence, project))
+		activeDates[occurrence.CompletedAt.In(location).Format("2006-01-02")] = struct{}{}
+		projectIDs[occurrence.ProjectID] = struct{}{}
+	}
+	sort.SliceStable(summaries, func(left, right int) bool {
+		return *summaries[left].CompletedAt > *summaries[right].CompletedAt
+	})
+
+	page, pageSize := getPagination(c)
+	total := len(summaries)
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	groups := legacyWebSummaryGroups(summaries[start:end], location)
+	data := model.NewSummaryData(groups, len(activeDates), len(projectIDs), total)
+	successWithPagination(c, data, page, pageSize, total)
+}
+
+func (handler legacyWebTaskDomainV2Handler) projectLegacyOccurrences(
+	ctx context.Context,
+	identity taskDomainIdentity,
+	occurrences []taskdomain.QueryOccurrenceSnapshot,
+) ([]legacytaskadapter.LegacyTask, error) {
+	tasks := make([]legacytaskadapter.LegacyTask, 0, len(occurrences))
+	taskCache := make(map[string]taskdomain.TaskAggregateQueryResult)
+	projectCache := make(map[string]taskdomain.ProjectSnapshot)
+	for _, occurrence := range occurrences {
+		if occurrence.WorkspaceID != identity.workspaceID {
+			return nil, taskapp.ErrInvalidRuntime
+		}
+		aggregate, exists := taskCache[occurrence.TaskID]
+		if !exists {
+			var err error
+			aggregate, err = handler.application.GetTask(ctx, taskapp.EntityQueryRequest{
+				WorkspaceID: identity.workspaceID, ActorID: identity.actorID, EntityID: occurrence.TaskID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			taskCache[occurrence.TaskID] = aggregate
+		}
+		project, exists := projectCache[occurrence.ProjectID]
+		if !exists {
+			var err error
+			project, err = handler.application.GetProject(ctx, taskapp.EntityQueryRequest{
+				WorkspaceID: identity.workspaceID, ActorID: identity.actorID, EntityID: occurrence.ProjectID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			projectCache[occurrence.ProjectID] = project
+		}
+		version, found := legacyGeneratedScheduleVersion(aggregate.Versions, occurrence.GeneratedScheduleRevision)
+		if !found || aggregate.Task.WorkspaceID != identity.workspaceID ||
+			aggregate.Schedule.WorkspaceID != identity.workspaceID || project.Project.WorkspaceID != identity.workspaceID {
+			return nil, taskapp.ErrInvalidRuntime
+		}
+		projected, err := legacytaskadapter.ProjectLegacyTask(legacytaskadapter.LegacyTaskProjectionSnapshot{
+			Project: project, Task: aggregate.Task, Schedule: version,
+			ScheduleHeaderRevision: aggregate.Schedule.Revision, Occurrence: occurrence,
+		})
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, projected)
+	}
+	return tasks, nil
+}
+
+func filterLegacyWebOverdueWindow(
+	occurrences []taskdomain.QueryOccurrenceSnapshot,
+	cutoff time.Time,
+) []taskdomain.QueryOccurrenceSnapshot {
+	result := make([]taskdomain.QueryOccurrenceSnapshot, 0, len(occurrences))
+	for _, occurrence := range occurrences {
+		if occurrence.DueAt == nil || !occurrence.DueAt.Before(cutoff) {
+			result = append(result, occurrence)
+		}
+	}
+	return result
+}
+
+func sortLegacyWebTodayTasks(tasks []legacytaskadapter.LegacyTask) {
+	sort.SliceStable(tasks, func(left, right int) bool {
+		if tasks[left].SortOrder != tasks[right].SortOrder {
+			return tasks[left].SortOrder < tasks[right].SortOrder
+		}
+		return tasks[left].OccurrenceID < tasks[right].OccurrenceID
+	})
+}
+
+func legacyWebSummaryTask(
+	occurrence taskdomain.QueryOccurrenceSnapshot,
+	project taskdomain.ProjectSnapshot,
+) model.TaskSummary {
+	completedAt := occurrence.CompletedAt.Unix()
+	id := occurrence.OccurrenceID
+	if id == "" {
+		id = occurrence.TaskID
+	}
+	projectType := "regular"
+	if project.Project.Kind == taskdomain.ProjectKindLearning {
+		projectType = "learning"
+	}
+	result := model.TaskSummary{
+		ID: id, Title: occurrence.Title, Done: 1, CompletedAt: &completedAt,
+		Project: &model.TaskProject{ID: project.Project.ID, Name: project.Project.Name, Type: projectType},
+	}
+	if occurrence.PlannedDate != "" {
+		plannedDate := occurrence.PlannedDate
+		result.PlannedDate = &plannedDate
+	}
+	if occurrence.DueAt != nil {
+		due := occurrence.DueAt.Unix()
+		result.Due = &due
+	}
+	noteID := occurrence.OccurrenceNoteID
+	if noteID == "" {
+		noteID = occurrence.TaskNoteID
+	}
+	if noteID != "" {
+		result.NoteID = &noteID
+	}
+	if occurrence.Recurring {
+		result.ExecutionType = legacytaskadapter.LegacyExecutionRecurring
+		result.OccurrenceDate = occurrence.OccurrenceKey
+	} else {
+		result.ExecutionType = legacytaskadapter.LegacyExecutionSingle
+	}
+	return result
+}
+
+func legacyWebSummaryGroups(tasks []model.TaskSummary, location *time.Location) []model.DateGroup {
+	groups := make([]model.DateGroup, 0)
+	indexByDate := make(map[string]int)
+	for _, task := range tasks {
+		date := task.CompletedAt
+		if date == nil {
+			continue
+		}
+		dateKey := time.Unix(*date, 0).In(location).Format("2006-01-02")
+		index, exists := indexByDate[dateKey]
+		if !exists {
+			index = len(groups)
+			indexByDate[dateKey] = index
+			groups = append(groups, model.DateGroup{Date: dateKey, Tasks: make([]model.TaskSummary, 0)})
+		}
+		groups[index].Tasks = append(groups[index].Tasks, task)
+		groups[index].Count++
+	}
+	return groups
 }
 
 type legacyTaskListFilter struct {

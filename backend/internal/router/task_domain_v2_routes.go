@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/handler"
+	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/taskapp"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
@@ -38,7 +39,7 @@ func registerTaskDomainRoutes(routes *gin.RouterGroup, cfg Config) {
 		legacy:   legacyTaskDomainDelegate(cfg),
 		v2:       taskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime), cfg.AIChat),
 	}
-	dispatcher.compat = legacyWebTaskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime))
+	dispatcher.compat = legacyWebTaskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime), cfg.Store)
 	registerModelAwareTaskDomainRoutes(routes, dispatcher)
 	routes.GET("/task-domain/capabilities", dispatcher.capabilities)
 }
@@ -93,9 +94,9 @@ func taskDomainV2Delegate(
 	return router
 }
 
-func legacyWebTaskDomainV2Delegate(application handler.LegacyWebTaskDomainApplication) http.Handler {
+func legacyWebTaskDomainV2Delegate(application handler.LegacyWebTaskDomainApplication, store storage.Store) http.Handler {
 	router := gin.New()
-	handler.RegisterLegacyWebTaskDomainV2Routes(router.Group("/api"), application)
+	handler.RegisterLegacyWebTaskDomainV2RoutesWithStore(router.Group("/api"), application, store)
 	return router
 }
 
@@ -134,8 +135,8 @@ func registerModelAwareTaskDomainRoutes(routes *gin.RouterGroup, dispatcher task
 	routes.DELETE("/events/:id", dispatcher.handlerWithV2(true, dispatcher.compat))
 	routes.GET("/calendar/project-sources", legacyOnly)
 	routes.PUT("/calendar/project-sources", legacyOnly)
-	routes.GET("/today", legacyOnly)
-	routes.GET("/summary", legacyOnly)
+	routes.GET("/today", dispatcher.handlerWithV2(true, dispatcher.compat))
+	routes.GET("/summary", dispatcher.handlerWithV2(true, dispatcher.compat))
 
 	routes.GET("/projects", v2Only)
 	routes.POST("/projects", v2Only)
@@ -207,6 +208,7 @@ func (dispatcher taskDomainRouteDispatcher) handlerWithV2(legacyAllowed bool, v2
 			dispatcher.legacy.ServeHTTP(c.Writer, c.Request)
 		case taskapp.ModelV2:
 			if v2 == nil {
+				c.Header("Cache-Control", "no-store")
 				c.JSON(http.StatusGone, taskDomainRoutingError("legacy_task_domain_endpoint_retired", "this legacy task-domain endpoint is not available for a v2 workspace", false))
 				return
 			}

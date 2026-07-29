@@ -286,6 +286,9 @@ func TestLegacyOnlyTaskDomainRoutesRunOnlyForExplicitDurableLegacyModel(t *testi
 		if response.Code != http.StatusGone {
 			t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusGone, response.Body.String())
 		}
+		if got := response.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("Cache-Control = %q, want no-store", got)
+		}
 		assertRouterErrorCode(t, response.Body.String(), "legacy_task_domain_endpoint_retired")
 		if got := resolver.workspaces(); len(got) != 0 {
 			t.Fatalf("legacy-only endpoint resolved v2 runtime: %#v", got)
