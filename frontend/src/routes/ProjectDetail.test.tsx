@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProjectV2 } from '../api/taskDomain'
+import {
+  TaskDomainRevisionConflictError,
+  type ProjectV2,
+} from '../api/taskDomain'
 import * as roadmapHooks from '../hooks/useRoadmapV2'
 import * as taskHooks from '../hooks/useTaskDomain'
 import ProjectDetail from './ProjectDetail'
@@ -16,6 +19,7 @@ const createTask = vi.fn()
 const activateProject = vi.fn()
 const completeProject = vi.fn()
 const cancelTask = vi.fn()
+const publishTask = vi.fn()
 const updateTask = vi.fn()
 const generateRoadmap = vi.fn()
 const updateProject = vi.fn()
@@ -80,9 +84,10 @@ describe('Project detail v2', () => {
       ],
       isLoading: false,
     } as ReturnType<typeof taskHooks.useProjects>)
-    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue(
-      idleMutation() as ReturnType<typeof taskHooks.usePublishTaskMutation>
-    )
+    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue({
+      mutateAsync: publishTask,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.usePublishTaskMutation>)
     vi.mocked(taskHooks.usePauseTaskMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.usePauseTaskMutation>
     )
@@ -159,6 +164,33 @@ describe('Project detail v2', () => {
           expected_project_revision: project.revision,
         },
       })
+    )
+  })
+
+  it('shows a visible error when publishing a stale task definition', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [{ ...taskDefinition, lifecycle_status: 'draft' }],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    publishTask.mockRejectedValue(
+      new TaskDomainRevisionConflictError(
+        'the resource changed',
+        {
+          expected_task_revision: 4,
+          expected_schedule_revision: 2,
+          expected_occurrence_revisions: {},
+        },
+        { task_revision: 5 }
+      )
+    )
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '发布' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '任务已在其他窗口更新，请刷新后重试。'
     )
   })
 

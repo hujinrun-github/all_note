@@ -366,6 +366,19 @@ export default function ProjectDetail() {
     }
   }
 
+  async function handleTaskCommand(command: () => Promise<unknown>) {
+    setError('')
+    try {
+      await command()
+    } catch (caught) {
+      setError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务已在其他窗口更新，请刷新后重试。'
+          : '任务操作失败，请稍后重试。'
+      )
+    }
+  }
+
   async function completeAfterCancelling() {
     const project = projectQuery.data
     if (!project) return
@@ -760,22 +773,34 @@ export default function ProjectDetail() {
             busy={commandBusy}
             onClose={() => updateSearchParams({ task_id: null })}
             onPublish={() =>
-              publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onPause={() =>
-              pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onResume={() =>
-              resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onCancel={() =>
-              cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onRestore={() =>
-              restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onArchive={() =>
-              archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
           />
         ) : null}

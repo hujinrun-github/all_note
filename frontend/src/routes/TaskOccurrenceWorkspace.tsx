@@ -71,6 +71,7 @@ export default function TaskOccurrenceWorkspace() {
   const [rescheduleConflict, setRescheduleConflict] =
     useState<TaskDomainRevisionConflictError | null>(null)
   const [showComparison, setShowComparison] = useState(false)
+  const [taskCommandError, setTaskCommandError] = useState('')
 
   const projectsQuery = useProjects()
   const inboxProject = (projectsQuery.data ?? []).find(
@@ -242,6 +243,19 @@ export default function TaskOccurrenceWorkspace() {
           ])
         ),
       },
+    }
+  }
+
+  async function handleTaskCommand(command: () => Promise<unknown>) {
+    setTaskCommandError('')
+    try {
+      await command()
+    } catch (caught) {
+      setTaskCommandError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务已在其他窗口更新，请刷新后重试。'
+          : '任务操作失败，请稍后重试。'
+      )
     }
   }
 
@@ -569,6 +583,11 @@ export default function TaskOccurrenceWorkspace() {
               执行实例暂时不可用，请刷新后重试。
             </div>
           ) : null}
+          {taskCommandError ? (
+            <div className="td-inline-error" role="alert">
+              {taskCommandError}
+            </div>
+          ) : null}
           {activeCount === 0 &&
           !activeQuery?.isLoading &&
           !draftsQuery.isLoading ? (
@@ -713,22 +732,34 @@ export default function TaskOccurrenceWorkspace() {
               updateSearchParams({ occurrence_id: null, task_id: null })
             }
             onPublish={() =>
-              publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onPause={() =>
-              pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onResume={() =>
-              resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onCancel={() =>
-              cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onRestore={() =>
-              restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onArchive={() =>
-              archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
           />
         ) : null}

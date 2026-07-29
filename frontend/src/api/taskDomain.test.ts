@@ -512,11 +512,10 @@ describe('task lifecycle command client', () => {
     ['publish', publishTaskDefinition],
     ['pause', pauseTaskDefinition],
     ['resume', resumeTaskDefinition],
-    ['cancel', cancelTaskDefinition],
     ['restore', restoreTaskDefinition],
     ['archive', archiveTaskDefinition],
   ] as const)(
-    'posts the explicit %s command with all expected revisions',
+    'posts the explicit %s command without unrelated occurrence revisions',
     async (command, invoke) => {
       const fetchMock = vi
         .fn<typeof fetch>()
@@ -527,11 +526,26 @@ describe('task lifecycle command client', () => {
 
       expect(requestPath(fetchMock, 0)).toBe(`/api/tasks/task-1/${command}`)
       expect(requestInit(fetchMock, 0).method).toBe('POST')
-      expect(requestBody(fetchMock, 0)).toEqual(revisions)
+      expect(requestBody(fetchMock, 0)).toEqual({
+        ...revisions,
+        expected_occurrence_revisions: {},
+      })
       expect(result.task_revision).toBe(5)
       expect(result.occurrence_revisions['occurrence-1']).toBe(10)
     }
   )
+
+  it('includes every occurrence revision when cancelling a task', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ data: commandResultFixture() }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await cancelTaskDefinition('task-1', revisions)
+
+    expect(requestPath(fetchMock, 0)).toBe('/api/tasks/task-1/cancel')
+    expect(requestBody(fetchMock, 0)).toEqual(revisions)
+  })
 
   it('does not expose a lifecycle PATCH escape hatch', () => {
     expect(taskDomain).not.toHaveProperty('patchTaskLifecycle')
@@ -792,7 +806,10 @@ describe('revision conflict contract', () => {
     expect(error).toMatchObject({
       status: 409,
       code: 'revision_conflict',
-      expectedRevisions: expected,
+      expectedRevisions: {
+        ...expected,
+        expected_occurrence_revisions: {},
+      },
       currentRevisions: current,
     })
   })

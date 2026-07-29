@@ -696,10 +696,17 @@ function taskLifecycleCommand(
   command: TaskLifecycleCommand,
   revisions: TaskDomainExpectedRevisions
 ) {
+  const commandRevisions =
+    command === 'cancel'
+      ? revisions
+      : {
+          ...revisions,
+          expected_occurrence_revisions: {},
+        }
   return requestData<TaskAggregateCommandResponse>(
     `/api/tasks/${encodeURIComponent(taskID)}/${command}`,
-    jsonPost(revisions),
-    revisions
+    jsonPost(commandRevisions),
+    commandRevisions
   )
 }
 
