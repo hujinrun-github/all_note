@@ -381,6 +381,55 @@ describe('Project detail v2', () => {
     })
     expect(completeProject).toHaveBeenCalled()
   })
+
+  it('edits the task name, description, and attachment links', async () => {
+    updateTask.mockResolvedValue({
+      ...taskDefinition,
+      title: '复习 N2 核心语法',
+      description: '完成错题整理',
+      attachment_links: [{ name: '复习资料', url: 'https://example.com/n2' }],
+      revision: 5,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '编辑任务' }))
+
+    const title = screen.getByRole('textbox', { name: '任务名' })
+    await user.clear(title)
+    await user.type(title, '复习 N2 核心语法')
+    await user.type(
+      screen.getByRole('textbox', { name: '任务描述' }),
+      '完成错题整理'
+    )
+    await user.click(screen.getByRole('button', { name: '添加附件链接' }))
+    await user.type(
+      screen.getByRole('textbox', { name: '附件 1 名称' }),
+      '复习资料'
+    )
+    await user.type(
+      screen.getByRole('textbox', { name: '附件 1 链接' }),
+      'https://example.com/n2'
+    )
+    await user.click(screen.getByRole('button', { name: '保存任务' }))
+
+    await waitFor(() =>
+      expect(updateTask).toHaveBeenCalledWith({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        input: {
+          title: '复习 N2 核心语法',
+          description: '完成错题整理',
+          attachment_links: [
+            { name: '复习资料', url: 'https://example.com/n2' },
+          ],
+          expected_task_revision: 4,
+          expected_schedule_revision: 2,
+        },
+      })
+    )
+  })
 })
 
 function renderDetail() {

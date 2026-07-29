@@ -6,20 +6,32 @@ import {
   Check,
   Circle,
   Folder,
+  ExternalLink,
+  Link2,
   MoreHorizontal,
   Pause,
+  Pencil,
   Play,
+  Plus,
   Repeat2,
   RotateCcw,
+  Save,
   Send,
+  Trash2,
   X,
 } from 'lucide-react'
-import { type KeyboardEvent, type ReactNode, useState } from 'react'
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useState,
+} from 'react'
 
 import type {
   ExecutionStatus,
   OccurrenceV2,
   ProjectV2,
+  TaskAttachmentLink,
   TaskLifecycleStatus,
   TaskV2,
 } from '../../api/taskDomain'
@@ -207,7 +219,9 @@ export function OccurrenceInspector({
                 <button
                   type="button"
                   className="is-primary"
-                  disabled={!onStart || occurrence.execution_status === 'active' || busy}
+                  disabled={
+                    !onStart || occurrence.execution_status === 'active' || busy
+                  }
                   onClick={() => void onStart?.()}
                 >
                   <Play aria-hidden="true" />
@@ -240,7 +254,8 @@ export function OccurrenceInspector({
             className="td-block-form"
             onSubmit={(event) => {
               event.preventDefault()
-              if (blockedReason.trim() === '' || nextAction.trim() === '') return
+              if (blockedReason.trim() === '' || nextAction.trim() === '')
+                return
               void onBlock?.(blockedReason.trim(), nextAction.trim())
               setBlocking(false)
             }}
@@ -343,7 +358,14 @@ export interface TaskDefinitionInspectorProps {
   onCancel?: () => Promise<unknown> | void
   onRestore?: () => Promise<unknown> | void
   onArchive?: () => Promise<unknown> | void
+  onUpdate?: (input: TaskDefinitionEditInput) => Promise<unknown>
   busy?: boolean
+}
+
+export interface TaskDefinitionEditInput {
+  title: string
+  description: string
+  attachment_links: TaskAttachmentLink[]
 }
 
 export function TaskDefinitionInspector({
@@ -357,8 +379,70 @@ export function TaskDefinitionInspector({
   onCancel,
   onRestore,
   onArchive,
+  onUpdate,
   busy = false,
 }: TaskDefinitionInspectorProps) {
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description ?? '')
+  const [attachmentLinks, setAttachmentLinks] = useState<TaskAttachmentLink[]>(
+    task.attachment_links ?? []
+  )
+  const [editError, setEditError] = useState('')
+
+  function beginEditing() {
+    setTitle(task.title)
+    setDescription(task.description ?? '')
+    setAttachmentLinks(
+      (task.attachment_links ?? []).map((attachment) => ({ ...attachment }))
+    )
+    setEditError('')
+    setEditing(true)
+  }
+
+  function cancelEditing() {
+    setEditError('')
+    setEditing(false)
+  }
+
+  function updateAttachment(index: number, patch: Partial<TaskAttachmentLink>) {
+    setAttachmentLinks((current) =>
+      current.map((attachment, attachmentIndex) =>
+        attachmentIndex === index ? { ...attachment, ...patch } : attachment
+      )
+    )
+  }
+
+  async function saveTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const normalizedTitle = title.trim()
+    if (!normalizedTitle) {
+      setEditError('任务名不能为空。')
+      return
+    }
+    const normalizedLinks: TaskAttachmentLink[] = []
+    for (const attachment of attachmentLinks) {
+      const name = attachment.name.trim()
+      const url = attachment.url.trim()
+      if (!name || !validAttachmentURL(url)) {
+        setEditError('请为每个附件填写名称和有效的 http(s) 链接。')
+        return
+      }
+      normalizedLinks.push({ name, url })
+    }
+    setEditError('')
+    try {
+      await onUpdate?.({
+        title: normalizedTitle,
+        description: description.trim(),
+        attachment_links: normalizedLinks,
+      })
+      setEditing(false)
+    } catch {
+      setEditError('保存失败，请刷新后重试。')
+    }
+  }
+
   return (
     <aside
       className="td-inspector"
@@ -375,6 +459,110 @@ export function TaskDefinitionInspector({
         </button>
       </header>
       <div className="td-inspector-body">
+        {editing ? (
+          <form className="td-task-edit-form" onSubmit={saveTask}>
+            <label>
+              <span>任务名</span>
+              <input
+                aria-label="任务名"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                autoFocus
+              />
+            </label>
+            <label>
+              <span>描述</span>
+              <textarea
+                aria-label="任务描述"
+                value={description}
+                placeholder="补充背景、目标或完成标准"
+                rows={5}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </label>
+            <fieldset className="td-task-attachments-editor">
+              <legend>附件链接</legend>
+              {attachmentLinks.map((attachment, index) => (
+                <div className="td-task-attachment-row" key={index}>
+                  <input
+                    aria-label={`附件 ${index + 1} 名称`}
+                    value={attachment.name}
+                    placeholder="附件名称"
+                    onChange={(event) =>
+                      updateAttachment(index, { name: event.target.value })
+                    }
+                  />
+                  <input
+                    aria-label={`附件 ${index + 1} 链接`}
+                    type="url"
+                    value={attachment.url}
+                    placeholder="https://..."
+                    onChange={(event) =>
+                      updateAttachment(index, { url: event.target.value })
+                    }
+                  />
+                  <button
+                    type="button"
+                    aria-label={`删除附件 ${index + 1}`}
+                    onClick={() =>
+                      setAttachmentLinks((current) =>
+                        current.filter(
+                          (_, attachmentIndex) => attachmentIndex !== index
+                        )
+                      )
+                    }
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="td-add-attachment"
+                disabled={attachmentLinks.length >= 20}
+                onClick={() =>
+                  setAttachmentLinks((current) => [
+                    ...current,
+                    { name: '', url: '' },
+                  ])
+                }
+              >
+                <Plus aria-hidden="true" />
+                添加附件链接
+              </button>
+            </fieldset>
+            {editError ? (
+              <div className="td-inline-error" role="alert">
+                {editError}
+              </div>
+            ) : null}
+            <div className="td-form-actions">
+              <button type="button" onClick={cancelEditing}>
+                取消编辑
+              </button>
+              <button
+                type="submit"
+                className="is-primary"
+                disabled={!onUpdate || busy}
+              >
+                <Save aria-hidden="true" />
+                保存任务
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="td-inspector-links">
+            <span>任务信息</span>
+            <button
+              type="button"
+              disabled={!onUpdate || busy}
+              onClick={beginEditing}
+            >
+              <Pencil aria-hidden="true" />
+              编辑任务
+            </button>
+          </div>
+        )}
         <TaskLifecycleActions
           status={task.lifecycle_status}
           onPublish={onPublish}
@@ -400,6 +588,10 @@ export function TaskDefinitionInspector({
             <dt>优先级</dt>
             <dd>{priorityLabel(task.priority)}</dd>
           </div>
+          <div>
+            <dt>描述</dt>
+            <dd>{task.description || '暂无描述'}</dd>
+          </div>
           {task.task_note_id ? (
             <div>
               <dt>关联笔记</dt>
@@ -407,6 +599,27 @@ export function TaskDefinitionInspector({
             </div>
           ) : null}
         </dl>
+        <div className="td-task-attachments">
+          <div className="td-task-attachments-heading">
+            <span>附件</span>
+            <small>{task.attachment_links?.length ?? 0} 个链接</small>
+          </div>
+          {task.attachment_links?.length ? (
+            <ul>
+              {task.attachment_links.map((attachment) => (
+                <li key={attachment.url}>
+                  <Link2 aria-hidden="true" />
+                  <a href={attachment.url} target="_blank" rel="noreferrer">
+                    {attachment.name}
+                    <ExternalLink aria-hidden="true" />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>暂无附件链接</p>
+          )}
+        </div>
         <div className="td-schedule-summary">
           <span>当前安排</span>
           <strong>{scheduleSummary(occurrences)}</strong>
@@ -430,6 +643,15 @@ export function TaskDefinitionInspector({
       </div>
     </aside>
   )
+}
+
+function validAttachmentURL(value: string) {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 function TaskLifecycleActions({

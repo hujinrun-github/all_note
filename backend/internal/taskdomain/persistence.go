@@ -4,11 +4,22 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/url"
 	"strings"
 	"time"
 )
 
-var ErrInvalidTaskAggregateSnapshot = errors.New("invalid task aggregate persistence snapshot")
+var (
+	ErrInvalidTaskAggregateSnapshot = errors.New("invalid task aggregate persistence snapshot")
+	ErrInvalidTaskAttachmentLinks   = errors.New("invalid task attachment links")
+)
+
+const maxTaskAttachmentLinks = 20
+
+type TaskAttachmentLink struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
 
 type TaskRecord struct {
 	WorkspaceID     string
@@ -18,6 +29,7 @@ type TaskRecord struct {
 	NoteID          string
 	Title           string
 	Description     string
+	AttachmentLinks []TaskAttachmentLink
 	LifecycleStatus TaskLifecycleStatus
 	Priority        int
 	SortOrder       float64
@@ -84,6 +96,9 @@ func ValidateTaskAggregateSnapshot(snapshot TaskAggregateSnapshot) error {
 		snapshot.Task.Revision != 1 || snapshot.Task.Priority < 0 || snapshot.Task.Priority > 3 || !knownTaskLifecycleStatus(snapshot.Task.LifecycleStatus) {
 		return ErrInvalidTaskAggregateSnapshot
 	}
+	if _, err := NormalizeTaskAttachmentLinks(snapshot.Task.AttachmentLinks); err != nil {
+		return err
+	}
 	if snapshot.Schedule.WorkspaceID != workspaceID || snapshot.Schedule.TaskID != taskID || snapshot.Schedule.Revision != 1 || snapshot.Schedule.CurrentScheduleRevision < 1 || len(snapshot.Versions) == 0 {
 		return ErrInvalidTaskAggregateSnapshot
 	}
@@ -128,6 +143,31 @@ func ValidateTaskAggregateSnapshot(snapshot TaskAggregateSnapshot) error {
 	return nil
 }
 
+func NormalizeTaskAttachmentLinks(values []TaskAttachmentLink) ([]TaskAttachmentLink, error) {
+	if len(values) > maxTaskAttachmentLinks {
+		return nil, ErrInvalidTaskAttachmentLinks
+	}
+	result := make([]TaskAttachmentLink, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		name := strings.TrimSpace(value.Name)
+		rawURL := strings.TrimSpace(value.URL)
+		if name == "" || len(name) > 120 || rawURL == "" || len(rawURL) > 2048 {
+			return nil, ErrInvalidTaskAttachmentLinks
+		}
+		parsed, err := url.ParseRequestURI(rawURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return nil, ErrInvalidTaskAttachmentLinks
+		}
+		if _, duplicate := seen[rawURL]; duplicate {
+			return nil, ErrInvalidTaskAttachmentLinks
+		}
+		seen[rawURL] = struct{}{}
+		result = append(result, TaskAttachmentLink{Name: name, URL: rawURL})
+	}
+	return result, nil
+}
+
 func ValidateTaskAggregateWrite(write TaskAggregateWrite) error {
 	aggregate := write.Aggregate
 	if strings.TrimSpace(aggregate.WorkspaceID) == "" || strings.TrimSpace(aggregate.TaskID) == "" ||
@@ -142,6 +182,9 @@ func ValidateTaskAggregateWrite(write TaskAggregateWrite) error {
 			task.LifecycleStatus != aggregate.LifecycleStatus || strings.TrimSpace(task.ProjectID) == "" || strings.TrimSpace(task.Title) == "" ||
 			task.Priority < 0 || task.Priority > 3 || math.IsNaN(task.SortOrder) || math.IsInf(task.SortOrder, 0) {
 			return ErrInvalidTaskAggregateSnapshot
+		}
+		if _, err := NormalizeTaskAttachmentLinks(task.AttachmentLinks); err != nil {
+			return err
 		}
 	}
 	targets := make(map[string]Occurrence, len(aggregate.Occurrences))

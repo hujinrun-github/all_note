@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -88,15 +89,16 @@ type LifecycleCommandRequest struct {
 }
 
 type TaskAttributePatch struct {
-	Title       *string
-	Description *string
-	Priority    *int
-	SortOrder   *float64
-	Project     *ProjectIdentity
-	RoadmapSet  bool
-	Roadmap     *Roadmap
-	TaskNoteSet bool
-	TaskNote    *TaskNoteIdentity
+	Title           *string
+	Description     *string
+	AttachmentLinks *[]TaskAttachmentLink
+	Priority        *int
+	SortOrder       *float64
+	Project         *ProjectIdentity
+	RoadmapSet      bool
+	Roadmap         *Roadmap
+	TaskNoteSet     bool
+	TaskNote        *TaskNoteIdentity
 }
 
 type PatchTaskRequest struct {
@@ -154,7 +156,7 @@ func (result TaskCommandResult) ExecutionLogs() []ExecutionLog {
 	return append([]ExecutionLog(nil), result.executionLogs...)
 }
 func (result TaskCommandResult) IsZero() bool {
-	return result.task == (TaskRecord{}) && result.taskRevision == 0 && result.scheduleRevision == 0 && result.lifecycleStatus == "" &&
+	return reflect.DeepEqual(result.task, TaskRecord{}) && result.taskRevision == 0 && result.scheduleRevision == 0 && result.lifecycleStatus == "" &&
 		len(result.occurrenceRevisions) == 0 && len(result.executionLogs) == 0 && result.audit == (TaskCommandAudit{})
 }
 
@@ -285,7 +287,7 @@ func validatePatchTaskRequest(service *TaskService, request PatchTaskRequest) er
 }
 
 func taskAttributePatchHasChanges(patch TaskAttributePatch) bool {
-	return patch.Title != nil || patch.Description != nil || patch.Priority != nil || patch.SortOrder != nil ||
+	return patch.Title != nil || patch.Description != nil || patch.AttachmentLinks != nil || patch.Priority != nil || patch.SortOrder != nil ||
 		patch.Project != nil || patch.RoadmapSet || patch.TaskNoteSet
 }
 
@@ -296,6 +298,13 @@ func applyTaskAttributePatch(current TaskRecord, workspaceID string, patch TaskA
 	}
 	if patch.Description != nil {
 		after.Description = *patch.Description
+	}
+	if patch.AttachmentLinks != nil {
+		links, err := NormalizeTaskAttachmentLinks(*patch.AttachmentLinks)
+		if err != nil {
+			return current, ErrInvalidTaskCommand
+		}
+		after.AttachmentLinks = links
 	}
 	if patch.Priority != nil {
 		after.Priority = *patch.Priority

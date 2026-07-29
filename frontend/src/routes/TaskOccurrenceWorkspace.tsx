@@ -26,6 +26,7 @@ import {
   useStartOccurrenceMutation,
   useTaskDefinitions,
   useUnblockOccurrenceMutation,
+  useUpdateTaskDefinitionMutation,
 } from '../hooks/useTaskDomain'
 import { useUIStore } from '../stores/ui'
 
@@ -102,6 +103,7 @@ export default function TaskOccurrenceWorkspace() {
   const cancelTask = useCancelTaskMutation()
   const restoreTask = useRestoreTaskMutation()
   const archiveTask = useArchiveTaskMutation()
+  const updateTask = useUpdateTaskDefinitionMutation()
 
   const occurrenceQueries = {
     inbox: inboxQuery,
@@ -191,6 +193,7 @@ export default function TaskOccurrenceWorkspace() {
     ? definitionsByID.get(editingOccurrence.task_id)
     : undefined
   const commandBusy = [
+    updateTask,
     completeOccurrence,
     startOccurrence,
     blockOccurrence,
@@ -730,6 +733,17 @@ export default function TaskOccurrenceWorkspace() {
             busy={commandBusy}
             onClose={() =>
               updateSearchParams({ occurrence_id: null, task_id: null })
+            }
+            onUpdate={(input) =>
+              updateTask.mutateAsync({
+                projectID: selectedTask.project_id,
+                taskID: selectedTask.id,
+                input: {
+                  ...input,
+                  expected_task_revision: selectedTask.revision,
+                  expected_schedule_revision: selectedTask.schedule_revision,
+                },
+              })
             }
             onPublish={() =>
               handleTaskCommand(() =>

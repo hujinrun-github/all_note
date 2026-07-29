@@ -92,6 +92,11 @@ describe('Task occurrence workspace', () => {
     vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.useArchiveTaskMutation>
     )
+    vi.mocked(taskHooks.useUpdateTaskDefinitionMutation).mockReturnValue(
+      idleMutation() as ReturnType<
+        typeof taskHooks.useUpdateTaskDefinitionMutation
+      >
+    )
   })
 
   it('keeps upcoming selected by default and never mixes overdue into it', async () => {

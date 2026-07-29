@@ -404,6 +404,7 @@ describe('task definition update client', () => {
       project_id: 'project-2',
       roadmap_node_id: '',
       task_note_id: '',
+      attachment_links: [{ name: '需求文档', url: 'https://example.com/spec' }],
       lifecycle_status: 'cancelled',
       schedule: { timing_type: 'unscheduled' },
       execution_status: 'done',
@@ -422,6 +423,7 @@ describe('task definition update client', () => {
       project_id: 'project-2',
       roadmap_node_id: '',
       task_note_id: '',
+      attachment_links: [{ name: '需求文档', url: 'https://example.com/spec' }],
     })
   })
 

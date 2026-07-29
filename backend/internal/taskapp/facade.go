@@ -590,6 +590,7 @@ type PatchTaskRequest struct {
 	ExpectedScheduleRevision int64
 	Title                    *string
 	Description              *string
+	AttachmentLinks          *[]taskdomain.TaskAttachmentLink
 	Priority                 *int
 	SortOrder                *float64
 	ProjectID                *string
@@ -599,7 +600,7 @@ type PatchTaskRequest struct {
 
 func (facade *Facade) PatchTask(ctx context.Context, request PatchTaskRequest) (TaskCommandOutcome, error) {
 	if !validWorkspaceActorEntity(request.WorkspaceID, request.ActorID, request.TaskID) ||
-		(request.Title == nil && request.Description == nil && request.Priority == nil && request.SortOrder == nil &&
+		(request.Title == nil && request.Description == nil && request.AttachmentLinks == nil && request.Priority == nil && request.SortOrder == nil &&
 			request.ProjectID == nil && request.RoadmapNodeID == nil && request.NoteID == nil) {
 		return TaskCommandOutcome{}, ErrInvalidRequest
 	}
@@ -617,7 +618,8 @@ func (facade *Facade) PatchTask(ctx context.Context, request PatchTaskRequest) (
 	}
 	projectID := current.Task.ProjectID
 	patch := taskdomain.TaskAttributePatch{
-		Title: cloneString(request.Title), Description: cloneString(request.Description), Priority: cloneInt(request.Priority), SortOrder: cloneFloat64(request.SortOrder),
+		Title: cloneString(request.Title), Description: cloneString(request.Description), AttachmentLinks: cloneTaskAttachmentLinksPointer(request.AttachmentLinks),
+		Priority: cloneInt(request.Priority), SortOrder: cloneFloat64(request.SortOrder),
 	}
 	if request.ProjectID != nil {
 		projectID = strings.TrimSpace(*request.ProjectID)
@@ -1313,6 +1315,7 @@ func cloneOccurrenceRecords(values []taskdomain.OccurrenceRecord) []taskdomain.O
 
 func cloneTaskAggregateQueryResult(value taskdomain.TaskAggregateQueryResult) taskdomain.TaskAggregateQueryResult {
 	result := value
+	result.Task.AttachmentLinks = append([]taskdomain.TaskAttachmentLink(nil), value.Task.AttachmentLinks...)
 	result.Aggregate.Occurrences = make([]taskdomain.Occurrence, len(value.Aggregate.Occurrences))
 	for index, occurrence := range value.Aggregate.Occurrences {
 		result.Aggregate.Occurrences[index] = occurrence
@@ -1322,6 +1325,14 @@ func cloneTaskAggregateQueryResult(value taskdomain.TaskAggregateQueryResult) ta
 	result.Versions = append([]taskdomain.ScheduleVersion(nil), value.Versions...)
 	result.Occurrences = cloneQueryOccurrences(value.Occurrences)
 	return result
+}
+
+func cloneTaskAttachmentLinksPointer(value *[]taskdomain.TaskAttachmentLink) *[]taskdomain.TaskAttachmentLink {
+	if value == nil {
+		return nil
+	}
+	result := append([]taskdomain.TaskAttachmentLink(nil), (*value)...)
+	return &result
 }
 
 func cloneLifecycleExpected(value taskdomain.LifecycleExpectedRevisions) taskdomain.LifecycleExpectedRevisions {

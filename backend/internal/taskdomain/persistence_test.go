@@ -36,6 +36,33 @@ func TestValidateTaskAggregateSnapshot(t *testing.T) {
 	}
 }
 
+func TestNormalizeTaskAttachmentLinks(t *testing.T) {
+	got, err := NormalizeTaskAttachmentLinks([]TaskAttachmentLink{{
+		Name: " 需求文档 ",
+		URL:  " https://example.com/spec?id=1 ",
+	}})
+	if err != nil {
+		t.Fatalf("NormalizeTaskAttachmentLinks() unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "需求文档" || got[0].URL != "https://example.com/spec?id=1" {
+		t.Fatalf("normalized links = %#v", got)
+	}
+
+	for _, links := range [][]TaskAttachmentLink{
+		{{Name: "", URL: "https://example.com/spec"}},
+		{{Name: "本地文件", URL: "file:///tmp/spec.pdf"}},
+		{{Name: "无主机", URL: "https:///spec"}},
+		{
+			{Name: "需求文档", URL: "https://example.com/spec"},
+			{Name: "重复链接", URL: "https://example.com/spec"},
+		},
+	} {
+		if _, err := NormalizeTaskAttachmentLinks(links); !errors.Is(err, ErrInvalidTaskAttachmentLinks) {
+			t.Fatalf("links %#v error = %v, want %v", links, err, ErrInvalidTaskAttachmentLinks)
+		}
+	}
+}
+
 func TestValidateTaskAggregateSnapshotAllowsRecurringRuleBeforeInitialWindow(t *testing.T) {
 	snapshot := TaskAggregateSnapshot{
 		Task: TaskRecord{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -280,7 +281,7 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 			})
 		}
 		afterInvalidReferences, err := reader.GetTaskAggregate(ctx, "catalog-draft")
-		if err != nil || afterInvalidReferences.Task != current.Task {
+		if err != nil || !reflect.DeepEqual(afterInvalidReferences.Task, current.Task) {
 			t.Fatalf("invalid references changed task: %#v err=%v", afterInvalidReferences.Task, err)
 		}
 
@@ -290,6 +291,10 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		task.Description = "patched description"
 		task.Priority = 3
 		task.SortOrder = -5
+		task.AttachmentLinks = []taskdomain.TaskAttachmentLink{{
+			Name: "需求文档",
+			URL:  "https://example.com/spec",
+		}}
 		task.Revision++
 		next := current.Aggregate
 		next.Revision++
@@ -310,6 +315,9 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		if updated.Task.ProjectID != "query-other" || updated.Task.Title != task.Title || updated.Task.Description != task.Description ||
 			updated.Task.Priority != 3 || updated.Task.SortOrder != -5 || updated.Task.Revision != 2 || updated.Aggregate.Revision != 2 {
 			t.Fatalf("task attribute patch was incomplete: %#v", updated.Task)
+		}
+		if !reflect.DeepEqual(updated.Task.AttachmentLinks, task.AttachmentLinks) {
+			t.Fatalf("task attachment links were not persisted: %#v", updated.Task.AttachmentLinks)
 		}
 		moved, err := reader.ListTaskDefinitions(ctx, taskdomain.TaskDefinitionListFilter{ProjectID: "query-other"})
 		if err != nil {

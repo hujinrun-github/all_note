@@ -179,6 +179,7 @@ export default function ProjectDetail() {
     ? Math.round((completedTasks.length / actionableTasks.length) * 100)
     : 0
   const commandBusy = [
+    updateTask,
     publishTask,
     pauseTask,
     resumeTask,
@@ -772,6 +773,17 @@ export default function ProjectDetail() {
             occurrences={selectedTaskOccurrences}
             busy={commandBusy}
             onClose={() => updateSearchParams({ task_id: null })}
+            onUpdate={(input) =>
+              updateTask.mutateAsync({
+                projectID,
+                taskID: selectedTask.id,
+                input: {
+                  ...input,
+                  expected_task_revision: selectedTask.revision,
+                  expected_schedule_revision: selectedTask.schedule_revision,
+                },
+              })
+            }
             onPublish={() =>
               handleTaskCommand(() =>
                 publishTask.mutateAsync(taskCommandVariables(selectedTask))
