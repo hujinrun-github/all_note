@@ -59,7 +59,22 @@ func TestPostgresAdoptExistingTenantIsIdempotentAndAllowsV2Migration(t *testing.
 	if err := provider.MigrateTenant(context.Background(), cfg); err != nil {
 		t.Fatalf("migrate adopted tenant: %v", err)
 	}
-	assertRowCount(t, db, `SELECT COUNT(*) FROM tenant_schema_migrations`, 5)
+	migrationsDir, err := findPostgresTenantMigrationsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := loadPostgresTenantMigrations(migrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRowCount(t, db, `SELECT COUNT(*) FROM tenant_schema_migrations`, len(migrations))
+	for _, migration := range migrations {
+		assertRowCount(t, db,
+			`SELECT COUNT(*) FROM tenant_schema_migrations WHERE version=$1`,
+			1,
+			migration.version,
+		)
+	}
 	assertRowCount(t, db, `
 		SELECT COUNT(*) FROM workspace_task_domain_state
 		WHERE workspace_id='workspace-adopt'

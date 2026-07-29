@@ -114,11 +114,11 @@ func validatePostgresTestSchemaName(schema string) error {
 	}
 }
 
-func assertRowCount(t *testing.T, db *sql.DB, query string, want int) {
+func assertRowCount(t *testing.T, db *sql.DB, query string, want int, args ...any) {
 	t.Helper()
 
 	var got int
-	if err := db.QueryRow(query).Scan(&got); err != nil {
+	if err := db.QueryRow(query, args...).Scan(&got); err != nil {
 		t.Fatalf("query row count: %v", err)
 	}
 	if got != want {
