@@ -31,6 +31,11 @@ type SnapshotPageToken struct {
 	ExpiresAt      int64        `json:"expires_at"`
 }
 
+type ChangeCursorToken struct {
+	Binding  TokenBinding `json:"binding"`
+	Sequence string       `json:"sequence"`
+}
+
 type TokenCodec struct{ secret []byte }
 
 func NewTokenCodec(secret string) TokenCodec { return TokenCodec{secret: []byte(secret)} }
@@ -51,20 +56,62 @@ func (codec TokenCodec) EncodeSnapshotPage(page SnapshotPageToken) (string, erro
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
+func (codec TokenCodec) EncodeChangeCursor(cursor ChangeCursorToken) (string, error) {
+	if len(codec.secret) == 0 || !validBinding(cursor.Binding) || !validDecimal(cursor.Sequence) {
+		return "", ErrInvalidToken
+	}
+	payload, err := json.Marshal(struct {
+		Version int               `json:"version"`
+		Kind    string            `json:"kind"`
+		Value   ChangeCursorToken `json:"value"`
+	}{Version: 2, Kind: "change-cursor", Value: cursor})
+	if err != nil {
+		return "", err
+	}
+	signature := codec.sign(payload)
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func (codec TokenCodec) DecodeChangeCursor(token string, expected TokenBinding) (ChangeCursorToken, error) {
+	if !validBinding(expected) {
+		return ChangeCursorToken{}, ErrInvalidToken
+	}
+	cursor, err := codec.DecodeChangeCursorToken(token)
+	if err != nil || !equalBinding(cursor.Binding, expected) {
+		return ChangeCursorToken{}, ErrInvalidToken
+	}
+	return cursor, nil
+}
+
+func (codec TokenCodec) DecodeChangeCursorToken(token string) (ChangeCursorToken, error) {
+	if len(codec.secret) == 0 {
+		return ChangeCursorToken{}, ErrInvalidToken
+	}
+	payload, err := codec.decodeSignedPayload(token)
+	if err != nil {
+		return ChangeCursorToken{}, err
+	}
+	var envelope struct {
+		Version int               `json:"version"`
+		Kind    string            `json:"kind"`
+		Value   ChangeCursorToken `json:"value"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil || envelope.Version != 2 || envelope.Kind != "change-cursor" {
+		return ChangeCursorToken{}, ErrInvalidToken
+	}
+	cursor := envelope.Value
+	if !validBinding(cursor.Binding) || !validDecimal(cursor.Sequence) {
+		return ChangeCursorToken{}, ErrInvalidToken
+	}
+	return cursor, nil
+}
+
 func (codec TokenCodec) DecodeSnapshotPage(token string, expected TokenBinding) (SnapshotPageToken, error) {
 	if len(codec.secret) == 0 || !validBinding(expected) {
 		return SnapshotPageToken{}, ErrInvalidToken
 	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return SnapshotPageToken{}, ErrInvalidToken
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	payload, err := codec.decodeSignedPayload(token)
 	if err != nil {
-		return SnapshotPageToken{}, ErrInvalidToken
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || subtle.ConstantTimeCompare(signature, codec.sign(payload)) != 1 {
 		return SnapshotPageToken{}, ErrInvalidToken
 	}
 	var envelope struct {
@@ -82,6 +129,22 @@ func (codec TokenCodec) DecodeSnapshotPage(token string, expected TokenBinding) 
 	return page, nil
 }
 
+func (codec TokenCodec) decodeSignedPayload(token string) ([]byte, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return nil, ErrInvalidToken
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || subtle.ConstantTimeCompare(signature, codec.sign(payload)) != 1 {
+		return nil, ErrInvalidToken
+	}
+	return payload, nil
+}
+
 func (codec TokenCodec) sign(payload []byte) []byte {
 	mac := hmac.New(sha256.New, codec.secret)
 	_, _ = mac.Write(payload)
@@ -89,7 +152,9 @@ func (codec TokenCodec) sign(payload []byte) []byte {
 }
 
 func validBinding(binding TokenBinding) bool {
-	if binding.WorkspaceID == "" || binding.ContractEpoch == "" || binding.RuntimeEpoch == "" || binding.TaskModelVersion < 2 || binding.ScopeGeneration == "" {
+	if binding.WorkspaceID == "" || !validPositiveDecimal(binding.ContractEpoch) ||
+		!validPositiveDecimal(binding.RuntimeEpoch) || binding.TaskModelVersion < 2 ||
+		binding.ScopeGeneration == "" {
 		return false
 	}
 	switch binding.Scope {
@@ -114,4 +179,20 @@ func equalOptionalString(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+func validDecimal(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPositiveDecimal(value string) bool {
+	return validDecimal(value) && value != "0"
 }

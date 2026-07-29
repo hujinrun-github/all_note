@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
@@ -36,10 +39,23 @@ func (w *TenantWriter) BeginFencedWrite(ctx context.Context, workspaceID string,
 	// transactional outbox), so this is deliberately a task-domain write
 	// boundary. Non-task tenant writes must use a different writer rather than
 	// calling this method and accidentally setting v2_first_write_at.
-	return w.beginTaskDomainFencedWrite(ctx, workspaceID, expectedEpoch, fn)
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, true, fn)
 }
 
-func (w *TenantWriter) beginTaskDomainFencedWrite(ctx context.Context, workspaceID string, expectedEpoch int64, fn func(storage.TenantWriteTx) error) error {
+func (w *TenantWriter) BeginFencedMobileV2Write(ctx context.Context, workspaceID string, expectedEpoch int64, fn func(storage.MobileV2TenantWriteTx) error) error {
+	if fn == nil {
+		return errors.New("mobile-v2 tenant write callback is nil")
+	}
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, false, func(tx storage.TenantWriteTx) error {
+		mobileTx, ok := tx.(storage.MobileV2TenantWriteTx)
+		if !ok {
+			return errors.New("tenant transaction does not expose mobile-v2 capabilities")
+		}
+		return fn(mobileTx)
+	})
+}
+
+func (w *TenantWriter) beginFencedWrite(ctx context.Context, workspaceID string, expectedEpoch int64, markTaskDomainWrite bool, fn func(storage.TenantWriteTx) error) error {
 	gate := w.gate(workspaceID)
 	gate.RLock()
 	defer gate.RUnlock()
@@ -57,7 +73,9 @@ func (w *TenantWriter) beginTaskDomainFencedWrite(ctx context.Context, workspace
 		return err
 	}
 	committed := false
-	tx := &sqliteTenantWriteTx{conn: conn, workspaceID: workspaceID}
+	tx := &sqliteTenantWriteTx{
+		conn: conn, workspaceID: workspaceID, mobileV2Changes: storage.NewMobileV2TaskChanges(),
+	}
 	defer func() {
 		tx.closed = true
 		if !committed {
@@ -67,11 +85,28 @@ func (w *TenantWriter) beginTaskDomainFencedWrite(ctx context.Context, workspace
 	if err := checkSQLiteTenantFence(ctx, conn, workspaceID, expectedEpoch, "active"); err != nil {
 		return err
 	}
+	var initialMobileV2Sequence uint64
+	if markTaskDomainWrite {
+		initialMobileV2Sequence, err = mobilev2change.LockCommitHead(
+			ctx, conn, mobilev2projection.DialectSQLite, workspaceID,
+		)
+		if err != nil {
+			return err
+		}
+	}
 	if err := fn(tx); err != nil {
 		return err
 	}
-	if err := markSQLiteTaskDomainV2FirstWrite(ctx, conn, workspaceID); err != nil {
-		return err
+	if markTaskDomainWrite {
+		if err := mobilev2change.AppendTaskChanges(
+			ctx, conn, mobilev2projection.DialectSQLite, workspaceID,
+			initialMobileV2Sequence, tx.mobileV2Changes.Snapshot(), time.Now().UTC(),
+		); err != nil {
+			return err
+		}
+		if err := markSQLiteTaskDomainV2FirstWrite(ctx, conn, workspaceID); err != nil {
+			return err
+		}
 	}
 	tx.closed = true
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
@@ -187,32 +222,45 @@ func (w *TenantWriter) ActivateWorkspace(ctx context.Context, workspaceID string
 }
 
 type sqliteTenantWriteTx struct {
-	conn        *sql.Conn
-	workspaceID string
-	closed      bool
+	conn            *sql.Conn
+	workspaceID     string
+	closed          bool
+	mobileV2Changes *storage.MobileV2TaskChanges
+}
+
+func (tx *sqliteTenantWriteTx) TaskDomainReader() taskdomain.TaskDomainReader {
+	return &sqliteTaskDomainV2ProjectReader{queryer: tx.conn, workspaceID: tx.workspaceID}
+}
+
+func (tx *sqliteTenantWriteTx) MobileV2SQLRunner() storage.TenantSQLRunner {
+	return tx.conn
 }
 
 func (tx *sqliteTenantWriteTx) TaskDomainWriter() taskdomain.TaskDomainWriter {
-	return &sqliteTaskDomainV2ProjectWriter{
+	return storage.TrackTaskDomainWriter(&sqliteTaskDomainV2ProjectWriter{
 		queryer:     tx.conn,
 		workspaceID: tx.workspaceID,
 		isClosed:    func() bool { return tx.closed },
-	}
+	}, tx.mobileV2Changes)
 }
 
 func (tx *sqliteTenantWriteTx) ScheduleCommandWriter() taskdomain.ScheduleCommandWriter {
-	return &sqliteTaskDomainV2ProjectWriter{
+	return storage.TrackScheduleWriter(&sqliteTaskDomainV2ProjectWriter{
 		queryer:     tx.conn,
 		workspaceID: tx.workspaceID,
 		isClosed:    func() bool { return tx.closed },
-	}
+	}, tx.mobileV2Changes)
 }
 
 func (tx *sqliteTenantWriteTx) ProjectWriter() taskdomain.ProjectWriter {
-	return &sqliteProjectCommandWriter{delegate: tx.taskDomainWriter()}
+	return storage.TrackProjectWriter(
+		&sqliteProjectCommandWriter{delegate: tx.taskDomainWriter()}, tx.mobileV2Changes,
+	)
 }
 
-func (tx *sqliteTenantWriteTx) RoadmapWriter() taskdomain.RoadmapWriter { return tx.taskDomainWriter() }
+func (tx *sqliteTenantWriteTx) RoadmapWriter() taskdomain.RoadmapWriter {
+	return storage.TrackRoadmapWriter(tx.taskDomainWriter(), tx.mobileV2Changes)
+}
 
 func (tx *sqliteTenantWriteTx) GetRoadmapByProject(ctx context.Context, id string) (taskdomain.RoadmapSnapshot, error) {
 	return tx.taskDomainWriter().GetRoadmapByProject(ctx, id)
@@ -244,11 +292,19 @@ func (tx *sqliteTenantWriteTx) ListGenerationTargets(ctx context.Context) ([]tas
 }
 
 func (tx *sqliteTenantWriteTx) InsertMissingOccurrences(ctx context.Context, insert taskdomain.GenerationInsert) error {
-	return tx.taskDomainWriter().InsertMissingOccurrences(ctx, insert)
+	if err := tx.taskDomainWriter().InsertMissingOccurrences(ctx, insert); err != nil {
+		return err
+	}
+	tx.mobileV2Changes.TrackGenerationInsert(insert)
+	return nil
 }
 
 func (tx *sqliteTenantWriteTx) CompleteGeneration(ctx context.Context, completion taskdomain.GenerationCompletion) error {
-	return tx.taskDomainWriter().CompleteGeneration(ctx, completion)
+	if err := tx.taskDomainWriter().CompleteGeneration(ctx, completion); err != nil {
+		return err
+	}
+	tx.mobileV2Changes.TrackGenerationCompletion(completion)
+	return nil
 }
 
 func (tx *sqliteTenantWriteTx) taskDomainWriter() *sqliteTaskDomainV2ProjectWriter {
@@ -306,6 +362,8 @@ func classifySQLiteTenantFenceFailure(ctx context.Context, db *sql.DB, workspace
 }
 
 var _ storage.TenantFencedWriter = (*TenantWriter)(nil)
+var _ storage.MobileV2TenantFencedWriter = (*TenantWriter)(nil)
+var _ storage.MobileV2TenantWriteTx = (*sqliteTenantWriteTx)(nil)
 var _ storage.TenantMigrationFencer = (*TenantWriter)(nil)
 var _ taskdomain.ScheduleCommandFencer = (*TenantWriter)(nil)
 var _ taskdomain.ProjectCommandFencer = (*TenantWriter)(nil)

@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 )
@@ -34,12 +37,21 @@ func (w *TenantWriter) BeginFencedWrite(ctx context.Context, workspaceID string,
 	// transactional outbox), so this is deliberately a task-domain write
 	// boundary. Non-task tenant writes must use a different writer rather than
 	// calling beginTaskDomainFencedWrite and accidentally setting v2_first_write_at.
-	return w.beginTaskDomainFencedWrite(ctx, workspaceID, expectedEpoch, `FOR SHARE`, func(tx *postgresTenantWriteTx) error {
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, `FOR SHARE`, true, func(tx *postgresTenantWriteTx) error {
 		return fn(tx)
 	})
 }
 
-func (w *TenantWriter) beginTaskDomainFencedWrite(ctx context.Context, workspaceID string, expectedEpoch int64, lockClause string, fn func(*postgresTenantWriteTx) error) error {
+func (w *TenantWriter) BeginFencedMobileV2Write(ctx context.Context, workspaceID string, expectedEpoch int64, fn func(storage.MobileV2TenantWriteTx) error) error {
+	if fn == nil {
+		return errors.New("mobile-v2 tenant write callback is nil")
+	}
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, `FOR SHARE`, false, func(tx *postgresTenantWriteTx) error {
+		return fn(tx)
+	})
+}
+
+func (w *TenantWriter) beginFencedWrite(ctx context.Context, workspaceID string, expectedEpoch int64, lockClause string, markTaskDomainWrite bool, fn func(*postgresTenantWriteTx) error) error {
 	db, err := w.provider.openWithoutMigrations(ctx, w.cfg)
 	if err != nil {
 		return err
@@ -50,7 +62,9 @@ func (w *TenantWriter) beginTaskDomainFencedWrite(ctx context.Context, workspace
 		return err
 	}
 	committed := false
-	writeTx := &postgresTenantWriteTx{tx: tx, workspaceID: workspaceID}
+	writeTx := &postgresTenantWriteTx{
+		tx: tx, workspaceID: workspaceID, mobileV2Changes: storage.NewMobileV2TaskChanges(),
+	}
 	defer func() {
 		writeTx.closed = true
 		if !committed {
@@ -60,11 +74,28 @@ func (w *TenantWriter) beginTaskDomainFencedWrite(ctx context.Context, workspace
 	if err := checkPostgresTenantFence(ctx, tx, workspaceID, expectedEpoch, "active", lockClause); err != nil {
 		return err
 	}
+	var initialMobileV2Sequence uint64
+	if markTaskDomainWrite {
+		initialMobileV2Sequence, err = mobilev2change.LockCommitHead(
+			ctx, tx, mobilev2projection.DialectPostgres, workspaceID,
+		)
+		if err != nil {
+			return err
+		}
+	}
 	if err := fn(writeTx); err != nil {
 		return err
 	}
-	if err := markPostgresTaskDomainV2FirstWrite(ctx, tx, workspaceID); err != nil {
-		return err
+	if markTaskDomainWrite {
+		if err := mobilev2change.AppendTaskChanges(
+			ctx, tx, mobilev2projection.DialectPostgres, workspaceID,
+			initialMobileV2Sequence, writeTx.mobileV2Changes.Snapshot(), time.Now().UTC(),
+		); err != nil {
+			return err
+		}
+		if err := markPostgresTaskDomainV2FirstWrite(ctx, tx, workspaceID); err != nil {
+			return err
+		}
 	}
 	writeTx.closed = true
 	if err := tx.Commit(); err != nil {
@@ -101,7 +132,7 @@ func (w *TenantWriter) BeginFencedProjectWrite(ctx context.Context, workspaceID 
 	// Project completion must serialize its count-and-save decision with every
 	// normal tenant write. Normal writes hold FOR SHARE on this anchor; taking
 	// FOR UPDATE here closes the count/occurrence-create race across instances.
-	return w.beginTaskDomainFencedWrite(ctx, workspaceID, expectedEpoch, `FOR UPDATE`, func(tx *postgresTenantWriteTx) error {
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, `FOR UPDATE`, true, func(tx *postgresTenantWriteTx) error {
 		return fn(tx)
 	})
 }
@@ -119,7 +150,7 @@ func (w *TenantWriter) BeginFencedCompletionWrite(ctx context.Context, workspace
 	}
 	// The natural-completion proof and its task CAS must observe one stable
 	// workspace write boundary, including occurrence reopen and generation.
-	return w.beginTaskDomainFencedWrite(ctx, workspaceID, expectedEpoch, `FOR UPDATE`, func(tx *postgresTenantWriteTx) error {
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, `FOR UPDATE`, true, func(tx *postgresTenantWriteTx) error {
 		return fn(tx)
 	})
 }
@@ -128,7 +159,7 @@ func (w *TenantWriter) BeginGenerationWrite(ctx context.Context, workspaceID str
 	if fn == nil {
 		return errors.New("generation write callback is nil")
 	}
-	return w.beginTaskDomainFencedWrite(ctx, workspaceID, expectedEpoch, `FOR UPDATE`, func(tx *postgresTenantWriteTx) error {
+	return w.beginFencedWrite(ctx, workspaceID, expectedEpoch, `FOR UPDATE`, true, func(tx *postgresTenantWriteTx) error {
 		return fn(tx, tx)
 	})
 }
@@ -188,33 +219,44 @@ func (w *TenantWriter) ActivateWorkspace(ctx context.Context, workspaceID string
 }
 
 type postgresTenantWriteTx struct {
-	tx          *sql.Tx
-	workspaceID string
-	closed      bool
+	tx              *sql.Tx
+	workspaceID     string
+	closed          bool
+	mobileV2Changes *storage.MobileV2TaskChanges
+}
+
+func (tx *postgresTenantWriteTx) TaskDomainReader() taskdomain.TaskDomainReader {
+	return &postgresTaskDomainV2ProjectReader{queryer: tx.tx, workspaceID: tx.workspaceID}
+}
+
+func (tx *postgresTenantWriteTx) MobileV2SQLRunner() storage.TenantSQLRunner {
+	return tx.tx
 }
 
 func (tx *postgresTenantWriteTx) TaskDomainWriter() taskdomain.TaskDomainWriter {
-	return &postgresTaskDomainV2ProjectWriter{
+	return storage.TrackTaskDomainWriter(&postgresTaskDomainV2ProjectWriter{
 		queryer:     tx.tx,
 		workspaceID: tx.workspaceID,
 		isClosed:    func() bool { return tx.closed },
-	}
+	}, tx.mobileV2Changes)
 }
 
 func (tx *postgresTenantWriteTx) ScheduleCommandWriter() taskdomain.ScheduleCommandWriter {
-	return &postgresTaskDomainV2ProjectWriter{
+	return storage.TrackScheduleWriter(&postgresTaskDomainV2ProjectWriter{
 		queryer:     tx.tx,
 		workspaceID: tx.workspaceID,
 		isClosed:    func() bool { return tx.closed },
-	}
+	}, tx.mobileV2Changes)
 }
 
 func (tx *postgresTenantWriteTx) ProjectWriter() taskdomain.ProjectWriter {
-	return &postgresProjectCommandWriter{delegate: tx.taskDomainWriter()}
+	return storage.TrackProjectWriter(
+		&postgresProjectCommandWriter{delegate: tx.taskDomainWriter()}, tx.mobileV2Changes,
+	)
 }
 
 func (tx *postgresTenantWriteTx) RoadmapWriter() taskdomain.RoadmapWriter {
-	return tx.taskDomainWriter()
+	return storage.TrackRoadmapWriter(tx.taskDomainWriter(), tx.mobileV2Changes)
 }
 func (tx *postgresTenantWriteTx) GetRoadmapByProject(ctx context.Context, id string) (taskdomain.RoadmapSnapshot, error) {
 	return tx.taskDomainWriter().GetRoadmapByProject(ctx, id)
@@ -246,11 +288,19 @@ func (tx *postgresTenantWriteTx) ListGenerationTargets(ctx context.Context) ([]t
 }
 
 func (tx *postgresTenantWriteTx) InsertMissingOccurrences(ctx context.Context, insert taskdomain.GenerationInsert) error {
-	return tx.taskDomainWriter().InsertMissingOccurrences(ctx, insert)
+	if err := tx.taskDomainWriter().InsertMissingOccurrences(ctx, insert); err != nil {
+		return err
+	}
+	tx.mobileV2Changes.TrackGenerationInsert(insert)
+	return nil
 }
 
 func (tx *postgresTenantWriteTx) CompleteGeneration(ctx context.Context, completion taskdomain.GenerationCompletion) error {
-	return tx.taskDomainWriter().CompleteGeneration(ctx, completion)
+	if err := tx.taskDomainWriter().CompleteGeneration(ctx, completion); err != nil {
+		return err
+	}
+	tx.mobileV2Changes.TrackGenerationCompletion(completion)
+	return nil
 }
 
 func (tx *postgresTenantWriteTx) taskDomainWriter() *postgresTaskDomainV2ProjectWriter {
@@ -294,6 +344,8 @@ func checkPostgresTenantFence(ctx context.Context, queryer postgresFenceQueryer,
 }
 
 var _ storage.TenantFencedWriter = (*TenantWriter)(nil)
+var _ storage.MobileV2TenantFencedWriter = (*TenantWriter)(nil)
+var _ storage.MobileV2TenantWriteTx = (*postgresTenantWriteTx)(nil)
 var _ storage.TenantMigrationFencer = (*TenantWriter)(nil)
 var _ taskdomain.ScheduleCommandFencer = (*TenantWriter)(nil)
 var _ taskdomain.ProjectCommandFencer = (*TenantWriter)(nil)

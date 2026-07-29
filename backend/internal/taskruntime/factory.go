@@ -2,6 +2,7 @@ package taskruntime
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,7 +16,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/tenantruntime"
 )
 
-const ExpectedTenantSchemaVersion = "0003_task_domain_legacy_migration.sql"
+const ExpectedTenantSchemaVersion = "0007_mobile_v2_content_domain.sql"
 
 var (
 	ErrTaskDomainNotServingV2  = errors.New("workspace task domain is not serving v2")
@@ -116,6 +117,10 @@ func (f *Factory) Build(ctx context.Context, snapshot tenantruntime.Snapshot) (t
 	if !ok {
 		return nil, ErrTaskRuntimeType
 	}
+	sqlStore, ok := store.(storage.SQLStore)
+	if !ok || sqlStore.SQLDB() == nil {
+		return nil, ErrTaskRuntimeType
+	}
 	state, err := runtimeStore.LoadTaskDomainRuntimeState(ctx, snapshot.WorkspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("load task-domain runtime state: %w", err)
@@ -180,6 +185,9 @@ func (f *Factory) Build(ctx context.Context, snapshot tenantruntime.Snapshot) (t
 	resource := &Resource{
 		store:        store,
 		runtimeStore: runtimeStore,
+		db:           sqlStore.SQLDB(),
+		driver:       endpoint.Storage.Driver,
+		writer:       writer,
 		workspaceID:  snapshot.WorkspaceID,
 		epoch:        state.Epoch,
 		generation:   generationFencer,
@@ -254,6 +262,9 @@ type Resource struct {
 	mu           sync.RWMutex
 	store        storage.Store
 	runtimeStore storage.TaskDomainRuntimeStore
+	db           *sql.DB
+	driver       storage.Driver
+	writer       storage.TenantFencedWriter
 	workspaceID  string
 	epoch        int64
 	application  taskapp.RuntimeSnapshot
@@ -261,6 +272,15 @@ type Resource struct {
 	closeOnce    sync.Once
 	closeErr     error
 	closed       bool
+}
+
+type MobileRuntimeSnapshot struct {
+	WorkspaceID string
+	Epoch       int64
+	Driver      storage.Driver
+	DB          *sql.DB
+	Writer      storage.TenantFencedWriter
+	Application taskapp.RuntimeSnapshot
 }
 
 func (r *Resource) ApplicationSnapshot(ctx context.Context) (taskapp.RuntimeSnapshot, error) {
@@ -286,6 +306,43 @@ func (r *Resource) ApplicationSnapshot(ctx context.Context) (taskapp.RuntimeSnap
 		return taskapp.RuntimeSnapshot{}, ErrTaskRuntimeModelChanged
 	}
 	return application, nil
+}
+
+func (r *Resource) MobileRuntimeSnapshot(ctx context.Context) (MobileRuntimeSnapshot, error) {
+	if r == nil {
+		return MobileRuntimeSnapshot{}, ErrTaskRuntimeClosed
+	}
+	r.mu.RLock()
+	if r.closed || r.runtimeStore == nil || r.db == nil || r.writer == nil {
+		r.mu.RUnlock()
+		return MobileRuntimeSnapshot{}, ErrTaskRuntimeClosed
+	}
+	runtimeStore := r.runtimeStore
+	workspaceID := r.workspaceID
+	epoch := r.epoch
+	driver := r.driver
+	db := r.db
+	writer := r.writer
+	application := r.application
+	r.mu.RUnlock()
+	model, err := loadVerifiedDurableModel(ctx, runtimeStore, workspaceID, epoch, taskapp.ModelV2)
+	if err != nil {
+		return MobileRuntimeSnapshot{}, err
+	}
+	if model != taskapp.ModelV2 {
+		return MobileRuntimeSnapshot{}, ErrTaskRuntimeModelChanged
+	}
+	if driver != storage.DriverPostgres && driver != storage.DriverSQLite {
+		return MobileRuntimeSnapshot{}, ErrTaskRuntimeType
+	}
+	return MobileRuntimeSnapshot{
+		WorkspaceID: workspaceID,
+		Epoch:       epoch,
+		Driver:      driver,
+		DB:          db,
+		Writer:      writer,
+		Application: application,
+	}, nil
 }
 
 // GenerationSnapshot exposes only the transaction-scoped generation fencer.
@@ -342,6 +399,8 @@ func (r *Resource) Close() error {
 		store := r.store
 		r.store = nil
 		r.runtimeStore = nil
+		r.db = nil
+		r.writer = nil
 		r.generation = nil
 		r.mu.Unlock()
 		if store != nil {

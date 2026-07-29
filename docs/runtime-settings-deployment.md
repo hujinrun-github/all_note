@@ -35,12 +35,19 @@ server boundary:
 
 ```text
 FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=false
+FLOWSPACE_ENABLE_MOBILE_SYNC_V2=false
 ```
 
 Leave this flag disabled until every target tenant endpoint has the verified
 `0003_task_domain_legacy_migration.sql` tenant schema and the selected canary
 workspace has completed the snapshot, replay, drain, reconcile, and CAS
 cutover workflow. Enabling the flag does not migrate data or run DDL.
+
+`FLOWSPACE_ENABLE_MOBILE_SYNC_V2` is a separate protocol-service gate. Keep it
+disabled until the concrete mobile-v2 snapshot/change/command/receipt service
+has been deployed. The server refuses to start if this flag is true while
+task-domain v2 routing is false or the concrete service is not injected; this
+prevents an enabled deployment from silently returning `404`.
 
 When enabled, the server resolves the durable model independently for every
 authenticated workspace. Only an explicit stable `legacy + idle` state may

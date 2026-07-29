@@ -135,6 +135,16 @@ jobs:
               exit 0
             fi
 
+            mobile_v2_probe="$(
+              docker compose exec -T backend \
+                wget -S -O /dev/null http://127.0.0.1:4201/api/mobile/v2/capabilities 2>&1 || true
+            )"
+            printf '%s\n' "$mobile_v2_probe"
+            if ! printf '%s\n' "$mobile_v2_probe" | grep -Eq 'HTTP/[0-9.]+ 401'; then
+              echo "Refusing cutover: the deployed backend does not expose the authenticated /api/mobile/v2/capabilities route."
+              exit 1
+            fi
+
             services_stopped=1
             restart_services() {
               if [ "$services_stopped" = "1" ]; then

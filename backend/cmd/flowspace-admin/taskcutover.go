@@ -37,6 +37,7 @@ type taskMigrationCutoverOptions struct {
 	OwnerTimezone      string
 	DeploymentTimezone string
 	RoutingEnabled     bool
+	MobileV2Enabled    bool
 	OfflineGate        taskCutoverOfflineGate
 }
 
@@ -107,6 +108,9 @@ func cutoverTaskMigration(
 	}
 	if !options.RoutingEnabled {
 		return fmt.Errorf("task-domain cutover requires FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true")
+	}
+	if !options.MobileV2Enabled {
+		return fmt.Errorf("task-domain cutover requires FLOWSPACE_ENABLE_MOBILE_SYNC_V2=true and a deployed concrete mobile-v2 service")
 	}
 	if options.OfflineGate == nil {
 		return fmt.Errorf("task-domain cutover requires a backend offline gate")

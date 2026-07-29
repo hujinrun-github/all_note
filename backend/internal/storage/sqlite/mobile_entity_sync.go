@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -494,12 +497,20 @@ func persistSQLiteEntityMutationResult(ctx context.Context, tx *sql.Tx, workspac
 		result.Entity.Revision, string(entityJSON), now); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_mutation_receipts (
 			workspace_id, device_client_id, mutation_id, request_sha256, response_json, created_at
 		) VALUES (?, ?, ?, ?, ?, ?)
-	`, workspaceID, mutation.DeviceClientID, mutation.MutationID, mutation.RequestSHA256, string(responseJSON), now)
-	return err
+	`, workspaceID, mutation.DeviceClientID, mutation.MutationID, mutation.RequestSHA256, string(responseJSON), now); err != nil {
+		return err
+	}
+	if mutation.EntityType != "inbox" && mutation.EntityType != "voice_note" {
+		return nil
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectSQLite,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: mutation.EntityType, ClientID: mutation.EntityClientID,
+		}}, time.Unix(now, 0).UTC())
 }
 
 func persistSQLiteServerEntityChange(ctx context.Context, tx *sql.Tx, workspaceID, mutationID, entityType, operation, clientID string, now int64) error {
@@ -511,12 +522,20 @@ func persistSQLiteServerEntityChange(ctx context.Context, tx *sql.Tx, workspaceI
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_sync_outbox (
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, workspaceID, mutationID, entityType, clientID, operation, entity.Revision, string(entityJSON), now)
-	return err
+	`, workspaceID, mutationID, entityType, clientID, operation, entity.Revision, string(entityJSON), now); err != nil {
+		return err
+	}
+	if entityType != "inbox" && entityType != "voice_note" {
+		return nil
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectSQLite,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: entityType, ClientID: clientID,
+		}}, time.Unix(now, 0).UTC())
 }
 
 func validateMobileEntityMutation(mutation model.MobileEntityMutation) error {

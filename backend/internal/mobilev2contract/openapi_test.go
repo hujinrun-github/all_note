@@ -37,7 +37,10 @@ func TestMTDV2Contract002IdentityAndOfflineOccurrenceCorrelation(t *testing.T) {
 	document := loadMobileV2Document(t)
 	assertSchemaProperties(t, document, "IdentityMapping", []string{"client_id", "entity_id", "entity_type"})
 	assertSchemaProperties(t, document, "EntityEnvelope", []string{"aggregate_revisions", "client_id", "deleted_at", "entity_id", "entity_revision", "entity_type", "payload"})
-	assertSchemaRequired(t, document, "TaskCreatePayload", []string{"initial_occurrence_client_id", "project", "task_client_id"})
+	assertSchemaRequired(t, document, "TaskCreatePayload", []string{
+		"all_day_end_date", "description", "due_at", "initial_occurrence_client_id", "note_id",
+		"priority", "project", "roadmap_node_id", "schedule", "selected_offsets", "sort_order", "title",
+	})
 	assertSchemaProperties(t, document, "CommandTarget", []string{"client_id", "entity_id"})
 	if got := schemaMap(t, document, "EntityEnvelope")["x-local-primary-key"]; got != "immutable-local-id" {
 		t.Fatalf("EntityEnvelope x-local-primary-key = %#v, want immutable-local-id", got)
@@ -48,6 +51,17 @@ func TestMTDV2Contract003CommandRevisionMatrixIsExplicit(t *testing.T) {
 	document := loadMobileV2Document(t)
 	matrix := stringMap(t, document, "x-command-revision-matrix")
 	want := map[string]string{
+		"note.create":                            "none",
+		"note.update":                            "entity",
+		"note.delete":                            "entity",
+		"inbox.create":                           "none",
+		"inbox.update":                           "entity",
+		"inbox.delete":                           "entity",
+		"voice.create":                           "none",
+		"voice_audio.delete":                     "entity",
+		"voice_note.delete":                      "entity",
+		"transcription.request":                  "entity",
+		"transcription.retry":                    "entity",
 		"project.create":                         "none",
 		"project.update":                         "project",
 		"project.activate":                       "project",
@@ -104,6 +118,10 @@ func TestMTDV2Contract013EntityFieldMatrixIsComplete(t *testing.T) {
 	assertSchemaEnum(t, document, "RoadmapNodeStatus", []string{"available", "in_progress", "locked", "mastered", "skipped"})
 	assertSchemaEnum(t, document, "RoadmapEdgeType", []string{"prerequisite", "related", "suggested_order"})
 	want := map[string][]string{
+		"NotePayload":                {"body", "created_at", "folder_id", "tags", "title", "updated_at"},
+		"VoiceNotePayload":           {"audio_revision", "audio_sha256", "audio_size", "audio_state", "body", "created_at", "duration_ms", "language", "mime_type", "note_id", "recorded_at", "title", "transcription_error", "transcription_state", "updated_at", "upload_state"},
+		"InboxPayload":               {"archived", "body", "created_at", "kind", "title", "updated_at"},
+		"TranscriptionJobPayload":    {"created_at", "error_code", "generation", "next_attempt_at", "state", "updated_at", "voice_note_id"},
 		"ProjectPayload":             {"archived_at", "archived_from_status", "created_at", "description", "horizon", "kind", "name", "status", "system_role", "target_at", "updated_at"},
 		"TaskPayload":                {"archived_at", "created_at", "description", "lifecycle_status", "note_id", "priority", "project_id", "roadmap_node_id", "sort_order", "title", "updated_at"},
 		"TaskSchedulePayload":        {"current_schedule_revision", "generation_error", "generation_retry_at", "generation_status", "generation_watermark", "task_id", "updated_at"},
@@ -118,7 +136,7 @@ func TestMTDV2Contract013EntityFieldMatrixIsComplete(t *testing.T) {
 		assertSchemaProperties(t, document, name, fields)
 		assertSchemaRequired(t, document, name, fields)
 	}
-	assertSchemaEnum(t, document, "EntityType", []string{"learning_roadmap", "project", "roadmap_edge", "roadmap_node", "roadmap_node_progress", "schedule_version", "task", "task_occurrence", "task_schedule"})
+	assertSchemaEnum(t, document, "EntityType", []string{"inbox", "learning_roadmap", "note", "project", "roadmap_edge", "roadmap_node", "roadmap_node_progress", "schedule_version", "task", "task_occurrence", "task_schedule", "transcription_job", "voice_note"})
 }
 
 func TestMTDV2Contract014ProjectLifecycleUsesDedicatedCommands(t *testing.T) {
@@ -158,8 +176,19 @@ func TestMTDV2Contract017WorkspaceModesAndScopesAreFrozen(t *testing.T) {
 	document := loadMobileV2Document(t)
 	assertSchemaEnum(t, document, "WorkspaceMode", []string{"legacy-active", "upgrade-required", "v2-active", "v2-cutover-migrating", "v2-shadow-readonly"})
 	assertSchemaEnum(t, document, "SyncScopeName", []string{"iphone-content", "iphone-occurrence-window", "iphone-task-core", "watch-occurrence-window"})
-	assertPropertyEnum(t, document, "APIError", "code", []string{"lifecycle_command_required", "projection_refresh_required", "receipt_history_ambiguous", "resync_required", "restore_target_required", "stale_runtime_epoch", "upgrade_required", "workspace_gone", "workspace_mode_forbids_command"})
+	assertPropertyEnum(t, document, "APIError", "code", []string{
+		"audio_conflict", "audio_too_large", "checksum_mismatch", "invalid_request",
+		"lifecycle_command_required", "not_found", "projection_refresh_required",
+		"receipt_history_ambiguous", "resync_required", "restore_target_required",
+		"stale_runtime_epoch", "unsupported_audio_type", "upgrade_required",
+		"voice_audio_gone", "voice_storage_unavailable", "workspace_gone",
+		"workspace_mode_forbids_command",
+	})
 	assertSchemaProperties(t, document, "MobileV2Capabilities", []string{"contract_sha256", "features", "minimum_client_build", "mobile_contract_epoch", "runtime_epoch", "schema_version", "server_cutover_epoch", "sync_scopes", "task_model_version", "workspace_id", "workspace_mode"})
+	assertSchemaRequired(t, document, "MobileV2Features", []string{
+		"content_commands", "roadmap_read", "task_commands", "transcription_jobs",
+		"voice_upload", "watch_occurrence_commands",
+	})
 }
 
 func loadMobileV2Document(t *testing.T) map[string]any {

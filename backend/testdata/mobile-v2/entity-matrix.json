@@ -43,5 +43,25 @@
     "entity_type":"roadmap_node_progress","entity_id":"node-1","client_id":null,"entity_revision":"42",
     "aggregate_revisions":{"project_revision":"1","task_revision":null,"schedule_revision":null,"occurrence_revision":null},"deleted_at":null,
     "payload":{"roadmap_node_id":"node-1","as_of_sequence":"42","total":8,"open":2,"active":1,"blocked":1,"done":2,"skipped":1,"cancelled":1}
+  },
+  {
+    "entity_type":"note","entity_id":"note-1","client_id":"44444444-4444-4444-8444-444444444444","entity_revision":"7",
+    "aggregate_revisions":{"project_revision":null,"task_revision":null,"schedule_revision":null,"occurrence_revision":null},"deleted_at":null,
+    "payload":{"title":"Note","body":"Body","folder_id":"folder-1","tags":["mobile","voice"],"created_at":"2026-07-23T16:05:04.123Z","updated_at":"2026-07-23T16:05:04.123Z"}
+  },
+  {
+    "entity_type":"voice_note","entity_id":"voice-1","client_id":"55555555-5555-4555-8555-555555555555","entity_revision":"8",
+    "aggregate_revisions":{"project_revision":null,"task_revision":null,"schedule_revision":null,"occurrence_revision":null},"deleted_at":null,
+    "payload":{"note_id":"note-1","title":"Voice","body":"Transcript","duration_ms":"3200","recorded_at":"2026-07-23T16:05:04.123Z","language":"zh-CN","upload_state":"uploaded","audio_state":"uploaded","audio_revision":"2","transcription_state":"completed","transcription_error":"","mime_type":"audio/m4a","audio_size":"4096","audio_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","created_at":"2026-07-23T16:05:04.123Z","updated_at":"2026-07-23T16:05:04.123Z"}
+  },
+  {
+    "entity_type":"inbox","entity_id":"inbox-1","client_id":"66666666-6666-4666-8666-666666666666","entity_revision":"9",
+    "aggregate_revisions":{"project_revision":null,"task_revision":null,"schedule_revision":null,"occurrence_revision":null},"deleted_at":null,
+    "payload":{"kind":"text","title":"Inbox item","body":"Capture","archived":false,"created_at":"2026-07-23T16:05:04.123Z","updated_at":"2026-07-23T16:05:04.123Z"}
+  },
+  {
+    "entity_type":"transcription_job","entity_id":"job-1","client_id":null,"entity_revision":"10",
+    "aggregate_revisions":{"project_revision":null,"task_revision":null,"schedule_revision":null,"occurrence_revision":null},"deleted_at":null,
+    "payload":{"voice_note_id":"voice-1","generation":"1","state":"completed","error_code":"","next_attempt_at":null,"created_at":"2026-07-23T16:05:04.123Z","updated_at":"2026-07-23T16:05:04.123Z"}
   }
 ]

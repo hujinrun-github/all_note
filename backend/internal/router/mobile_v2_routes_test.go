@@ -209,6 +209,7 @@ func mobileV2RouteNames() []string {
 		"GET /api/mobile/v2/changes",
 		"POST /api/mobile/v2/commands",
 		"GET /api/mobile/v2/commands/:originDeviceClientID/:commandID/receipt",
+		"PUT /api/mobile/v2/voice-notes/:clientID/audio",
 	}
 }
 

@@ -73,8 +73,9 @@ func TestCutoverTaskMigrationRejectsUnsafeDeploymentBeforeOpeningStores(t *testi
 	cfg := adminTestRuntimeConfig()
 	cfg.InstanceMode = config.InstanceModeMulti
 	err := cutoverTaskMigration(context.Background(), cfg, nil, taskMigrationCutoverOptions{
-		RoutingEnabled: true,
-		OfflineGate:    staticTaskCutoverGate{},
+		RoutingEnabled:  true,
+		MobileV2Enabled: true,
+		OfflineGate:     staticTaskCutoverGate{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "FLOWSPACE_INSTANCE_MODE=single") {
 		t.Fatalf("multi-instance error = %v", err)
@@ -82,16 +83,27 @@ func TestCutoverTaskMigrationRejectsUnsafeDeploymentBeforeOpeningStores(t *testi
 
 	cfg.InstanceMode = config.InstanceModeSingle
 	err = cutoverTaskMigration(context.Background(), cfg, nil, taskMigrationCutoverOptions{
-		RoutingEnabled: false,
-		OfflineGate:    staticTaskCutoverGate{},
+		RoutingEnabled:  false,
+		MobileV2Enabled: true,
+		OfflineGate:     staticTaskCutoverGate{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true") {
 		t.Fatalf("routing-disabled error = %v", err)
 	}
 
 	err = cutoverTaskMigration(context.Background(), cfg, nil, taskMigrationCutoverOptions{
-		RoutingEnabled: true,
-		OfflineGate:    staticTaskCutoverGate{err: errBackendStillReachable},
+		RoutingEnabled:  true,
+		MobileV2Enabled: false,
+		OfflineGate:     staticTaskCutoverGate{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ENABLE_MOBILE_SYNC_V2=true") {
+		t.Fatalf("mobile-v2-disabled error = %v", err)
+	}
+
+	err = cutoverTaskMigration(context.Background(), cfg, nil, taskMigrationCutoverOptions{
+		RoutingEnabled:  true,
+		MobileV2Enabled: true,
+		OfflineGate:     staticTaskCutoverGate{err: errBackendStillReachable},
 	})
 	if err == nil || !errors.Is(err, errBackendStillReachable) {
 		t.Fatalf("reachable-backend error = %v", err)

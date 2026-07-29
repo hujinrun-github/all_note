@@ -2,9 +2,11 @@ package mobilev2command
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,15 +47,15 @@ type Command struct {
 }
 
 type IdentityMapping struct {
-	EntityType string
-	ClientID   *string
-	EntityID   *string
+	EntityType string  `json:"entity_type"`
+	ClientID   *string `json:"client_id"`
+	EntityID   *string `json:"entity_id"`
 }
 
 type AffectedRevision struct {
-	EntityType string
-	EntityID   string
-	Revision   string
+	EntityType string `json:"entity_type"`
+	EntityID   string `json:"entity_id"`
+	Revision   string `json:"revision"`
 }
 
 type DomainResult struct {
@@ -64,15 +66,73 @@ type DomainResult struct {
 }
 
 type Receipt struct {
-	WorkspaceID          string
-	OriginDeviceClientID string
-	CommandID            string
-	RequestDigest        string
-	Status               ResultStatus
-	CommitSequence       uint64
-	IdentityMappings     []IdentityMapping
-	AffectedRevisions    []AffectedRevision
-	CompletedAt          time.Time
+	WorkspaceID          string             `json:"workspace_id"`
+	OriginDeviceClientID string             `json:"origin_device_client_id"`
+	CommandID            string             `json:"command_id"`
+	RequestDigest        string             `json:"request_digest"`
+	Status               ResultStatus       `json:"status"`
+	CommitSequence       uint64             `json:"-"`
+	IdentityMappings     []IdentityMapping  `json:"identity_mappings"`
+	AffectedRevisions    []AffectedRevision `json:"affected_revisions"`
+	CompletedAt          time.Time          `json:"completed_at"`
+}
+
+func (receipt Receipt) MarshalJSON() ([]byte, error) {
+	type wireReceipt struct {
+		WorkspaceID          string             `json:"workspace_id"`
+		OriginDeviceClientID string             `json:"origin_device_client_id"`
+		CommandID            string             `json:"command_id"`
+		RequestDigest        string             `json:"request_digest"`
+		Status               ResultStatus       `json:"status"`
+		CommitSequence       string             `json:"commit_sequence"`
+		IdentityMappings     []IdentityMapping  `json:"identity_mappings"`
+		AffectedRevisions    []AffectedRevision `json:"affected_revisions"`
+		CompletedAt          string             `json:"completed_at"`
+	}
+	return json.Marshal(wireReceipt{
+		WorkspaceID: receipt.WorkspaceID, OriginDeviceClientID: receipt.OriginDeviceClientID,
+		CommandID: receipt.CommandID, RequestDigest: receipt.RequestDigest, Status: receipt.Status,
+		CommitSequence:    strconv.FormatUint(receipt.CommitSequence, 10),
+		IdentityMappings:  cloneMappings(receipt.IdentityMappings),
+		AffectedRevisions: cloneRevisions(receipt.AffectedRevisions),
+		CompletedAt:       receipt.CompletedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+	})
+}
+
+func (receipt *Receipt) UnmarshalJSON(data []byte) error {
+	if receipt == nil {
+		return errors.New("mobile-v2 receipt destination is nil")
+	}
+	type wireReceipt struct {
+		WorkspaceID          string             `json:"workspace_id"`
+		OriginDeviceClientID string             `json:"origin_device_client_id"`
+		CommandID            string             `json:"command_id"`
+		RequestDigest        string             `json:"request_digest"`
+		Status               ResultStatus       `json:"status"`
+		CommitSequence       string             `json:"commit_sequence"`
+		IdentityMappings     []IdentityMapping  `json:"identity_mappings"`
+		AffectedRevisions    []AffectedRevision `json:"affected_revisions"`
+		CompletedAt          string             `json:"completed_at"`
+	}
+	var wire wireReceipt
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	sequence, err := strconv.ParseUint(wire.CommitSequence, 10, 64)
+	if err != nil {
+		return err
+	}
+	completedAt, err := time.Parse("2006-01-02T15:04:05.000Z", wire.CompletedAt)
+	if err != nil {
+		return err
+	}
+	*receipt = Receipt{
+		WorkspaceID: wire.WorkspaceID, OriginDeviceClientID: wire.OriginDeviceClientID,
+		CommandID: wire.CommandID, RequestDigest: wire.RequestDigest, Status: wire.Status,
+		CommitSequence: sequence, IdentityMappings: cloneMappings(wire.IdentityMappings),
+		AffectedRevisions: cloneRevisions(wire.AffectedRevisions), CompletedAt: completedAt.UTC(),
+	}
+	return nil
 }
 
 type ChangeBatch struct {
@@ -230,18 +290,26 @@ func ValidateWorkspaceCommandMode(mode string) error {
 
 func requiredRevisionNames(commandType string) []string {
 	switch {
+	case commandType == "note.create" || commandType == "inbox.create" || commandType == "voice.create":
+		return []string{}
+	case strings.HasPrefix(commandType, "note.") || strings.HasPrefix(commandType, "inbox.") ||
+		commandType == "voice_audio.delete" || commandType == "voice_note.delete" ||
+		strings.HasPrefix(commandType, "transcription."):
+		return []string{"entity"}
 	case commandType == "project.create":
 		return []string{}
 	case strings.HasPrefix(commandType, "project."):
 		return []string{"project"}
 	case commandType == "task.create":
 		return []string{"project"}
+	case commandType == "task.update":
+		return []string{"schedule", "task"}
 	case strings.HasPrefix(commandType, "task."):
-		return []string{"task"}
+		return []string{"occurrences", "schedule", "task"}
 	case strings.HasPrefix(commandType, "occurrence."):
-		return []string{"occurrence", "task"}
-	case commandType == "schedule.reschedule-this-and-following":
 		return []string{"occurrence", "schedule", "task"}
+	case commandType == "schedule.reschedule-this-and-following":
+		return []string{"schedule", "task"}
 	default:
 		return nil
 	}

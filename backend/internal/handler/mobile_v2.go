@@ -65,6 +65,7 @@ type MobileV2ProtocolError struct {
 	Status  int
 	Code    string
 	Message string
+	Details map[string]any
 }
 
 func (e *MobileV2ProtocolError) Error() string {
@@ -203,11 +204,17 @@ func writeMobileV2Error(c *gin.Context, err error) {
 		if status < 400 || status > 599 {
 			status = http.StatusInternalServerError
 		}
-		c.JSON(status, gin.H{
+		payload := gin.H{
 			"schema_version": "mobile-v2",
 			"code":           protocolError.Code,
 			"message":        protocolError.Message,
-		})
+		}
+		for key, value := range protocolError.Details {
+			if key != "schema_version" && key != "code" && key != "message" {
+				payload[key] = value
+			}
+		}
+		c.JSON(status, payload)
 		return
 	}
 	c.JSON(http.StatusServiceUnavailable, gin.H{

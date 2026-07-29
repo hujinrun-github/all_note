@@ -14,6 +14,7 @@ const defaultMaxVoiceAudioBytes int64 = 50 * 1024 * 1024
 type NativeConfig struct {
 	MaxVoiceAudioBytes         int64
 	MobileSyncV1Enabled        bool
+	MobileSyncV2Enabled        bool
 	TaskDomainV2RoutingEnabled bool
 	MinIO                      MinIOConfig
 	Transcription              TranscriptionConfig
@@ -49,6 +50,10 @@ func LoadNativeConfig() (NativeConfig, error) {
 	if err != nil {
 		return NativeConfig{}, err
 	}
+	mobileSyncV2Enabled, err := envBool("FLOWSPACE_ENABLE_MOBILE_SYNC_V2", false)
+	if err != nil {
+		return NativeConfig{}, err
+	}
 	taskDomainV2RoutingEnabled, err := envBool("FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING", false)
 	if err != nil {
 		return NativeConfig{}, err
@@ -73,6 +78,7 @@ func LoadNativeConfig() (NativeConfig, error) {
 	return NativeConfig{
 		MaxVoiceAudioBytes:         maxBytes,
 		MobileSyncV1Enabled:        mobileSyncV1Enabled,
+		MobileSyncV2Enabled:        mobileSyncV2Enabled,
 		TaskDomainV2RoutingEnabled: taskDomainV2RoutingEnabled,
 		MinIO:                      minioCfg,
 		Transcription:              transcriptionCfg,

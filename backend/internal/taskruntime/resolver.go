@@ -178,6 +178,38 @@ func (r *Resolver) Resolve(ctx context.Context, workspaceID string) (taskapp.Run
 	return validateApplicationSnapshot(workspaceID, application)
 }
 
+func (r *Resolver) ResolveMobileRuntime(ctx context.Context, workspaceID string) (MobileRuntimeSnapshot, error) {
+	if r == nil || r.tenants == nil || workspaceID == "" {
+		return MobileRuntimeSnapshot{}, taskapp.ErrInvalidRuntime
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		runtime, err := r.tenants.Resolve(ctx, workspaceID)
+		if err != nil {
+			return MobileRuntimeSnapshot{}, err
+		}
+		resource, ok := runtime.Resource.(interface {
+			MobileRuntimeSnapshot(context.Context) (MobileRuntimeSnapshot, error)
+		})
+		if !ok {
+			r.tenants.Invalidate(workspaceID)
+			return MobileRuntimeSnapshot{}, fmt.Errorf("%w: task model does not expose mobile-v2 runtime", tenantruntime.ErrRuntimeUnavailable)
+		}
+		snapshot, err := resource.MobileRuntimeSnapshot(ctx)
+		if err == nil {
+			if snapshot.WorkspaceID != workspaceID || snapshot.Epoch < 1 || snapshot.DB == nil || snapshot.Writer == nil ||
+				snapshot.Application.WorkspaceID != workspaceID || snapshot.Application.Epoch != snapshot.Epoch {
+				return MobileRuntimeSnapshot{}, fmt.Errorf("%w: incomplete mobile-v2 runtime", ErrTaskRuntimeType)
+			}
+			return snapshot, nil
+		}
+		r.tenants.Invalidate(workspaceID)
+		if attempt == 1 || !errors.Is(err, ErrTaskRuntimeEpochChanged) {
+			return MobileRuntimeSnapshot{}, err
+		}
+	}
+	return MobileRuntimeSnapshot{}, ErrTaskRuntimeType
+}
+
 func validateApplicationSnapshot(workspaceID string, snapshot taskapp.RuntimeSnapshot) (taskapp.RuntimeSnapshot, error) {
 	if snapshot.WorkspaceID != workspaceID || snapshot.Epoch < 1 || snapshot.Factory == nil || snapshot.Tasks == nil ||
 		snapshot.Occurrences == nil || snapshot.Projects == nil || snapshot.Schedules == nil || snapshot.Reader == nil {

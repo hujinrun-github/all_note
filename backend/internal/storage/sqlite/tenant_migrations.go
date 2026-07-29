@@ -103,6 +103,9 @@ func applySQLiteTenantMigration(ctx context.Context, db *sql.DB, migration tenan
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	if err := prepareSQLiteTenantMigration(ctx, tx, migration.version); err != nil {
+		return fmt.Errorf("prepare tenant migration %s: %w", migration.version, err)
+	}
 	if _, err := tx.ExecContext(ctx, string(migration.sql)); err != nil {
 		return fmt.Errorf("apply tenant migration %s: %w", migration.version, err)
 	}
@@ -114,6 +117,69 @@ func applySQLiteTenantMigration(ctx context.Context, db *sql.DB, migration tenan
 	}
 	committed = true
 	return nil
+}
+
+func prepareSQLiteTenantMigration(ctx context.Context, tx *sql.Tx, version string) error {
+	if version != "0007_mobile_v2_content_domain.sql" {
+		return nil
+	}
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "client_id", definition: "TEXT"},
+		{name: "body", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "tags", definition: "TEXT NOT NULL DEFAULT '[]'"},
+		{name: "revision", definition: "INTEGER NOT NULL DEFAULT 1"},
+		{name: "deleted_at", definition: "INTEGER"},
+	}
+	for _, column := range columns {
+		exists, err := sqliteTenantColumnExists(ctx, tx, "notes", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE notes ADD COLUMN "+column.name+" "+column.definition); err != nil {
+			return fmt.Errorf("add notes.%s: %w", column.name, err)
+		}
+	}
+	contentTextExists, err := sqliteTenantColumnExists(ctx, tx, "notes", "content_text")
+	if err != nil {
+		return err
+	}
+	if contentTextExists {
+		if _, err := tx.ExecContext(ctx, `UPDATE notes SET body=content_text WHERE body='' AND content_text<>''`); err != nil {
+			return fmt.Errorf("backfill notes.body: %w", err)
+		}
+	}
+	return nil
+}
+
+func sqliteTenantColumnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info("`+table+`")`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func loadSQLiteTenantMigrations(dir string) ([]tenantMigration, error) {

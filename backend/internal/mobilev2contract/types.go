@@ -21,6 +21,53 @@ type RoadmapNodeType string
 type RoadmapNodeStatus string
 type RoadmapEdgeType string
 
+type NotePayload struct {
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	FolderID  string   `json:"folder_id"`
+	Tags      []string `json:"tags"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
+}
+
+type VoiceNotePayload struct {
+	NoteID             string `json:"note_id"`
+	Title              string `json:"title"`
+	Body               string `json:"body"`
+	DurationMS         string `json:"duration_ms"`
+	RecordedAt         string `json:"recorded_at"`
+	Language           string `json:"language"`
+	UploadState        string `json:"upload_state"`
+	AudioState         string `json:"audio_state"`
+	AudioRevision      string `json:"audio_revision"`
+	TranscriptionState string `json:"transcription_state"`
+	TranscriptionError string `json:"transcription_error"`
+	MimeType           string `json:"mime_type"`
+	AudioSize          string `json:"audio_size"`
+	AudioSHA256        string `json:"audio_sha256"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
+type InboxPayload struct {
+	Kind      string  `json:"kind"`
+	Title     string  `json:"title"`
+	Body      *string `json:"body"`
+	Archived  bool    `json:"archived"`
+	CreatedAt string  `json:"created_at"`
+	UpdatedAt string  `json:"updated_at"`
+}
+
+type TranscriptionJobPayload struct {
+	VoiceNoteID   string  `json:"voice_note_id"`
+	Generation    string  `json:"generation"`
+	State         string  `json:"state"`
+	ErrorCode     string  `json:"error_code"`
+	NextAttemptAt *string `json:"next_attempt_at"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
+}
+
 type AggregateRevisions struct {
 	ProjectRevision    *string `json:"project_revision"`
 	TaskRevision       *string `json:"task_revision"`
@@ -180,8 +227,30 @@ func DecodeEntityMatrix(data []byte) ([]EntityEnvelope, error) {
 		if item.EntityID == "" || item.EntityRevision == "" {
 			return nil, fmt.Errorf("entity %d is missing identity or revision", index)
 		}
+		if !supportedEntityType(item.EntityType) {
+			return nil, fmt.Errorf("entity %d has unsupported entity_type %q", index, item.EntityType)
+		}
+		if bytes.Equal(bytes.TrimSpace(item.Payload), []byte("null")) {
+			if item.DeletedAt == nil {
+				return nil, fmt.Errorf("entity %d has null payload without deleted_at", index)
+			}
+			result = append(result, EntityEnvelope{
+				EntityType: item.EntityType, EntityID: item.EntityID, ClientID: item.ClientID,
+				EntityRevision: item.EntityRevision, AggregateRevisions: item.AggregateRevisions,
+				DeletedAt: item.DeletedAt,
+			})
+			continue
+		}
 		var payload any
 		switch item.EntityType {
+		case "note":
+			payload = &NotePayload{}
+		case "voice_note":
+			payload = &VoiceNotePayload{}
+		case "inbox":
+			payload = &InboxPayload{}
+		case "transcription_job":
+			payload = &TranscriptionJobPayload{}
 		case "project":
 			payload = &ProjectPayload{}
 		case "task":
@@ -217,6 +286,17 @@ func DecodeEntityMatrix(data []byte) ([]EntityEnvelope, error) {
 		})
 	}
 	return result, nil
+}
+
+func supportedEntityType(entityType string) bool {
+	switch entityType {
+	case "note", "voice_note", "inbox", "transcription_job", "project", "task",
+		"task_schedule", "schedule_version", "task_occurrence", "learning_roadmap",
+		"roadmap_node", "roadmap_edge", "roadmap_node_progress":
+		return true
+	default:
+		return false
+	}
 }
 
 func validatePayloadEnums(payload any) error {
@@ -290,6 +370,14 @@ func invalidEnum(field, value string) error {
 
 func dereferencePayload(payload any) any {
 	switch value := payload.(type) {
+	case *NotePayload:
+		return *value
+	case *VoiceNotePayload:
+		return *value
+	case *InboxPayload:
+		return *value
+	case *TranscriptionJobPayload:
+		return *value
 	case *ProjectPayload:
 		return *value
 	case *TaskPayload:

@@ -14,6 +14,17 @@ x-mobile-v1-cutover:
   http-status: 426
   error-code: upgrade_required
 x-command-revision-matrix:
+  note.create: none
+  note.update: entity
+  note.delete: entity
+  inbox.create: none
+  inbox.update: entity
+  inbox.delete: entity
+  voice.create: none
+  voice_audio.delete: entity
+  voice_note.delete: entity
+  transcription.request: entity
+  transcription.retry: entity
   project.create: none
   project.update: project
   project.activate: project
@@ -149,6 +160,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/APIError'
+  /api/mobile/v2/voice-notes/{clientID}/audio:
+    put:
+      operationId: uploadMobileV2VoiceAudio
+      parameters:
+        - name: clientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Audio-SHA256
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{64}$'
+      requestBody:
+        required: true
+        content:
+          audio/m4a:
+            schema: {type: string, format: binary}
+          audio/mp4:
+            schema: {type: string, format: binary}
+          audio/wav:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Audio was durably stored and the voice-note revision advanced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAudioUploadResponse'
+        '400':
+          $ref: '#/components/responses/MobileV2Error'
+        '404':
+          $ref: '#/components/responses/MobileV2Error'
+        '409':
+          $ref: '#/components/responses/MobileV2Error'
+        '410':
+          $ref: '#/components/responses/MobileV2Error'
+        '413':
+          $ref: '#/components/responses/MobileV2Error'
+        '415':
+          $ref: '#/components/responses/MobileV2Error'
+        '422':
+          $ref: '#/components/responses/MobileV2Error'
+        '503':
+          $ref: '#/components/responses/MobileV2Error'
 components:
   securitySchemes:
     sessionCookie:
@@ -201,6 +260,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ProjectionRefreshError'
+    MobileV2Error:
+      description: Mobile-v2 protocol or voice transport failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
   schemas:
     BigIntString:
       type: string
@@ -216,6 +281,8 @@ components:
     LocalDate:
       type: string
       pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    NullableLocalDate:
+      oneOf: [{$ref: '#/components/schemas/LocalDate'}, {type: 'null'}]
     LocalTime:
       type: string
       pattern: '^[0-9]{2}:[0-9]{2}:[0-9]{2}$'
@@ -231,7 +298,7 @@ components:
           const: mobile-v2
         code:
           type: string
-          enum: [lifecycle_command_required, projection_refresh_required, receipt_history_ambiguous, resync_required, restore_target_required, stale_runtime_epoch, upgrade_required, workspace_gone, workspace_mode_forbids_command]
+          enum: [audio_conflict, audio_too_large, checksum_mismatch, invalid_request, lifecycle_command_required, not_found, projection_refresh_required, receipt_history_ambiguous, resync_required, restore_target_required, stale_runtime_epoch, unsupported_audio_type, upgrade_required, voice_audio_gone, voice_storage_unavailable, workspace_gone, workspace_mode_forbids_command]
         message:
           type: string
     WorkspaceMode:
@@ -257,13 +324,19 @@ components:
     MobileV2Features:
       type: object
       additionalProperties: false
-      required: [roadmap_read, task_commands, watch_occurrence_commands]
+      required: [content_commands, roadmap_read, task_commands, transcription_jobs, voice_upload, watch_occurrence_commands]
       properties:
+        content_commands:
+          type: boolean
         task_commands:
           type: boolean
         roadmap_read:
           type: boolean
         watch_occurrence_commands:
+          type: boolean
+        voice_upload:
+          type: boolean
+        transcription_jobs:
           type: boolean
     MobileV2Capabilities:
       type: object
@@ -299,7 +372,7 @@ components:
           $ref: '#/components/schemas/MobileV2Features'
     EntityType:
       type: string
-      enum: [project, task, task_schedule, schedule_version, task_occurrence, learning_roadmap, roadmap_node, roadmap_edge, roadmap_node_progress]
+      enum: [note, voice_note, inbox, transcription_job, project, task, task_schedule, schedule_version, task_occurrence, learning_roadmap, roadmap_node, roadmap_edge, roadmap_node_progress]
     IdentityMapping:
       type: object
       additionalProperties: false
@@ -353,9 +426,15 @@ components:
         deleted_at:
           $ref: '#/components/schemas/NullableInstant'
         payload:
-          $ref: '#/components/schemas/EntityPayload'
+          oneOf:
+            - $ref: '#/components/schemas/EntityPayload'
+            - type: 'null'
     EntityPayload:
       oneOf:
+        - $ref: '#/components/schemas/NotePayload'
+        - $ref: '#/components/schemas/VoiceNotePayload'
+        - $ref: '#/components/schemas/InboxPayload'
+        - $ref: '#/components/schemas/TranscriptionJobPayload'
         - $ref: '#/components/schemas/ProjectPayload'
         - $ref: '#/components/schemas/TaskPayload'
         - $ref: '#/components/schemas/TaskSchedulePayload'
@@ -404,6 +483,63 @@ components:
     RoadmapEdgeType:
       type: string
       enum: [prerequisite, related, suggested_order]
+    NotePayload:
+      type: object
+      additionalProperties: false
+      required: [body, created_at, folder_id, tags, title, updated_at]
+      properties:
+        title: {type: string}
+        body: {type: string}
+        folder_id: {type: string}
+        tags:
+          type: array
+          items: {type: string}
+        created_at: {type: string}
+        updated_at: {type: string}
+    VoiceNotePayload:
+      type: object
+      additionalProperties: false
+      required: [audio_revision, audio_sha256, audio_size, audio_state, body, created_at, duration_ms, language, mime_type, note_id, recorded_at, title, transcription_error, transcription_state, updated_at, upload_state]
+      properties:
+        note_id: {type: string}
+        title: {type: string}
+        body: {type: string}
+        duration_ms: {$ref: '#/components/schemas/BigIntString'}
+        recorded_at: {type: string}
+        language: {type: string}
+        upload_state: {type: string}
+        audio_state: {type: string}
+        audio_revision: {$ref: '#/components/schemas/BigIntString'}
+        transcription_state: {type: string}
+        transcription_error: {type: string}
+        mime_type: {type: string}
+        audio_size: {$ref: '#/components/schemas/BigIntString'}
+        audio_sha256: {type: string}
+        created_at: {type: string}
+        updated_at: {type: string}
+    InboxPayload:
+      type: object
+      additionalProperties: false
+      required: [archived, body, created_at, kind, title, updated_at]
+      properties:
+        kind: {type: string}
+        title: {type: string}
+        body: {$ref: '#/components/schemas/NullableString'}
+        archived: {type: boolean}
+        created_at: {type: string}
+        updated_at: {type: string}
+    TranscriptionJobPayload:
+      type: object
+      additionalProperties: false
+      required: [created_at, error_code, generation, next_attempt_at, state, updated_at, voice_note_id]
+      properties:
+        voice_note_id: {type: string}
+        generation: {$ref: '#/components/schemas/BigIntString'}
+        state: {type: string}
+        error_code: {type: string}
+        next_attempt_at: {$ref: '#/components/schemas/NullableInstant'}
+        created_at: {type: string}
+        updated_at: {type: string}
     ProjectPayload:
       type: object
       additionalProperties: false
@@ -556,7 +692,7 @@ components:
         cancelled: {type: integer}
     CommandType:
       type: string
-      enum: [project.create, project.update, project.activate, project.pause, project.resume, project.complete, project.archive, project.restore, task.create, task.update, task.publish, task.pause, task.resume, task.cancel, task.restore, task.archive, schedule.reschedule-this-and-following, occurrence.start, occurrence.block, occurrence.unblock, occurrence.complete, occurrence.skip, occurrence.cancel, occurrence.reopen, occurrence.reschedule-only-this]
+      enum: [note.create, note.update, note.delete, inbox.create, inbox.update, inbox.delete, voice.create, voice_audio.delete, voice_note.delete, transcription.request, transcription.retry, project.create, project.update, project.activate, project.pause, project.resume, project.complete, project.archive, project.restore, task.create, task.update, task.publish, task.pause, task.resume, task.cancel, task.restore, task.archive, schedule.reschedule-this-and-following, occurrence.start, occurrence.block, occurrence.unblock, occurrence.complete, occurrence.skip, occurrence.cancel, occurrence.reopen, occurrence.reschedule-only-this]
     CommandTarget:
       type: object
       additionalProperties: false
@@ -581,29 +717,159 @@ components:
       type: object
       additionalProperties: false
       properties:
+        entity_revision: {$ref: '#/components/schemas/ExpectedRevision'}
         old_project_revision: {$ref: '#/components/schemas/ExpectedRevision'}
         new_project_revision: {$ref: '#/components/schemas/ExpectedRevision'}
         project_revision: {$ref: '#/components/schemas/ExpectedRevision'}
         task_revision: {$ref: '#/components/schemas/ExpectedRevision'}
         schedule_revision: {$ref: '#/components/schemas/ExpectedRevision'}
         occurrence_revision: {$ref: '#/components/schemas/ExpectedRevision'}
+        occurrence_revisions:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ExpectedRevision'
+    ProjectCreatePayload:
+      type: object
+      additionalProperties: false
+      required: [horizon, kind, name, status]
+      properties:
+        name: {type: string}
+        kind: {$ref: '#/components/schemas/ProjectKind'}
+        horizon: {$ref: '#/components/schemas/ProjectHorizon'}
+        status: {$ref: '#/components/schemas/ProjectStatus'}
+    ScheduleCommandInput:
+      type: object
+      additionalProperties: false
+      required: [duration_minutes, ends_on, local_start_time, recurrence_type, rule, starts_on, timezone, timing_type]
+      properties:
+        recurrence_type: {$ref: '#/components/schemas/RecurrenceType'}
+        timing_type: {$ref: '#/components/schemas/TimingType'}
+        timezone: {type: string}
+        starts_on: {$ref: '#/components/schemas/NullableLocalDate'}
+        ends_on: {$ref: '#/components/schemas/NullableLocalDate'}
+        rule: {type: object}
+        local_start_time: {$ref: '#/components/schemas/NullableString'}
+        duration_minutes: {type: [integer, 'null']}
+    SelectedOffsets:
+      type: object
+      additionalProperties:
+        type: integer
     TaskCreatePayload:
       type: object
       additionalProperties: false
-      required: [initial_occurrence_client_id, project, task_client_id]
+      required: [all_day_end_date, description, due_at, initial_occurrence_client_id, note_id, priority, project, roadmap_node_id, schedule, selected_offsets, sort_order, title]
       properties:
-        task_client_id: {type: string, format: uuid}
-        initial_occurrence_client_id: {type: string, format: uuid}
+        initial_occurrence_client_id: {type: [string, 'null'], format: uuid}
         project: {$ref: '#/components/schemas/CommandTarget'}
+        roadmap_node_id: {type: [string, 'null']}
+        note_id: {type: [string, 'null']}
+        title: {type: string}
+        description: {type: string}
+        priority: {type: integer, minimum: 0, maximum: 3}
+        sort_order: {type: number}
+        schedule: {$ref: '#/components/schemas/ScheduleCommandInput'}
+        all_day_end_date: {$ref: '#/components/schemas/NullableLocalDate'}
+        due_at: {$ref: '#/components/schemas/NullableInstant'}
+        selected_offsets: {$ref: '#/components/schemas/SelectedOffsets'}
     ProjectUpdatePayload:
       type: object
       additionalProperties: false
       properties:
         name: {type: string}
+        kind: {$ref: '#/components/schemas/ProjectKind'}
+        horizon: {$ref: '#/components/schemas/ProjectHorizon'}
+    ProjectRestorePayload:
+      type: object
+      additionalProperties: false
+      required: [restore_to]
+      properties:
+        restore_to:
+          oneOf: [{$ref: '#/components/schemas/ProjectStatus'}, {type: 'null'}]
+    TaskUpdatePayload:
+      type: object
+      additionalProperties: false
+      properties:
+        title: {type: string}
         description: {type: string}
+        priority: {type: integer, minimum: 0, maximum: 3}
+        sort_order: {type: number}
+        project_id: {type: string}
+        roadmap_node_id: {type: [string, 'null']}
+        note_id: {type: [string, 'null']}
+    OccurrenceBlockPayload:
+      type: object
+      additionalProperties: false
+      required: [blocked_reason, next_action]
+      properties:
+        blocked_reason: {type: string}
+        next_action: {type: string}
+    OccurrenceTimingInput:
+      type: object
+      additionalProperties: false
+      anyOf:
+        - required: [all_day_end_date, duration_minutes, local_start_time, planned_date, selected_offsets, timezone, timing_type]
+        - required: [due_at]
+      properties:
+        timing_type: {$ref: '#/components/schemas/TimingType'}
+        timezone: {type: string}
+        planned_date: {$ref: '#/components/schemas/NullableLocalDate'}
+        all_day_end_date: {$ref: '#/components/schemas/NullableLocalDate'}
+        local_start_time: {$ref: '#/components/schemas/NullableString'}
+        duration_minutes: {type: [integer, 'null']}
+        selected_offsets: {$ref: '#/components/schemas/SelectedOffsets'}
+        due_at: {$ref: '#/components/schemas/NullableInstant'}
+    ScheduleReschedulePayload:
+      type: object
+      additionalProperties: false
+      required: [effective_from, generate_through_exclusive, schedule, selected_offsets]
+      properties:
+        effective_from: {$ref: '#/components/schemas/LocalDate'}
+        generate_through_exclusive: {$ref: '#/components/schemas/LocalDate'}
+        schedule: {$ref: '#/components/schemas/ScheduleCommandInput'}
+        selected_offsets: {$ref: '#/components/schemas/SelectedOffsets'}
+    NoteCommandPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        title: {type: string}
+        body: {type: string}
+        folder_id: {type: string}
+        tags:
+          type: array
+          items: {type: string}
+    InboxCommandPayload:
+      type: object
+      additionalProperties: false
+      properties:
         kind: {type: string}
-        horizon: {type: string}
-        target_at: {$ref: '#/components/schemas/NullableInstant'}
+        title: {type: string}
+        body: {$ref: '#/components/schemas/NullableString'}
+        archived: {type: boolean}
+    VoiceCreatePayload:
+      type: object
+      additionalProperties: false
+      required: [duration_ms, language, recorded_at, title]
+      properties:
+        title: {type: string}
+        duration_ms: {$ref: '#/components/schemas/BigIntString'}
+        recorded_at: {type: string}
+        language: {type: string}
+    VoiceAudioUploadResponse:
+      type: object
+      additionalProperties: false
+      required: [audio_revision, entity_revision, schema_version, voice_note_client_id]
+      properties:
+        schema_version: {const: mobile-v2}
+        voice_note_client_id: {type: string, format: uuid}
+        entity_revision: {$ref: '#/components/schemas/BigIntString'}
+        audio_revision: {$ref: '#/components/schemas/BigIntString'}
+    TranscriptionCommandPayload:
+      type: object
+      additionalProperties: false
+      required: [language]
+      properties:
+        language: {type: string}
+        failed_job_id: {$ref: '#/components/schemas/NullableString'}
     CommandEnvelope:
       type: object
       additionalProperties: false
@@ -619,10 +885,21 @@ components:
         expected: {$ref: '#/components/schemas/ExpectedRevisions'}
         depends_on_command_id: {type: [string, 'null'], format: uuid}
         supersedes_command_id: {type: [string, 'null'], format: uuid}
+        forwarded_by_device_client_id: {type: [string, 'null'], format: uuid}
         payload:
           oneOf:
+            - {$ref: '#/components/schemas/NoteCommandPayload'}
+            - {$ref: '#/components/schemas/InboxCommandPayload'}
+            - {$ref: '#/components/schemas/VoiceCreatePayload'}
+            - {$ref: '#/components/schemas/TranscriptionCommandPayload'}
+            - {$ref: '#/components/schemas/ProjectCreatePayload'}
             - {$ref: '#/components/schemas/TaskCreatePayload'}
             - {$ref: '#/components/schemas/ProjectUpdatePayload'}
+            - {$ref: '#/components/schemas/ProjectRestorePayload'}
+            - {$ref: '#/components/schemas/TaskUpdatePayload'}
+            - {$ref: '#/components/schemas/OccurrenceBlockPayload'}
+            - {$ref: '#/components/schemas/OccurrenceTimingInput'}
+            - {$ref: '#/components/schemas/ScheduleReschedulePayload'}
             - {type: object}
     ReceiptStatus:
       type: string

@@ -8,6 +8,8 @@ production cutover by itself.
 
 - Keep `FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=false` while schemas are being
   installed and while legacy data is copied.
+- Keep `FLOWSPACE_ENABLE_MOBILE_SYNC_V2=false` until the concrete mobile-v2
+  service and its durable snapshot/change/receipt storage are deployed.
 - Run control and tenant migrations explicitly. Opening a request runtime must
   never run DDL.
 - Operate on one workspace at a time. The workspace id and migration id are
@@ -32,6 +34,9 @@ production cutover by itself.
    removed before cutover.
 6. Enable `FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true`. This only enables
    durable per-workspace routing; it does not change any workspace model.
+7. Enable `FLOWSPACE_ENABLE_MOBILE_SYNC_V2=true` only after the concrete
+   protocol service is deployed. Verify that an unauthenticated
+   `/api/mobile/v2/capabilities` request returns `401`, not `404`.
 
 Docker Compose performs steps 2 and 3 through the `control-migrate`,
 `tenant-adopt`, and `tenant-migrate` one-shot services. Tenant adoption is
@@ -98,8 +103,9 @@ flowspace-admin task-migration-cutover \
 ```
 
 The command requires `FLOWSPACE_INSTANCE_MODE=single`,
-`FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true`, and a failed connection probe to
-the known Compose backend endpoint. Run it only after stopping the `backend`
+`FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true`,
+`FLOWSPACE_ENABLE_MOBILE_SYNC_V2=true`, and a failed connection probe to the
+known Compose backend endpoint. Run it only after stopping the `backend`
 service. It is idempotent: a retry after the tenant cutover CAS repairs a
 still-stale control epoch without applying the tenant cutover twice. Do not
 replace it with a direct `UPDATE workspace_task_domain_state`.
@@ -108,13 +114,14 @@ The manual GitHub Action exposes `cutover-to-v2`, which stops `frontend` and
 `backend`, runs the durable migration to `legacy/ready`, executes the final
 cutover, synchronizes epochs, prints status, and restarts both services. Use the
 exact confirmation `CUTOVER_TO_V2_AND_RETIRE_MOBILE_V1`. The Action verifies
-that the checked-out production commit is identical to the workflow commit.
+that the checked-out production commit is identical to the workflow commit and
+that the running backend exposes the authenticated mobile-v2 capability route
+before it stops any service.
 
 After cutover, the existing frontend bundle selects its v2 pages from
 `/api/task-domain/capabilities`; there is no separate frontend feature flag.
 Mobile-v1 task sync and Watch task endpoints return HTTP 426 for that workspace.
-Voice upload and transcription routes remain available. A production mobile-v2
-service is a separate rollout requirement.
+Voice upload and transcription routes remain available.
 
 ## Required go/no-go observations
 
