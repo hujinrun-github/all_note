@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/hujinrun/flowspace/internal/taskdomain"
@@ -42,6 +43,29 @@ type TenantWriteTx interface {
 
 type TenantFencedWriter interface {
 	BeginFencedWrite(context.Context, string, int64, func(TenantWriteTx) error) error
+}
+
+// MobileV2TenantFencedWriter exposes a fenced transaction for non-task
+// mobile-v2 commands without mutating task-domain cutover metadata.
+type MobileV2TenantFencedWriter interface {
+	TenantFencedWriter
+	BeginFencedMobileV2Write(context.Context, string, int64, func(MobileV2TenantWriteTx) error) error
+}
+
+type TenantSQLRunner interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// MobileV2TenantWriteTx is the narrow production bridge that lets the
+// mobile-v2 command boundary reuse the already-fenced task transaction. It
+// avoids a nested transaction while keeping raw SQL unavailable from ordinary
+// task-domain handlers.
+type MobileV2TenantWriteTx interface {
+	TenantWriteTx
+	TaskDomainReader() taskdomain.TaskDomainReader
+	MobileV2SQLRunner() TenantSQLRunner
 }
 
 type TenantMigrationFencer interface {

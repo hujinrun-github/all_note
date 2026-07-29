@@ -11,6 +11,7 @@ import (
 
 	"github.com/hujinrun/flowspace/internal/mobilev2command"
 	"github.com/hujinrun/flowspace/internal/mobilev2contract"
+	"github.com/hujinrun/flowspace/internal/mobilev2sync"
 )
 
 type MobileV2CommandLedgerFixture struct {
@@ -45,6 +46,12 @@ func RunMobileV2CommandLedgerSuite(t *testing.T, fixture MobileV2CommandLedgerFi
 				AffectedRevisions: []mobilev2command.AffectedRevision{{EntityType: "task_occurrence", EntityID: "occ-server", Revision: "7"}},
 				AfterImages:       [][]byte{[]byte(`{"entity_type":"task_occurrence","entity_id":"occ-server"}`)},
 			},
+			ScopeChanges: []mobilev2command.ScopeChange{{
+				Scope: mobilev2sync.ScopeIPhoneOccurrenceWindow,
+				AfterImages: [][]byte{
+					[]byte(`{"entity_type":"task_occurrence","entity_id":"occ-server"}`),
+				},
+			}},
 			CompletedAt: completedAt,
 		}, func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, mobileV2Bind(fixture.Dialect, `INSERT INTO mobile_v2_command_test_effects(workspace_id,command_id,value) VALUES (?,?,?)`),
@@ -66,6 +73,21 @@ func RunMobileV2CommandLedgerSuite(t *testing.T, fixture MobileV2CommandLedgerFi
 			t.Fatalf("changes=%#v err=%v", changes, err)
 		}
 		assertMobileV2EffectCount(t, fixture.DB, workspaceID, command.CommandID, 1)
+		var scopeEntityType string
+		scopeEntityQuery := `SELECT json_extract(entities_json,'$[0].entity_type')
+			FROM mobile_v2_scope_change_batches WHERE workspace_id=? AND scope=? AND sequence=?`
+		if fixture.Dialect == mobilev2command.SQLDialectPostgres {
+			scopeEntityQuery = `SELECT entities_json->0->>'entity_type'
+				FROM mobile_v2_scope_change_batches WHERE workspace_id=? AND scope=? AND sequence=?`
+		}
+		if err := fixture.DB.QueryRow(mobileV2Bind(fixture.Dialect, scopeEntityQuery),
+			workspaceID, string(mobilev2sync.ScopeIPhoneOccurrenceWindow), 1,
+		).Scan(&scopeEntityType); err != nil {
+			t.Fatal(err)
+		}
+		if scopeEntityType != "task_occurrence" {
+			t.Fatalf("scope change entity type = %q", scopeEntityType)
+		}
 	})
 
 	t.Run("same_idempotency_key_replays_without_running_effect", func(t *testing.T) {
@@ -238,12 +260,12 @@ func mobileV2LedgerCommand(t *testing.T, workspaceID, commandID string) mobilev2
 	return mobilev2command.Command{
 		WorkspaceID: workspaceID, OriginDeviceClientID: "watch-device", CommandID: commandID,
 		RequestDigest: mobileV2MustDigest(t, raw), CommandType: "occurrence.complete", CreatedRuntimeEpoch: "8",
-		ExpectedRevisionNames: []string{"task", "occurrence"}, RawEnvelope: raw,
+		ExpectedRevisionNames: []string{"task", "schedule", "occurrence"}, RawEnvelope: raw,
 	}
 }
 
 func mobileV2LedgerEnvelope(workspaceID, commandID, epoch string) []byte {
-	return []byte(`{"command_id":"` + commandID + `","request_digest":"sha256:ignored","origin_device_client_id":"watch-device","workspace_id":"` + workspaceID + `","command_type":"occurrence.complete","target":{"entity_id":"occ-1","client_id":null},"created_runtime_epoch":"` + epoch + `","expected":{"task_revision":{"source":"exact","value":"6"},"occurrence_revision":{"source":"exact","value":"7"}},"depends_on_command_id":null,"supersedes_command_id":null,"payload":{}}`)
+	return []byte(`{"command_id":"` + commandID + `","request_digest":"sha256:ignored","origin_device_client_id":"watch-device","workspace_id":"` + workspaceID + `","command_type":"occurrence.complete","target":{"entity_id":"occ-1","client_id":null},"created_runtime_epoch":"` + epoch + `","expected":{"task_revision":{"source":"exact","value":"6"},"schedule_revision":{"source":"exact","value":"2"},"occurrence_revision":{"source":"exact","value":"7"}},"depends_on_command_id":null,"supersedes_command_id":null,"payload":{}}`)
 }
 
 func mobileV2MustDigest(t *testing.T, raw []byte) string {

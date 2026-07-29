@@ -43,3 +43,28 @@ func TestMTDV2Contract004And007PageTokenBindsEntireFixedView(t *testing.T) {
 		}
 	}
 }
+
+func TestChangeCursorBindsScopeGenerationAndEpoch(t *testing.T) {
+	binding := TokenBinding{
+		WorkspaceID: "workspace-1", Scope: ScopeIPhoneTaskCore,
+		ContractEpoch: "2", RuntimeEpoch: "8", TaskModelVersion: 2,
+		ScopeGeneration: "task-core-v2",
+	}
+	codec := NewTokenCodec("test-mobile-v2-secret")
+	token, err := codec.EncodeChangeCursor(ChangeCursorToken{Binding: binding, Sequence: "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := codec.DecodeChangeCursor(token, binding)
+	if err != nil || decoded.Sequence != "42" {
+		t.Fatalf("decoded cursor=%#v err=%v", decoded, err)
+	}
+	changed := binding
+	changed.RuntimeEpoch = "9"
+	if _, err := codec.DecodeChangeCursor(token, changed); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("epoch mismatch error = %v", err)
+	}
+	if _, err := codec.EncodeChangeCursor(ChangeCursorToken{Binding: binding, Sequence: "01"}); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("leading-zero sequence error = %v", err)
+	}
+}

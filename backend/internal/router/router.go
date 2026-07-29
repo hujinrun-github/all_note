@@ -106,6 +106,7 @@ func Setup(cfg Config) *gin.Engine {
 			mobileV2.GET("/changes", handler.ListMobileV2Changes(cfg.MobileSyncV2))
 			mobileV2.POST("/commands", handler.ApplyMobileV2Command(cfg.MobileSyncV2))
 			mobileV2.GET("/commands/:originDeviceClientID/:commandID/receipt", handler.GetMobileV2CommandReceipt(cfg.MobileSyncV2))
+			mobileV2.PUT("/voice-notes/:clientID/audio", handler.UploadMobileV2VoiceAudio(cfg.Store, cfg.VoiceObjects, cfg.MaxVoiceBytes))
 		}
 		protected.POST("/devices/watch/authorize", handler.AuthorizeWatchDevice(cfg.Store, cfg.Auth.SessionSecret))
 		protected.POST("/devices/watch/revoke", handler.RevokeWatchDevice(cfg.Store))

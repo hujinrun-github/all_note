@@ -605,5 +605,12 @@ func (s *typedTrackingStore) TaskDomainReader(workspaceID string) taskdomain.Tas
 func (s *typedTrackingStore) LoadTaskDomainRuntimeState(ctx context.Context, workspaceID string) (storage.TaskDomainRuntimeState, error) {
 	return s.runtime.LoadTaskDomainRuntimeState(ctx, workspaceID)
 }
+func (s *typedTrackingStore) SQLDB() *sql.DB {
+	sqlStore, _ := s.trackingStore.Store.(storage.SQLStore)
+	if sqlStore == nil {
+		return nil
+	}
+	return sqlStore.SQLDB()
+}
 
 var _ taskapp.RuntimeResolver = (*Resolver)(nil)

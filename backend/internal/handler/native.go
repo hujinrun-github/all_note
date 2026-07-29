@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -70,14 +71,18 @@ func CreateVoiceNote(store storage.Store) gin.HandlerFunc {
 }
 
 func UploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64) gin.HandlerFunc {
-	return uploadVoiceAudio(store, objects, maxBytes, false)
+	return uploadVoiceAudio(store, objects, maxBytes, false, false)
 }
 
 func UploadMobileVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64) gin.HandlerFunc {
-	return uploadVoiceAudio(store, objects, maxBytes, true)
+	return uploadVoiceAudio(store, objects, maxBytes, true, false)
 }
 
-func uploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64, mobile bool) gin.HandlerFunc {
+func UploadMobileV2VoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64) gin.HandlerFunc {
+	return uploadVoiceAudio(store, objects, maxBytes, true, true)
+}
+
+func uploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64, mobile, mobileV2 bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		voice, err := service.UploadVoiceAudio(
 			c.Request.Context(),
@@ -91,7 +96,9 @@ func uploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes i
 			maxBytes,
 		)
 		if err != nil {
-			if mobile {
+			if mobileV2 {
+				handleMobileV2VoiceError(c, err, http.StatusInternalServerError)
+			} else if mobile {
 				handleMobileVoiceError(c, err, http.StatusInternalServerError)
 			} else {
 				handleNativeError(c, err, http.StatusInternalServerError)
@@ -99,6 +106,15 @@ func uploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes i
 			return
 		}
 		if mobile {
+			if mobileV2 {
+				c.JSON(http.StatusOK, gin.H{
+					"schema_version":       "mobile-v2",
+					"voice_note_client_id": voice.ClientID,
+					"entity_revision":      strconv.FormatInt(voice.Revision, 10),
+					"audio_revision":       strconv.FormatInt(voice.AudioRevision, 10),
+				})
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{"voice_note": voice})
 			return
 		}
@@ -193,6 +209,30 @@ func handleNativeError(c *gin.Context, err error, fallbackStatus int) {
 	default:
 		errorResponse(c, fallbackStatus, "NATIVE_SERVICE_ERROR", "native app request failed")
 	}
+}
+
+func handleMobileV2VoiceError(c *gin.Context, err error, fallbackStatus int) {
+	protocol := &MobileV2ProtocolError{Status: fallbackStatus, Code: "voice_storage_unavailable", Message: "voice storage is unavailable"}
+	switch {
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, objectstore.ErrNotFound):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusNotFound, "not_found", "voice note or audio object was not found"
+	case errors.Is(err, service.ErrInvalidVoiceClientID), errors.Is(err, service.ErrInvalidVoiceMetadata):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusBadRequest, "invalid_request", err.Error()
+	case errors.Is(err, service.ErrVoiceAudioTooLarge):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusRequestEntityTooLarge, "audio_too_large", err.Error()
+	case errors.Is(err, service.ErrVoiceAudioChecksum):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusUnprocessableEntity, "checksum_mismatch", err.Error()
+	case errors.Is(err, service.ErrVoiceAudioType):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusUnsupportedMediaType, "unsupported_audio_type", err.Error()
+	case errors.Is(err, storage.ErrUploadConflict):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusConflict, "audio_conflict", err.Error()
+	case errors.Is(err, storage.ErrVoiceAudioGone), errors.Is(err, storage.ErrMobileEntityGone):
+		protocol.Status, protocol.Code, protocol.Message = http.StatusGone, "voice_audio_gone", "voice audio or voice note was deleted"
+	case errors.Is(err, service.ErrVoiceStorageUnavailable), errors.Is(err, objectstore.ErrUnavailable):
+	default:
+		protocol.Message = "voice upload failed"
+	}
+	writeMobileV2Error(c, protocol)
 }
 
 func handleMobileVoiceError(c *gin.Context, err error, fallbackStatus int) {

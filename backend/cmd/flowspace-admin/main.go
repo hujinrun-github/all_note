@@ -180,6 +180,7 @@ func runAdminCommand(ctx context.Context, args []string, cfg config.RuntimeStora
 			OwnerTimezone:      *ownerTimezone,
 			DeploymentTimezone: *deploymentTimezone,
 			RoutingEnabled:     nativeCfg.TaskDomainV2RoutingEnabled,
+			MobileV2Enabled:    nativeCfg.MobileSyncV2Enabled,
 			OfflineGate:        newSingleInstanceOfflineGate(),
 		})
 	default:

@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -529,12 +531,20 @@ func persistPostgresEntityMutationResult(ctx context.Context, tx *sql.Tx, worksp
 	`, workspaceID, mutation.MutationID, mutation.EntityType, mutation.EntityClientID, mutation.Operation, result.Entity.Revision, entityJSON, now); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_mutation_receipts (
 			workspace_id, device_client_id, mutation_id, request_sha256, response_json, created_at
 		) VALUES ($1, $2, $3, $4, $5::json, $6)
-	`, workspaceID, mutation.DeviceClientID, mutation.MutationID, mutation.RequestSHA256, responseJSON, now)
-	return err
+	`, workspaceID, mutation.DeviceClientID, mutation.MutationID, mutation.RequestSHA256, responseJSON, now); err != nil {
+		return err
+	}
+	if mutation.EntityType != "inbox" && mutation.EntityType != "voice_note" {
+		return nil
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectPostgres,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: mutation.EntityType, ClientID: mutation.EntityClientID,
+		}}, now)
 }
 
 func persistPostgresServerEntityChange(ctx context.Context, tx *sql.Tx, workspaceID, mutationID, entityType, operation, clientID string, now time.Time) error {
@@ -546,12 +556,20 @@ func persistPostgresServerEntityChange(ctx context.Context, tx *sql.Tx, workspac
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_sync_outbox (
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-	`, workspaceID, mutationID, entityType, clientID, operation, entity.Revision, entityJSON, now)
-	return err
+	`, workspaceID, mutationID, entityType, clientID, operation, entity.Revision, entityJSON, now); err != nil {
+		return err
+	}
+	if entityType != "inbox" && entityType != "voice_note" {
+		return nil
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectPostgres,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: entityType, ClientID: clientID,
+		}}, now)
 }
 
 func upsertPostgresMobileEntitySearch(ctx context.Context, tx *sql.Tx, workspaceID, entityType, clientID string) error {

@@ -14,12 +14,17 @@ func TestMTDV2Contract003ExpectedRevisionMatrixRejectsPartialAggregates(t *testi
 		got     []string
 		valid   bool
 	}{
+		{command: "note.create", valid: true},
+		{command: "note.update", got: []string{"entity"}, valid: true},
+		{command: "note.update", valid: false},
+		{command: "voice.create", valid: true},
+		{command: "transcription.retry", got: []string{"entity"}, valid: true},
 		{command: "project.create", valid: true},
 		{command: "project.update", got: []string{"project"}, valid: true},
 		{command: "project.update", valid: false},
-		{command: "occurrence.complete", got: []string{"task", "occurrence"}, valid: true},
+		{command: "occurrence.complete", got: []string{"task", "schedule", "occurrence"}, valid: true},
 		{command: "occurrence.complete", got: []string{"occurrence"}, valid: false},
-		{command: "schedule.reschedule-this-and-following", got: []string{"task", "schedule", "occurrence"}, valid: true},
+		{command: "schedule.reschedule-this-and-following", got: []string{"task", "schedule"}, valid: true},
 		{command: "schedule.reschedule-this-and-following", got: []string{"task", "occurrence"}, valid: false},
 	}
 	for _, test := range tests {
@@ -144,12 +149,12 @@ func commandFixture(t *testing.T, epoch string) Command {
 		WorkspaceID: "workspace-1", OriginDeviceClientID: "watch-device",
 		CommandID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", RequestDigest: mustDigest(t, raw),
 		CommandType: "occurrence.complete", CreatedRuntimeEpoch: epoch,
-		ExpectedRevisionNames: []string{"task", "occurrence"}, RawEnvelope: raw,
+		ExpectedRevisionNames: []string{"task", "schedule", "occurrence"}, RawEnvelope: raw,
 	}
 }
 
 func commandEnvelope(commandID, epoch string) []byte {
-	return []byte(`{"command_id":"` + commandID + `","request_digest":"sha256:ignored-by-digest","origin_device_client_id":"watch-device","workspace_id":"workspace-1","command_type":"occurrence.complete","target":{"entity_id":"occ-1","client_id":null},"created_runtime_epoch":"` + epoch + `","expected":{"task_revision":{"source":"exact","value":"6"},"occurrence_revision":{"source":"exact","value":"7"}},"depends_on_command_id":null,"supersedes_command_id":null,"payload":{}}`)
+	return []byte(`{"command_id":"` + commandID + `","request_digest":"sha256:ignored-by-digest","origin_device_client_id":"watch-device","workspace_id":"workspace-1","command_type":"occurrence.complete","target":{"entity_id":"occ-1","client_id":null},"created_runtime_epoch":"` + epoch + `","expected":{"task_revision":{"source":"exact","value":"6"},"schedule_revision":{"source":"exact","value":"2"},"occurrence_revision":{"source":"exact","value":"7"}},"depends_on_command_id":null,"supersedes_command_id":null,"payload":{}}`)
 }
 
 func mustDigest(t *testing.T, raw []byte) string {

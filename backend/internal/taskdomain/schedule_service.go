@@ -66,6 +66,9 @@ type OccurrenceTimingInput struct {
 	LocalStartTime        string
 	DurationMinutes       int
 	SelectedOffsetSeconds *int
+	PreserveTiming        bool
+	DueAtSet              bool
+	DueAt                 *time.Time
 }
 
 type RescheduleOccurrenceRequest struct {
@@ -281,6 +284,15 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 }
 
 func rescheduleOccurrenceAfterImage(current ScheduleOccurrenceSnapshot, input OccurrenceTimingInput) (ScheduleOccurrenceSnapshot, []OffsetCandidate, error) {
+	if input.PreserveTiming {
+		after := current
+		if input.DueAtSet {
+			after.Record.DueAt = cloneScheduleServiceTime(input.DueAt)
+		}
+		after.Record.Revision++
+		after.ManuallyOverridden = true
+		return after, nil, nil
+	}
 	normalized, err := NormalizeSchedule(ScheduleInput{
 		RecurrenceType: RecurrenceNone, TimingType: input.TimingType, Timezone: input.Timezone,
 		StartsOn: input.PlannedDate, LocalStartTime: input.LocalStartTime, DurationMinutes: input.DurationMinutes,
@@ -293,6 +305,9 @@ func rescheduleOccurrenceAfterImage(current ScheduleOccurrenceSnapshot, input Oc
 	after.Record.PlannedStartAt = nil
 	after.Record.PlannedEndAt = nil
 	after.Record.AllDayEndDate = ""
+	if input.DueAtSet {
+		after.Record.DueAt = cloneScheduleServiceTime(input.DueAt)
+	}
 	after.Record.Revision++
 	after.ManuallyOverridden = true
 

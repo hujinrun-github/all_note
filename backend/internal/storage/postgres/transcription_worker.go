@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -256,12 +258,17 @@ func persistPostgresTranscriptionCompletionChanges(
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_sync_outbox (
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES ($1, $2, 'note', $3, 'note.transcription_applied', $4, $5::jsonb, to_timestamp($6))
-	`, workspaceID, job.JobID, clientID, revision, noteJSON, now)
-	return err
+	`, workspaceID, job.JobID, clientID, revision, noteJSON, now); err != nil {
+		return err
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectPostgres,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: "note", EntityID: noteID,
+		}}, time.Unix(now, 0).UTC())
 }
 
 func persistPostgresTranscriptionJobChange(
@@ -288,12 +295,17 @@ func persistPostgresTranscriptionJobChange(
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_sync_outbox (
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES ($1, $2, 'transcription_job', $2, $3, $4, $5::jsonb, to_timestamp($6))
-	`, workspaceID, job.JobID, operation, job.Revision, jobJSON, now)
-	return err
+	`, workspaceID, job.JobID, operation, job.Revision, jobJSON, now); err != nil {
+		return err
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectPostgres,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: "transcription_job", EntityID: job.JobID,
+		}}, time.Unix(now, 0).UTC())
 }
 
 func withPostgresTranscriptionWorkerTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {

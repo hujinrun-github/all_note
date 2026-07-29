@@ -70,6 +70,35 @@ func TestScheduleServiceRescheduleTerminalOccurrenceRequiresExplicitReopen(t *te
 	}
 }
 
+func TestScheduleServiceRescheduleOccurrenceCanPatchDueAtWithoutChangingTiming(t *testing.T) {
+	state := scheduleServiceState()
+	originalStart := time.Date(2026, 7, 24, 9, 30, 0, 0, time.UTC)
+	state.Occurrences[0].Record.PlannedStartAt = &originalStart
+	dueAt := originalStart.Add(48 * time.Hour)
+	writer, fencer, reader := scheduleServiceHarness(state)
+	service := NewScheduleService(fencer, reader)
+
+	request := scheduleServiceRescheduleRequest()
+	request.Timing = OccurrenceTimingInput{
+		PreserveTiming: true,
+		DueAtSet:       true,
+		DueAt:          &dueAt,
+	}
+	if _, err := service.RescheduleOccurrence(context.Background(), request); err != nil {
+		t.Fatalf("RescheduleOccurrence() unexpected error: %v", err)
+	}
+	after := writer.reschedule.After
+	if after.Record.PlannedStartAt == nil || !after.Record.PlannedStartAt.Equal(originalStart) {
+		t.Fatalf("planned timing changed: %#v", after.Record)
+	}
+	if after.Record.DueAt == nil || !after.Record.DueAt.Equal(dueAt) {
+		t.Fatalf("due_at = %v, want %v", after.Record.DueAt, dueAt)
+	}
+	if after.Record.Revision != 12 || !after.ManuallyOverridden {
+		t.Fatalf("after-image = %#v", after)
+	}
+}
+
 func TestScheduleServiceThisAndFutureInstallsVersionAndReconcilesOnlyMutableFuture(t *testing.T) {
 	state := scheduleServiceState()
 	startedAt := time.Date(2026, 7, 23, 9, 5, 0, 0, time.UTC)

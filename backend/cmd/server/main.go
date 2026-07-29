@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/generationclaims"
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/mobilesyncpublisher"
+	"github.com/hujinrun/flowspace/internal/mobilev2service"
 	"github.com/hujinrun/flowspace/internal/objectstore"
 	"github.com/hujinrun/flowspace/internal/outbound"
 	"github.com/hujinrun/flowspace/internal/repository"
@@ -134,8 +137,28 @@ func main() {
 		routerConfig.TaskDomainModelSelector = taskDomainRuntime.models
 		log.Printf("task-domain model-aware routing initialized")
 	}
+	if nativeCfg.MobileSyncV2Enabled && taskDomainRuntime != nil {
+		commandService, err := mobilev2service.NewCommandExecutor(mobilev2service.CommandExecutorConfig{
+			Runtime: taskDomainRuntime.application,
+		})
+		if err != nil {
+			log.Fatalf("mobile-v2 command service: %v", err)
+		}
+		routerConfig.MobileSyncV2, err = mobilev2service.New(mobilev2service.Config{
+			Runtime:     taskDomainRuntime.application,
+			Commands:    commandService,
+			TokenSecret: deriveMobileV2TokenSecret(authCfg.SessionSecret),
+		})
+		if err != nil {
+			log.Fatalf("mobile-v2 service: %v", err)
+		}
+		log.Printf("mobile-v2 concrete service initialized")
+	}
+	if err := validateMobileV2Wiring(nativeCfg, routerConfig.MobileSyncV2); err != nil {
+		log.Fatalf("mobile-v2 wiring: %v", err)
+	}
 	r := router.Setup(routerConfig)
-	if nativeCfg.MobileSyncV1Enabled {
+	if nativeCfg.MobileSyncV1Enabled || nativeCfg.MobileSyncV2Enabled {
 		workerCtx, stopWorker := context.WithCancel(context.Background())
 		defer stopWorker()
 		worker := transcriptionjob.NewWorker(store, runtimeObjects, runtimeTranscriber, "server-transcription-worker")
@@ -144,7 +167,7 @@ func main() {
 		})
 		log.Printf("durable transcription worker initialized")
 	}
-	if nativeCfg.MobileSyncV1Enabled {
+	if nativeCfg.MobileSyncV1Enabled || nativeCfg.MobileSyncV2Enabled {
 		cleanupCtx, stopCleanup := context.WithCancel(context.Background())
 		defer stopCleanup()
 		worker := voiceaudiocleanup.NewWorker(store, runtimeObjects, "server-voice-audio-cleanup-worker")
@@ -189,6 +212,24 @@ func main() {
 			log.Printf("server stopped: %v", err)
 		}
 	}
+}
+
+func validateMobileV2Wiring(nativeCfg config.NativeConfig, service handler.MobileV2Service) error {
+	if !nativeCfg.MobileSyncV2Enabled {
+		return nil
+	}
+	if !nativeCfg.TaskDomainV2RoutingEnabled {
+		return errors.New("FLOWSPACE_ENABLE_MOBILE_SYNC_V2=true requires FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=true")
+	}
+	if service == nil {
+		return errors.New("FLOWSPACE_ENABLE_MOBILE_SYNC_V2=true requires a concrete mobile-v2 service")
+	}
+	return nil
+}
+
+func deriveMobileV2TokenSecret(sessionSecret string) string {
+	digest := sha256.Sum256([]byte("flowspace/mobile-v2/sync-token/v1\x00" + sessionSecret))
+	return hex.EncodeToString(digest[:])
 }
 
 func databaseStorageConfig(environment string, cfg config.DatabaseConfig) storagepkg.Config {

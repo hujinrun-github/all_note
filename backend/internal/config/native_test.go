@@ -21,6 +21,9 @@ func TestLoadNativeConfigDefaultsToOptionalServicesDisabled(t *testing.T) {
 	if cfg.MobileSyncV1Enabled {
 		t.Fatal("mobile_sync_v1 must be disabled by default")
 	}
+	if cfg.MobileSyncV2Enabled {
+		t.Fatal("mobile_sync_v2 must be disabled by default")
+	}
 	if cfg.TaskDomainV2RoutingEnabled {
 		t.Fatal("task-domain v2 routing must be disabled by default")
 	}
@@ -40,6 +43,23 @@ func TestLoadNativeConfigParsesMobileSyncV1FeatureFlag(t *testing.T) {
 	t.Setenv("FLOWSPACE_ENABLE_MOBILE_SYNC_V1", "sometimes")
 	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ENABLE_MOBILE_SYNC_V1") {
 		t.Fatalf("invalid mobile sync feature flag error = %v", err)
+	}
+}
+
+func TestLoadNativeConfigParsesMobileSyncV2FeatureFlag(t *testing.T) {
+	clearNativeConfigEnvironment(t)
+	t.Setenv("FLOWSPACE_ENABLE_MOBILE_SYNC_V2", "true")
+	cfg, err := LoadNativeConfig()
+	if err != nil {
+		t.Fatalf("LoadNativeConfig: %v", err)
+	}
+	if !cfg.MobileSyncV2Enabled {
+		t.Fatal("mobile_sync_v2 feature flag was not enabled")
+	}
+
+	t.Setenv("FLOWSPACE_ENABLE_MOBILE_SYNC_V2", "sometimes")
+	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ENABLE_MOBILE_SYNC_V2") {
+		t.Fatalf("invalid mobile sync v2 feature flag error = %v", err)
 	}
 }
 
@@ -105,6 +125,7 @@ func clearNativeConfigEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"FLOWSPACE_ENABLE_MOBILE_SYNC_V1",
+		"FLOWSPACE_ENABLE_MOBILE_SYNC_V2",
 		"FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING",
 		"FLOWSPACE_VOICE_MAX_BYTES",
 		"FLOWSPACE_MINIO_ENDPOINT",

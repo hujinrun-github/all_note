@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/mobilev2contract"
+	"github.com/hujinrun/flowspace/internal/mobilev2sync"
 )
 
 type SQLDialect string
@@ -22,9 +23,25 @@ const (
 var ErrInvalidSQLDialect = errors.New("mobile-v2 invalid SQL dialect")
 
 type TerminalCommit struct {
-	Command     Command
-	Result      DomainResult
-	CompletedAt time.Time
+	Command      Command
+	Result       DomainResult
+	ScopeChanges []ScopeChange
+	CompletedAt  time.Time
+}
+
+type ScopeChange struct {
+	Scope       mobilev2sync.ScopeName
+	AfterImages [][]byte
+}
+
+type DynamicCommitResult struct {
+	DomainResult
+	ScopeChanges []ScopeChange
+}
+
+type SQLRunner interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 type SQLLedger struct {
@@ -41,19 +58,32 @@ func (ledger *SQLLedger) Commit(
 	input TerminalCommit,
 	apply func(context.Context, *sql.Tx) error,
 ) (Response, error) {
+	return ledger.CommitDynamic(ctx, input.Command, input.CompletedAt, func(ctx context.Context, tx *sql.Tx) (DynamicCommitResult, error) {
+		if apply != nil {
+			if err := apply(ctx, tx); err != nil {
+				return DynamicCommitResult{}, err
+			}
+		}
+		return DynamicCommitResult{DomainResult: input.Result, ScopeChanges: input.ScopeChanges}, nil
+	})
+}
+
+func (ledger *SQLLedger) CommitDynamic(
+	ctx context.Context,
+	command Command,
+	completedAt time.Time,
+	apply func(context.Context, *sql.Tx) (DynamicCommitResult, error),
+) (Response, error) {
 	if err := ledger.validate(); err != nil {
 		return Response{}, err
 	}
-	if err := validateLedgerCommand(input.Command); err != nil {
+	if err := validateLedgerCommand(command); err != nil {
 		return Response{}, err
 	}
-	if input.Result.Status == StatusRetryLater {
-		return Response{RetryLater: true}, nil
-	}
-	if !terminalStatus(input.Result.Status) {
+	if apply == nil {
 		return Response{}, ErrInvalidTerminalStatus
 	}
-	completedAt := input.CompletedAt.UTC()
+	completedAt = completedAt.UTC()
 	if completedAt.IsZero() {
 		completedAt = time.Now().UTC()
 	}
@@ -63,71 +93,144 @@ func (ledger *SQLLedger) Commit(
 		return Response{}, err
 	}
 	defer tx.Rollback()
-
-	if err := ledger.ensureAndLockHead(ctx, tx, input.Command.WorkspaceID); err != nil {
-		return Response{}, err
-	}
-	stored, found, err := ledger.lookup(ctx, tx, input.Command.WorkspaceID, input.Command.OriginDeviceClientID, input.Command.CommandID)
+	prepared, proceed, err := ledger.PrepareOnRunner(ctx, tx, command)
 	if err != nil {
 		return Response{}, err
 	}
-	if found {
-		if stored.RequestDigest != input.Command.RequestDigest {
-			return Response{}, ErrRequestDigestMismatch
-		}
-		copy := cloneReceipt(stored)
+	if !proceed {
 		if err := tx.Commit(); err != nil {
 			return Response{}, err
 		}
-		return Response{Receipt: &copy, Replayed: true}, nil
+		return prepared, nil
 	}
-	complete, err := ledger.historyComplete(ctx, tx, input.Command.WorkspaceID)
+	dynamic, err := apply(ctx, tx)
 	if err != nil {
 		return Response{}, err
 	}
-	if !complete {
-		return Response{}, ErrReceiptHistoryAmbiguous
+	if dynamic.Status == StatusRetryLater {
+		return Response{RetryLater: true}, nil
 	}
-	if apply != nil {
-		if err := apply(ctx, tx); err != nil {
-			return Response{}, err
+	response, err := ledger.FinalizeOnRunner(ctx, tx, command, completedAt, dynamic)
+	if err != nil {
+		return Response{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Response{}, err
+	}
+	return response, nil
+}
+
+// PrepareOnRunner locks the per-workspace ledger head and performs the
+// receipt-first idempotency lookup inside an existing tenant transaction.
+func (ledger *SQLLedger) PrepareOnRunner(
+	ctx context.Context,
+	runner SQLRunner,
+	command Command,
+) (Response, bool, error) {
+	if err := ledger.validateDialect(); err != nil {
+		return Response{}, false, err
+	}
+	if runner == nil {
+		return Response{}, false, ErrInvalidSQLDialect
+	}
+	if err := validateLedgerCommand(command); err != nil {
+		return Response{}, false, err
+	}
+	if err := ledger.ensureAndLockHead(ctx, runner, command.WorkspaceID); err != nil {
+		return Response{}, false, err
+	}
+	stored, found, err := ledger.lookup(ctx, runner, command.WorkspaceID, command.OriginDeviceClientID, command.CommandID)
+	if err != nil {
+		return Response{}, false, err
+	}
+	if found {
+		if stored.RequestDigest != command.RequestDigest {
+			return Response{}, false, ErrRequestDigestMismatch
 		}
+		copy := cloneReceipt(stored)
+		return Response{Receipt: &copy, Replayed: true}, false, nil
+	}
+	complete, err := ledger.historyComplete(ctx, runner, command.WorkspaceID)
+	if err != nil {
+		return Response{}, false, err
+	}
+	if !complete {
+		return Response{}, false, ErrReceiptHistoryAmbiguous
+	}
+	return Response{}, true, nil
+}
+
+// FinalizeOnRunner writes the sequence, terminal receipt, global audit batch,
+// and every scope batch into the same existing transaction as the domain
+// effect.
+func (ledger *SQLLedger) FinalizeOnRunner(
+	ctx context.Context,
+	runner SQLRunner,
+	command Command,
+	completedAt time.Time,
+	dynamic DynamicCommitResult,
+) (Response, error) {
+	if err := ledger.validateDialect(); err != nil {
+		return Response{}, err
+	}
+	if runner == nil {
+		return Response{}, ErrInvalidSQLDialect
+	}
+	completedAt = completedAt.UTC()
+	if completedAt.IsZero() {
+		completedAt = time.Now().UTC()
+	}
+	if !terminalStatus(dynamic.Status) {
+		return Response{}, ErrInvalidTerminalStatus
+	}
+	if err := validateScopeChanges(dynamic.ScopeChanges); err != nil {
+		return Response{}, err
 	}
 
-	sequence, err := ledger.nextSequence(ctx, tx, input.Command.WorkspaceID)
+	sequence, err := ledger.nextSequence(ctx, runner, command.WorkspaceID)
 	if err != nil {
 		return Response{}, err
 	}
 	receipt := Receipt{
-		WorkspaceID: input.Command.WorkspaceID, OriginDeviceClientID: input.Command.OriginDeviceClientID,
-		CommandID: input.Command.CommandID, RequestDigest: input.Command.RequestDigest, Status: input.Result.Status,
-		CommitSequence: sequence, IdentityMappings: cloneMappings(input.Result.IdentityMappings),
-		AffectedRevisions: cloneRevisions(input.Result.AffectedRevisions), CompletedAt: completedAt,
+		WorkspaceID: command.WorkspaceID, OriginDeviceClientID: command.OriginDeviceClientID,
+		CommandID: command.CommandID, RequestDigest: command.RequestDigest, Status: dynamic.Status,
+		CommitSequence: sequence, IdentityMappings: cloneMappings(dynamic.IdentityMappings),
+		AffectedRevisions: cloneRevisions(dynamic.AffectedRevisions), CompletedAt: completedAt,
 	}
 	receiptJSON, err := json.Marshal(receipt)
 	if err != nil {
 		return Response{}, err
 	}
-	afterImagesJSON, err := json.Marshal(cloneImages(input.Result.AfterImages))
+	afterImagesJSON, err := marshalAfterImages(dynamic.AfterImages)
 	if err != nil {
 		return Response{}, err
 	}
-	if _, err := tx.ExecContext(ctx, ledger.bind(`INSERT INTO mobile_v2_command_receipts
+	if _, err := runner.ExecContext(ctx, ledger.bind(`INSERT INTO mobile_v2_command_receipts
 		(workspace_id,origin_device_client_id,command_id,request_digest,command_type,status,commit_sequence,receipt_json,completed_at)
 		VALUES (?,?,?,?,?,?,?,?,?)`),
-		input.Command.WorkspaceID, input.Command.OriginDeviceClientID, input.Command.CommandID, input.Command.RequestDigest,
-		input.Command.CommandType, input.Result.Status, sequence, string(receiptJSON), completedAt); err != nil {
+		command.WorkspaceID, command.OriginDeviceClientID, command.CommandID, command.RequestDigest,
+		command.CommandType, dynamic.Status, sequence, string(receiptJSON), completedAt); err != nil {
 		return Response{}, err
 	}
-	if _, err := tx.ExecContext(ctx, ledger.bind(`INSERT INTO mobile_v2_change_batches
+	if _, err := runner.ExecContext(ctx, ledger.bind(`INSERT INTO mobile_v2_change_batches
 		(workspace_id,sequence,caused_by_command_id,origin_device_client_id,receipt_json,after_images_json,committed_at)
 		VALUES (?,?,?,?,?,?,?)`),
-		input.Command.WorkspaceID, sequence, input.Command.CommandID, input.Command.OriginDeviceClientID,
+		command.WorkspaceID, sequence, command.CommandID, command.OriginDeviceClientID,
 		string(receiptJSON), string(afterImagesJSON), completedAt); err != nil {
 		return Response{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return Response{}, err
+	for _, change := range dynamic.ScopeChanges {
+		entitiesJSON, err := marshalAfterImages(change.AfterImages)
+		if err != nil {
+			return Response{}, err
+		}
+		if _, err := runner.ExecContext(ctx, ledger.bind(`INSERT INTO mobile_v2_scope_change_batches
+			(workspace_id,scope,sequence,caused_by_command_id,origin_device_client_id,receipt_json,entities_json,committed_at)
+			VALUES (?,?,?,?,?,?,?,?)`),
+			command.WorkspaceID, change.Scope, sequence, command.CommandID, command.OriginDeviceClientID,
+			string(receiptJSON), string(entitiesJSON), completedAt); err != nil {
+			return Response{}, err
+		}
 	}
 	copy := cloneReceipt(receipt)
 	return Response{Receipt: &copy}, nil
@@ -143,6 +246,43 @@ func (ledger *SQLLedger) Lookup(
 		return Receipt{}, false, err
 	}
 	return ledger.lookup(ctx, ledger.db, workspaceID, originDeviceClientID, commandID)
+}
+
+func (ledger *SQLLedger) LookupOnRunner(
+	ctx context.Context,
+	runner SQLRunner,
+	workspaceID string,
+	originDeviceClientID string,
+	commandID string,
+) (Receipt, bool, error) {
+	if err := ledger.validateDialect(); err != nil {
+		return Receipt{}, false, err
+	}
+	if runner == nil {
+		return Receipt{}, false, ErrInvalidSQLDialect
+	}
+	return ledger.lookup(ctx, runner, workspaceID, originDeviceClientID, commandID)
+}
+
+// CurrentSequenceOnRunner reads the locked workspace commit head. Callers use
+// current+1 when producing transaction-local after-images whose payload
+// contains the sequence that FinalizeOnRunner will reserve.
+func (ledger *SQLLedger) CurrentSequenceOnRunner(
+	ctx context.Context,
+	runner SQLRunner,
+	workspaceID string,
+) (uint64, error) {
+	if err := ledger.validateDialect(); err != nil {
+		return 0, err
+	}
+	if runner == nil {
+		return 0, ErrInvalidSQLDialect
+	}
+	var sequence uint64
+	err := runner.QueryRowContext(ctx, ledger.bind(
+		`SELECT latest_sequence FROM mobile_v2_commit_heads WHERE workspace_id=?`,
+	), workspaceID).Scan(&sequence)
+	return sequence, err
 }
 
 func (ledger *SQLLedger) ChangesAfter(ctx context.Context, workspaceID string, sequence uint64) ([]ChangeBatch, error) {
@@ -166,7 +306,8 @@ func (ledger *SQLLedger) ChangesAfter(ctx context.Context, workspaceID string, s
 		if err := json.Unmarshal(receiptJSON, &change.Receipt); err != nil {
 			return nil, fmt.Errorf("decode mobile-v2 receipt change: %w", err)
 		}
-		if err := json.Unmarshal(afterImagesJSON, &change.AfterImages); err != nil {
+		change.AfterImages, err = unmarshalAfterImages(afterImagesJSON)
+		if err != nil {
 			return nil, fmt.Errorf("decode mobile-v2 after-images: %w", err)
 		}
 		result = append(result, change)
@@ -243,37 +384,44 @@ func (ledger *SQLLedger) lookup(
 	return receipt, true, nil
 }
 
-func (ledger *SQLLedger) ensureAndLockHead(ctx context.Context, tx *sql.Tx, workspaceID string) error {
+func (ledger *SQLLedger) ensureAndLockHead(ctx context.Context, runner SQLRunner, workspaceID string) error {
 	if ledger.dialect == SQLDialectPostgres {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO mobile_v2_commit_heads(workspace_id) VALUES ($1) ON CONFLICT DO NOTHING`, workspaceID); err != nil {
+		if _, err := runner.ExecContext(ctx, `INSERT INTO mobile_v2_commit_heads(workspace_id) VALUES ($1) ON CONFLICT DO NOTHING`, workspaceID); err != nil {
 			return err
 		}
 		var sequence uint64
-		return tx.QueryRowContext(ctx, `SELECT latest_sequence FROM mobile_v2_commit_heads WHERE workspace_id=$1 FOR UPDATE`, workspaceID).Scan(&sequence)
+		return runner.QueryRowContext(ctx, `SELECT latest_sequence FROM mobile_v2_commit_heads WHERE workspace_id=$1 FOR UPDATE`, workspaceID).Scan(&sequence)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_v2_commit_heads(workspace_id) VALUES (?)`, workspaceID); err != nil {
+	if _, err := runner.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_v2_commit_heads(workspace_id) VALUES (?)`, workspaceID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE mobile_v2_commit_heads SET latest_sequence=latest_sequence WHERE workspace_id=?`, workspaceID)
+	_, err := runner.ExecContext(ctx, `UPDATE mobile_v2_commit_heads SET latest_sequence=latest_sequence WHERE workspace_id=?`, workspaceID)
 	return err
 }
 
-func (ledger *SQLLedger) historyComplete(ctx context.Context, tx *sql.Tx, workspaceID string) (bool, error) {
+func (ledger *SQLLedger) historyComplete(ctx context.Context, runner SQLRunner, workspaceID string) (bool, error) {
 	var complete bool
-	err := tx.QueryRowContext(ctx, ledger.bind(`SELECT receipt_history_complete FROM mobile_v2_commit_heads WHERE workspace_id=?`), workspaceID).Scan(&complete)
+	err := runner.QueryRowContext(ctx, ledger.bind(`SELECT receipt_history_complete FROM mobile_v2_commit_heads WHERE workspace_id=?`), workspaceID).Scan(&complete)
 	return complete, err
 }
 
-func (ledger *SQLLedger) nextSequence(ctx context.Context, tx *sql.Tx, workspaceID string) (uint64, error) {
+func (ledger *SQLLedger) nextSequence(ctx context.Context, runner SQLRunner, workspaceID string) (uint64, error) {
 	var sequence uint64
-	err := tx.QueryRowContext(ctx, ledger.bind(`UPDATE mobile_v2_commit_heads
+	err := runner.QueryRowContext(ctx, ledger.bind(`UPDATE mobile_v2_commit_heads
 		SET latest_sequence=latest_sequence+1,updated_at=CURRENT_TIMESTAMP WHERE workspace_id=?
 		RETURNING latest_sequence`), workspaceID).Scan(&sequence)
 	return sequence, err
 }
 
 func (ledger *SQLLedger) validate() error {
-	if ledger == nil || ledger.db == nil || (ledger.dialect != SQLDialectSQLite && ledger.dialect != SQLDialectPostgres) {
+	if ledger == nil || ledger.db == nil {
+		return ErrInvalidSQLDialect
+	}
+	return ledger.validateDialect()
+}
+
+func (ledger *SQLLedger) validateDialect() error {
+	if ledger == nil || (ledger.dialect != SQLDialectSQLite && ledger.dialect != SQLDialectPostgres) {
 		return ErrInvalidSQLDialect
 	}
 	return nil
@@ -313,4 +461,52 @@ func validateLedgerCommand(command Command) error {
 		return fmt.Errorf("invalid command identity")
 	}
 	return ValidateExpectedRevisions(command.CommandType, command.ExpectedRevisionNames)
+}
+
+func validateScopeChanges(changes []ScopeChange) error {
+	seen := make(map[mobilev2sync.ScopeName]struct{}, len(changes))
+	for _, change := range changes {
+		switch change.Scope {
+		case mobilev2sync.ScopeIPhoneContent,
+			mobilev2sync.ScopeIPhoneTaskCore,
+			mobilev2sync.ScopeIPhoneOccurrenceWindow,
+			mobilev2sync.ScopeWatchOccurrenceWindow:
+		default:
+			return ErrInvalidTerminalStatus
+		}
+		if _, exists := seen[change.Scope]; exists {
+			return ErrInvalidTerminalStatus
+		}
+		seen[change.Scope] = struct{}{}
+		for _, image := range change.AfterImages {
+			trimmed := strings.TrimSpace(string(image))
+			if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(image) {
+				return ErrInvalidTerminalStatus
+			}
+		}
+	}
+	return nil
+}
+
+func marshalAfterImages(images [][]byte) ([]byte, error) {
+	raw := make([]json.RawMessage, len(images))
+	for index, image := range images {
+		if !json.Valid(image) {
+			return nil, ErrInvalidTerminalStatus
+		}
+		raw[index] = append(json.RawMessage(nil), image...)
+	}
+	return json.Marshal(raw)
+}
+
+func unmarshalAfterImages(encoded []byte) ([][]byte, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		return nil, err
+	}
+	result := make([][]byte, len(raw))
+	for index, image := range raw {
+		result[index] = append([]byte(nil), image...)
+	}
+	return result, nil
 }

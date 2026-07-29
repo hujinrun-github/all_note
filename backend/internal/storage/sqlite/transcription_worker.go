@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -279,12 +282,17 @@ func persistSQLiteTranscriptionCompletionChanges(
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_sync_outbox (
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES (?, ?, 'note', ?, 'note.transcription_applied', ?, ?, ?)
-	`, workspaceID, job.JobID, clientID, revision, string(noteJSON), now)
-	return err
+	`, workspaceID, job.JobID, clientID, revision, string(noteJSON), now); err != nil {
+		return err
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectSQLite,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: "note", EntityID: noteID,
+		}}, time.Unix(now, 0).UTC())
 }
 
 func persistSQLiteTranscriptionJobChange(
@@ -311,12 +319,17 @@ func persistSQLiteTranscriptionJobChange(
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
+	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO mobile_sync_outbox (
 			workspace_id, mutation_id, entity_type, entity_client_id, operation, revision, entity_json, created_at
 		) VALUES (?, ?, 'transcription_job', ?, ?, ?, ?, ?)
-	`, workspaceID, job.JobID, job.JobID, operation, job.Revision, string(jobJSON), now)
-	return err
+	`, workspaceID, job.JobID, job.JobID, operation, job.Revision, string(jobJSON), now); err != nil {
+		return err
+	}
+	return mobilev2change.AppendContentChanges(ctx, tx, mobilev2projection.DialectSQLite,
+		workspaceID, []mobilev2change.ContentEntityRef{{
+			EntityType: "transcription_job", EntityID: job.JobID,
+		}}, time.Unix(now, 0).UTC())
 }
 
 func withSQLiteTranscriptionWorkerTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
