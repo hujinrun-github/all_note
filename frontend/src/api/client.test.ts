@@ -20,7 +20,10 @@ describe('api client', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/api/example'),
-      expect.objectContaining({ credentials: 'include' }),
+      expect.objectContaining({
+        credentials: 'include',
+        cache: 'no-store',
+      }),
     )
   })
 })

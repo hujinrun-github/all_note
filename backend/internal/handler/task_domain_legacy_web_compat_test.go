@@ -138,6 +138,66 @@ func TestLegacyWebV2UnknownOrUnrepresentableStateHasStableError(t *testing.T) {
 	}
 }
 
+func TestLegacyWebV2SummaryProjectsCompletedOccurrences(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	completedAt := time.Date(2026, 7, 29, 14, 30, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	occurrence := legacyWebOccurrence("workspace-1", "task-1", "occ-1", taskdomain.TimingDate, "2026-07-29", nil, nil, "")
+	occurrence.Status = taskdomain.ExecutionStatusDone
+	occurrence.CompletedAt = &completedAt
+	application := &legacyWebApplicationFake{
+		workspaceID: "workspace-1",
+		occurrencesByScope: map[taskdomain.OccurrenceListScope][]taskdomain.QueryOccurrenceSnapshot{
+			taskdomain.OccurrenceListCompleted: {occurrence},
+		},
+		projects: map[string]taskdomain.ProjectSnapshot{
+			"project-1": {Project: taskdomain.Project{WorkspaceID: "workspace-1", ID: "project-1", Name: "Personal", Kind: taskdomain.ProjectKindStandard}},
+		},
+	}
+	response := httptest.NewRecorder()
+	legacyWebCompatRouter(application).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/summary?from=2026-07-29&to=2026-07-29&page=1&page_size=50", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	for _, fragment := range []string{`"active_days":1`, `"project_count":1`, `"date":"2026-07-29"`, `"id":"occ-1"`, `"total":1`} {
+		if !strings.Contains(response.Body.String(), fragment) {
+			t.Fatalf("body = %s, want %s", response.Body.String(), fragment)
+		}
+	}
+}
+
+func TestLegacyWebV2TodayProjectsCurrentAndOverdueOccurrences(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	now := time.Now()
+	todayOccurrence := legacyWebOccurrence("workspace-1", "task-today", "occ-today", taskdomain.TimingDate, now.Format("2006-01-02"), nil, nil, "")
+	overdueOccurrence := legacyWebOccurrence("workspace-1", "task-overdue", "occ-overdue", taskdomain.TimingDate, now.AddDate(0, 0, -1).Format("2006-01-02"), nil, nil, "")
+	dueAt := now.Add(-24 * time.Hour)
+	overdueOccurrence.DueAt = &dueAt
+	application := &legacyWebApplicationFake{
+		workspaceID: "workspace-1",
+		occurrencesByScope: map[taskdomain.OccurrenceListScope][]taskdomain.QueryOccurrenceSnapshot{
+			taskdomain.OccurrenceListToday:   {todayOccurrence},
+			taskdomain.OccurrenceListOverdue: {overdueOccurrence},
+		},
+		tasks: map[string]taskdomain.TaskAggregateQueryResult{
+			"task-today":   legacyWebTask("workspace-1", "task-today", taskdomain.TimingDate, now.Format("2006-01-02"), "", 0),
+			"task-overdue": legacyWebTask("workspace-1", "task-overdue", taskdomain.TimingDate, now.AddDate(0, 0, -1).Format("2006-01-02"), "", 0),
+		},
+		projects: map[string]taskdomain.ProjectSnapshot{
+			"project-1": {Project: taskdomain.Project{WorkspaceID: "workspace-1", ID: "project-1", Name: "Personal", Kind: taskdomain.ProjectKindStandard, Horizon: taskdomain.ProjectHorizonShort, Status: taskdomain.ProjectStatusActive}, Revision: 7},
+		},
+	}
+	response := httptest.NewRecorder()
+	legacyWebCompatRouter(application).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/today?timezone=Asia/Shanghai", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	for _, fragment := range []string{`"occurrence_id":"occ-today"`, `"occurrence_id":"occ-overdue"`, `"recentNotes":[]`} {
+		if !strings.Contains(response.Body.String(), fragment) {
+			t.Fatalf("body = %s, want %s", response.Body.String(), fragment)
+		}
+	}
+}
+
 func legacyWebCompatRouter(application LegacyWebTaskDomainApplication) *gin.Engine {
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -151,19 +211,23 @@ func legacyWebCompatRouter(application LegacyWebTaskDomainApplication) *gin.Engi
 }
 
 type legacyWebApplicationFake struct {
-	workspaceID     string
-	occurrences     []taskdomain.QueryOccurrenceSnapshot
-	tasks           map[string]taskdomain.TaskAggregateQueryResult
-	projects        map[string]taskdomain.ProjectSnapshot
-	listCalls       int
-	getTaskCalls    int
-	getProjectCalls int
+	workspaceID        string
+	occurrences        []taskdomain.QueryOccurrenceSnapshot
+	occurrencesByScope map[taskdomain.OccurrenceListScope][]taskdomain.QueryOccurrenceSnapshot
+	tasks              map[string]taskdomain.TaskAggregateQueryResult
+	projects           map[string]taskdomain.ProjectSnapshot
+	listCalls          int
+	getTaskCalls       int
+	getProjectCalls    int
 }
 
 func (fake *legacyWebApplicationFake) ListOccurrences(_ context.Context, request taskapp.OccurrenceQueryRequest) ([]taskdomain.QueryOccurrenceSnapshot, error) {
 	fake.listCalls++
 	if request.WorkspaceID != fake.workspaceID {
 		return nil, taskapp.ErrInvalidRuntime
+	}
+	if fake.occurrencesByScope != nil {
+		return append([]taskdomain.QueryOccurrenceSnapshot(nil), fake.occurrencesByScope[request.Scope]...), nil
 	}
 	return append([]taskdomain.QueryOccurrenceSnapshot(nil), fake.occurrences...), nil
 }
