@@ -199,6 +199,30 @@ describe('Task occurrence workspace', () => {
     expect(screen.getByRole('button', { name: '刷新服务器版本' })).toBeVisible()
     expect(screen.getByRole('button', { name: '比较差异' })).toBeVisible()
   })
+
+  it('shows a visible error and preserves the selected date when reschedule fails', async () => {
+    const reschedule = vi
+      .fn()
+      .mockRejectedValue(new Error('service unavailable'))
+    vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue({
+      mutateAsync: reschedule,
+      isPending: false,
+    } as unknown as ReturnType<
+      typeof taskHooks.useRescheduleOccurrenceMutation
+    >)
+    renderWorkspace()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '改期准备评审' }))
+    const date = screen.getByLabelText('新的执行日期')
+    await user.type(date, '2026-07-25')
+    await user.click(screen.getByRole('button', { name: '保存改期' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '保存改期失败，请稍后重试。'
+    )
+    expect(date).toHaveValue('2026-07-25')
+  })
 })
 
 function renderWorkspace() {

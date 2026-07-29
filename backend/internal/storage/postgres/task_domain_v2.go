@@ -299,7 +299,11 @@ func (r *postgresTaskDomainV2ProjectReader) listOccurrences(ctx context.Context,
 const postgresTaskDomainV2OccurrenceSelect = `SELECT
 	o.workspace_id,t.project_id,t.id,o.id,o.occurrence_key,
 	COALESCE(o.override_title,t.title),COALESCE(o.override_description,t.description),
-	v.timing_type,v.timezone,o.planned_date::text,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
+	CASE
+		WHEN o.planned_start_at IS NOT NULL THEN 'time_block'
+		WHEN o.planned_date IS NOT NULL THEN 'date'
+		ELSE 'unscheduled'
+	END,v.timezone,o.planned_date::text,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
 	(v.recurrence_type <> 'none'),
 	o.revision,p.revision,t.revision,s.revision,o.generated_schedule_revision,t.lifecycle_status,t.priority,t.sort_order,
 	o.actual_start_at,o.completed_at,o.blocked_reason,o.next_action,o.location,o.calendar_kind,o.calendar_notes,
@@ -462,8 +466,8 @@ func postgresTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter
 		if err != nil {
 			return "", nil, err
 		}
-		predicate = fmt.Sprintf(`((v.timing_type='date' AND o.planned_date < %s AND COALESCE(o.all_day_end_date,o.planned_date + 1) > %s)
-			OR (v.timing_type='time_block' AND o.planned_start_at < %s AND o.planned_end_at > %s))`,
+		predicate = fmt.Sprintf(`((o.planned_start_at IS NULL AND o.planned_date < %s AND COALESCE(o.all_day_end_date,o.planned_date + 1) > %s)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at < %s AND o.planned_end_at > %s))`,
 			placeholder(toDate), placeholder(fromDate), placeholder(filter.To), placeholder(filter.From))
 	case taskdomain.OccurrenceListUpcoming:
 		if err := requireRange(); err != nil {
@@ -473,8 +477,8 @@ func postgresTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter
 		if err != nil {
 			return "", nil, err
 		}
-		predicate = fmt.Sprintf(`(((v.timing_type='date' AND o.planned_date >= %s AND o.planned_date < %s)
-			OR (v.timing_type='time_block' AND o.planned_start_at >= %s AND o.planned_start_at < %s))
+		predicate = fmt.Sprintf(`(((o.planned_start_at IS NULL AND o.planned_date >= %s AND o.planned_date < %s)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at >= %s AND o.planned_start_at < %s))
 			AND o.execution_status NOT IN ('done','skipped','cancelled'))`,
 			placeholder(fromDate), placeholder(toDate), placeholder(filter.From), placeholder(filter.To))
 	case taskdomain.OccurrenceListOverdue:
@@ -483,7 +487,7 @@ func postgresTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter
 		}
 		predicate = fmt.Sprintf(`o.due_at < %s AND o.execution_status NOT IN ('done','skipped','cancelled')`, placeholder(filter.From))
 	case taskdomain.OccurrenceListUnscheduled:
-		predicate = `v.timing_type='unscheduled'`
+		predicate = `o.planned_date IS NULL AND o.planned_start_at IS NULL`
 	case taskdomain.OccurrenceListCompleted:
 		if err := requireRange(); err != nil {
 			return "", nil, err
@@ -498,8 +502,8 @@ func postgresTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter
 		if err != nil {
 			return "", nil, err
 		}
-		predicate = fmt.Sprintf(`((v.timing_type='date' AND o.planned_date < %s AND COALESCE(o.all_day_end_date,o.planned_date + 1) > %s)
-			OR (v.timing_type='time_block' AND o.planned_start_at < %s AND o.planned_end_at > %s))`,
+		predicate = fmt.Sprintf(`((o.planned_start_at IS NULL AND o.planned_date < %s AND COALESCE(o.all_day_end_date,o.planned_date + 1) > %s)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at < %s AND o.planned_end_at > %s))`,
 			placeholder(toDate), placeholder(fromDate), placeholder(filter.To), placeholder(filter.From))
 	default:
 		return "", nil, taskdomain.ErrInvalidOccurrenceListFilter

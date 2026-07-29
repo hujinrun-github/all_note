@@ -83,6 +83,9 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 	mustExecArgs(t, fixture.DB, `UPDATE domain_task_occurrences_v2
 		SET due_at=?,execution_status='done',completed_at=? WHERE workspace_id='query-w1' AND id='done-occ'`, fixture.Dialect,
 		queryContractTime(fixture.Dialect, duePast), queryContractTime(fixture.Dialect, completed))
+	mustExec(t, fixture.DB, `UPDATE domain_task_occurrences_v2
+		SET planned_date='2026-07-22',manually_overridden=TRUE
+		WHERE workspace_id='query-w1' AND id='unscheduled-occ'`)
 
 	reader := fixture.NewReader("query-w1")
 	t.Run("project_and_task_catalog_filters_are_stable_and_workspace_bound", func(t *testing.T) {
@@ -161,6 +164,10 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		if err != nil || len(items) != 2 || items[0].OccurrenceID != "future-1" || items[1].OccurrenceID != "future-2" {
 			t.Fatalf("stable task occurrences = %#v, err=%v", items, err)
 		}
+		rescheduled, err := reader.GetOccurrence(ctx, "unscheduled-occ")
+		if err != nil || rescheduled.TimingType != taskdomain.TimingDate || rescheduled.PlannedDate != "2026-07-22" {
+			t.Fatalf("manual reschedule timing = %#v, err=%v", rescheduled, err)
+		}
 	})
 
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
@@ -173,7 +180,7 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		assertQueryIDs(t, allForProject, "other-occ")
 
 		today := queryList(t, reader, taskdomain.OccurrenceListFilter{Scope: taskdomain.OccurrenceListToday, From: dayStart, To: dayEnd, Timezone: "UTC"})
-		assertQueryIDs(t, today, "date-multi-occ", "date-a-occ", "other-occ", "time-a-occ")
+		assertQueryIDs(t, today, "date-multi-occ", "date-a-occ", "other-occ", "unscheduled-occ", "time-a-occ")
 
 		upcoming := queryList(t, reader, taskdomain.OccurrenceListFilter{
 			Scope: taskdomain.OccurrenceListUpcoming, From: now, To: dayStart.Add(72 * time.Hour), Timezone: "UTC",
@@ -186,14 +193,14 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		unscheduled := queryList(t, reader, taskdomain.OccurrenceListFilter{
 			Scope: taskdomain.OccurrenceListUnscheduled, Timezone: "UTC", Statuses: []taskdomain.ExecutionStatus{taskdomain.ExecutionStatusOpen},
 		})
-		assertQueryIDs(t, unscheduled, "overdue-occ", "catalog-draft-occ", "catalog-paused-occ", "unscheduled-occ")
+		assertQueryIDs(t, unscheduled, "overdue-occ", "catalog-draft-occ", "catalog-paused-occ")
 		completedItems := queryList(t, reader, taskdomain.OccurrenceListFilter{
 			Scope: taskdomain.OccurrenceListCompleted, From: dayStart, To: dayEnd, Timezone: "UTC",
 		})
 		assertQueryIDs(t, completedItems, "done-occ")
 
 		calendar := queryList(t, reader, taskdomain.OccurrenceListFilter{Scope: taskdomain.OccurrenceListCalendar, From: dayStart, To: dayEnd, Timezone: "UTC"})
-		assertQueryIDs(t, calendar, "date-multi-occ", "date-a-occ", "other-occ", "time-a-occ")
+		assertQueryIDs(t, calendar, "date-multi-occ", "date-a-occ", "other-occ", "unscheduled-occ", "time-a-occ")
 		for _, item := range calendar {
 			if item.TimingType == taskdomain.TimingUnscheduled {
 				t.Fatalf("calendar leaked unscheduled occurrence: %#v", item)

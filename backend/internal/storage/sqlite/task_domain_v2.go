@@ -328,7 +328,11 @@ func (r *sqliteTaskDomainV2ProjectReader) listOccurrences(ctx context.Context, p
 const sqliteTaskDomainV2OccurrenceSelect = `SELECT
 	o.workspace_id,t.project_id,t.id,o.id,o.occurrence_key,
 	COALESCE(o.override_title,t.title),COALESCE(o.override_description,t.description),
-	v.timing_type,v.timezone,o.planned_date,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
+	CASE
+		WHEN o.planned_start_at IS NOT NULL THEN 'time_block'
+		WHEN o.planned_date IS NOT NULL THEN 'date'
+		ELSE 'unscheduled'
+	END,v.timezone,o.planned_date,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
 	CASE WHEN v.recurrence_type <> 'none' THEN 1 ELSE 0 END,
 	o.revision,p.revision,t.revision,s.revision,o.generated_schedule_revision,t.lifecycle_status,t.priority,t.sort_order,
 	o.actual_start_at,o.completed_at,o.blocked_reason,o.next_action,o.location,o.calendar_kind,o.calendar_notes,
@@ -496,8 +500,8 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		if err != nil {
 			return "", nil, err
 		}
-		return `((v.timing_type='date' AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
-			OR (v.timing_type='time_block' AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
+		return `((o.planned_start_at IS NULL AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
 	case taskdomain.OccurrenceListUpcoming:
 		if err := requireRange(); err != nil {
 			return "", nil, err
@@ -506,8 +510,8 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		if err != nil {
 			return "", nil, err
 		}
-		return `(((v.timing_type='date' AND o.planned_date >= ? AND o.planned_date < ?)
-			OR (v.timing_type='time_block' AND o.planned_start_at >= ? AND o.planned_start_at < ?))
+		return `(((o.planned_start_at IS NULL AND o.planned_date >= ? AND o.planned_date < ?)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at >= ? AND o.planned_start_at < ?))
 			AND o.execution_status NOT IN ('done','skipped','cancelled'))`, []any{fromDate, toDate, from, to}, nil
 	case taskdomain.OccurrenceListOverdue:
 		if filter.From.IsZero() {
@@ -515,7 +519,7 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		}
 		return `o.due_at < ? AND o.execution_status NOT IN ('done','skipped','cancelled')`, []any{from}, nil
 	case taskdomain.OccurrenceListUnscheduled:
-		return `v.timing_type='unscheduled'`, nil, nil
+		return `o.planned_date IS NULL AND o.planned_start_at IS NULL`, nil, nil
 	case taskdomain.OccurrenceListCompleted:
 		if err := requireRange(); err != nil {
 			return "", nil, err
@@ -529,8 +533,8 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		if err != nil {
 			return "", nil, err
 		}
-		return `((v.timing_type='date' AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
-			OR (v.timing_type='time_block' AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
+		return `((o.planned_start_at IS NULL AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
 	default:
 		return "", nil, taskdomain.ErrInvalidOccurrenceListFilter
 	}

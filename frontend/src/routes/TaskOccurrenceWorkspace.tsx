@@ -71,6 +71,7 @@ export default function TaskOccurrenceWorkspace() {
   const [rescheduleDate, setRescheduleDate] = useState('')
   const [rescheduleConflict, setRescheduleConflict] =
     useState<TaskDomainRevisionConflictError | null>(null)
+  const [rescheduleError, setRescheduleError] = useState('')
   const [showComparison, setShowComparison] = useState(false)
   const [taskCommandError, setTaskCommandError] = useState('')
 
@@ -270,6 +271,7 @@ export default function TaskOccurrenceWorkspace() {
     setEditingOccurrenceID(occurrence.id)
     setRescheduleDate(occurrence.planned_date ?? '')
     setRescheduleConflict(null)
+    setRescheduleError('')
     setShowComparison(false)
   }
 
@@ -278,6 +280,7 @@ export default function TaskOccurrenceWorkspace() {
     if (!editingOccurrence || !editingDefinition || rescheduleDate === '')
       return
     setRescheduleConflict(null)
+    setRescheduleError('')
     setShowComparison(false)
     try {
       await rescheduleOccurrence.mutateAsync({
@@ -307,7 +310,7 @@ export default function TaskOccurrenceWorkspace() {
         setRescheduleConflict(caught)
         return
       }
-      throw caught
+      setRescheduleError('保存改期失败，请稍后重试。')
     }
   }
 
@@ -720,6 +723,11 @@ export default function TaskOccurrenceWorkspace() {
                         </div>
                       </dl>
                     ) : null}
+                  </div>
+                ) : null}
+                {rescheduleError ? (
+                  <div className="td-inline-error" role="alert">
+                    {rescheduleError}
                   </div>
                 ) : null}
               </form>
