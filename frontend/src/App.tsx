@@ -18,6 +18,9 @@ export function App() {
     location.pathname.startsWith('/calendar')
   const isV2TaskRoute =
     isTaskRoute && taskDomainCapability.data?.model_version === 'v2'
+  const isRoadmapCanvasRoute =
+    location.pathname.includes('/roadmap/nodes/') &&
+    location.pathname.endsWith('/mind-map')
 
   return (
     <div className={`workspace-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
@@ -25,8 +28,12 @@ export function App() {
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
-      <main className={`workspace-main ${isTaskRoute ? 'is-task-route' : ''}`}>
-        <TopBar compact={isV2TaskRoute} />
+      <main
+        className={`workspace-main ${isTaskRoute ? 'is-task-route' : ''}${
+          isRoadmapCanvasRoute ? ' is-roadmap-canvas-route' : ''
+        }`}
+      >
+        {isRoadmapCanvasRoute ? null : <TopBar compact={isV2TaskRoute} />}
         <Suspense fallback={<div className="text-fs-text-muted">Loading...</div>}>
           <Outlet />
         </Suspense>

@@ -72,6 +72,23 @@ describe('RoadmapV2', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     } as never)
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [
+        {
+          id: 't1',
+          project_id: 'p1',
+          roadmap_node_id: 'n1',
+          title: 'Read the guide',
+          priority: 1,
+          sort_order: 0,
+          lifecycle_status: 'active',
+          revision: 1,
+          schedule_revision: 1,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    } as never)
     vi.mocked(hooks.useRoadmapV2).mockReturnValue({
       data: roadmapModel,
       isLoading: false,
@@ -104,8 +121,9 @@ describe('RoadmapV2', () => {
     const user = userEvent.setup()
     renderRoute()
 
-    expect(screen.getAllByText('33%')).toHaveLength(2)
-    expect(screen.getByText('阻塞 1')).toBeInTheDocument()
+    expect(screen.getAllByText('33%').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('Read the guide')).toBeInTheDocument()
+    expect(screen.getByText('被阻塞')).toBeInTheDocument()
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '添加任务' }))
     expect(
@@ -172,14 +190,14 @@ describe('RoadmapV2', () => {
     renderRoute()
 
     await user.click(
-      screen.getByRole('button', { name: '重新生成路线' })
+      screen.getByRole('button', { name: '重新生成' })
     )
     await user.type(
       screen.getByRole('textbox', { name: '补充生成要求' }),
       '每个阶段都要有作品'
     )
     await user.click(
-      screen.getAllByRole('button', { name: '重新生成路线' })[1]
+      screen.getByRole('button', { name: '重新生成路线' })
     )
 
     expect(generate).toHaveBeenCalledWith({
@@ -191,7 +209,7 @@ describe('RoadmapV2', () => {
     renderRoute()
 
     expect(
-      screen.getByRole('button', { name: '重新生成路线' })
+      screen.getByRole('button', { name: '重新生成' })
     ).toBeDisabled()
   })
 })

@@ -18,6 +18,9 @@ const Settings = lazy(() => import('./routes/Settings'))
 const ProjectsRoute = lazy(() => import('./routes/ProjectsRoute'))
 const ProjectDetailRoute = lazy(() => import('./routes/ProjectDetailRoute'))
 const RoadmapV2Route = lazy(() => import('./routes/RoadmapV2Route'))
+const RoadmapMindMapRoute = lazy(
+  () => import('./routes/RoadmapMindMapRoute')
+)
 
 export const router = createBrowserRouter(
   [
@@ -33,6 +36,10 @@ export const router = createBrowserRouter(
         { path: 'projects', element: <ProjectsRoute /> },
         { path: 'projects/:projectID', element: <ProjectDetailRoute /> },
         { path: 'projects/:projectID/roadmap', element: <RoadmapV2Route /> },
+        {
+          path: 'projects/:projectID/roadmap/nodes/:roadmapNodeID/mind-map',
+          element: <RoadmapMindMapRoute />,
+        },
         { path: 'calendar', element: <Calendar /> },
         { path: 'inbox', element: <Inbox /> },
         { path: 'search', element: <Search /> },
