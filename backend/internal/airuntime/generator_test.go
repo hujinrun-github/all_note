@@ -45,6 +45,146 @@ func TestGeneratorUsesCodexResponsesStreamAndAccountHeader(t *testing.T) {
 	}
 }
 
+func TestGeneratorUsesCompatibleStructuredContentAndRoadmapSizedBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" || r.Header.Get("Authorization") != "Bearer api-key" {
+			t.Fatalf("request path=%s headers=%v", r.URL.Path, r.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["max_tokens"] != float64(12000) {
+			t.Fatalf("max_tokens=%v, want 12000", body["max_tokens"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":[{"type":"text","text":"{\"title\":\"AI Roadmap\"}"}]}}]}`))
+	}))
+	defer server.Close()
+	source := keyedSource{&fakeSource{
+		bindings: map[string]Binding{"llm_chat": {Kind: "llm_chat", Mode: "custom", EndpointID: "chat"}},
+		profiles: map[string]EndpointProfile{"chat": {
+			EndpointID:       "chat",
+			Kind:             "llm_chat",
+			ProfileVersionID: "v1",
+			Provider:         "openai_compatible",
+			Model:            "gpt-test",
+			ConfigJSON:       `{"endpoint":"` + server.URL + `","model":"gpt-test"}`,
+			Secret:           []byte("api-key"),
+		}},
+		features: map[string]FeatureSetting{},
+	}}
+	resolver, _ := NewResolver(source)
+	generator, _ := NewGenerator(resolver, server.Client())
+
+	got, err := generator.Generate(context.Background(), "w1", "system", "user")
+	if err != nil || got != `{"title":"AI Roadmap"}` {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestGeneratorRetriesCompatibleEmptyJSONContent(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":""}}]}`))
+			return
+		}
+		if len(body.Messages) != 2 || !strings.Contains(body.Messages[1].Content, "Return the JSON object immediately") {
+			t.Fatalf("retry messages=%+v", body.Messages)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"title\":\"AI Roadmap\"}"}}]}`))
+	}))
+	defer server.Close()
+	source := keyedSource{&fakeSource{
+		bindings: map[string]Binding{"llm_chat": {Kind: "llm_chat", Mode: "custom", EndpointID: "chat"}},
+		profiles: map[string]EndpointProfile{"chat": {
+			EndpointID:       "chat",
+			Kind:             "llm_chat",
+			ProfileVersionID: "v1",
+			Provider:         "openai_compatible",
+			Model:            "gpt-test",
+			ConfigJSON:       `{"endpoint":"` + server.URL + `","model":"gpt-test"}`,
+			Secret:           []byte("api-key"),
+		}},
+		features: map[string]FeatureSetting{},
+	}}
+	resolver, _ := NewResolver(source)
+	generator, _ := NewGenerator(resolver, server.Client())
+
+	got, err := generator.Generate(context.Background(), "w1", "system", "user")
+	if err != nil || got != `{"title":"AI Roadmap"}` || calls != 2 {
+		t.Fatalf("got=%q calls=%d err=%v", got, calls, err)
+	}
+}
+
+func TestGeneratorUsesCompatibleJSONObjectContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":{"title":"AI Roadmap"}}}]}`))
+	}))
+	defer server.Close()
+	source := keyedSource{&fakeSource{
+		bindings: map[string]Binding{"llm_chat": {Kind: "llm_chat", Mode: "custom", EndpointID: "chat"}},
+		profiles: map[string]EndpointProfile{"chat": {
+			EndpointID:       "chat",
+			Kind:             "llm_chat",
+			ProfileVersionID: "v1",
+			Provider:         "openai_compatible",
+			Model:            "gpt-test",
+			ConfigJSON:       `{"endpoint":"` + server.URL + `","model":"gpt-test"}`,
+			Secret:           []byte("api-key"),
+		}},
+		features: map[string]FeatureSetting{},
+	}}
+	resolver, _ := NewResolver(source)
+	generator, _ := NewGenerator(resolver, server.Client())
+
+	got, err := generator.Generate(context.Background(), "w1", "system", "user")
+	if err != nil || got != `{"title":"AI Roadmap"}` {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestGeneratorExplainsCompatibleTokenExhaustion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"length","message":{"content":null,"reasoning_content":"unfinished reasoning"}}]}`))
+	}))
+	defer server.Close()
+	source := keyedSource{&fakeSource{
+		bindings: map[string]Binding{"llm_chat": {Kind: "llm_chat", Mode: "custom", EndpointID: "chat"}},
+		profiles: map[string]EndpointProfile{"chat": {
+			EndpointID:       "chat",
+			Kind:             "llm_chat",
+			ProfileVersionID: "v1",
+			Provider:         "openai_compatible",
+			Model:            "gpt-test",
+			ConfigJSON:       `{"endpoint":"` + server.URL + `","model":"gpt-test"}`,
+			Secret:           []byte("api-key"),
+		}},
+		features: map[string]FeatureSetting{},
+	}}
+	resolver, _ := NewResolver(source)
+	generator, _ := NewGenerator(resolver, server.Client())
+
+	_, err := generator.Generate(context.Background(), "w1", "system", "user")
+	if err == nil || !strings.Contains(err.Error(), "token budget") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestConsumeResponsesSSEReturnsProviderError(t *testing.T) {
 	_, err := consumeResponsesSSE(strings.NewReader("data: {\"type\":\"error\",\"error\":{\"message\":\"quota exhausted\"}}\n\n"))
 	if err == nil || !strings.Contains(err.Error(), "quota exhausted") {

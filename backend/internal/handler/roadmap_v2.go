@@ -28,6 +28,8 @@ type RoadmapV2Application interface {
 
 var _ RoadmapV2Application = (*taskapp.Facade)(nil)
 
+const roadmapGenerationTimeout = 90 * time.Second
+
 type roadmapCreateDTO struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -185,7 +187,7 @@ func (h taskDomainV2Handler) generateRoadmap(c *gin.Context) {
 
 	generationContext, cancelGeneration := context.WithTimeout(
 		c.Request.Context(),
-		12*time.Second,
+		roadmapGenerationTimeout,
 	)
 	defer cancelGeneration()
 	plan, err := service.GenerateLearningRoadmapPlan(

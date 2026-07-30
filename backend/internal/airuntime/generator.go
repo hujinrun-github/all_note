@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-const aiGenerationRequestTimeout = 2 * time.Minute
+const (
+	aiGenerationRequestTimeout    = 2 * time.Minute
+	compatibleGenerationMaxTokens = 12000
+)
+
+var errCompatibleContentMissing = errors.New("AI response did not include content")
 
 type Generator struct {
 	resolver       *Resolver
@@ -80,9 +85,10 @@ func (g *Generator) Generate(ctx context.Context, workspaceID, systemPrompt, use
 	}
 	defer clear(resolved.Secret)
 	var config struct {
-		Endpoint string `json:"endpoint"`
-		Model    string `json:"model"`
-		APIMode  string `json:"api_mode"`
+		Endpoint  string `json:"endpoint"`
+		Model     string `json:"model"`
+		APIMode   string `json:"api_mode"`
+		MaxTokens int    `json:"max_tokens"`
 	}
 	if json.Unmarshal([]byte(resolved.ConfigJSON), &config) != nil || strings.TrimSpace(config.Endpoint) == "" {
 		return "", ErrConfigurationUnavailable
@@ -93,10 +99,13 @@ func (g *Generator) Generate(ctx context.Context, workspaceID, systemPrompt, use
 	if strings.TrimSpace(config.Model) == "" {
 		return "", ErrConfigurationUnavailable
 	}
+	if config.MaxTokens <= 0 {
+		config.MaxTokens = compatibleGenerationMaxTokens
+	}
 	if resolved.Provider == "openai_codex_subscription" || config.APIMode == "codex_responses" {
 		return g.generateCodex(ctx, config.Endpoint, config.Model, resolved.Secret, systemPrompt, userPrompt)
 	}
-	return g.generateCompatible(ctx, config.Endpoint, config.Model, resolved.Secret, systemPrompt, userPrompt)
+	return g.generateCompatible(ctx, config.Endpoint, config.Model, config.MaxTokens, resolved.Secret, systemPrompt, userPrompt)
 }
 
 func codexCredentialsNeedRefresh(secret []byte, now time.Time) bool {
@@ -149,8 +158,25 @@ func (g *Generator) generateCodex(ctx context.Context, endpoint, model string, s
 	return consumeResponsesSSE(response.Body)
 }
 
-func (g *Generator) generateCompatible(ctx context.Context, endpoint, model string, secret []byte, systemPrompt, userPrompt string) (string, error) {
-	body := map[string]any{"model": model, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": userPrompt}}, "response_format": map[string]string{"type": "json_object"}}
+func (g *Generator) generateCompatible(ctx context.Context, endpoint, model string, maxTokens int, secret []byte, systemPrompt, userPrompt string) (string, error) {
+	content, err := g.generateCompatibleAttempt(ctx, endpoint, model, maxTokens, secret, systemPrompt, userPrompt)
+	if !errors.Is(err, errCompatibleContentMissing) {
+		return content, err
+	}
+	retryPrompt := userPrompt + "\n\nThe previous generation returned empty content. Return the JSON object immediately. Do not return empty content or commentary."
+	return g.generateCompatibleAttempt(ctx, endpoint, model, maxTokens, secret, systemPrompt, retryPrompt)
+}
+
+func (g *Generator) generateCompatibleAttempt(ctx context.Context, endpoint, model string, maxTokens int, secret []byte, systemPrompt, userPrompt string) (string, error) {
+	body := map[string]any{
+		"model":      model,
+		"max_tokens": maxTokens,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"response_format": map[string]string{"type": "json_object"},
+	}
 	payload, _ := json.Marshal(body)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
@@ -166,17 +192,105 @@ func (g *Generator) generateCompatible(ctx context.Context, endpoint, model stri
 	if response.StatusCode >= http.StatusBadRequest {
 		return "", limitedHTTPError("AI", response)
 	}
+	return decodeCompatibleChatContent(response.Body)
+}
+
+func decodeCompatibleChatContent(reader io.Reader) (string, error) {
 	var decoded struct {
 		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
+			FinishReason string `json:"finish_reason"`
+			Text         string `json:"text"`
+			Message      struct {
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
+				Refusal          string          `json:"refusal"`
 			} `json:"message"`
 		} `json:"choices"`
+		OutputText json.RawMessage `json:"output_text"`
+		Error      *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if json.NewDecoder(response.Body).Decode(&decoded) != nil || len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return "", errors.New("AI response did not include content")
+	if err := json.NewDecoder(reader).Decode(&decoded); err != nil {
+		return "", fmt.Errorf("decode AI response: %w", err)
 	}
-	return decoded.Choices[0].Message.Content, nil
+	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
+		return "", fmt.Errorf("AI response error: %s", strings.TrimSpace(decoded.Error.Message))
+	}
+	if len(decoded.Choices) == 0 {
+		if content := compatibleContentText(decoded.OutputText); content != "" {
+			return content, nil
+		}
+		return "", fmt.Errorf("%w: response did not include choices", errCompatibleContentMissing)
+	}
+
+	choice := decoded.Choices[0]
+	if content := compatibleContentText(choice.Message.Content); content != "" {
+		return content, nil
+	}
+	if content := strings.TrimSpace(choice.Text); content != "" {
+		return content, nil
+	}
+	if content := compatibleContentText(decoded.OutputText); content != "" {
+		return content, nil
+	}
+
+	switch strings.TrimSpace(choice.FinishReason) {
+	case "length", "max_tokens":
+		return "", errors.New("AI response exhausted its token budget before returning content")
+	case "content_filter":
+		return "", errors.New("AI response was filtered before returning content")
+	}
+	if strings.TrimSpace(choice.Message.Refusal) != "" {
+		return "", errors.New("AI response was refused before returning content")
+	}
+	if strings.TrimSpace(choice.Message.ReasoningContent) != "" {
+		return "", fmt.Errorf("%w after reasoning", errCompatibleContentMissing)
+	}
+	return "", errCompatibleContentMissing
+}
+
+func compatibleContentText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	switch raw[0] {
+	case '"':
+		var content string
+		if json.Unmarshal(raw, &content) == nil {
+			return strings.TrimSpace(content)
+		}
+	case '[':
+		var parts []json.RawMessage
+		if json.Unmarshal(raw, &parts) != nil {
+			return ""
+		}
+		var content strings.Builder
+		for _, part := range parts {
+			content.WriteString(compatibleContentText(part))
+		}
+		return strings.TrimSpace(content.String())
+	case '{':
+		var part struct {
+			Text  json.RawMessage `json:"text"`
+			Value json.RawMessage `json:"value"`
+		}
+		if json.Unmarshal(raw, &part) != nil {
+			return ""
+		}
+		if content := compatibleContentText(part.Text); content != "" {
+			return content
+		}
+		if content := compatibleContentText(part.Value); content != "" {
+			return content
+		}
+		var compact bytes.Buffer
+		if json.Compact(&compact, raw) == nil {
+			return compact.String()
+		}
+	}
+	return ""
 }
 
 func consumeResponsesSSE(reader io.Reader) (string, error) {

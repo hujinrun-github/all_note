@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/auth"
@@ -75,6 +76,39 @@ func TestRoadmapV2GenerationCreatesACompleteLearningPath(t *testing.T) {
 	}
 }
 
+func TestRoadmapV2GenerationAllowsFullAIResponseWindow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	app := &roadmapV2AppFake{
+		taskDomainV2ApplicationFake: taskDomainV2ApplicationFake{},
+		roadmapMissing:              true,
+	}
+	chat := &deadlineRecordingRoadmapChat{}
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		ctx := auth.ContextWithIdentity(c.Request.Context(), auth.RequestIdentity{UserID: "u1", WorkspaceID: "w1"})
+		ctx = auth.ContextWithWorkspaceScope(ctx, "w1")
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	})
+	RegisterTaskDomainV2RoutesWithAI(r.Group("/api"), app, chat)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/p1/roadmap/generate",
+		strings.NewReader(`{"prompt":"include distributed training"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST status=%d body=%s", w.Code, w.Body.String())
+	}
+	if chat.remaining < time.Minute {
+		t.Fatalf("AI generation window=%s, want at least one minute", chat.remaining)
+	}
+}
+
 func TestRoadmapV2GenerationReplacesAnUnlinkedExistingPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	app := &roadmapV2AppFake{
@@ -133,6 +167,21 @@ func TestRoadmapV2GenerationProtectsNodesWithLinkedTasks(t *testing.T) {
 	if app.deletedNodes != 0 || app.createdNodes != 0 {
 		t.Fatalf("regeneration mutated protected path: deleted=%d created=%d", app.deletedNodes, app.createdNodes)
 	}
+}
+
+type deadlineRecordingRoadmapChat struct {
+	remaining time.Duration
+}
+
+func (c *deadlineRecordingRoadmapChat) Generate(ctx context.Context, _, _, _ string) (string, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		c.remaining = time.Until(deadline)
+	}
+	return `{"title":"AI Roadmap","goal":"Learn","nodes":[{"id":"start","title":"Start","description":"Begin"}],"edges":[]}`, nil
+}
+
+func (*deadlineRecordingRoadmapChat) ResolveFeature(context.Context, string, string) (bool, string, error) {
+	return true, "template", nil
 }
 
 type roadmapV2AppFake struct {

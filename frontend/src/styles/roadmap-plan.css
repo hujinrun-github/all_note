@@ -85,6 +85,7 @@
 /* Roadmap overview */
 .plan-page {
   width: min(100%, var(--fs-content-max, 1648px));
+  min-width: 0;
   margin: 0 auto;
   padding-bottom: 44px;
 }
