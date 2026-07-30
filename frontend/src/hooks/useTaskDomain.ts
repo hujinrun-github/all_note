@@ -353,13 +353,27 @@ export function useRescheduleThisAndFollowingMutation() {
   })
 }
 
-function useTaskCommandMutation(command: TaskCommand) {
+function useTaskCommandMutation(
+  command: TaskCommand,
+  lifecycleStatus: taskDomainAPI.TaskLifecycleStatus
+) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (variables: TaskCommandVariables) =>
       command(variables.taskID, variables.expectedRevisions),
-    onSuccess: (response, variables) =>
-      invalidateAffectedTaskDomain(queryClient, variables, response),
+    onSuccess: (response, variables) => {
+      applyTaskLifecycleResult(
+        queryClient,
+        variables.taskID,
+        lifecycleStatus,
+        response
+      )
+      void invalidateAffectedTaskDomain(
+        queryClient,
+        variables,
+        response
+      ).catch(() => undefined)
+    },
   })
 }
 
@@ -374,27 +388,36 @@ function useOccurrenceCommandMutation(command: OccurrenceCommand) {
 }
 
 export function usePublishTaskMutation() {
-  return useTaskCommandMutation(taskDomainAPI.publishTaskDefinition)
+  return useTaskCommandMutation(
+    taskDomainAPI.publishTaskDefinition,
+    'active'
+  )
 }
 
 export function usePauseTaskMutation() {
-  return useTaskCommandMutation(taskDomainAPI.pauseTaskDefinition)
+  return useTaskCommandMutation(taskDomainAPI.pauseTaskDefinition, 'paused')
 }
 
 export function useResumeTaskMutation() {
-  return useTaskCommandMutation(taskDomainAPI.resumeTaskDefinition)
+  return useTaskCommandMutation(taskDomainAPI.resumeTaskDefinition, 'active')
 }
 
 export function useCancelTaskMutation() {
-  return useTaskCommandMutation(taskDomainAPI.cancelTaskDefinition)
+  return useTaskCommandMutation(
+    taskDomainAPI.cancelTaskDefinition,
+    'cancelled'
+  )
 }
 
 export function useRestoreTaskMutation() {
-  return useTaskCommandMutation(taskDomainAPI.restoreTaskDefinition)
+  return useTaskCommandMutation(taskDomainAPI.restoreTaskDefinition, 'active')
 }
 
 export function useArchiveTaskMutation() {
-  return useTaskCommandMutation(taskDomainAPI.archiveTaskDefinition)
+  return useTaskCommandMutation(
+    taskDomainAPI.archiveTaskDefinition,
+    'archived'
+  )
 }
 
 export function useStartOccurrenceMutation() {
@@ -464,6 +487,33 @@ async function invalidateAffectedTaskDomain(
   ]
   await Promise.all(
     queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+  )
+}
+
+function applyTaskLifecycleResult(
+  queryClient: QueryClient,
+  taskID: string,
+  lifecycleStatus: taskDomainAPI.TaskLifecycleStatus,
+  response: taskDomainAPI.TaskAggregateCommandResponse
+) {
+  const apply = (task: taskDomainAPI.TaskV2): taskDomainAPI.TaskV2 =>
+    task.id === taskID
+      ? {
+          ...task,
+          lifecycle_status: lifecycleStatus,
+          revision: response.task_revision,
+          schedule_revision:
+            response.schedule_revision ?? task.schedule_revision,
+        }
+      : task
+
+  queryClient.setQueryData<taskDomainAPI.TaskV2>(
+    taskDomainQueryKeys.task(taskID),
+    (task) => (task ? apply(task) : task)
+  )
+  queryClient.setQueriesData<taskDomainAPI.TaskV2[]>(
+    { queryKey: taskDomainQueryKeys.taskLists() },
+    (tasks) => tasks?.map(apply)
   )
 }
 

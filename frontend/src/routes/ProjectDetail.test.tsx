@@ -8,12 +8,14 @@ import {
   TaskDomainRevisionConflictError,
   type ProjectV2,
 } from '../api/taskDomain'
+import * as notesApi from '../api/notes'
 import * as roadmapHooks from '../hooks/useRoadmapV2'
 import * as taskHooks from '../hooks/useTaskDomain'
 import ProjectDetail from './ProjectDetail'
 
 vi.mock('../hooks/useTaskDomain')
 vi.mock('../hooks/useRoadmapV2')
+vi.mock('../api/notes')
 
 const createTask = vi.fn()
 const activateProject = vi.fn()
@@ -429,6 +431,32 @@ describe('Project detail v2', () => {
         },
       })
     )
+  })
+
+  it('lists notes linked through tasks in the project notes section', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [{ ...taskDefinition, task_note_id: 'note-1' }],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(notesApi.getNote).mockResolvedValue({
+      id: 'note-1',
+      title: 'N2 复习记录',
+      body: '',
+      folder_id: '__uncategorized',
+      tags: '[]',
+      projects: [],
+      created_at: 1,
+      updated_at: 2,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('tab', { name: '笔记' }))
+
+    expect(await screen.findByText('N2 复习记录')).toBeVisible()
+    expect(
+      screen.getByRole('link', { name: /N2 复习记录/ })
+    ).toHaveAttribute('href', '/editor/note-1')
   })
 })
 

@@ -26,6 +26,7 @@ import {
   type ReactNode,
   useState,
 } from 'react'
+import { Link } from 'react-router-dom'
 
 import type {
   ExecutionStatus,
@@ -595,7 +596,14 @@ export function TaskDefinitionInspector({
           {task.task_note_id ? (
             <div>
               <dt>关联笔记</dt>
-              <dd>{task.task_note_id}</dd>
+              <dd>
+                <Link
+                  className="td-linked-note-link"
+                  to={`/editor/${encodeURIComponent(task.task_note_id)}`}
+                >
+                  打开关联笔记
+                </Link>
+              </dd>
             </div>
           ) : null}
         </dl>

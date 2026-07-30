@@ -11,16 +11,19 @@ import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
-import { useQuery } from '@tanstack/react-query'
 import { NoteSyncCard } from '../components/sync/NoteSyncCard'
 import { useNote, useUpdateNote } from '../hooks/useNotes'
+import {
+  useProjects,
+  useTaskDefinitions,
+  useUpdateTaskDefinitionMutation,
+} from '../hooks/useTaskDomain'
 import {
   useNoteSyncBinding,
   useSyncNote,
   useSyncTargets,
 } from '../hooks/useSync'
-import { listTaskProjects } from '../api/tasks'
-import { formatTaskProjectOption } from '../utils/taskProjects'
+import type { ProjectV2 } from '../api/taskDomain'
 import { Ruby } from '../extensions/Ruby'
 import { annotateJapanese, type FuriganaSegment } from '../api/japanese'
 
@@ -92,11 +95,20 @@ function countWords(markdown: string): number {
   return cjk + latin
 }
 
+function formatProjectOption(project: ProjectV2): string {
+  const kind = project.kind === 'learning' ? '学习项目' : '标准项目'
+  const horizon = project.horizon === 'short' ? '短期' : '长期'
+  return `${project.name} · ${kind} · ${horizon}`
+}
+
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { data: note, isLoading, error } = useNote(id!)
   const updateNote = useUpdateNote()
+  const projectsQuery = useProjects()
+  const tasksQuery = useTaskDefinitions()
+  const updateTask = useUpdateTaskDefinitionMutation()
   const syncTargetsQ = useSyncTargets()
   const syncBindingQ = useNoteSyncBinding(id)
   const { mutate: syncCurrentNote, isPending: isAutoSyncPending } =
@@ -116,15 +128,26 @@ export default function EditorPage() {
     useState<RubyDialogState>(EMPTY_RUBY_DIALOG)
   const [isAutoAnnotating, setIsAutoAnnotating] = useState(false)
   const [rubyNotice, setRubyNotice] = useState('')
-
-  // Fetch all projects for the selector
-  const { data: allProjects = [] } = useQuery({
-    queryKey: ['task-projects'],
-    queryFn: listTaskProjects,
-  })
-
-  // Local state for selected project IDs
-  const [selectedProjectIDs, setSelectedProjectIDs] = useState<string[]>([])
+  const [projectFilterID, setProjectFilterID] = useState('')
+  const [associationLoadedID, setAssociationLoadedID] = useState<string | null>(
+    null
+  )
+  const [associationError, setAssociationError] = useState('')
+  const allProjects = projectsQuery.data ?? []
+  const allTasks = tasksQuery.data ?? []
+  const linkedTasks = id
+    ? allTasks.filter((task) => task.task_note_id === id)
+    : []
+  const linkedProjectIDs = [
+    ...new Set(linkedTasks.map((task) => task.project_id)),
+  ]
+  const availableTasks = allTasks.filter(
+    (task) =>
+      task.project_id === projectFilterID &&
+      !task.task_note_id &&
+      task.lifecycle_status !== 'archived' &&
+      task.lifecycle_status !== 'cancelled'
+  )
 
   const editor = useEditor({
     immediatelyRender: true,
@@ -167,7 +190,6 @@ export default function EditorPage() {
     if (note && note.id === id && note.id !== lastLoadedID) {
       setTitle(note.title)
       editor.commands.setContent(note.body || '')
-      setSelectedProjectIDs(note.projects?.map((p) => p.id) || [])
       setLastLoadedID(note.id)
     } else if (!note || note.id !== id) {
       setTitle('')
@@ -175,6 +197,27 @@ export default function EditorPage() {
       setLastLoadedID(null)
     }
   }, [id, note, editor, lastLoadedID])
+
+  useEffect(() => {
+    if (
+      !id ||
+      associationLoadedID === id ||
+      projectsQuery.isLoading ||
+      tasksQuery.isLoading
+    ) {
+      return
+    }
+    const linkedProjectID = linkedTasks[0]?.project_id
+    setProjectFilterID(linkedProjectID ?? allProjects[0]?.id ?? '')
+    setAssociationLoadedID(id)
+  }, [
+    allProjects,
+    associationLoadedID,
+    id,
+    linkedTasks,
+    projectsQuery.isLoading,
+    tasksQuery.isLoading,
+  ])
 
   const syncAfterSave = useCallback(() => {
     if (autoSyncEnabled && !isAutoSyncPending) {
@@ -189,11 +232,10 @@ export default function EditorPage() {
         id,
         title: title.trim(),
         body: getMarkdown(editor),
-        project_ids: selectedProjectIDs,
       },
       { onSuccess: syncAfterSave }
     )
-  }, [id, title, editor, updateNote, syncAfterSave, selectedProjectIDs])
+  }, [id, title, editor, updateNote, syncAfterSave])
 
   useEffect(() => {
     if (!editor || !id) return
@@ -210,14 +252,46 @@ export default function EditorPage() {
             id,
             title: title.trim(),
             body: markdown,
-            project_ids: selectedProjectIDs,
           },
           { onSuccess: syncAfterSave }
         )
       }
     }, 5000)
     return () => clearInterval(timer)
-  }, [editor, title, id, note, updateNote, syncAfterSave, selectedProjectIDs])
+  }, [editor, title, id, note, updateNote, syncAfterSave])
+
+  async function setTaskNote(taskID: string, noteID: string) {
+    const task = allTasks.find((candidate) => candidate.id === taskID)
+    if (!task) return
+    await updateTask.mutateAsync({
+      projectID: task.project_id,
+      taskID: task.id,
+      input: {
+        task_note_id: noteID,
+        expected_task_revision: task.revision,
+        expected_schedule_revision: task.schedule_revision,
+      },
+    })
+  }
+
+  async function linkTask(taskID: string) {
+    if (!id || !taskID) return
+    setAssociationError('')
+    try {
+      await setTaskNote(taskID, id)
+    } catch {
+      setAssociationError('关联任务失败，请刷新后重试。')
+    }
+  }
+
+  async function unlinkTask(taskID: string) {
+    setAssociationError('')
+    try {
+      await setTaskNote(taskID, '')
+    } catch {
+      setAssociationError('取消关联失败，请刷新后重试。')
+    }
+  }
 
   const markdown = editor ? getMarkdown(editor) : ''
 
@@ -808,47 +882,90 @@ export default function EditorPage() {
           </div>
           {id && <NoteSyncCard noteID={id} />}
           <div className="inspector-section">
-            <h4 className="inspector-label">所属项目</h4>
+            <h4 className="inspector-label">关联项目</h4>
             <div className="chip-list">
-              {selectedProjectIDs.map((pid) => {
+              {linkedProjectIDs.map((pid) => {
                 const project = allProjects.find((p) => p.id === pid)
                 if (!project) return null
                 return (
-                  <button
+                  <span
                     key={pid}
-                    type="button"
                     className="sync-tag-chip"
-                    onClick={() =>
-                      setSelectedProjectIDs((prev) =>
-                        prev.filter((id) => id !== pid)
-                      )
-                    }
                   >
-                    {formatTaskProjectOption(project)}
-                    <span aria-hidden="true">&times;</span>
-                  </button>
+                    {project.name}
+                  </span>
                 )
               })}
             </div>
             <select
               className="project-select"
-              value=""
-              onChange={(e) => {
-                const pid = e.target.value
-                if (pid && !selectedProjectIDs.includes(pid)) {
-                  setSelectedProjectIDs((prev) => [...prev, pid])
-                }
-              }}
+              aria-label="选择关联项目"
+              value={projectFilterID}
+              onChange={(event) => setProjectFilterID(event.target.value)}
+              disabled={projectsQuery.isLoading || allProjects.length === 0}
             >
-              <option value="">+ 添加项目</option>
-              {allProjects
-                .filter((p) => !selectedProjectIDs.includes(p.id))
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {formatTaskProjectOption(p)}
-                  </option>
-                ))}
+              {allProjects.length === 0 ? (
+                <option value="">暂无项目</option>
+              ) : null}
+              {allProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {formatProjectOption(project)}
+                </option>
+              ))}
             </select>
+            <p className="editor-association-hint">
+              项目用于筛选任务，关联任务后会自动建立项目关系。
+            </p>
+          </div>
+          <div className="inspector-section">
+            <h4 className="inspector-label">关联任务</h4>
+            <div className="chip-list">
+              {linkedTasks.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  className="sync-tag-chip"
+                  disabled={updateTask.isPending}
+                  onClick={() => void unlinkTask(task.id)}
+                  title="取消关联"
+                >
+                  {task.title}
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              ))}
+            </div>
+            <select
+              className="project-select"
+              aria-label="选择关联任务"
+              value=""
+              disabled={
+                !projectFilterID ||
+                tasksQuery.isLoading ||
+                updateTask.isPending
+              }
+              onChange={(event) => void linkTask(event.target.value)}
+            >
+              <option value="">
+                {projectFilterID ? '+ 关联任务' : '请先选择项目'}
+              </option>
+              {availableTasks.map((task) => (
+                <option key={task.id} value={task.id}>
+                  {task.title}
+                </option>
+              ))}
+            </select>
+            {projectFilterID &&
+            !tasksQuery.isLoading &&
+            availableTasks.length === 0 ? (
+              <p className="editor-association-hint">
+                该项目没有可关联的任务。
+              </p>
+            ) : null}
+            {associationError ? (
+              <p className="editor-association-error" role="alert">
+                {associationError}
+              </p>
+            ) : null}
           </div>
           <div className="inspector-section">
             <h4 className="inspector-label">最近版本</h4>

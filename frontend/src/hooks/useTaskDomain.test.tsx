@@ -17,8 +17,10 @@ import {
   useDeleteProjectMutation,
   useOccurrence,
   useOccurrences,
+  usePauseTaskMutation,
   useProject,
   useProjects,
+  useRestoreTaskMutation,
   useTaskDefinition,
   useTaskDomainCapabilities,
   useTaskDefinitions,
@@ -208,6 +210,74 @@ describe('task-domain query hooks', () => {
 describe('task-domain mutation hooks', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('applies a paused lifecycle immediately without waiting for background refetches', async () => {
+    vi.mocked(taskDomainAPI.pauseTaskDefinition).mockResolvedValue({
+      task_revision: 8,
+      schedule_revision: 5,
+      occurrence_revisions: {},
+    })
+    const { client, wrapper } = createQueryWrapper()
+    const taskListKey = taskDomainQueryKeys.taskList({
+      project_id: 'project-1',
+    })
+    client.setQueryData(taskListKey, [taskFixture])
+    vi.spyOn(client, 'invalidateQueries').mockImplementation(
+      () => new Promise(() => {})
+    )
+    const { result } = renderHook(() => usePauseTaskMutation(), { wrapper })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        expectedRevisions: revisionsFixture(),
+      })
+    })
+
+    expect(result.current.isPending).toBe(false)
+    expect(
+      client.getQueryData<taskDomainAPI.TaskV2[]>(taskListKey)?.[0]
+    ).toMatchObject({
+      lifecycle_status: 'paused',
+      revision: 8,
+      schedule_revision: 5,
+    })
+  })
+
+  it('applies a restored lifecycle immediately to cancelled tasks', async () => {
+    vi.mocked(taskDomainAPI.restoreTaskDefinition).mockResolvedValue({
+      task_revision: 9,
+      schedule_revision: 5,
+      occurrence_revisions: {},
+    })
+    const { client, wrapper } = createQueryWrapper()
+    const taskListKey = taskDomainQueryKeys.taskList({
+      project_id: 'project-1',
+    })
+    client.setQueryData(taskListKey, [
+      { ...taskFixture, lifecycle_status: 'cancelled', revision: 8 },
+    ])
+    const { result } = renderHook(() => useRestoreTaskMutation(), { wrapper })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        expectedRevisions: {
+          ...revisionsFixture(),
+          expected_task_revision: 8,
+        },
+      })
+    })
+
+    expect(
+      client.getQueryData<taskDomainAPI.TaskV2[]>(taskListKey)?.[0]
+    ).toMatchObject({
+      lifecycle_status: 'active',
+      revision: 9,
+    })
   })
 
   it('passes expected revisions and invalidates only affected domain keys', async () => {

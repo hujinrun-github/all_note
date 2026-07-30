@@ -14545,6 +14545,152 @@ select {
   border-bottom: 0;
 }
 
+.editor-association-hint,
+.editor-association-error {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.editor-association-hint {
+  color: var(--editor-ink-muted);
+}
+
+.editor-association-error {
+  color: #a04432;
+}
+
+.td-linked-note-link {
+  color: var(--color-fs-accent);
+  font-weight: 760;
+  text-decoration: none;
+}
+
+.td-linked-note-link:hover {
+  text-decoration: underline;
+}
+
+.td-project-notes {
+  display: grid;
+  gap: 16px;
+}
+
+.td-project-notes > header,
+.td-project-notes > header > div {
+  display: flex;
+  align-items: center;
+}
+
+.td-project-notes > header {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.td-project-notes > header > div {
+  gap: 10px;
+}
+
+.td-project-notes > header svg {
+  width: 20px;
+  height: 20px;
+  color: var(--color-fs-accent);
+}
+
+.td-project-notes > header strong,
+.td-project-notes > header span {
+  display: block;
+}
+
+.td-project-notes > header span {
+  margin-top: 2px;
+  color: var(--color-fs-text-muted);
+  font-size: 0.78rem;
+}
+
+.td-project-notes > header em {
+  min-width: 30px;
+  border-radius: 999px;
+  background: var(--color-fs-hover);
+  padding: 5px 9px;
+  color: var(--color-fs-text-muted);
+  font-size: 0.78rem;
+  font-style: normal;
+  text-align: center;
+}
+
+.td-project-notes-state {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  border: 1px dashed var(--color-fs-border);
+  border-radius: 12px;
+  padding: 34px 18px;
+  color: var(--color-fs-text-muted);
+  text-align: center;
+}
+
+.td-project-notes-state svg {
+  width: 24px;
+  height: 24px;
+}
+
+.td-project-note-list {
+  display: grid;
+  gap: 8px;
+}
+
+.td-project-note-list > a {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-fs-border);
+  border-radius: 12px;
+  background: var(--color-fs-surface);
+  padding: 13px 14px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.td-project-note-list > a:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--color-fs-accent) 42%,
+    var(--color-fs-border)
+  );
+  background: var(--color-fs-hover);
+}
+
+.td-project-note-list > a > svg {
+  width: 18px;
+  height: 18px;
+  color: var(--color-fs-accent);
+}
+
+.td-project-note-list > a span,
+.td-project-note-list > a strong,
+.td-project-note-list > a small {
+  display: block;
+  min-width: 0;
+}
+
+.td-project-note-list > a strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.td-project-note-list > a small,
+.td-project-note-error {
+  margin-top: 3px;
+  color: var(--color-fs-text-muted);
+  font-size: 0.75rem;
+}
+
+.td-project-note-error {
+  padding: 10px 12px;
+}
+
 .editor-workspace.is-fullscreen {
   position: fixed;
   inset: 0;
