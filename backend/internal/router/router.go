@@ -26,6 +26,7 @@ type Config struct {
 	VoiceObjects             objectstore.Store
 	Transcriber              transcription.Transcriber
 	MaxVoiceBytes            int64
+	MaxAttachmentBytes       int64
 	MobileSyncV1Enabled      bool
 	MobileSyncV2             handler.MobileV2Service
 	VoiceUploadEnabled       bool
@@ -142,6 +143,11 @@ func Setup(cfg Config) *gin.Engine {
 		protected.POST("/notes", handler.CreateNote(cfg.Store))
 		protected.PATCH("/notes/:id", handler.UpdateNote(cfg.Store))
 		protected.DELETE("/notes/:id", handler.DeleteNote(cfg.Store))
+		protected.GET("/notes/:id/attachments", handler.ListNoteAttachments(cfg.Store))
+		protected.POST("/notes/:id/attachments", handler.UploadNoteAttachment(cfg.Store, cfg.VoiceObjects, cfg.MaxAttachmentBytes))
+		protected.GET("/notes/:id/attachments/:attachmentID/content", handler.GetNoteAttachmentContent(cfg.Store, cfg.VoiceObjects))
+		protected.HEAD("/notes/:id/attachments/:attachmentID/content", handler.GetNoteAttachmentContent(cfg.Store, cfg.VoiceObjects))
+		protected.DELETE("/notes/:id/attachments/:attachmentID", handler.DeleteNoteAttachment(cfg.Store, cfg.VoiceObjects))
 		protected.GET("/notes/:id/sync-binding", handler.GetNoteSyncBinding(cfg.Store))
 		protected.PUT("/notes/:id/sync-binding", handler.PutNoteSyncBinding(cfg.Store))
 		protected.DELETE("/notes/:id/sync-binding", handler.DeleteNoteSyncBinding(cfg.Store))

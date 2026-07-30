@@ -39,6 +39,10 @@ type voiceCreateCommandPayload struct {
 	Language   string `json:"language"`
 }
 
+type voiceUpdateCommandPayload struct {
+	Title string `json:"title"`
+}
+
 type transcriptionCommandPayload struct {
 	Language    string  `json:"language"`
 	FailedJobID *string `json:"failed_job_id"`
@@ -487,6 +491,65 @@ func dispatchVoiceCommand(
 		outcome.Result.AffectedRevisions = []mobilev2command.AffectedRevision{
 			{EntityType: "voice_note", EntityID: voiceID, Revision: "1"},
 			{EntityType: "note", EntityID: noteID, Revision: "1"},
+		}
+		return outcome, nil
+	}
+
+	if envelope.CommandType == "voice.update" {
+		var payload voiceUpdateCommandPayload
+		if err := decodeCommandPayload(envelope.Payload, &payload); err != nil {
+			return outcome, err
+		}
+		title := strings.TrimSpace(payload.Title)
+		voiceID := targetEntityID(envelope.Target)
+		if voiceID == "" || title == "" {
+			return outcome, mobilev2command.ErrInvalidCommandEnvelope
+		}
+		expected, err := envelope.Expected.Exact("entity")
+		if err != nil {
+			return outcome, err
+		}
+		var current int64
+		var noteID string
+		var deleted bool
+		err = runner.QueryRowContext(ctx, bindContentSQL(dialect, `SELECT
+			revision,note_id,(deleted_at IS NOT NULL)
+			FROM voice_notes WHERE workspace_id=? AND id=?`), workspaceID, voiceID).
+			Scan(&current, &noteID, &deleted)
+		if errors.Is(err, sql.ErrNoRows) || deleted || current != expected {
+			outcome.Result.Status = mobilev2command.StatusConflict
+			return outcome, nil
+		}
+		if err != nil {
+			return outcome, err
+		}
+		unixNow := now.Unix()
+		result, err := runner.ExecContext(ctx, bindContentSQL(dialect, `UPDATE voice_notes
+			SET revision=revision+1,updated_at=?
+			WHERE workspace_id=? AND id=? AND revision=? AND deleted_at IS NULL`),
+			unixNow, workspaceID, voiceID, expected)
+		if err != nil {
+			return outcome, err
+		}
+		if !exactlyOneRow(result) {
+			outcome.Result.Status = mobilev2command.StatusConflict
+			return outcome, nil
+		}
+		var noteRevision int64
+		noteTimestamp := contentTimestamp(dialect, now)
+		err = runner.QueryRowContext(ctx, bindContentSQL(dialect, `UPDATE notes
+			SET title=?,updated_at=?,revision=revision+1
+			WHERE workspace_id=? AND id=? AND deleted_at IS NULL
+			RETURNING revision`), title, noteTimestamp, workspaceID, noteID).Scan(&noteRevision)
+		if err != nil {
+			return outcome, err
+		}
+		outcome.include("voice_note", voiceID)
+		outcome.include("note", noteID)
+		outcome.Result.Status = mobilev2command.StatusApplied
+		outcome.Result.AffectedRevisions = []mobilev2command.AffectedRevision{
+			{EntityType: "voice_note", EntityID: voiceID, Revision: strconv.FormatInt(expected+1, 10)},
+			{EntityType: "note", EntityID: noteID, Revision: strconv.FormatInt(noteRevision, 10)},
 		}
 		return outcome, nil
 	}

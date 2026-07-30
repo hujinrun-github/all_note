@@ -84,17 +84,47 @@ func UploadMobileV2VoiceAudio(store storage.Store, objects objectstore.Store, ma
 
 func uploadVoiceAudio(store storage.Store, objects objectstore.Store, maxBytes int64, mobile, mobileV2 bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		voice, err := service.UploadVoiceAudio(
-			c.Request.Context(),
-			store,
-			objects,
-			c.Param("clientID"),
-			c.GetHeader("Content-Type"),
-			c.GetHeader("X-Audio-SHA256"),
-			c.Request.Body,
-			c.Request.ContentLength,
-			maxBytes,
-		)
+		var voice *model.VoiceNote
+		var err error
+		baseRevisionHeader := strings.TrimSpace(c.GetHeader("X-Audio-Base-Revision"))
+		durationHeader := strings.TrimSpace(c.GetHeader("X-Audio-Duration-MS"))
+		if mobileV2 && (baseRevisionHeader != "" || durationHeader != "") {
+			if baseRevisionHeader == "" || durationHeader == "" {
+				handleMobileV2VoiceError(c, service.ErrInvalidVoiceMetadata, http.StatusBadRequest)
+				return
+			}
+			baseRevision, baseErr := strconv.ParseInt(baseRevisionHeader, 10, 64)
+			durationMS, durationErr := strconv.ParseInt(durationHeader, 10, 64)
+			if baseErr != nil || durationErr != nil {
+				handleMobileV2VoiceError(c, service.ErrInvalidVoiceMetadata, http.StatusBadRequest)
+				return
+			}
+			voice, err = service.ReplaceVoiceAudio(
+				c.Request.Context(),
+				store,
+				objects,
+				c.Param("clientID"),
+				c.GetHeader("Content-Type"),
+				c.GetHeader("X-Audio-SHA256"),
+				baseRevision,
+				durationMS,
+				c.Request.Body,
+				c.Request.ContentLength,
+				maxBytes,
+			)
+		} else {
+			voice, err = service.UploadVoiceAudio(
+				c.Request.Context(),
+				store,
+				objects,
+				c.Param("clientID"),
+				c.GetHeader("Content-Type"),
+				c.GetHeader("X-Audio-SHA256"),
+				c.Request.Body,
+				c.Request.ContentLength,
+				maxBytes,
+			)
+		}
 		if err != nil {
 			if mobileV2 {
 				handleMobileV2VoiceError(c, err, http.StatusInternalServerError)

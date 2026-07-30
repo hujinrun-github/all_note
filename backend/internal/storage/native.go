@@ -37,7 +37,9 @@ type WatchDeviceRepository interface {
 type VoiceNoteRepository interface {
 	Create(context.Context, *model.VoiceNote) error
 	GetByClientID(context.Context, string) (*model.VoiceNote, error)
+	GetByNoteID(context.Context, string) (*model.VoiceNote, error)
 	ClaimUpload(context.Context, string, model.VoiceUploadClaim) (*model.VoiceNote, error)
+	ReplaceUploaded(context.Context, string, model.VoiceAudioReplacement) (*model.VoiceNote, error)
 	MarkUploaded(context.Context, string, string) (*model.VoiceNote, error)
 	MarkUploadFailed(context.Context, string, string) error
 	SetTranscriptionState(context.Context, string, string, string) (*model.VoiceNote, error)

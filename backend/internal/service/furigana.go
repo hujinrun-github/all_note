@@ -100,6 +100,11 @@ func AnnotateJapanese(text string) ([]model.FuriganaSegment, error) {
 	return segments, nil
 }
 
+func WarmJapaneseTokenizer() error {
+	_, err := japaneseTokenizer()
+	return err
+}
+
 func annotateJapaneseWithOpenAI(ctx context.Context, text, apiKey string) ([]model.FuriganaSegment, error) {
 	modelName := strings.TrimSpace(os.Getenv("AI_MODEL"))
 	if modelName == "" {

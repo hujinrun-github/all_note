@@ -14,6 +14,7 @@ const maxFuriganaTextRunes = 5000
 
 type japaneseFuriganaRequest struct {
 	Text string `json:"text"`
+	Mode string `json:"mode,omitempty"`
 }
 
 func JapaneseFurigana(c *gin.Context) {
@@ -36,6 +37,19 @@ func japaneseFuriganaWithChat(c *gin.Context, chat WorkspaceChatService) {
 	}
 	if utf8.RuneCountInString(req.Text) > maxFuriganaTextRunes {
 		badRequest(c, "text is too long")
+		return
+	}
+	if req.Mode != "" && req.Mode != "local" {
+		badRequest(c, "invalid annotation mode")
+		return
+	}
+	if req.Mode == "local" {
+		segments, err := service.AnnotateJapanese(req.Text)
+		if err != nil {
+			internalError(c, "failed to annotate Japanese text")
+			return
+		}
+		success(c, model.FuriganaResponse{Segments: segments, Source: "local"})
 		return
 	}
 

@@ -110,6 +110,12 @@ func TestAnnotateJapaneseLeavesKanaAndLatinTextUnchanged(t *testing.T) {
 	}
 }
 
+func TestWarmJapaneseTokenizer(t *testing.T) {
+	if err := WarmJapaneseTokenizer(); err != nil {
+		t.Fatalf("WarmJapaneseTokenizer returned error: %v", err)
+	}
+}
+
 func TestAlignTokenReadingHandlesOkurigana(t *testing.T) {
 	got := alignTokenReading("取り扱う", "トリアツカウ")
 	want := []model.FuriganaSegment{

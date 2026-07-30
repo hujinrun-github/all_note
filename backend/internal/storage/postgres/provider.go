@@ -275,6 +275,10 @@ func (s *store) Notes() storage.NoteRepository {
 	return noteRepository{db: s.db}
 }
 
+func (s *store) NoteAttachments() storage.NoteAttachmentRepository {
+	return noteAttachmentRepository{db: s.db}
+}
+
 func (s *store) Tasks() storage.TaskRepository {
 	return taskRepository{db: s.db}
 }
@@ -350,6 +354,10 @@ func (s *storeTx) Folders() storage.FolderRepository {
 
 func (s *storeTx) Notes() storage.NoteRepository {
 	return noteRepository{db: s.tx}
+}
+
+func (s *storeTx) NoteAttachments() storage.NoteAttachmentRepository {
+	return noteAttachmentRepository{db: s.tx}
 }
 
 func (s *storeTx) Search() storage.SearchRepository {

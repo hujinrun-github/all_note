@@ -10,11 +10,20 @@ export interface FuriganaResponse {
   source: 'ai' | 'local'
 }
 
+export interface AnnotateJapaneseOptions {
+  signal?: AbortSignal
+  mode?: 'local'
+}
+
 export async function annotateJapanese(
-  text: string
+  text: string,
+  options: AnnotateJapaneseOptions = {}
 ): Promise<FuriganaResponse> {
-  const response = await api.post<FuriganaResponse>('/api/japanese/furigana', {
-    text,
-  })
+  const body = options.mode ? { text, mode: options.mode } : { text }
+  const response = options.signal
+    ? await api.post<FuriganaResponse>('/api/japanese/furigana', body, {
+        signal: options.signal,
+      })
+    : await api.post<FuriganaResponse>('/api/japanese/furigana', body)
   return response.data
 }

@@ -18,6 +18,9 @@ func TestLoadNativeConfigDefaultsToOptionalServicesDisabled(t *testing.T) {
 	if cfg.MaxVoiceAudioBytes != 50*1024*1024 {
 		t.Fatalf("MaxVoiceAudioBytes = %d", cfg.MaxVoiceAudioBytes)
 	}
+	if cfg.MaxAttachmentBytes != 200*1024*1024 {
+		t.Fatalf("MaxAttachmentBytes = %d", cfg.MaxAttachmentBytes)
+	}
 	if cfg.MobileSyncV1Enabled {
 		t.Fatal("mobile_sync_v1 must be disabled by default")
 	}
@@ -87,6 +90,7 @@ func TestLoadNativeConfigParsesMinIOAndTranscription(t *testing.T) {
 	t.Setenv("FLOWSPACE_MINIO_SECRET_KEY", "secret")
 	t.Setenv("FLOWSPACE_MINIO_BUCKET", "voice")
 	t.Setenv("FLOWSPACE_VOICE_MAX_BYTES", "4096")
+	t.Setenv("FLOWSPACE_ATTACHMENT_MAX_BYTES", "8192")
 	t.Setenv("FLOWSPACE_TRANSCRIPTION_URL", "https://speech.example.com/transcribe")
 	t.Setenv("FLOWSPACE_TRANSCRIPTION_API_KEY", "speech-key")
 	t.Setenv("FLOWSPACE_TRANSCRIPTION_MODEL", "speech-model")
@@ -105,6 +109,9 @@ func TestLoadNativeConfigParsesMinIOAndTranscription(t *testing.T) {
 	if cfg.MaxVoiceAudioBytes != 4096 {
 		t.Fatalf("MaxVoiceAudioBytes = %d", cfg.MaxVoiceAudioBytes)
 	}
+	if cfg.MaxAttachmentBytes != 8192 {
+		t.Fatalf("MaxAttachmentBytes = %d", cfg.MaxAttachmentBytes)
+	}
 }
 
 func TestLoadNativeConfigRejectsPartialCredentials(t *testing.T) {
@@ -119,6 +126,12 @@ func TestLoadNativeConfigRejectsPartialCredentials(t *testing.T) {
 	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_TRANSCRIPTION_URL") {
 		t.Fatalf("partial transcription config error = %v", err)
 	}
+
+	clearNativeConfigEnvironment(t)
+	t.Setenv("FLOWSPACE_ATTACHMENT_MAX_BYTES", "unlimited")
+	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ATTACHMENT_MAX_BYTES") {
+		t.Fatalf("invalid attachment limit error = %v", err)
+	}
 }
 
 func clearNativeConfigEnvironment(t *testing.T) {
@@ -128,6 +141,7 @@ func clearNativeConfigEnvironment(t *testing.T) {
 		"FLOWSPACE_ENABLE_MOBILE_SYNC_V2",
 		"FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING",
 		"FLOWSPACE_VOICE_MAX_BYTES",
+		"FLOWSPACE_ATTACHMENT_MAX_BYTES",
 		"FLOWSPACE_MINIO_ENDPOINT",
 		"FLOWSPACE_MINIO_ACCESS_KEY",
 		"FLOWSPACE_MINIO_SECRET_KEY",

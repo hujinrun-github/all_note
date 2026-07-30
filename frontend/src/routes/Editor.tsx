@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type MouseEvent,
   type ReactNode,
@@ -12,6 +13,7 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
 import { NoteSyncCard } from '../components/sync/NoteSyncCard'
+import { NoteAttachmentsSection } from '../components/NoteAttachments'
 import { useNote, useUpdateNote } from '../hooks/useNotes'
 import {
   useProjects,
@@ -47,6 +49,25 @@ const EMPTY_RUBY_DIALOG: RubyDialogState = {
   message: '',
 }
 
+const LIVE_FURIGANA_DEBOUNCE_MS = 450
+const LIVE_FURIGANA_COMPOSITION_RECHECK_MS = 80
+const JAPANESE_RUN_PATTERN = /[一-龯々〆ヵヶぁ-ゖァ-ヺー]+/gu
+const KANJI_PATTERN = /[一-龯々〆ヵヶ]/u
+
+type LiveFuriganaStatus =
+  | 'idle'
+  | 'ready'
+  | 'waiting'
+  | 'annotating'
+  | 'done'
+  | 'error'
+
+type LiveFuriganaTarget = {
+  from: number
+  to: number
+  text: string
+}
+
 type EditorInlineContent = {
   type: 'ruby' | 'text' | 'hardBreak'
   text?: string
@@ -73,6 +94,73 @@ function furiganaSegmentsToContent(
     })
   }
   return content
+}
+
+function getLiveFuriganaTarget(editor: Editor): LiveFuriganaTarget | null {
+  if (editor.isDestroyed || editor.view.composing) return null
+
+  const { selection } = editor.state
+  if (!selection.empty) return null
+
+  const cursor = selection.$from
+  if (cursor.parent.type.name === 'codeBlock') return null
+
+  let textBeforeCursor: { text: string; offset: number } | null = null
+  cursor.parent.forEach((node, offset) => {
+    if (!node.isText || typeof node.text !== 'string') return
+    if (
+      offset > cursor.parentOffset ||
+      offset + node.nodeSize < cursor.parentOffset
+    )
+      return
+
+    const prefix = node.text.slice(0, cursor.parentOffset - offset)
+    if (prefix) textBeforeCursor = { text: prefix, offset }
+  })
+  const candidate = textBeforeCursor as {
+    text: string
+    offset: number
+  } | null
+  if (!candidate) return null
+
+  let latestMatch: RegExpMatchArray | null = null
+  for (const match of candidate.text.matchAll(JAPANESE_RUN_PATTERN)) {
+    if (KANJI_PATTERN.test(match[0])) latestMatch = match
+  }
+  if (!latestMatch) return null
+
+  const relativeFrom = candidate.offset + (latestMatch.index ?? 0)
+  const from = cursor.start() + relativeFrom
+  return {
+    from,
+    to: from + latestMatch[0].length,
+    text: latestMatch[0],
+  }
+}
+
+function liveFuriganaStatusText(status: LiveFuriganaStatus) {
+  switch (status) {
+    case 'waiting':
+      return '等待停顿'
+    case 'annotating':
+      return '注音中'
+    case 'done':
+      return '已注音'
+    case 'error':
+      return '暂不可用'
+    default:
+      return '已开启'
+  }
+}
+
+function isCanceledRequest(error: unknown) {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ERR_CANCELED')
+  )
 }
 
 function getMarkdown(editor: Editor | null): string {
@@ -127,7 +215,15 @@ export default function EditorPage() {
   const [rubyDialog, setRubyDialog] =
     useState<RubyDialogState>(EMPTY_RUBY_DIALOG)
   const [isAutoAnnotating, setIsAutoAnnotating] = useState(false)
+  const [liveFuriganaEnabled, setLiveFuriganaEnabled] = useState(false)
+  const [liveFuriganaStatus, setLiveFuriganaStatus] =
+    useState<LiveFuriganaStatus>('idle')
   const [rubyNotice, setRubyNotice] = useState('')
+  const liveFuriganaEnabledRef = useRef(false)
+  const liveFuriganaTimerRef = useRef<number | null>(null)
+  const liveFuriganaRequestRef = useRef<AbortController | null>(null)
+  const liveFuriganaGenerationRef = useRef(0)
+  const isApplyingLiveFuriganaRef = useRef(false)
   const [projectFilterID, setProjectFilterID] = useState('')
   const [associationLoadedID, setAssociationLoadedID] = useState<string | null>(
     null
@@ -179,6 +275,12 @@ export default function EditorPage() {
     onUpdate: ({ editor: activeEditor }) => {
       if (!activeEditor.isDestroyed) {
         ;(activeEditor as Editor & { _dirty?: boolean })._dirty = true
+      }
+      if (
+        liveFuriganaEnabledRef.current &&
+        !isApplyingLiveFuriganaRef.current
+      ) {
+        scheduleLiveFurigana(activeEditor)
       }
     },
   })
@@ -315,6 +417,16 @@ export default function EditorPage() {
     return () => window.clearTimeout(timer)
   }, [rubyNotice])
 
+  useEffect(
+    () => () => {
+      if (liveFuriganaTimerRef.current !== null) {
+        window.clearTimeout(liveFuriganaTimerRef.current)
+      }
+      liveFuriganaRequestRef.current?.abort()
+    },
+    []
+  )
+
   if (isLoading) {
     return (
       <div className="editor-skeleton">
@@ -342,6 +454,118 @@ export default function EditorPage() {
   const run = (event: MouseEvent, fn: () => void) => {
     event.preventDefault()
     fn()
+  }
+
+  function scheduleLiveFurigana(activeEditor: Editor) {
+    if (liveFuriganaTimerRef.current !== null) {
+      window.clearTimeout(liveFuriganaTimerRef.current)
+      liveFuriganaTimerRef.current = null
+    }
+    liveFuriganaRequestRef.current?.abort()
+    liveFuriganaRequestRef.current = null
+
+    if (activeEditor.view.composing) {
+      setLiveFuriganaStatus('waiting')
+      liveFuriganaTimerRef.current = window.setTimeout(() => {
+        liveFuriganaTimerRef.current = null
+        if (liveFuriganaEnabledRef.current) {
+          scheduleLiveFurigana(activeEditor)
+        }
+      }, LIVE_FURIGANA_COMPOSITION_RECHECK_MS)
+      return
+    }
+
+    const generation = ++liveFuriganaGenerationRef.current
+    const target = getLiveFuriganaTarget(activeEditor)
+    if (!target) {
+      setLiveFuriganaStatus('ready')
+      return
+    }
+
+    setLiveFuriganaStatus('waiting')
+    liveFuriganaTimerRef.current = window.setTimeout(() => {
+      liveFuriganaTimerRef.current = null
+      void annotateLiveFurigana(activeEditor, target, generation)
+    }, LIVE_FURIGANA_DEBOUNCE_MS)
+  }
+
+  async function annotateLiveFurigana(
+    activeEditor: Editor,
+    target: LiveFuriganaTarget,
+    generation: number
+  ) {
+    if (!liveFuriganaEnabledRef.current || activeEditor.isDestroyed) return
+
+    const controller = new AbortController()
+    liveFuriganaRequestRef.current = controller
+    setLiveFuriganaStatus('annotating')
+
+    try {
+      const result = await annotateJapanese(target.text, {
+        signal: controller.signal,
+        mode: 'local',
+      })
+      if (
+        controller.signal.aborted ||
+        generation !== liveFuriganaGenerationRef.current ||
+        !liveFuriganaEnabledRef.current ||
+        activeEditor.isDestroyed
+      ) {
+        return
+      }
+      if (
+        activeEditor.state.doc.textBetween(target.from, target.to, '') !==
+        target.text
+      ) {
+        setLiveFuriganaStatus('ready')
+        return
+      }
+
+      const hasReading = result.segments.some((segment) =>
+        Boolean(segment.reading)
+      )
+      if (!hasReading) {
+        setLiveFuriganaStatus('ready')
+        return
+      }
+
+      isApplyingLiveFuriganaRef.current = true
+      activeEditor.commands.insertContentAt(
+        { from: target.from, to: target.to },
+        furiganaSegmentsToContent(result.segments)
+      )
+      activeEditor.commands.focus()
+      setLiveFuriganaStatus('done')
+    } catch (error) {
+      if (isCanceledRequest(error)) return
+      setLiveFuriganaStatus('error')
+      setRubyNotice('实时注音暂时不可用，原文已保留')
+    } finally {
+      isApplyingLiveFuriganaRef.current = false
+      if (liveFuriganaRequestRef.current === controller) {
+        liveFuriganaRequestRef.current = null
+      }
+    }
+  }
+
+  function toggleLiveFurigana(enabled: boolean) {
+    setLiveFuriganaEnabled(enabled)
+    liveFuriganaEnabledRef.current = enabled
+    liveFuriganaGenerationRef.current += 1
+
+    if (!enabled) {
+      if (liveFuriganaTimerRef.current !== null) {
+        window.clearTimeout(liveFuriganaTimerRef.current)
+        liveFuriganaTimerRef.current = null
+      }
+      liveFuriganaRequestRef.current?.abort()
+      liveFuriganaRequestRef.current = null
+      setLiveFuriganaStatus('idle')
+      return
+    }
+
+    setLiveFuriganaStatus('ready')
+    if (editor && !editor.isDestroyed) scheduleLiveFurigana(editor)
   }
 
   async function openRubyDialog() {
@@ -580,12 +804,46 @@ export default function EditorPage() {
 
               <div className="editor-toolbar-group">
                 <ToolbarBtn
-                  active={rubyDialog.open || isAutoAnnotating}
-                  disabled={isAutoAnnotating}
+                  active={
+                    rubyDialog.open ||
+                    isAutoAnnotating ||
+                    liveFuriganaStatus === 'annotating'
+                  }
+                  disabled={
+                    isAutoAnnotating || liveFuriganaStatus === 'annotating'
+                  }
                   onClick={(event) => run(event, openRubyDialog)}
-                  title={isAutoAnnotating ? '正在自动注音' : '假名标注'}
+                  title={
+                    isAutoAnnotating || liveFuriganaStatus === 'annotating'
+                      ? '正在自动注音'
+                      : '假名标注'
+                  }
                   label={isAutoAnnotating ? '…' : 'あ'}
                 />
+                <label
+                  className={`ruby-live-toggle ${
+                    liveFuriganaEnabled ? 'is-enabled' : ''
+                  }`}
+                  title="开启后，输入日文并停顿片刻即可自动添加假名"
+                >
+                  <input
+                    type="checkbox"
+                    checked={liveFuriganaEnabled}
+                    onChange={(event) =>
+                      toggleLiveFurigana(event.target.checked)
+                    }
+                  />
+                  <span className="ruby-live-toggle-label">实时注音</span>
+                  {liveFuriganaEnabled && (
+                    <span
+                      className="ruby-live-toggle-status"
+                      data-status={liveFuriganaStatus}
+                      aria-live="polite"
+                    >
+                      {liveFuriganaStatusText(liveFuriganaStatus)}
+                    </span>
+                  )}
+                </label>
               </div>
 
               <div className="editor-toolbar-divider" />
@@ -764,6 +1022,8 @@ export default function EditorPage() {
 
           <EditorContent editor={editor} />
 
+          {id ? <NoteAttachmentsSection noteID={id} /> : null}
+
           {editor && (
             <BubbleMenu editor={editor} className="bubble-menu">
               <button
@@ -888,10 +1148,7 @@ export default function EditorPage() {
                 const project = allProjects.find((p) => p.id === pid)
                 if (!project) return null
                 return (
-                  <span
-                    key={pid}
-                    className="sync-tag-chip"
-                  >
+                  <span key={pid} className="sync-tag-chip">
                     {project.name}
                   </span>
                 )
@@ -939,9 +1196,7 @@ export default function EditorPage() {
               aria-label="选择关联任务"
               value=""
               disabled={
-                !projectFilterID ||
-                tasksQuery.isLoading ||
-                updateTask.isPending
+                !projectFilterID || tasksQuery.isLoading || updateTask.isPending
               }
               onChange={(event) => void linkTask(event.target.value)}
             >

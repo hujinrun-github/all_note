@@ -154,6 +154,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureSQLiteNoteAttachmentSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureSQLiteTranscriptionJobSchema(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -272,6 +276,10 @@ func (s *store) Notes() storage.NoteRepository {
 	return noteRepository{db: s.db}
 }
 
+func (s *store) NoteAttachments() storage.NoteAttachmentRepository {
+	return noteAttachmentRepository{db: s.db}
+}
+
 func (s *store) Tasks() storage.TaskRepository {
 	return taskRepository{db: s.db}
 }
@@ -347,6 +355,10 @@ func (s *storeTx) Folders() storage.FolderRepository {
 
 func (s *storeTx) Notes() storage.NoteRepository {
 	return noteRepository{db: s.tx}
+}
+
+func (s *storeTx) NoteAttachments() storage.NoteAttachmentRepository {
+	return noteAttachmentRepository{db: s.tx}
 }
 
 func (s *storeTx) Search() storage.SearchRepository {

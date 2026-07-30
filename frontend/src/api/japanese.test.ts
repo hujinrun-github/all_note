@@ -24,4 +24,22 @@ describe('Japanese furigana api', () => {
     })
     expect(result).toEqual({ segments, source: 'ai' })
   })
+
+  it('forwards an abort signal for superseded live requests', async () => {
+    const controller = new AbortController()
+    vi.mocked(api.post).mockResolvedValue({
+      data: { segments: [{ text: '日本', reading: 'にほん' }], source: 'ai' },
+    })
+
+    await annotateJapanese('日本', {
+      signal: controller.signal,
+      mode: 'local',
+    })
+
+    expect(api.post).toHaveBeenLastCalledWith(
+      '/api/japanese/furigana',
+      { text: '日本', mode: 'local' },
+      { signal: controller.signal }
+    )
+  })
 })
