@@ -127,6 +127,18 @@ func (r voiceNoteRepository) GetByClientID(ctx context.Context, clientID string)
 	`, workspaceID, clientID))
 }
 
+func (r voiceNoteRepository) GetByNoteID(ctx context.Context, noteID string) (*model.VoiceNote, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return scanPostgresVoiceNote(r.db.QueryRowContext(ctx, postgresVoiceNoteSelect+`
+		WHERE v.workspace_id = $1 AND v.note_id = $2
+		  AND v.deleted_at IS NULL AND n.deleted_at IS NULL
+		  AND v.upload_state = 'uploaded' AND v.audio_state = 'uploaded'
+	`, workspaceID, strings.TrimSpace(noteID)))
+}
+
 func (r voiceNoteRepository) ClaimUpload(ctx context.Context, clientID string, claim model.VoiceUploadClaim) (*model.VoiceNote, error) {
 	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 	if err != nil {
@@ -163,6 +175,66 @@ func (r voiceNoteRepository) ClaimUpload(ctx context.Context, clientID string, c
 			}
 			voice = existing
 			return nil
+		}
+		if err := persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "voice_note", "voice.server_updated", clientID, time.Unix(now, 0).UTC()); err != nil {
+			return err
+		}
+		voice, err = (voiceNoteRepository{db: tx}).GetByClientID(ctx, clientID)
+		return err
+	})
+	return voice, err
+}
+
+func (r voiceNoteRepository) ReplaceUploaded(ctx context.Context, clientID string, replacement model.VoiceAudioReplacement) (*model.VoiceNote, error) {
+	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	var voice *model.VoiceNote
+	err = (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE voice_notes
+			SET object_key = $1, mime_type = $2, audio_size = $3, audio_sha256 = $4, duration_ms = $5,
+				upload_state = 'uploaded', audio_state = 'uploaded',
+				transcription_state = 'not_started', transcription_error = '',
+				audio_revision = audio_revision + 1, updated_at = $6, revision = revision + 1
+			WHERE workspace_id = $7 AND client_id = $8 AND deleted_at IS NULL
+				AND upload_state = 'uploaded' AND audio_state = 'uploaded' AND audio_revision = $9
+		`, replacement.ObjectKey, replacement.MimeType, replacement.Size, replacement.SHA256,
+			replacement.DurationMS, now, workspaceID, clientID, replacement.BaseAudioRevision)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			existing, getErr := (voiceNoteRepository{db: tx}).GetByClientID(ctx, clientID)
+			if getErr != nil {
+				return getErr
+			}
+			if existing.DeletedAt != nil || existing.AudioState == model.VoiceAudioDeleteRequested || existing.AudioState == model.VoiceAudioDeleted {
+				return storage.ErrVoiceAudioGone
+			}
+			if existing.UploadState == model.VoiceUploadUploaded &&
+				existing.AudioSHA256 == replacement.SHA256 &&
+				existing.DurationMS == replacement.DurationMS {
+				voice = existing
+				return nil
+			}
+			return storage.ErrUploadConflict
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE transcription_jobs
+			SET state = 'canceled', revision = revision + 1, error_code = 'voice_audio_replaced',
+				next_attempt_at = NULL, lease_owner = '', lease_token = '', lease_expires_at = NULL,
+				heartbeat_at = NULL, updated_at = $1
+			WHERE workspace_id = $2 AND voice_note_id = $3
+				AND state IN ('waiting_for_audio','queued','processing','retry_waiting')
+		`, now, workspaceID, clientID); err != nil {
+			return err
 		}
 		if err := persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "voice_note", "voice.server_updated", clientID, time.Unix(now, 0).UTC()); err != nil {
 			return err

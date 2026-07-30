@@ -293,7 +293,7 @@ func requiredRevisionNames(commandType string) []string {
 	case commandType == "note.create" || commandType == "inbox.create" || commandType == "voice.create":
 		return []string{}
 	case strings.HasPrefix(commandType, "note.") || strings.HasPrefix(commandType, "inbox.") ||
-		commandType == "voice_audio.delete" || commandType == "voice_note.delete" ||
+		commandType == "voice.update" || commandType == "voice_audio.delete" || commandType == "voice_note.delete" ||
 		strings.HasPrefix(commandType, "transcription."):
 		return []string{"entity"}
 	case commandType == "project.create":

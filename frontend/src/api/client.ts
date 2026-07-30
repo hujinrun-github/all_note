@@ -4,11 +4,18 @@ export interface APIResponse<T> {
   error?: { code: string; message: string }
 }
 
+function getBasePath() {
+  return import.meta.env.BASE_URL === '/'
+    ? ''
+    : import.meta.env.BASE_URL.replace(/\/$/, '')
+}
+
+export function apiResourceURL(path: string) {
+  return `${getBasePath()}${path}`
+}
+
 class APIClient {
-  private basePath =
-    import.meta.env.BASE_URL === '/'
-      ? ''
-      : import.meta.env.BASE_URL.replace(/\/$/, '')
+  private basePath = getBasePath()
 
   async get<T>(
     path: string,
@@ -37,12 +44,17 @@ class APIClient {
     return res.json()
   }
 
-  async post<T>(path: string, body?: unknown): Promise<APIResponse<T>> {
+  async post<T>(
+    path: string,
+    body?: unknown,
+    init?: Pick<RequestInit, 'signal'>
+  ): Promise<APIResponse<T>> {
     const res = await fetch(`${this.basePath}${path}`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: init?.signal,
     })
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}))
@@ -120,6 +132,32 @@ class APIClient {
       method: 'PUT',
       credentials: 'include',
       headers: { 'Content-Type': body.type || 'application/octet-stream' },
+      body,
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      this.redirectAfterAuthError(path, res.status, errBody?.error?.code)
+      throw new APIError(
+        res.status,
+        errBody?.error?.code ?? 'UNKNOWN',
+        errBody?.error?.message ?? 'Upload failed'
+      )
+    }
+    return res.json()
+  }
+
+  async postBlob<T>(
+    path: string,
+    body: Blob,
+    headers?: Record<string, string>
+  ): Promise<APIResponse<T>> {
+    const res = await fetch(`${this.basePath}${path}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': body.type || 'application/octet-stream',
+        ...headers,
+      },
       body,
     })
     if (!res.ok) {

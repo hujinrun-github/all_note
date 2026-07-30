@@ -238,15 +238,46 @@ func TestContentCommandExecutorCommitsNoteVoiceAndTranscriptionChanges(t *testin
 	}
 	voiceID := *voiceReceipt.IdentityMappings[0].EntityID
 
-	transcription := signedCommand(t, strings.ReplaceAll(`{
+	voiceUpdate := signedCommand(t, strings.ReplaceAll(`{
 		"command_id":"10000000-0000-4000-8000-000000000004",
+		"request_digest":"DIGEST",
+		"origin_device_client_id":"20000000-0000-4000-8000-000000000001",
+		"workspace_id":"workspace-content",
+		"command_type":"voice.update",
+		"target":{"entity_id":"VOICE_ID","client_id":null},
+		"created_runtime_epoch":"1",
+		"expected":{"entity_revision":{"source":"exact","value":"1","dependency_command_id":null}},
+		"depends_on_command_id":null,
+		"supersedes_command_id":null,
+		"payload":{"title":"Renamed voice"}
+	}`, "VOICE_ID", voiceID))
+	voiceUpdateValue, err := executor.ApplyCommand(ctx, handler.MobileV2CommandRequest{Identity: identity, RawEnvelope: voiceUpdate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	voiceUpdateReceipt := commandResponseWire(t, voiceUpdateValue).Receipt
+	if voiceUpdateReceipt.Status != mobilev2command.StatusApplied ||
+		voiceUpdateReceipt.CommitSequence != 4 || len(voiceUpdateReceipt.AffectedRevisions) != 2 {
+		t.Fatalf("voice update receipt = %#v", voiceUpdateReceipt)
+	}
+	var voiceTitle string
+	if err := db.QueryRow(`SELECT n.title FROM voice_notes v JOIN notes n ON n.id=v.note_id
+		WHERE v.workspace_id=? AND v.id=?`, workspaceID, voiceID).Scan(&voiceTitle); err != nil {
+		t.Fatal(err)
+	}
+	if voiceTitle != "Renamed voice" {
+		t.Fatalf("voice title = %q", voiceTitle)
+	}
+
+	transcription := signedCommand(t, strings.ReplaceAll(`{
+		"command_id":"10000000-0000-4000-8000-000000000005",
 		"request_digest":"DIGEST",
 		"origin_device_client_id":"20000000-0000-4000-8000-000000000001",
 		"workspace_id":"workspace-content",
 		"command_type":"transcription.request",
 		"target":{"entity_id":"VOICE_ID","client_id":null},
 		"created_runtime_epoch":"1",
-		"expected":{"entity_revision":{"source":"exact","value":"1","dependency_command_id":null}},
+		"expected":{"entity_revision":{"source":"exact","value":"2","dependency_command_id":null}},
 		"depends_on_command_id":null,
 		"supersedes_command_id":null,
 		"payload":{"language":"zh-CN","failed_job_id":null}
@@ -257,7 +288,7 @@ func TestContentCommandExecutorCommitsNoteVoiceAndTranscriptionChanges(t *testin
 	}
 	transcriptionReceipt := commandResponseWire(t, transcriptionValue).Receipt
 	if transcriptionReceipt.Status != mobilev2command.StatusApplied ||
-		transcriptionReceipt.CommitSequence != 4 || len(transcriptionReceipt.AffectedRevisions) != 2 {
+		transcriptionReceipt.CommitSequence != 5 || len(transcriptionReceipt.AffectedRevisions) != 2 {
 		t.Fatalf("transcription receipt = %#v", transcriptionReceipt)
 	}
 	var receiptCount, contentScopeCount, jobCount int
@@ -273,7 +304,7 @@ func TestContentCommandExecutorCommitsNoteVoiceAndTranscriptionChanges(t *testin
 		Scan(&jobCount); err != nil {
 		t.Fatal(err)
 	}
-	if receiptCount != 4 || contentScopeCount != 4 || jobCount != 1 {
+	if receiptCount != 5 || contentScopeCount != 5 || jobCount != 1 {
 		t.Fatalf("receipts=%d content_scopes=%d jobs=%d", receiptCount, contentScopeCount, jobCount)
 	}
 }

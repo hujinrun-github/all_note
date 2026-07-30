@@ -799,6 +799,11 @@ func TestNativeRoutesAreRegistered(t *testing.T) {
 		"PUT /api/mobile/voice-notes/:clientID/audio",
 		"POST /api/mobile/voice-notes/:clientID/transcriptions",
 		"GET /api/mobile/transcription-jobs/:jobID",
+		"GET /api/notes/:id/attachments",
+		"POST /api/notes/:id/attachments",
+		"GET /api/notes/:id/attachments/:attachmentID/content",
+		"HEAD /api/notes/:id/attachments/:attachmentID/content",
+		"DELETE /api/notes/:id/attachments/:attachmentID",
 		"GET /api/watch/snapshot",
 		"PATCH /api/watch/tasks/:id",
 	} {

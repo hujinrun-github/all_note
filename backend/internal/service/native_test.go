@@ -99,6 +99,61 @@ func TestUploadVoiceAudioIsIdempotentAndRejectsDifferentContent(t *testing.T) {
 	}
 }
 
+func TestReplaceVoiceAudioUsesAudioRevisionAndUpdatesDuration(t *testing.T) {
+	store, ctx := openNativeServiceStore(t)
+	clientID := uuid.NewString()
+	if _, _, err := CreateVoiceNote(ctx, store, model.CreateVoiceNoteRequest{
+		ClientID: clientID, DurationMS: 1_200,
+	}); err != nil {
+		t.Fatalf("create voice note: %v", err)
+	}
+	objects := objectstore.NewMemoryStore()
+	original := []byte("m4a-original")
+	originalDigest := sha256.Sum256(original)
+	uploaded, err := UploadVoiceAudio(
+		ctx, store, objects, clientID, "audio/mp4", hex.EncodeToString(originalDigest[:]),
+		bytes.NewReader(original), int64(len(original)), 1024,
+	)
+	if err != nil {
+		t.Fatalf("upload original: %v", err)
+	}
+
+	replacement := []byte("m4a-original-plus-speech")
+	replacementDigest := sha256.Sum256(replacement)
+	replaced, err := ReplaceVoiceAudio(
+		ctx, store, objects, clientID, "audio/mp4", hex.EncodeToString(replacementDigest[:]),
+		uploaded.AudioRevision, 2_450, bytes.NewReader(replacement), int64(len(replacement)), 1024,
+	)
+	if err != nil {
+		t.Fatalf("replace voice audio: %v", err)
+	}
+	if replaced.DurationMS != 2_450 || replaced.AudioRevision != uploaded.AudioRevision+1 ||
+		replaced.TranscriptionState != model.TranscriptionNotStarted {
+		t.Fatalf("replaced voice = %+v", replaced)
+	}
+
+	stale := []byte("stale-replacement")
+	staleDigest := sha256.Sum256(stale)
+	if _, err := ReplaceVoiceAudio(
+		ctx, store, objects, clientID, "audio/mp4", hex.EncodeToString(staleDigest[:]),
+		uploaded.AudioRevision, 3_000, bytes.NewReader(stale), int64(len(stale)), 1024,
+	); !errors.Is(err, storage.ErrUploadConflict) {
+		t.Fatalf("stale replacement error = %v, want ErrUploadConflict", err)
+	}
+	_, object, err := GetVoiceAudio(ctx, store, objects, clientID)
+	if err != nil {
+		t.Fatalf("get replacement audio: %v", err)
+	}
+	defer object.Body.Close()
+	stored, err := io.ReadAll(object.Body)
+	if err != nil {
+		t.Fatalf("read replacement audio: %v", err)
+	}
+	if !bytes.Equal(stored, replacement) {
+		t.Fatalf("stored audio = %q, want %q", stored, replacement)
+	}
+}
+
 func TestUploadVoiceAudioRemovesLateObjectWhenDeleteWinsDuringPut(t *testing.T) {
 	store, ctx := openNativeServiceStore(t)
 	clientID := uuid.NewString()

@@ -18,6 +18,8 @@ func TestMTDV2Contract003ExpectedRevisionMatrixRejectsPartialAggregates(t *testi
 		{command: "note.update", got: []string{"entity"}, valid: true},
 		{command: "note.update", valid: false},
 		{command: "voice.create", valid: true},
+		{command: "voice.update", got: []string{"entity"}, valid: true},
+		{command: "voice.update", valid: false},
 		{command: "transcription.retry", got: []string{"entity"}, valid: true},
 		{command: "project.create", valid: true},
 		{command: "project.update", got: []string{"project"}, valid: true},

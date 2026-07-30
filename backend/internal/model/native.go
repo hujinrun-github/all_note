@@ -87,6 +87,15 @@ type VoiceUploadClaim struct {
 	SHA256    string
 }
 
+type VoiceAudioReplacement struct {
+	BaseAudioRevision int64
+	DurationMS        int64
+	ObjectKey         string
+	MimeType          string
+	Size              int64
+	SHA256            string
+}
+
 type VoiceTranscriptionRequest struct {
 	Language string `json:"language"`
 }

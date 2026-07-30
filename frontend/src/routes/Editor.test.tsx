@@ -8,6 +8,7 @@ import * as notesApi from '../api/notes'
 import * as syncApi from '../api/sync'
 import * as taskDomainApi from '../api/taskDomain'
 import * as japaneseApi from '../api/japanese'
+import { APIError } from '../api/client'
 
 const tiptapMock = vi.hoisted(() => ({
   getMarkdown: vi.fn(() => 'updated markdown'),
@@ -16,40 +17,48 @@ const tiptapMock = vi.hoisted(() => ({
   insertContentAt: vi.fn(() => true),
   focus: vi.fn(() => true),
   textBetween: vi.fn(() => '附近'),
+  captureEditorOptions: vi.fn(),
+  captureEditor: vi.fn(),
 }))
 
 vi.mock('@tiptap/react', () => ({
-  useEditor: vi.fn(() => ({
-    isDestroyed: false,
-    storage: {
-      markdown: {
-        getMarkdown: tiptapMock.getMarkdown,
+  useEditor: vi.fn((options: unknown) => {
+    tiptapMock.captureEditorOptions(options)
+    const editor = {
+      isDestroyed: false,
+      view: { composing: false },
+      storage: {
+        markdown: {
+          getMarkdown: tiptapMock.getMarkdown,
+        },
       },
-    },
-    commands: {
-      setContent: tiptapMock.setContent,
-      insertContentAt: tiptapMock.insertContentAt,
-      focus: tiptapMock.focus,
-    },
-    state: {
-      selection: { from: 2, to: 4, empty: false },
-      doc: { textBetween: tiptapMock.textBetween },
-    },
-    isActive: tiptapMock.isActive,
-    chain: () => ({
-      focus: () => ({
-        toggleBold: () => ({ run: vi.fn() }),
-        toggleItalic: () => ({ run: vi.fn() }),
-        toggleStrike: () => ({ run: vi.fn() }),
-        toggleHeading: () => ({ run: vi.fn() }),
-        toggleBulletList: () => ({ run: vi.fn() }),
-        toggleOrderedList: () => ({ run: vi.fn() }),
-        toggleBlockquote: () => ({ run: vi.fn() }),
-        toggleCodeBlock: () => ({ run: vi.fn() }),
-        setHorizontalRule: () => ({ run: vi.fn() }),
+      commands: {
+        setContent: tiptapMock.setContent,
+        insertContentAt: tiptapMock.insertContentAt,
+        focus: tiptapMock.focus,
+      },
+      state: {
+        selection: { from: 2, to: 4, empty: false },
+        doc: { textBetween: tiptapMock.textBetween },
+      },
+      isActive: tiptapMock.isActive,
+      chain: () => ({
+        focus: () => ({
+          toggleBold: () => ({ run: vi.fn() }),
+          toggleItalic: () => ({ run: vi.fn() }),
+          toggleStrike: () => ({ run: vi.fn() }),
+          toggleHeading: () => ({ run: vi.fn() }),
+          toggleBulletList: () => ({ run: vi.fn() }),
+          toggleOrderedList: () => ({ run: vi.fn() }),
+          toggleBlockquote: () => ({ run: vi.fn() }),
+          toggleCodeBlock: () => ({ run: vi.fn() }),
+          setHorizontalRule: () => ({ run: vi.fn() }),
+        }),
       }),
-    }),
-  })),
+    }
+    tiptapMock.captureEditor(editor)
+    return editor
+  }),
   EditorContent: () => null,
 }))
 
@@ -113,6 +122,21 @@ describe('Editor auto sync', () => {
       created_at: 1,
       updated_at: 3,
     })
+    vi.mocked(notesApi.getNoteAttachments).mockResolvedValue([])
+    vi.mocked(notesApi.uploadNoteAttachment).mockResolvedValue({
+      id: 'attachment-1',
+      note_id: 'note-1',
+      kind: 'video',
+      original_name: 'demo.mp4',
+      mime_type: 'video/mp4',
+      size_bytes: 1024,
+      sha256: 'abc',
+      source: 'upload',
+      deletable: true,
+      created_at: 4,
+      content_url: '/api/notes/note-1/attachments/attachment-1/content',
+    })
+    vi.mocked(notesApi.deleteNoteAttachment).mockResolvedValue()
     vi.mocked(taskDomainApi.listProjects).mockResolvedValue([
       {
         id: 'project-1',
@@ -310,6 +334,145 @@ describe('Editor auto sync', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('adds furigana after typing pauses when live annotation is enabled', async () => {
+    vi.mocked(japaneseApi.annotateJapanese).mockResolvedValueOnce({
+      source: 'ai',
+      segments: [{ text: '日本語', reading: 'にほんご' }],
+    })
+    const user = userEvent.setup()
+    renderEditor()
+
+    expect(await screen.findByDisplayValue('Auto Sync Note')).toBeVisible()
+    await user.click(screen.getByRole('checkbox', { name: '实时注音' }))
+    expect(screen.getByText('已开启')).toBeVisible()
+
+    const editor = tiptapMock.captureEditor.mock.lastCall?.[0] as {
+      state: {
+        selection: unknown
+      }
+    }
+    editor.state.selection = {
+      from: 4,
+      to: 4,
+      empty: true,
+      $from: {
+        parentOffset: 3,
+        parent: {
+          type: { name: 'paragraph' },
+          forEach: (
+            callback: (
+              node: { isText: boolean; text: string; nodeSize: number },
+              offset: number
+            ) => void
+          ) => callback({ isText: true, text: '日本語', nodeSize: 3 }, 0),
+        },
+        start: () => 1,
+      },
+    }
+    tiptapMock.textBetween.mockReturnValue('日本語')
+
+    const options = tiptapMock.captureEditorOptions.mock.lastCall?.[0] as {
+      onUpdate: (payload: { editor: unknown }) => void
+    }
+    options.onUpdate({ editor })
+
+    expect(await screen.findByText('等待停顿')).toBeVisible()
+    await waitFor(
+      () =>
+        expect(japaneseApi.annotateJapanese).toHaveBeenCalledWith(
+          '日本語',
+          expect.objectContaining({
+            signal: expect.any(AbortSignal),
+            mode: 'local',
+          })
+        ),
+      { timeout: 1500 }
+    )
+    expect(tiptapMock.insertContentAt).toHaveBeenCalledWith(
+      { from: 1, to: 4 },
+      [
+        {
+          type: 'ruby',
+          attrs: { base: '日本語', reading: 'にほんご' },
+        },
+      ]
+    )
+    expect(await screen.findByText('已注音')).toBeVisible()
+  })
+
+  it('retries live annotation after Japanese IME composition ends', async () => {
+    vi.mocked(japaneseApi.annotateJapanese).mockResolvedValueOnce({
+      source: 'local',
+      segments: [
+        { text: '私', reading: 'わたし' },
+        { text: 'はここで' },
+        { text: '話', reading: 'はな' },
+        { text: 'します' },
+      ],
+    })
+    const user = userEvent.setup()
+    renderEditor()
+
+    expect(await screen.findByDisplayValue('Auto Sync Note')).toBeVisible()
+    await user.click(screen.getByRole('checkbox', { name: '实时注音' }))
+
+    const editor = tiptapMock.captureEditor.mock.lastCall?.[0] as {
+      view: { composing: boolean }
+      state: { selection: unknown }
+    }
+    editor.view.composing = true
+    editor.state.selection = {
+      from: 10,
+      to: 10,
+      empty: true,
+      $from: {
+        parentOffset: 9,
+        parent: {
+          type: { name: 'paragraph' },
+          forEach: (
+            callback: (
+              node: { isText: boolean; text: string; nodeSize: number },
+              offset: number
+            ) => void
+          ) =>
+            callback(
+              { isText: true, text: '私はここで話します', nodeSize: 9 },
+              0
+            ),
+        },
+        start: () => 1,
+      },
+    }
+    tiptapMock.textBetween.mockReturnValue('私はここで話します')
+
+    const options = tiptapMock.captureEditorOptions.mock.lastCall?.[0] as {
+      onUpdate: (payload: { editor: unknown }) => void
+    }
+    options.onUpdate({ editor })
+
+    expect(await screen.findByText('等待停顿')).toBeVisible()
+    editor.view.composing = false
+
+    await waitFor(
+      () =>
+        expect(japaneseApi.annotateJapanese).toHaveBeenCalledWith(
+          '私はここで話します',
+          expect.objectContaining({ mode: 'local' })
+        ),
+      { timeout: 1800 }
+    )
+    expect(tiptapMock.insertContentAt).toHaveBeenCalledWith(
+      { from: 1, to: 10 },
+      [
+        { type: 'ruby', attrs: { base: '私', reading: 'わたし' } },
+        { type: 'text', text: 'はここで' },
+        { type: 'ruby', attrs: { base: '話', reading: 'はな' } },
+        { type: 'text', text: 'します' },
+      ]
+    )
+    expect(await screen.findByText('已注音')).toBeVisible()
+  })
+
   it('falls back to the manual dialog when automatic annotation fails', async () => {
     vi.mocked(japaneseApi.annotateJapanese).mockRejectedValueOnce(
       new Error('offline')
@@ -325,5 +488,60 @@ describe('Editor auto sync', () => {
     ).toBeVisible()
     expect(screen.getByLabelText('汉字或词语')).toHaveValue('附近')
     expect(screen.getByText('自动注音失败，请手动填写假名。')).toBeVisible()
+  })
+
+  it('explains that a 404 attachment response needs a backend restart and can retry', async () => {
+    vi.mocked(notesApi.getNoteAttachments).mockRejectedValueOnce(
+      new APIError(404, 'UNKNOWN', 'Request failed')
+    )
+    const user = userEvent.setup()
+    renderEditor()
+
+    expect(await screen.findByText('后端尚未加载附件接口')).toBeVisible()
+    expect(screen.getByText('请重启后端服务，然后点击重试。')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '重试' }))
+
+    await waitFor(() =>
+      expect(notesApi.getNoteAttachments).toHaveBeenCalledTimes(2)
+    )
+    expect(await screen.findByText('还没有附件')).toBeVisible()
+  })
+
+  it('shows existing voice audio and uploads a new media attachment', async () => {
+    vi.mocked(notesApi.getNoteAttachments).mockResolvedValueOnce([
+      {
+        id: 'voice-client-1',
+        note_id: 'note-1',
+        kind: 'audio',
+        original_name: '散步录音.m4a',
+        mime_type: 'audio/mp4',
+        size_bytes: 2048,
+        sha256: 'voice-sha',
+        source: 'voice_note',
+        deletable: false,
+        created_at: 3,
+        content_url: '/api/notes/note-1/attachments/voice-client-1/content',
+      },
+    ])
+    const user = userEvent.setup()
+    renderEditor()
+
+    expect(await screen.findByText('散步录音.m4a')).toBeVisible()
+    expect(screen.getByText('语音笔记')).toBeVisible()
+    expect(screen.getByLabelText('播放 散步录音.m4a')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: '删除' })
+    ).not.toBeInTheDocument()
+
+    const video = new File(['video'], 'demo.mp4', { type: 'video/mp4' })
+    await user.upload(screen.getByLabelText('选择附件文件'), video)
+
+    await waitFor(() =>
+      expect(notesApi.uploadNoteAttachment).toHaveBeenCalledWith(
+        'note-1',
+        video
+      )
+    )
   })
 })

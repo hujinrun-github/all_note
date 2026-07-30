@@ -231,7 +231,26 @@ func GetVoiceNote(ctx context.Context, store storage.Store, clientID string) (*m
 	return voice, err
 }
 
+type voiceAudioReplacementOptions struct {
+	BaseAudioRevision int64
+	DurationMS        int64
+}
+
 func UploadVoiceAudio(ctx context.Context, store storage.Store, objects objectstore.Store, clientID, contentType, expectedSHA256 string, body io.Reader, declaredSize, maxBytes int64) (*model.VoiceNote, error) {
+	return uploadVoiceAudio(ctx, store, objects, clientID, contentType, expectedSHA256, body, declaredSize, maxBytes, nil)
+}
+
+func ReplaceVoiceAudio(ctx context.Context, store storage.Store, objects objectstore.Store, clientID, contentType, expectedSHA256 string, baseAudioRevision, durationMS int64, body io.Reader, declaredSize, maxBytes int64) (*model.VoiceNote, error) {
+	if baseAudioRevision < 0 || durationMS < 0 || durationMS > maxVoiceDurationMS {
+		return nil, ErrInvalidVoiceMetadata
+	}
+	return uploadVoiceAudio(ctx, store, objects, clientID, contentType, expectedSHA256, body, declaredSize, maxBytes, &voiceAudioReplacementOptions{
+		BaseAudioRevision: baseAudioRevision,
+		DurationMS:        durationMS,
+	})
+}
+
+func uploadVoiceAudio(ctx context.Context, store storage.Store, objects objectstore.Store, clientID, contentType, expectedSHA256 string, body io.Reader, declaredSize, maxBytes int64, replacement *voiceAudioReplacementOptions) (*model.VoiceNote, error) {
 	if objects == nil {
 		return nil, ErrVoiceStorageUnavailable
 	}
@@ -292,6 +311,62 @@ func UploadVoiceAudio(ctx context.Context, store storage.Store, objects objectst
 	nativeStore, err := storage.NativeStoreFrom(store)
 	if err != nil {
 		return nil, err
+	}
+	if replacement != nil {
+		existing, err := nativeStore.VoiceNotes().GetByClientID(ctx, clientID)
+		if err != nil {
+			return nil, err
+		}
+		if existing.DeletedAt != nil || existing.AudioState == model.VoiceAudioDeleteRequested || existing.AudioState == model.VoiceAudioDeleted {
+			return nil, storage.ErrVoiceAudioGone
+		}
+		if existing.UploadState == model.VoiceUploadUploaded &&
+			existing.AudioSHA256 == actualSHA256 &&
+			existing.DurationMS == replacement.DurationMS {
+			return existing, nil
+		}
+		if existing.UploadState != model.VoiceUploadUploaded ||
+			existing.AudioState != model.VoiceAudioUploaded ||
+			existing.AudioRevision != replacement.BaseAudioRevision {
+			return nil, storage.ErrUploadConflict
+		}
+		replacementKey := filepath.ToSlash(filepath.Join(
+			"voice-notes",
+			objectWorkspaceSegment(workspaceID),
+			clientID+"-"+actualSHA256+extension,
+		))
+		reader, err := os.Open(tempPath)
+		if err != nil {
+			return nil, err
+		}
+		putErr := objects.Put(ctx, replacementKey, reader, written, mediaType)
+		closeErr := reader.Close()
+		if putErr != nil {
+			if errors.Is(putErr, objectstore.ErrUnavailable) {
+				return nil, ErrVoiceStorageUnavailable
+			}
+			return nil, putErr
+		}
+		if closeErr != nil {
+			_ = objects.Remove(ctx, replacementKey)
+			return nil, closeErr
+		}
+		replaced, err := nativeStore.VoiceNotes().ReplaceUploaded(ctx, clientID, model.VoiceAudioReplacement{
+			BaseAudioRevision: replacement.BaseAudioRevision,
+			DurationMS:        replacement.DurationMS,
+			ObjectKey:         replacementKey,
+			MimeType:          mediaType,
+			Size:              written,
+			SHA256:            actualSHA256,
+		})
+		if err != nil {
+			_ = objects.Remove(ctx, replacementKey)
+			return nil, err
+		}
+		if existing.ObjectKey != "" && existing.ObjectKey != replacementKey {
+			_ = objects.Remove(ctx, existing.ObjectKey)
+		}
+		return replaced, nil
 	}
 	claimed, err := nativeStore.VoiceNotes().ClaimUpload(ctx, clientID, model.VoiceUploadClaim{
 		ObjectKey: objectKey,

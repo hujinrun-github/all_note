@@ -21,6 +21,7 @@ x-command-revision-matrix:
   inbox.update: entity
   inbox.delete: entity
   voice.create: none
+  voice.update: entity
   voice_audio.delete: entity
   voice_note.delete: entity
   transcription.request: entity
@@ -176,6 +177,18 @@ paths:
           schema:
             type: string
             pattern: '^[a-f0-9]{64}$'
+        - name: X-Audio-Base-Revision
+          in: header
+          required: false
+          description: Required with X-Audio-Duration-MS when replacing previously uploaded audio.
+          schema:
+            $ref: '#/components/schemas/BigIntString'
+        - name: X-Audio-Duration-MS
+          in: header
+          required: false
+          description: Total duration of replacement audio after client-side silence removal.
+          schema:
+            $ref: '#/components/schemas/BigIntString'
       requestBody:
         required: true
         content:
@@ -692,7 +705,7 @@ components:
         cancelled: {type: integer}
     CommandType:
       type: string
-      enum: [note.create, note.update, note.delete, inbox.create, inbox.update, inbox.delete, voice.create, voice_audio.delete, voice_note.delete, transcription.request, transcription.retry, project.create, project.update, project.activate, project.pause, project.resume, project.complete, project.archive, project.restore, task.create, task.update, task.publish, task.pause, task.resume, task.cancel, task.restore, task.archive, schedule.reschedule-this-and-following, occurrence.start, occurrence.block, occurrence.unblock, occurrence.complete, occurrence.skip, occurrence.cancel, occurrence.reopen, occurrence.reschedule-only-this]
+      enum: [note.create, note.update, note.delete, inbox.create, inbox.update, inbox.delete, voice.create, voice.update, voice_audio.delete, voice_note.delete, transcription.request, transcription.retry, project.create, project.update, project.activate, project.pause, project.resume, project.complete, project.archive, project.restore, task.create, task.update, task.publish, task.pause, task.resume, task.cancel, task.restore, task.archive, schedule.reschedule-this-and-following, occurrence.start, occurrence.block, occurrence.unblock, occurrence.complete, occurrence.skip, occurrence.cancel, occurrence.reopen, occurrence.reschedule-only-this]
     CommandTarget:
       type: object
       additionalProperties: false
@@ -854,6 +867,12 @@ components:
         duration_ms: {$ref: '#/components/schemas/BigIntString'}
         recorded_at: {type: string}
         language: {type: string}
+    VoiceUpdatePayload:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1}
     VoiceAudioUploadResponse:
       type: object
       additionalProperties: false
@@ -891,6 +910,7 @@ components:
             - {$ref: '#/components/schemas/NoteCommandPayload'}
             - {$ref: '#/components/schemas/InboxCommandPayload'}
             - {$ref: '#/components/schemas/VoiceCreatePayload'}
+            - {$ref: '#/components/schemas/VoiceUpdatePayload'}
             - {$ref: '#/components/schemas/TranscriptionCommandPayload'}
             - {$ref: '#/components/schemas/ProjectCreatePayload'}
             - {$ref: '#/components/schemas/TaskCreatePayload'}

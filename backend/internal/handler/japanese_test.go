@@ -13,9 +13,13 @@ import (
 	"github.com/hujinrun/flowspace/internal/model"
 )
 
-type recordingWorkspaceChat struct{ workspaceID string }
+type recordingWorkspaceChat struct {
+	workspaceID string
+	calls       int
+}
 
 func (r *recordingWorkspaceChat) Generate(_ context.Context, workspaceID, _, _ string) (string, error) {
+	r.calls++
 	r.workspaceID = workspaceID
 	return `{"segments":[{"text":"近","reading":"ちか"},{"text":"く"}]}`, nil
 }
@@ -36,6 +40,27 @@ func TestJapaneseFuriganaUsesRequestWorkspaceAI(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || chat.workspaceID != "workspace-one" || !strings.Contains(response.Body.String(), `"source":"ai"`) {
 		t.Fatalf("status=%d workspace=%q body=%s", response.Code, chat.workspaceID, response.Body.String())
+	}
+}
+
+func TestJapaneseFuriganaLocalModeBypassesAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	chat := &recordingWorkspaceChat{}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		ctx := auth.ContextWithIdentity(c.Request.Context(), auth.RequestIdentity{UserID: "u1", WorkspaceID: "workspace-one"})
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	})
+	router.POST("/api/japanese/furigana", JapaneseFuriganaWithAI(chat))
+	request := httptest.NewRequest(http.MethodPost, "/api/japanese/furigana", strings.NewReader(`{"text":"日本語","mode":"local"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || chat.calls != 0 || !strings.Contains(response.Body.String(), `"source":"local"`) {
+		t.Fatalf("status=%d ai_calls=%d body=%s", response.Code, chat.calls, response.Body.String())
 	}
 }
 
@@ -91,5 +116,20 @@ func TestJapaneseFuriganaRejectsEmptyAndOversizedText(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusBadRequest, w.Body.String())
 		}
+	}
+}
+
+func TestJapaneseFuriganaRejectsUnknownMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/japanese/furigana", JapaneseFurigana)
+	req := httptest.NewRequest(http.MethodPost, "/api/japanese/furigana", strings.NewReader(`{"text":"日本語","mode":"fastest"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }

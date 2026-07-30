@@ -1,6 +1,6 @@
 package mobilev2contract
 
 const (
-	ContractSHA256 = "a30ebcb4bff45c3885f50cea4515e29b4488834b6a758e5e89c816f628d0bdec"
+	ContractSHA256 = "c602dd87b040c706edb08da6aa8a8d99281e5ab5fae95b780b231774e595474c"
 	ContractEpoch  = "1"
 )

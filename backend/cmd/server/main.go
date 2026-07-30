@@ -36,6 +36,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/router"
 	"github.com/hujinrun/flowspace/internal/runtimecontrol"
+	"github.com/hujinrun/flowspace/internal/service"
 	storagepkg "github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/storage/postgres"
 	"github.com/hujinrun/flowspace/internal/storage/sqlite"
@@ -78,6 +79,9 @@ func main() {
 	nativeCfg, err := config.LoadNativeConfig()
 	if err != nil {
 		log.Fatalf("native app config: %v", err)
+	}
+	if err := service.WarmJapaneseTokenizer(); err != nil {
+		log.Fatalf("warm Japanese tokenizer: %v", err)
 	}
 	bootstrapCfg := bootstrap.Config{
 		AdminEmail:    authCfg.Bootstrap.Email,
@@ -125,6 +129,7 @@ func main() {
 		VoiceObjects:             runtimeObjects,
 		Transcriber:              runtimeTranscriber,
 		MaxVoiceBytes:            nativeCfg.MaxVoiceAudioBytes,
+		MaxAttachmentBytes:       nativeCfg.MaxAttachmentBytes,
 		MobileSyncV1Enabled:      nativeCfg.MobileSyncV1Enabled,
 		VoiceUploadEnabled:       nativeCfg.MobileSyncV1Enabled,
 		TranscriptionEnabled:     nativeCfg.MobileSyncV1Enabled,

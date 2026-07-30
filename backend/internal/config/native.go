@@ -9,10 +9,14 @@ import (
 	"time"
 )
 
-const defaultMaxVoiceAudioBytes int64 = 50 * 1024 * 1024
+const (
+	defaultMaxVoiceAudioBytes int64 = 50 * 1024 * 1024
+	defaultMaxAttachmentBytes int64 = 200 * 1024 * 1024
+)
 
 type NativeConfig struct {
 	MaxVoiceAudioBytes         int64
+	MaxAttachmentBytes         int64
 	MobileSyncV1Enabled        bool
 	MobileSyncV2Enabled        bool
 	TaskDomainV2RoutingEnabled bool
@@ -66,6 +70,14 @@ func LoadNativeConfig() (NativeConfig, error) {
 		}
 		maxBytes = parsed
 	}
+	maxAttachmentBytes := defaultMaxAttachmentBytes
+	if value := strings.TrimSpace(os.Getenv("FLOWSPACE_ATTACHMENT_MAX_BYTES")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 {
+			return NativeConfig{}, errors.New("FLOWSPACE_ATTACHMENT_MAX_BYTES must be a positive integer")
+		}
+		maxAttachmentBytes = parsed
+	}
 
 	minioCfg, err := loadMinIOConfig()
 	if err != nil {
@@ -77,6 +89,7 @@ func LoadNativeConfig() (NativeConfig, error) {
 	}
 	return NativeConfig{
 		MaxVoiceAudioBytes:         maxBytes,
+		MaxAttachmentBytes:         maxAttachmentBytes,
 		MobileSyncV1Enabled:        mobileSyncV1Enabled,
 		MobileSyncV2Enabled:        mobileSyncV2Enabled,
 		TaskDomainV2RoutingEnabled: taskDomainV2RoutingEnabled,
