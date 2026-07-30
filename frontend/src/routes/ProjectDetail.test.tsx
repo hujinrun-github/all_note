@@ -4,18 +4,24 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProjectV2 } from '../api/taskDomain'
+import {
+  TaskDomainRevisionConflictError,
+  type ProjectV2,
+} from '../api/taskDomain'
+import * as notesApi from '../api/notes'
 import * as roadmapHooks from '../hooks/useRoadmapV2'
 import * as taskHooks from '../hooks/useTaskDomain'
 import ProjectDetail from './ProjectDetail'
 
 vi.mock('../hooks/useTaskDomain')
 vi.mock('../hooks/useRoadmapV2')
+vi.mock('../api/notes')
 
 const createTask = vi.fn()
 const activateProject = vi.fn()
 const completeProject = vi.fn()
 const cancelTask = vi.fn()
+const publishTask = vi.fn()
 const updateTask = vi.fn()
 const generateRoadmap = vi.fn()
 const updateProject = vi.fn()
@@ -80,9 +86,10 @@ describe('Project detail v2', () => {
       ],
       isLoading: false,
     } as ReturnType<typeof taskHooks.useProjects>)
-    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue(
-      idleMutation() as ReturnType<typeof taskHooks.usePublishTaskMutation>
-    )
+    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue({
+      mutateAsync: publishTask,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.usePublishTaskMutation>)
     vi.mocked(taskHooks.usePauseTaskMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.usePauseTaskMutation>
     )
@@ -159,6 +166,33 @@ describe('Project detail v2', () => {
           expected_project_revision: project.revision,
         },
       })
+    )
+  })
+
+  it('shows a visible error when publishing a stale task definition', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [{ ...taskDefinition, lifecycle_status: 'draft' }],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    publishTask.mockRejectedValue(
+      new TaskDomainRevisionConflictError(
+        'the resource changed',
+        {
+          expected_task_revision: 4,
+          expected_schedule_revision: 2,
+          expected_occurrence_revisions: {},
+        },
+        { task_revision: 5 }
+      )
+    )
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '发布' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '任务已在其他窗口更新，请刷新后重试。'
     )
   })
 
@@ -348,6 +382,81 @@ describe('Project detail v2', () => {
       },
     })
     expect(completeProject).toHaveBeenCalled()
+  })
+
+  it('edits the task name, description, and attachment links', async () => {
+    updateTask.mockResolvedValue({
+      ...taskDefinition,
+      title: '复习 N2 核心语法',
+      description: '完成错题整理',
+      attachment_links: [{ name: '复习资料', url: 'https://example.com/n2' }],
+      revision: 5,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '编辑任务' }))
+
+    const title = screen.getByRole('textbox', { name: '任务名' })
+    await user.clear(title)
+    await user.type(title, '复习 N2 核心语法')
+    await user.type(
+      screen.getByRole('textbox', { name: '任务描述' }),
+      '完成错题整理'
+    )
+    await user.click(screen.getByRole('button', { name: '添加附件链接' }))
+    await user.type(
+      screen.getByRole('textbox', { name: '附件 1 名称' }),
+      '复习资料'
+    )
+    await user.type(
+      screen.getByRole('textbox', { name: '附件 1 链接' }),
+      'https://example.com/n2'
+    )
+    await user.click(screen.getByRole('button', { name: '保存任务' }))
+
+    await waitFor(() =>
+      expect(updateTask).toHaveBeenCalledWith({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        input: {
+          title: '复习 N2 核心语法',
+          description: '完成错题整理',
+          attachment_links: [
+            { name: '复习资料', url: 'https://example.com/n2' },
+          ],
+          expected_task_revision: 4,
+          expected_schedule_revision: 2,
+        },
+      })
+    )
+  })
+
+  it('lists notes linked through tasks in the project notes section', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [{ ...taskDefinition, task_note_id: 'note-1' }],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(notesApi.getNote).mockResolvedValue({
+      id: 'note-1',
+      title: 'N2 复习记录',
+      body: '',
+      folder_id: '__uncategorized',
+      tags: '[]',
+      projects: [],
+      created_at: 1,
+      updated_at: 2,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('tab', { name: '笔记' }))
+
+    expect(await screen.findByText('N2 复习记录')).toBeVisible()
+    expect(
+      screen.getByRole('link', { name: /N2 复习记录/ })
+    ).toHaveAttribute('href', '/editor/note-1')
   })
 })
 

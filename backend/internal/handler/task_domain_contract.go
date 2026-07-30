@@ -395,17 +395,18 @@ type ProjectV2DTO struct {
 // TaskV2DTO uses task_note_id for the stable definition-level note. It must
 // never be conflated with an occurrence-specific note.
 type TaskV2DTO struct {
-	ID               string                         `json:"id"`
-	ProjectID        string                         `json:"project_id"`
-	RoadmapNodeID    *string                        `json:"roadmap_node_id,omitempty"`
-	TaskNoteID       *string                        `json:"task_note_id,omitempty"`
-	Title            string                         `json:"title"`
-	Description      string                         `json:"description,omitempty"`
-	Priority         int                            `json:"priority"`
-	SortOrder        float64                        `json:"sort_order"`
-	LifecycleStatus  taskdomain.TaskLifecycleStatus `json:"lifecycle_status"`
-	Revision         int64                          `json:"revision"`
-	ScheduleRevision int64                          `json:"schedule_revision"`
+	ID               string                          `json:"id"`
+	ProjectID        string                          `json:"project_id"`
+	RoadmapNodeID    *string                         `json:"roadmap_node_id,omitempty"`
+	TaskNoteID       *string                         `json:"task_note_id,omitempty"`
+	Title            string                          `json:"title"`
+	Description      string                          `json:"description,omitempty"`
+	AttachmentLinks  []taskdomain.TaskAttachmentLink `json:"attachment_links,omitempty"`
+	Priority         int                             `json:"priority"`
+	SortOrder        float64                         `json:"sort_order"`
+	LifecycleStatus  taskdomain.TaskLifecycleStatus  `json:"lifecycle_status"`
+	Revision         int64                           `json:"revision"`
+	ScheduleRevision int64                           `json:"schedule_revision"`
 }
 
 // OccurrenceV2DTO exposes both note relationships with explicit names and

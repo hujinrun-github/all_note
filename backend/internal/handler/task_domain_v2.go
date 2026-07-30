@@ -48,20 +48,21 @@ type TaskDomainV2Application interface {
 var _ TaskDomainV2Application = (*taskapp.Facade)(nil)
 
 type PatchTaskV2Request struct {
-	ExpectedTaskRevision     int64    `json:"expected_task_revision"`
-	ExpectedScheduleRevision int64    `json:"expected_schedule_revision"`
-	Title                    *string  `json:"title,omitempty"`
-	Description              *string  `json:"description,omitempty"`
-	Priority                 *int     `json:"priority,omitempty"`
-	SortOrder                *float64 `json:"sort_order,omitempty"`
-	ProjectID                *string  `json:"project_id,omitempty"`
-	RoadmapNodeID            *string  `json:"roadmap_node_id,omitempty"`
-	TaskNoteID               *string  `json:"task_note_id,omitempty"`
+	ExpectedTaskRevision     int64                            `json:"expected_task_revision"`
+	ExpectedScheduleRevision int64                            `json:"expected_schedule_revision"`
+	Title                    *string                          `json:"title,omitempty"`
+	Description              *string                          `json:"description,omitempty"`
+	AttachmentLinks          *[]taskdomain.TaskAttachmentLink `json:"attachment_links,omitempty"`
+	Priority                 *int                             `json:"priority,omitempty"`
+	SortOrder                *float64                         `json:"sort_order,omitempty"`
+	ProjectID                *string                          `json:"project_id,omitempty"`
+	RoadmapNodeID            *string                          `json:"roadmap_node_id,omitempty"`
+	TaskNoteID               *string                          `json:"task_note_id,omitempty"`
 }
 
 func (request *PatchTaskV2Request) validateTaskDomainRequest() error {
 	if request == nil || request.ExpectedTaskRevision < 1 || request.ExpectedScheduleRevision < 1 ||
-		(request.Title == nil && request.Description == nil && request.Priority == nil && request.SortOrder == nil &&
+		(request.Title == nil && request.Description == nil && request.AttachmentLinks == nil && request.Priority == nil && request.SortOrder == nil &&
 			request.ProjectID == nil && request.RoadmapNodeID == nil && request.TaskNoteID == nil) {
 		return errors.New("invalid task patch")
 	}
@@ -70,6 +71,11 @@ func (request *PatchTaskV2Request) validateTaskDomainRequest() error {
 	}
 	if request.Priority != nil && (*request.Priority < 0 || *request.Priority > 3) {
 		return errors.New("invalid task priority")
+	}
+	if request.AttachmentLinks != nil {
+		if _, err := taskdomain.NormalizeTaskAttachmentLinks(*request.AttachmentLinks); err != nil {
+			return err
+		}
 	}
 	if request.ProjectID != nil && strings.TrimSpace(*request.ProjectID) == "" {
 		return errors.New("project_id must not be blank")
@@ -341,7 +347,8 @@ func (handler taskDomainV2Handler) patchTask(c *gin.Context) {
 	task, err := handler.application.PatchTask(c.Request.Context(), taskapp.PatchTaskRequest{
 		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, TaskID: c.Param("taskID"),
 		ExpectedTaskRevision: request.ExpectedTaskRevision, ExpectedScheduleRevision: request.ExpectedScheduleRevision,
-		Title: request.Title, Description: request.Description, Priority: request.Priority, SortOrder: request.SortOrder,
+		Title: request.Title, Description: request.Description, AttachmentLinks: request.AttachmentLinks,
+		Priority: request.Priority, SortOrder: request.SortOrder,
 		ProjectID: request.ProjectID, RoadmapNodeID: request.RoadmapNodeID, NoteID: request.TaskNoteID,
 	})
 	if err != nil {
@@ -615,7 +622,8 @@ func projectSnapshotV2DTO(snapshot taskdomain.ProjectSnapshot) ProjectV2DTO {
 func taskReadModelV2DTO(model taskdomain.TaskDefinitionSnapshot) TaskV2DTO {
 	return TaskV2DTO{ID: model.Task.ID, ProjectID: model.Task.ProjectID, RoadmapNodeID: optionalString(model.Task.RoadmapNodeID),
 		TaskNoteID: optionalString(model.Task.NoteID), Title: model.Task.Title, Description: model.Task.Description,
-		Priority: model.Task.Priority, SortOrder: model.Task.SortOrder, LifecycleStatus: model.Task.LifecycleStatus,
+		AttachmentLinks: append([]taskdomain.TaskAttachmentLink(nil), model.Task.AttachmentLinks...),
+		Priority:        model.Task.Priority, SortOrder: model.Task.SortOrder, LifecycleStatus: model.Task.LifecycleStatus,
 		Revision: model.Task.Revision, ScheduleRevision: model.ScheduleRevision}
 }
 

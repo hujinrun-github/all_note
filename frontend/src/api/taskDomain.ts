@@ -95,11 +95,17 @@ export interface TaskV2 {
   task_note_id?: string
   title: string
   description?: string
+  attachment_links?: TaskAttachmentLink[]
   priority: number
   sort_order: number
   lifecycle_status: TaskLifecycleStatus
   revision: number
   schedule_revision: number
+}
+
+export interface TaskAttachmentLink {
+  name: string
+  url: string
 }
 
 export interface OccurrenceV2 {
@@ -191,6 +197,7 @@ export interface TaskDefinitionExpectedRevisions {
 export interface UpdateTaskDefinitionInput extends TaskDefinitionExpectedRevisions {
   title?: string
   description?: string
+  attachment_links?: TaskAttachmentLink[]
   priority?: number
   sort_order?: number
   project_id?: string
@@ -562,6 +569,8 @@ export async function updateTaskDefinition(
   const body: UpdateTaskDefinitionInput = { ...expectedRevisions }
   if (input.title !== undefined) body.title = input.title
   if (input.description !== undefined) body.description = input.description
+  if (input.attachment_links !== undefined)
+    body.attachment_links = input.attachment_links
   if (input.priority !== undefined) body.priority = input.priority
   if (input.sort_order !== undefined) body.sort_order = input.sort_order
   if (input.project_id !== undefined) body.project_id = input.project_id
@@ -696,10 +705,17 @@ function taskLifecycleCommand(
   command: TaskLifecycleCommand,
   revisions: TaskDomainExpectedRevisions
 ) {
+  const commandRevisions =
+    command === 'cancel'
+      ? revisions
+      : {
+          ...revisions,
+          expected_occurrence_revisions: {},
+        }
   return requestData<TaskAggregateCommandResponse>(
     `/api/tasks/${encodeURIComponent(taskID)}/${command}`,
-    jsonPost(revisions),
-    revisions
+    jsonPost(commandRevisions),
+    commandRevisions
   )
 }
 

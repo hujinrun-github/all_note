@@ -227,12 +227,16 @@ func TestTaskServicePatchTaskWritesOnlyOrdinaryAttributesAtomically(t *testing.T
 	reader := &serviceStateReader{fencer: fencer, state: state}
 	service := NewTaskService(fencer, reader)
 	title, description, priority, sortOrder := " After ", "New", 3, 9.5
+	attachmentLinks := []TaskAttachmentLink{{
+		Name: " 需求文档 ",
+		URL:  " https://example.com/spec ",
+	}}
 
 	result, err := service.PatchTask(context.Background(), PatchTaskRequest{
 		WorkspaceID: "workspace-1", TaskID: "task-1", ExpectedRuntimeEpoch: 12,
 		ExpectedTaskRevision: 5, ExpectedScheduleRevision: 7,
 		Patch: TaskAttributePatch{
-			Title: &title, Description: &description, Priority: &priority, SortOrder: &sortOrder,
+			Title: &title, Description: &description, Priority: &priority, SortOrder: &sortOrder, AttachmentLinks: &attachmentLinks,
 			Project:    &ProjectIdentity{WorkspaceID: "workspace-1", ProjectID: "project-new"},
 			RoadmapSet: true, Roadmap: &Roadmap{WorkspaceID: "workspace-1", ID: "roadmap-new", ProjectID: "project-new"},
 			TaskNoteSet: true, TaskNote: &TaskNoteIdentity{WorkspaceID: "workspace-1", NoteID: "note-new"},
@@ -249,6 +253,9 @@ func TestTaskServicePatchTaskWritesOnlyOrdinaryAttributesAtomically(t *testing.T
 	if write.Task == nil || write.Task.Title != "After" || write.Task.Description != "New" || write.Task.Priority != 3 || write.Task.SortOrder != 9.5 ||
 		write.Task.ProjectID != "project-new" || write.Task.RoadmapNodeID != "roadmap-new" || write.Task.NoteID != "note-new" || write.Task.Revision != 6 {
 		t.Fatalf("task patch after-image = %#v", write.Task)
+	}
+	if !reflect.DeepEqual(write.Task.AttachmentLinks, []TaskAttachmentLink{{Name: "需求文档", URL: "https://example.com/spec"}}) {
+		t.Fatalf("task attachment links = %#v", write.Task.AttachmentLinks)
 	}
 	if write.Task.WorkspaceID != "workspace-1" || write.Task.ID != "task-1" || write.Task.LifecycleStatus != TaskLifecycleActive ||
 		write.Aggregate.LifecycleStatus != current.LifecycleStatus || write.Aggregate.GenerationEnabled != current.GenerationEnabled ||

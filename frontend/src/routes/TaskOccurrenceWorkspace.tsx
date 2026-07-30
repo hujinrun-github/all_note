@@ -26,6 +26,7 @@ import {
   useStartOccurrenceMutation,
   useTaskDefinitions,
   useUnblockOccurrenceMutation,
+  useUpdateTaskDefinitionMutation,
 } from '../hooks/useTaskDomain'
 import { useUIStore } from '../stores/ui'
 
@@ -70,7 +71,9 @@ export default function TaskOccurrenceWorkspace() {
   const [rescheduleDate, setRescheduleDate] = useState('')
   const [rescheduleConflict, setRescheduleConflict] =
     useState<TaskDomainRevisionConflictError | null>(null)
+  const [rescheduleError, setRescheduleError] = useState('')
   const [showComparison, setShowComparison] = useState(false)
+  const [taskCommandError, setTaskCommandError] = useState('')
 
   const projectsQuery = useProjects()
   const inboxProject = (projectsQuery.data ?? []).find(
@@ -101,6 +104,7 @@ export default function TaskOccurrenceWorkspace() {
   const cancelTask = useCancelTaskMutation()
   const restoreTask = useRestoreTaskMutation()
   const archiveTask = useArchiveTaskMutation()
+  const updateTask = useUpdateTaskDefinitionMutation()
 
   const occurrenceQueries = {
     inbox: inboxQuery,
@@ -190,6 +194,7 @@ export default function TaskOccurrenceWorkspace() {
     ? definitionsByID.get(editingOccurrence.task_id)
     : undefined
   const commandBusy = [
+    updateTask,
     completeOccurrence,
     startOccurrence,
     blockOccurrence,
@@ -245,6 +250,19 @@ export default function TaskOccurrenceWorkspace() {
     }
   }
 
+  async function handleTaskCommand(command: () => Promise<unknown>) {
+    setTaskCommandError('')
+    try {
+      await command()
+    } catch (caught) {
+      setTaskCommandError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务已在其他窗口更新，请刷新后重试。'
+          : '任务操作失败，请稍后重试。'
+      )
+    }
+  }
+
   function beginReschedule(occurrence: OccurrenceV2) {
     updateSearchParams({
       occurrence_id: occurrence.id,
@@ -253,6 +271,7 @@ export default function TaskOccurrenceWorkspace() {
     setEditingOccurrenceID(occurrence.id)
     setRescheduleDate(occurrence.planned_date ?? '')
     setRescheduleConflict(null)
+    setRescheduleError('')
     setShowComparison(false)
   }
 
@@ -261,6 +280,7 @@ export default function TaskOccurrenceWorkspace() {
     if (!editingOccurrence || !editingDefinition || rescheduleDate === '')
       return
     setRescheduleConflict(null)
+    setRescheduleError('')
     setShowComparison(false)
     try {
       await rescheduleOccurrence.mutateAsync({
@@ -290,7 +310,7 @@ export default function TaskOccurrenceWorkspace() {
         setRescheduleConflict(caught)
         return
       }
-      throw caught
+      setRescheduleError('保存改期失败，请稍后重试。')
     }
   }
 
@@ -569,6 +589,11 @@ export default function TaskOccurrenceWorkspace() {
               执行实例暂时不可用，请刷新后重试。
             </div>
           ) : null}
+          {taskCommandError ? (
+            <div className="td-inline-error" role="alert">
+              {taskCommandError}
+            </div>
+          ) : null}
           {activeCount === 0 &&
           !activeQuery?.isLoading &&
           !draftsQuery.isLoading ? (
@@ -700,6 +725,11 @@ export default function TaskOccurrenceWorkspace() {
                     ) : null}
                   </div>
                 ) : null}
+                {rescheduleError ? (
+                  <div className="td-inline-error" role="alert">
+                    {rescheduleError}
+                  </div>
+                ) : null}
               </form>
             ) : null}
           </OccurrenceInspector>
@@ -712,23 +742,46 @@ export default function TaskOccurrenceWorkspace() {
             onClose={() =>
               updateSearchParams({ occurrence_id: null, task_id: null })
             }
+            onUpdate={(input) =>
+              updateTask.mutateAsync({
+                projectID: selectedTask.project_id,
+                taskID: selectedTask.id,
+                input: {
+                  ...input,
+                  expected_task_revision: selectedTask.revision,
+                  expected_schedule_revision: selectedTask.schedule_revision,
+                },
+              })
+            }
             onPublish={() =>
-              publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onPause={() =>
-              pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onResume={() =>
-              resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onCancel={() =>
-              cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onRestore={() =>
-              restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onArchive={() =>
-              archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
           />
         ) : null}

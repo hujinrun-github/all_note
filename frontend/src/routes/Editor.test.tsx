@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import EditorPage from './Editor'
 import * as notesApi from '../api/notes'
 import * as syncApi from '../api/sync'
-import * as tasksApi from '../api/tasks'
+import * as taskDomainApi from '../api/taskDomain'
 import * as japaneseApi from '../api/japanese'
 
 const tiptapMock = vi.hoisted(() => ({
@@ -63,7 +63,7 @@ vi.mock('../extensions/Ruby', () => ({
 
 vi.mock('../api/notes')
 vi.mock('../api/sync')
-vi.mock('../api/tasks')
+vi.mock('../api/taskDomain')
 vi.mock('../api/japanese')
 
 function createQueryClient() {
@@ -113,7 +113,39 @@ describe('Editor auto sync', () => {
       created_at: 1,
       updated_at: 3,
     })
-    vi.mocked(tasksApi.listTaskProjects).mockResolvedValue([])
+    vi.mocked(taskDomainApi.listProjects).mockResolvedValue([
+      {
+        id: 'project-1',
+        name: '产品上线',
+        kind: 'standard',
+        horizon: 'short',
+        status: 'active',
+        revision: 2,
+      },
+    ])
+    vi.mocked(taskDomainApi.listTaskDefinitions).mockResolvedValue([
+      {
+        id: 'task-1',
+        project_id: 'project-1',
+        title: '完成发布检查',
+        priority: 1,
+        sort_order: 0,
+        lifecycle_status: 'active',
+        revision: 3,
+        schedule_revision: 4,
+      },
+    ])
+    vi.mocked(taskDomainApi.updateTaskDefinition).mockResolvedValue({
+      id: 'task-1',
+      project_id: 'project-1',
+      task_note_id: 'note-1',
+      title: '完成发布检查',
+      priority: 1,
+      sort_order: 0,
+      lifecycle_status: 'active',
+      revision: 4,
+      schedule_revision: 4,
+    })
     vi.mocked(japaneseApi.annotateJapanese).mockResolvedValue({
       source: 'ai',
       segments: [{ text: '近', reading: 'ちか' }, { text: 'く' }],
@@ -180,11 +212,36 @@ describe('Editor auto sync', () => {
       expect(notesApi.updateNote).toHaveBeenCalledWith('note-1', {
         title: 'Auto Sync Note',
         body: 'updated markdown',
-        project_ids: [],
       })
     )
     await waitFor(() => expect(syncApi.syncNote).toHaveBeenCalledWith('note-1'))
     expect(syncApi.syncObsidianNote).not.toHaveBeenCalled()
+  })
+
+  it('links the note to a v2 task selected through its project', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+
+    expect(await screen.findByDisplayValue('Auto Sync Note')).toBeVisible()
+    expect(
+      await screen.findByRole('option', { name: /产品上线/ })
+    ).toBeVisible()
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '选择关联任务' }),
+      'task-1'
+    )
+
+    await waitFor(() =>
+      expect(taskDomainApi.updateTaskDefinition).toHaveBeenCalledWith(
+        'task-1',
+        {
+          task_note_id: 'note-1',
+          expected_task_revision: 3,
+          expected_schedule_revision: 4,
+        }
+      )
+    )
   })
 
   it('enters fullscreen writing mode and exits with Escape', async () => {

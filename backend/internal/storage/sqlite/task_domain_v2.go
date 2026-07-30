@@ -92,7 +92,7 @@ func (r *sqliteTaskDomainV2ProjectReader) ListTaskDefinitions(ctx context.Contex
 		args = append(args, *filter.LifecycleStatus)
 	}
 	rows, err := r.queryer.QueryContext(ctx, `SELECT
-		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.lifecycle_status,
+		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.attachment_links,t.lifecycle_status,
 		t.priority,t.sort_order,t.revision,s.revision,s.current_schedule_revision
 		FROM domain_tasks_v2 t JOIN domain_task_schedules_v2 s
 		ON s.workspace_id=t.workspace_id AND s.task_id=t.id
@@ -105,12 +105,15 @@ func (r *sqliteTaskDomainV2ProjectReader) ListTaskDefinitions(ctx context.Contex
 	for rows.Next() {
 		var item taskdomain.TaskDefinitionSnapshot
 		var roadmapNodeID, noteID sql.NullString
-		var lifecycle string
+		var lifecycle, attachmentLinksJSON string
 		if err := rows.Scan(
 			&item.Task.WorkspaceID, &item.Task.ID, &item.Task.ProjectID, &roadmapNodeID, &noteID,
-			&item.Task.Title, &item.Task.Description, &lifecycle, &item.Task.Priority, &item.Task.SortOrder, &item.Task.Revision,
+			&item.Task.Title, &item.Task.Description, &attachmentLinksJSON, &lifecycle, &item.Task.Priority, &item.Task.SortOrder, &item.Task.Revision,
 			&item.ScheduleRevision, &item.CurrentScheduleRevision,
 		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(attachmentLinksJSON), &item.Task.AttachmentLinks); err != nil {
 			return nil, err
 		}
 		item.Task.RoadmapNodeID = roadmapNodeID.String
@@ -180,21 +183,24 @@ func (r *sqliteTaskDomainV2ProjectReader) GetScheduleCommandState(ctx context.Co
 func (r *sqliteTaskDomainV2ProjectReader) GetTaskAggregate(ctx context.Context, taskID string) (taskdomain.TaskAggregateQueryResult, error) {
 	var result taskdomain.TaskAggregateQueryResult
 	var roadmapNodeID, noteID sql.NullString
-	var lifecycle string
+	var lifecycle, attachmentLinksJSON string
 	err := r.queryer.QueryRowContext(ctx, `SELECT
-		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.lifecycle_status,t.priority,t.sort_order,t.revision,
+		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.attachment_links,t.lifecycle_status,t.priority,t.sort_order,t.revision,
 		s.revision,s.current_schedule_revision
 		FROM domain_tasks_v2 t
 		JOIN domain_task_schedules_v2 s ON s.workspace_id=t.workspace_id AND s.task_id=t.id
 		WHERE t.workspace_id=? AND t.id=?`, r.workspaceID, taskID).Scan(
 		&result.Task.WorkspaceID, &result.Task.ID, &result.Task.ProjectID, &roadmapNodeID, &noteID,
-		&result.Task.Title, &result.Task.Description, &lifecycle, &result.Task.Priority, &result.Task.SortOrder, &result.Task.Revision,
+		&result.Task.Title, &result.Task.Description, &attachmentLinksJSON, &lifecycle, &result.Task.Priority, &result.Task.SortOrder, &result.Task.Revision,
 		&result.Schedule.Revision, &result.Schedule.CurrentScheduleRevision,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskdomain.TaskAggregateQueryResult{}, taskdomain.ErrTaskNotFound
 	}
 	if err != nil {
+		return taskdomain.TaskAggregateQueryResult{}, err
+	}
+	if err := json.Unmarshal([]byte(attachmentLinksJSON), &result.Task.AttachmentLinks); err != nil {
 		return taskdomain.TaskAggregateQueryResult{}, err
 	}
 	result.Task.RoadmapNodeID = roadmapNodeID.String
@@ -322,7 +328,11 @@ func (r *sqliteTaskDomainV2ProjectReader) listOccurrences(ctx context.Context, p
 const sqliteTaskDomainV2OccurrenceSelect = `SELECT
 	o.workspace_id,t.project_id,t.id,o.id,o.occurrence_key,
 	COALESCE(o.override_title,t.title),COALESCE(o.override_description,t.description),
-	v.timing_type,v.timezone,o.planned_date,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
+	CASE
+		WHEN o.planned_start_at IS NOT NULL THEN 'time_block'
+		WHEN o.planned_date IS NOT NULL THEN 'date'
+		ELSE 'unscheduled'
+	END,v.timezone,o.planned_date,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
 	CASE WHEN v.recurrence_type <> 'none' THEN 1 ELSE 0 END,
 	o.revision,p.revision,t.revision,s.revision,o.generated_schedule_revision,t.lifecycle_status,t.priority,t.sort_order,
 	o.actual_start_at,o.completed_at,o.blocked_reason,o.next_action,o.location,o.calendar_kind,o.calendar_notes,
@@ -490,8 +500,8 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		if err != nil {
 			return "", nil, err
 		}
-		return `((v.timing_type='date' AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
-			OR (v.timing_type='time_block' AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
+		return `((o.planned_start_at IS NULL AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
 	case taskdomain.OccurrenceListUpcoming:
 		if err := requireRange(); err != nil {
 			return "", nil, err
@@ -500,8 +510,8 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		if err != nil {
 			return "", nil, err
 		}
-		return `(((v.timing_type='date' AND o.planned_date >= ? AND o.planned_date < ?)
-			OR (v.timing_type='time_block' AND o.planned_start_at >= ? AND o.planned_start_at < ?))
+		return `(((o.planned_start_at IS NULL AND o.planned_date >= ? AND o.planned_date < ?)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at >= ? AND o.planned_start_at < ?))
 			AND o.execution_status NOT IN ('done','skipped','cancelled'))`, []any{fromDate, toDate, from, to}, nil
 	case taskdomain.OccurrenceListOverdue:
 		if filter.From.IsZero() {
@@ -509,7 +519,7 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		}
 		return `o.due_at < ? AND o.execution_status NOT IN ('done','skipped','cancelled')`, []any{from}, nil
 	case taskdomain.OccurrenceListUnscheduled:
-		return `v.timing_type='unscheduled'`, nil, nil
+		return `o.planned_date IS NULL AND o.planned_start_at IS NULL`, nil, nil
 	case taskdomain.OccurrenceListCompleted:
 		if err := requireRange(); err != nil {
 			return "", nil, err
@@ -523,8 +533,8 @@ func sqliteTaskDomainV2OccurrenceFilter(filter taskdomain.OccurrenceListFilter) 
 		if err != nil {
 			return "", nil, err
 		}
-		return `((v.timing_type='date' AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
-			OR (v.timing_type='time_block' AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
+		return `((o.planned_start_at IS NULL AND o.planned_date < ? AND COALESCE(o.all_day_end_date,date(o.planned_date,'+1 day')) > ?)
+			OR (o.planned_start_at IS NOT NULL AND o.planned_start_at < ? AND o.planned_end_at > ?))`, []any{toDate, fromDate, to, from}, nil
 	default:
 		return "", nil, taskdomain.ErrInvalidOccurrenceListFilter
 	}
@@ -961,12 +971,20 @@ func (w *sqliteTaskDomainV2ProjectWriter) CreateTaskAggregate(ctx context.Contex
 	if err := w.ensureProjectAcceptsNonTerminalOccurrences(ctx, snapshot.Task.ProjectID); err != nil {
 		return err
 	}
+	attachmentLinks := snapshot.Task.AttachmentLinks
+	if attachmentLinks == nil {
+		attachmentLinks = []taskdomain.TaskAttachmentLink{}
+	}
+	attachmentLinksJSON, err := json.Marshal(attachmentLinks)
+	if err != nil {
+		return err
+	}
 	if _, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_tasks_v2
-		(workspace_id,id,project_id,roadmap_node_id,note_id,title,description,lifecycle_status,priority,sort_order,revision,created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		(workspace_id,id,project_id,roadmap_node_id,note_id,title,description,attachment_links,lifecycle_status,priority,sort_order,revision,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
 		snapshot.Task.WorkspaceID, snapshot.Task.ID, snapshot.Task.ProjectID,
 		nullableSQLiteTaskDomainV2String(snapshot.Task.RoadmapNodeID), nullableSQLiteTaskDomainV2String(snapshot.Task.NoteID),
-		snapshot.Task.Title, snapshot.Task.Description, snapshot.Task.LifecycleStatus,
+		snapshot.Task.Title, snapshot.Task.Description, string(attachmentLinksJSON), snapshot.Task.LifecycleStatus,
 		snapshot.Task.Priority, snapshot.Task.SortOrder, snapshot.Task.Revision,
 	); err != nil {
 		return err
@@ -1046,12 +1064,20 @@ func (w *sqliteTaskDomainV2ProjectWriter) SaveTaskAggregate(ctx context.Context,
 			write.Aggregate.LifecycleStatus, w.workspaceID, write.Aggregate.TaskID, write.ExpectedRevisions.Task)
 	} else {
 		task := *write.Task
+		attachmentLinks := task.AttachmentLinks
+		if attachmentLinks == nil {
+			attachmentLinks = []taskdomain.TaskAttachmentLink{}
+		}
+		attachmentLinksJSON, marshalErr := json.Marshal(attachmentLinks)
+		if marshalErr != nil {
+			return marshalErr
+		}
 		result, err = w.queryer.ExecContext(ctx, `UPDATE domain_tasks_v2 SET
-			project_id=?,roadmap_node_id=?,note_id=?,title=?,description=?,priority=?,sort_order=?,lifecycle_status=?,
+			project_id=?,roadmap_node_id=?,note_id=?,title=?,description=?,attachment_links=?,priority=?,sort_order=?,lifecycle_status=?,
 			revision=revision+1,updated_at=CURRENT_TIMESTAMP
 			WHERE workspace_id=? AND id=? AND revision=?`,
 			task.ProjectID, nullableSQLiteTaskDomainV2String(task.RoadmapNodeID), nullableSQLiteTaskDomainV2String(task.NoteID),
-			task.Title, task.Description, task.Priority, task.SortOrder, task.LifecycleStatus,
+			task.Title, task.Description, string(attachmentLinksJSON), task.Priority, task.SortOrder, task.LifecycleStatus,
 			w.workspaceID, write.Aggregate.TaskID, write.ExpectedRevisions.Task)
 	}
 	if err != nil {

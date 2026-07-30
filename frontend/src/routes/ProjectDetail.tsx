@@ -12,9 +12,11 @@ import {
   Trash2,
   WandSparkles,
 } from 'lucide-react'
+import { useQueries } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
+import { getNote } from '../api/notes'
 import type { RoadmapV2 } from '../api/roadmapV2'
 import type { OccurrenceV2, TaskV2 } from '../api/taskDomain'
 import { TaskDomainRevisionConflictError } from '../api/taskDomain'
@@ -151,6 +153,22 @@ export default function ProjectDetail() {
     () => new Map((tasksQuery.data ?? []).map((task) => [task.id, task])),
     [tasksQuery.data]
   )
+  const linkedNoteIDs = useMemo(
+    () => [
+      ...new Set(
+        (tasksQuery.data ?? [])
+          .map((task) => task.task_note_id)
+          .filter((noteID): noteID is string => Boolean(noteID))
+      ),
+    ],
+    [tasksQuery.data]
+  )
+  const linkedNoteQueries = useQueries({
+    queries: linkedNoteIDs.map((noteID) => ({
+      queryKey: ['notes', noteID],
+      queryFn: () => getNote(noteID),
+    })),
+  })
   const occurrencesByTask = useMemo(() => {
     const byTask = new Map<string, OccurrenceV2[]>()
     for (const occurrence of occurrencesQuery.data ?? []) {
@@ -179,6 +197,7 @@ export default function ProjectDetail() {
     ? Math.round((completedTasks.length / actionableTasks.length) * 100)
     : 0
   const commandBusy = [
+    updateTask,
     publishTask,
     pauseTask,
     resumeTask,
@@ -363,6 +382,19 @@ export default function ProjectDetail() {
       projectID,
       taskID: task.id,
       expectedRevisions: taskRevisions(task.id)!,
+    }
+  }
+
+  async function handleTaskCommand(command: () => Promise<unknown>) {
+    setError('')
+    try {
+      await command()
+    } catch (caught) {
+      setError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务已在其他窗口更新，请刷新后重试。'
+          : '任务操作失败，请稍后重试。'
+      )
     }
   }
 
@@ -742,10 +774,55 @@ export default function ProjectDetail() {
               onGenerate={() => setRoadmapDialogOpen(true)}
             />
           ) : activeSection === 'notes' ? (
-            <div className="td-section-placeholder">
-              <FileText aria-hidden="true" />
-              <strong>项目笔记保持现有能力</strong>
-              <span>这里只汇总与项目任务关联的笔记，不重做笔记编辑器。</span>
+            <div className="td-project-notes">
+              <header>
+                <div>
+                  <FileText aria-hidden="true" />
+                  <div>
+                    <strong>项目笔记</strong>
+                    <span>来自当前项目任务的关联笔记</span>
+                  </div>
+                </div>
+                <em>{linkedNoteIDs.length}</em>
+              </header>
+              {linkedNoteQueries.some((query) => query.isLoading) ? (
+                <div className="td-project-notes-state">正在加载关联笔记…</div>
+              ) : null}
+              {linkedNoteIDs.length === 0 ? (
+                <div className="td-project-notes-state">
+                  <FileText aria-hidden="true" />
+                  <strong>还没有关联笔记</strong>
+                  <span>在笔记编辑器中选择本项目及其任务即可建立关联。</span>
+                </div>
+              ) : null}
+              <div className="td-project-note-list">
+                {linkedNoteQueries.map((query, index) =>
+                  query.data ? (
+                    <Link
+                      key={query.data.id}
+                      to={`/editor/${encodeURIComponent(query.data.id)}`}
+                    >
+                      <FileText aria-hidden="true" />
+                      <span>
+                        <strong>{query.data.title || '未命名笔记'}</strong>
+                        <small>
+                          {new Date(
+                            query.data.updated_at * 1000
+                          ).toLocaleDateString('zh-CN')}
+                        </small>
+                      </span>
+                      <ArrowRight aria-hidden="true" />
+                    </Link>
+                  ) : linkedNoteQueries[index]?.isError ? (
+                    <div
+                      className="td-project-note-error"
+                      key={linkedNoteIDs[index]}
+                    >
+                      一条关联笔记暂时无法加载
+                    </div>
+                  ) : null
+                )}
+              </div>
             </div>
           ) : (
             <ProjectHistory occurrences={occurrencesQuery.data ?? []} />
@@ -759,23 +836,46 @@ export default function ProjectDetail() {
             occurrences={selectedTaskOccurrences}
             busy={commandBusy}
             onClose={() => updateSearchParams({ task_id: null })}
+            onUpdate={(input) =>
+              updateTask.mutateAsync({
+                projectID,
+                taskID: selectedTask.id,
+                input: {
+                  ...input,
+                  expected_task_revision: selectedTask.revision,
+                  expected_schedule_revision: selectedTask.schedule_revision,
+                },
+              })
+            }
             onPublish={() =>
-              publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                publishTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onPause={() =>
-              pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onResume={() =>
-              resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onCancel={() =>
-              cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onRestore={() =>
-              restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
             onArchive={() =>
-              archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              handleTaskCommand(() =>
+                archiveTask.mutateAsync(taskCommandVariables(selectedTask))
+              )
             }
           />
         ) : null}
