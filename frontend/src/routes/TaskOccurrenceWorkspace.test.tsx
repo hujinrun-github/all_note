@@ -256,6 +256,75 @@ describe('Task occurrence workspace', () => {
     )
     expect(date).toHaveValue('2026-07-25')
   })
+
+  it('can reschedule an existing task to a concrete time range', async () => {
+    const reschedule = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue({
+      mutateAsync: reschedule,
+      isPending: false,
+    } as unknown as ReturnType<
+      typeof taskHooks.useRescheduleOccurrenceMutation
+    >)
+    renderWorkspace()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '改期准备评审' }))
+    await user.selectOptions(
+      screen.getByLabelText('新的安排方式'),
+      'time_block'
+    )
+    await user.type(screen.getByLabelText('新的执行日期'), '2026-07-25')
+    await user.clear(screen.getByLabelText('新的开始时间'))
+    await user.type(screen.getByLabelText('新的开始时间'), '14:30')
+    await user.clear(screen.getByLabelText('新的结束时间'))
+    await user.type(screen.getByLabelText('新的结束时间'), '16:00')
+    await user.click(screen.getByRole('button', { name: '保存改期' }))
+
+    expect(reschedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        occurrenceID: 'open-occurrence',
+        input: expect.objectContaining({
+          timing: {
+            timing_type: 'time_block',
+            timezone: expect.any(String),
+            planned_date: '2026-07-25',
+            local_start_time: '14:30',
+            duration_minutes: 90,
+          },
+        }),
+      })
+    )
+  })
+
+  it('recognizes an existing time block even when timing_type is omitted', async () => {
+    vi.mocked(taskHooks.useOccurrences).mockImplementation(
+      (params) =>
+        ({
+          data:
+            params?.scope === 'upcoming'
+              ? [
+                  {
+                    ...occurrence('open-occurrence', 'open-task', 'open'),
+                    planned_date: '2026-07-25',
+                    planned_start_at: '2026-07-25T06:30:00Z',
+                    planned_end_at: '2026-07-25T08:00:00Z',
+                    timezone: 'Asia/Shanghai',
+                  },
+                ]
+              : [],
+          isLoading: false,
+          isError: false,
+        }) as ReturnType<typeof taskHooks.useOccurrences>
+    )
+    renderWorkspace()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '改期准备评审' }))
+
+    expect(screen.getByLabelText('新的安排方式')).toHaveValue('time_block')
+    expect(screen.getByLabelText('新的开始时间')).toHaveValue('14:30')
+    expect(screen.getByLabelText('新的结束时间')).toHaveValue('16:00')
+  })
 })
 
 function renderWorkspace() {

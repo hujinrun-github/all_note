@@ -928,6 +928,7 @@
 
 .td-block-form input,
 .td-reschedule-form input,
+.td-reschedule-form select,
 .td-project-move select,
 .td-inline-create input {
   width: 100%;
@@ -942,10 +943,47 @@
 
 .td-block-form input:focus,
 .td-reschedule-form input:focus,
+.td-reschedule-form select:focus,
 .td-project-move select:focus,
 .td-inline-create input:focus {
   border-color: var(--td-copper);
   box-shadow: 0 0 0 3px rgba(185, 103, 43, 0.1);
+}
+
+.td-reschedule-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 10px;
+}
+
+.td-reschedule-time-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 8px;
+}
+
+.td-reschedule-time-row > span {
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  color: var(--td-faint);
+  font-size: 10px;
+  font-weight: 720;
+}
+
+@media (max-width: 560px) {
+  .td-reschedule-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .td-reschedule-time-row {
+    grid-template-columns: 1fr;
+  }
+
+  .td-reschedule-time-row > span {
+    display: none;
+  }
 }
 
 .td-field-list {
