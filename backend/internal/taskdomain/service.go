@@ -89,16 +89,17 @@ type LifecycleCommandRequest struct {
 }
 
 type TaskAttributePatch struct {
-	Title           *string
-	Description     *string
-	AttachmentLinks *[]TaskAttachmentLink
-	Priority        *int
-	SortOrder       *float64
-	Project         *ProjectIdentity
-	RoadmapSet      bool
-	Roadmap         *Roadmap
-	TaskNoteSet     bool
-	TaskNote        *TaskNoteIdentity
+	Title                  *string
+	Description            *string
+	AttachmentLinks        *[]TaskAttachmentLink
+	CompletionRequirements *[]TaskCompletionRequirement
+	Priority               *int
+	SortOrder              *float64
+	Project                *ProjectIdentity
+	RoadmapSet             bool
+	Roadmap                *Roadmap
+	TaskNoteSet            bool
+	TaskNote               *TaskNoteIdentity
 }
 
 type PatchTaskRequest struct {
@@ -287,7 +288,7 @@ func validatePatchTaskRequest(service *TaskService, request PatchTaskRequest) er
 }
 
 func taskAttributePatchHasChanges(patch TaskAttributePatch) bool {
-	return patch.Title != nil || patch.Description != nil || patch.AttachmentLinks != nil || patch.Priority != nil || patch.SortOrder != nil ||
+	return patch.Title != nil || patch.Description != nil || patch.AttachmentLinks != nil || patch.CompletionRequirements != nil || patch.Priority != nil || patch.SortOrder != nil ||
 		patch.Project != nil || patch.RoadmapSet || patch.TaskNoteSet
 }
 
@@ -305,6 +306,13 @@ func applyTaskAttributePatch(current TaskRecord, workspaceID string, patch TaskA
 			return current, ErrInvalidTaskCommand
 		}
 		after.AttachmentLinks = links
+	}
+	if patch.CompletionRequirements != nil {
+		requirements, err := NormalizeTaskCompletionRequirements(*patch.CompletionRequirements)
+		if err != nil {
+			return current, ErrInvalidTaskCommand
+		}
+		after.CompletionRequirements = requirements
 	}
 	if patch.Priority != nil {
 		after.Priority = *patch.Priority

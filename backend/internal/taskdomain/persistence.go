@@ -10,30 +10,50 @@ import (
 )
 
 var (
-	ErrInvalidTaskAggregateSnapshot = errors.New("invalid task aggregate persistence snapshot")
-	ErrInvalidTaskAttachmentLinks   = errors.New("invalid task attachment links")
+	ErrInvalidTaskAggregateSnapshot         = errors.New("invalid task aggregate persistence snapshot")
+	ErrInvalidTaskAttachmentLinks           = errors.New("invalid task attachment links")
+	ErrInvalidTaskCompletionRequirements    = errors.New("invalid task completion requirements")
+	ErrTaskCompletionRequirementsIncomplete = errors.New("task completion requirements are incomplete")
 )
 
 const maxTaskAttachmentLinks = 20
+const maxTaskCompletionRequirements = 20
 
 type TaskAttachmentLink struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
 }
 
+type TaskCompletionRequirementKind string
+
+const (
+	TaskCompletionRequirementArticle TaskCompletionRequirementKind = "article"
+	TaskCompletionRequirementVideo   TaskCompletionRequirementKind = "video"
+	TaskCompletionRequirementCheck   TaskCompletionRequirementKind = "check"
+)
+
+type TaskCompletionRequirement struct {
+	ID        string                        `json:"id"`
+	Kind      TaskCompletionRequirementKind `json:"kind"`
+	Title     string                        `json:"title"`
+	URL       string                        `json:"url,omitempty"`
+	Completed bool                          `json:"completed"`
+}
+
 type TaskRecord struct {
-	WorkspaceID     string
-	ID              string
-	ProjectID       string
-	RoadmapNodeID   string
-	NoteID          string
-	Title           string
-	Description     string
-	AttachmentLinks []TaskAttachmentLink
-	LifecycleStatus TaskLifecycleStatus
-	Priority        int
-	SortOrder       float64
-	Revision        int64
+	WorkspaceID            string
+	ID                     string
+	ProjectID              string
+	RoadmapNodeID          string
+	NoteID                 string
+	Title                  string
+	Description            string
+	AttachmentLinks        []TaskAttachmentLink
+	CompletionRequirements []TaskCompletionRequirement
+	LifecycleStatus        TaskLifecycleStatus
+	Priority               int
+	SortOrder              float64
+	Revision               int64
 }
 
 type ScheduleHeader struct {
@@ -97,6 +117,9 @@ func ValidateTaskAggregateSnapshot(snapshot TaskAggregateSnapshot) error {
 		return ErrInvalidTaskAggregateSnapshot
 	}
 	if _, err := NormalizeTaskAttachmentLinks(snapshot.Task.AttachmentLinks); err != nil {
+		return err
+	}
+	if _, err := NormalizeTaskCompletionRequirements(snapshot.Task.CompletionRequirements); err != nil {
 		return err
 	}
 	if snapshot.Schedule.WorkspaceID != workspaceID || snapshot.Schedule.TaskID != taskID || snapshot.Schedule.Revision != 1 || snapshot.Schedule.CurrentScheduleRevision < 1 || len(snapshot.Versions) == 0 {
@@ -168,6 +191,50 @@ func NormalizeTaskAttachmentLinks(values []TaskAttachmentLink) ([]TaskAttachment
 	return result, nil
 }
 
+func NormalizeTaskCompletionRequirements(values []TaskCompletionRequirement) ([]TaskCompletionRequirement, error) {
+	if len(values) > maxTaskCompletionRequirements {
+		return nil, ErrInvalidTaskCompletionRequirements
+	}
+	result := make([]TaskCompletionRequirement, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		id := strings.TrimSpace(value.ID)
+		title := strings.TrimSpace(value.Title)
+		rawURL := strings.TrimSpace(value.URL)
+		if id == "" || len(id) > 120 || title == "" || len(title) > 200 {
+			return nil, ErrInvalidTaskCompletionRequirements
+		}
+		switch value.Kind {
+		case TaskCompletionRequirementArticle, TaskCompletionRequirementVideo, TaskCompletionRequirementCheck:
+		default:
+			return nil, ErrInvalidTaskCompletionRequirements
+		}
+		if rawURL != "" {
+			parsed, err := url.ParseRequestURI(rawURL)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return nil, ErrInvalidTaskCompletionRequirements
+			}
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, ErrInvalidTaskCompletionRequirements
+		}
+		seen[id] = struct{}{}
+		result = append(result, TaskCompletionRequirement{
+			ID: id, Kind: value.Kind, Title: title, URL: rawURL, Completed: value.Completed,
+		})
+	}
+	return result, nil
+}
+
+func TaskCompletionRequirementsSatisfied(values []TaskCompletionRequirement) bool {
+	for _, value := range values {
+		if !value.Completed {
+			return false
+		}
+	}
+	return true
+}
+
 func ValidateTaskAggregateWrite(write TaskAggregateWrite) error {
 	aggregate := write.Aggregate
 	if strings.TrimSpace(aggregate.WorkspaceID) == "" || strings.TrimSpace(aggregate.TaskID) == "" ||
@@ -184,6 +251,9 @@ func ValidateTaskAggregateWrite(write TaskAggregateWrite) error {
 			return ErrInvalidTaskAggregateSnapshot
 		}
 		if _, err := NormalizeTaskAttachmentLinks(task.AttachmentLinks); err != nil {
+			return err
+		}
+		if _, err := NormalizeTaskCompletionRequirements(task.CompletionRequirements); err != nil {
 			return err
 		}
 	}

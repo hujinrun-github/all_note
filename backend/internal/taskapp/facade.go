@@ -291,19 +291,20 @@ func NewFacade(runtimes RuntimeResolver, clock Clock, ids IDGenerator, commandID
 }
 
 type CreateTaskRequest struct {
-	WorkspaceID     string
-	ActorID         string
-	Project         taskdomain.ProjectIdentity
-	Roadmap         *taskdomain.Roadmap
-	TaskNote        *taskdomain.TaskNoteIdentity
-	Title           string
-	Description     string
-	Priority        int
-	SortOrder       float64
-	Schedule        taskdomain.ScheduleInput
-	AllDayEndDate   string
-	DueAt           *time.Time
-	SelectedOffsets map[string]int
+	WorkspaceID            string
+	ActorID                string
+	Project                taskdomain.ProjectIdentity
+	Roadmap                *taskdomain.Roadmap
+	TaskNote               *taskdomain.TaskNoteIdentity
+	Title                  string
+	Description            string
+	CompletionRequirements []taskdomain.TaskCompletionRequirement
+	Priority               int
+	SortOrder              float64
+	Schedule               taskdomain.ScheduleInput
+	AllDayEndDate          string
+	DueAt                  *time.Time
+	SelectedOffsets        map[string]int
 }
 
 type CreateTaskResult struct {
@@ -341,7 +342,8 @@ func (facade *Facade) CreateTask(ctx context.Context, request CreateTaskRequest)
 		WorkspaceID: request.WorkspaceID, Project: request.Project, Roadmap: request.Roadmap, TaskNote: request.TaskNote,
 		TaskID: taskID, ActorID: request.ActorID, ActorTime: now,
 		Title: request.Title, Description: request.Description, Priority: request.Priority, SortOrder: request.SortOrder,
-		Schedule: request.Schedule, AllDayEndDate: request.AllDayEndDate, DueAt: cloneTime(request.DueAt),
+		CompletionRequirements: append([]taskdomain.TaskCompletionRequirement(nil), request.CompletionRequirements...),
+		Schedule:               request.Schedule, AllDayEndDate: request.AllDayEndDate, DueAt: cloneTime(request.DueAt),
 		SelectedOffsets: cloneOffsets(request.SelectedOffsets),
 	})
 	if err != nil {
@@ -591,6 +593,7 @@ type PatchTaskRequest struct {
 	Title                    *string
 	Description              *string
 	AttachmentLinks          *[]taskdomain.TaskAttachmentLink
+	CompletionRequirements   *[]taskdomain.TaskCompletionRequirement
 	Priority                 *int
 	SortOrder                *float64
 	ProjectID                *string
@@ -600,7 +603,7 @@ type PatchTaskRequest struct {
 
 func (facade *Facade) PatchTask(ctx context.Context, request PatchTaskRequest) (TaskCommandOutcome, error) {
 	if !validWorkspaceActorEntity(request.WorkspaceID, request.ActorID, request.TaskID) ||
-		(request.Title == nil && request.Description == nil && request.AttachmentLinks == nil && request.Priority == nil && request.SortOrder == nil &&
+		(request.Title == nil && request.Description == nil && request.AttachmentLinks == nil && request.CompletionRequirements == nil && request.Priority == nil && request.SortOrder == nil &&
 			request.ProjectID == nil && request.RoadmapNodeID == nil && request.NoteID == nil) {
 		return TaskCommandOutcome{}, ErrInvalidRequest
 	}
@@ -619,7 +622,8 @@ func (facade *Facade) PatchTask(ctx context.Context, request PatchTaskRequest) (
 	projectID := current.Task.ProjectID
 	patch := taskdomain.TaskAttributePatch{
 		Title: cloneString(request.Title), Description: cloneString(request.Description), AttachmentLinks: cloneTaskAttachmentLinksPointer(request.AttachmentLinks),
-		Priority: cloneInt(request.Priority), SortOrder: cloneFloat64(request.SortOrder),
+		CompletionRequirements: cloneTaskCompletionRequirementsPointer(request.CompletionRequirements),
+		Priority:               cloneInt(request.Priority), SortOrder: cloneFloat64(request.SortOrder),
 	}
 	if request.ProjectID != nil {
 		projectID = strings.TrimSpace(*request.ProjectID)
@@ -1316,6 +1320,7 @@ func cloneOccurrenceRecords(values []taskdomain.OccurrenceRecord) []taskdomain.O
 func cloneTaskAggregateQueryResult(value taskdomain.TaskAggregateQueryResult) taskdomain.TaskAggregateQueryResult {
 	result := value
 	result.Task.AttachmentLinks = append([]taskdomain.TaskAttachmentLink(nil), value.Task.AttachmentLinks...)
+	result.Task.CompletionRequirements = append([]taskdomain.TaskCompletionRequirement(nil), value.Task.CompletionRequirements...)
 	result.Aggregate.Occurrences = make([]taskdomain.Occurrence, len(value.Aggregate.Occurrences))
 	for index, occurrence := range value.Aggregate.Occurrences {
 		result.Aggregate.Occurrences[index] = occurrence
@@ -1332,6 +1337,14 @@ func cloneTaskAttachmentLinksPointer(value *[]taskdomain.TaskAttachmentLink) *[]
 		return nil
 	}
 	result := append([]taskdomain.TaskAttachmentLink(nil), (*value)...)
+	return &result
+}
+
+func cloneTaskCompletionRequirementsPointer(value *[]taskdomain.TaskCompletionRequirement) *[]taskdomain.TaskCompletionRequirement {
+	if value == nil {
+		return nil
+	}
+	result := append([]taskdomain.TaskCompletionRequirement(nil), (*value)...)
 	return &result
 }
 

@@ -163,6 +163,36 @@ describe('Task occurrence workspace', () => {
     ).toHaveTextContent('未开始')
   })
 
+  it('shows and enforces completion requirements in the execution inspector', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: taskDefinitions.map((definition) =>
+        definition.id === 'open-task'
+          ? {
+              ...definition,
+              completion_requirements: [
+                {
+                  id: 'article-1',
+                  kind: 'article',
+                  title: '读完评审材料',
+                  completed: false,
+                },
+              ],
+            }
+          : definition
+      ),
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    const user = userEvent.setup()
+    renderWorkspace()
+
+    expect(screen.getByRole('button', { name: '完成准备评审' })).toBeDisabled()
+    await user.click(screen.getByText('准备评审'))
+
+    expect(screen.getByText('完成门槛')).toBeVisible()
+    expect(screen.getByText('0 / 1')).toBeVisible()
+    expect(screen.getByRole('button', { name: '还差 1 项' })).toBeDisabled()
+  })
+
   it('preserves the local date and offers refresh/compare when reschedule conflicts', async () => {
     const conflict = new (
       await import('../api/taskDomain')

@@ -96,7 +96,7 @@ func (r *postgresTaskDomainV2ProjectReader) ListTaskDefinitions(ctx context.Cont
 		add("t.lifecycle_status", *filter.LifecycleStatus)
 	}
 	rows, err := r.queryer.QueryContext(ctx, `SELECT
-		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.attachment_links::text,t.lifecycle_status,
+		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.attachment_links::text,t.completion_requirements::text,t.lifecycle_status,
 		t.priority,t.sort_order,t.revision,s.revision,s.current_schedule_revision
 		FROM domain_tasks_v2 t JOIN domain_task_schedules_v2 s
 		ON s.workspace_id=t.workspace_id AND s.task_id=t.id
@@ -109,15 +109,18 @@ func (r *postgresTaskDomainV2ProjectReader) ListTaskDefinitions(ctx context.Cont
 	for rows.Next() {
 		var item taskdomain.TaskDefinitionSnapshot
 		var roadmapNodeID, noteID sql.NullString
-		var lifecycle, attachmentLinksJSON string
+		var lifecycle, attachmentLinksJSON, completionRequirementsJSON string
 		if err := rows.Scan(
 			&item.Task.WorkspaceID, &item.Task.ID, &item.Task.ProjectID, &roadmapNodeID, &noteID,
-			&item.Task.Title, &item.Task.Description, &attachmentLinksJSON, &lifecycle, &item.Task.Priority, &item.Task.SortOrder, &item.Task.Revision,
+			&item.Task.Title, &item.Task.Description, &attachmentLinksJSON, &completionRequirementsJSON, &lifecycle, &item.Task.Priority, &item.Task.SortOrder, &item.Task.Revision,
 			&item.ScheduleRevision, &item.CurrentScheduleRevision,
 		); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(attachmentLinksJSON), &item.Task.AttachmentLinks); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(completionRequirementsJSON), &item.Task.CompletionRequirements); err != nil {
 			return nil, err
 		}
 		item.Task.RoadmapNodeID = roadmapNodeID.String
@@ -187,15 +190,15 @@ func (r *postgresTaskDomainV2ProjectReader) GetScheduleCommandState(ctx context.
 func (r *postgresTaskDomainV2ProjectReader) GetTaskAggregate(ctx context.Context, taskID string) (taskdomain.TaskAggregateQueryResult, error) {
 	var result taskdomain.TaskAggregateQueryResult
 	var roadmapNodeID, noteID sql.NullString
-	var lifecycle, attachmentLinksJSON string
+	var lifecycle, attachmentLinksJSON, completionRequirementsJSON string
 	err := r.queryer.QueryRowContext(ctx, `SELECT
-		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.attachment_links::text,t.lifecycle_status,t.priority,t.sort_order,t.revision,
+		t.workspace_id,t.id,t.project_id,t.roadmap_node_id,t.note_id,t.title,t.description,t.attachment_links::text,t.completion_requirements::text,t.lifecycle_status,t.priority,t.sort_order,t.revision,
 		s.revision,s.current_schedule_revision
 		FROM domain_tasks_v2 t
 		JOIN domain_task_schedules_v2 s ON s.workspace_id=t.workspace_id AND s.task_id=t.id
 		WHERE t.workspace_id=$1 AND t.id=$2`, r.workspaceID, taskID).Scan(
 		&result.Task.WorkspaceID, &result.Task.ID, &result.Task.ProjectID, &roadmapNodeID, &noteID,
-		&result.Task.Title, &result.Task.Description, &attachmentLinksJSON, &lifecycle, &result.Task.Priority, &result.Task.SortOrder, &result.Task.Revision,
+		&result.Task.Title, &result.Task.Description, &attachmentLinksJSON, &completionRequirementsJSON, &lifecycle, &result.Task.Priority, &result.Task.SortOrder, &result.Task.Revision,
 		&result.Schedule.Revision, &result.Schedule.CurrentScheduleRevision,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -205,6 +208,9 @@ func (r *postgresTaskDomainV2ProjectReader) GetTaskAggregate(ctx context.Context
 		return taskdomain.TaskAggregateQueryResult{}, err
 	}
 	if err := json.Unmarshal([]byte(attachmentLinksJSON), &result.Task.AttachmentLinks); err != nil {
+		return taskdomain.TaskAggregateQueryResult{}, err
+	}
+	if err := json.Unmarshal([]byte(completionRequirementsJSON), &result.Task.CompletionRequirements); err != nil {
 		return taskdomain.TaskAggregateQueryResult{}, err
 	}
 	result.Task.RoadmapNodeID = roadmapNodeID.String
@@ -975,12 +981,20 @@ func (w *postgresTaskDomainV2ProjectWriter) CreateTaskAggregate(ctx context.Cont
 	if err != nil {
 		return err
 	}
+	completionRequirements := snapshot.Task.CompletionRequirements
+	if completionRequirements == nil {
+		completionRequirements = []taskdomain.TaskCompletionRequirement{}
+	}
+	completionRequirementsJSON, err := json.Marshal(completionRequirements)
+	if err != nil {
+		return err
+	}
 	if _, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_tasks_v2
-		(workspace_id,id,project_id,roadmap_node_id,note_id,title,description,attachment_links,lifecycle_status,priority,sort_order,revision,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,now(),now())`,
+		(workspace_id,id,project_id,roadmap_node_id,note_id,title,description,attachment_links,completion_requirements,lifecycle_status,priority,sort_order,revision,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,now(),now())`,
 		snapshot.Task.WorkspaceID, snapshot.Task.ID, snapshot.Task.ProjectID,
 		nullablePostgresTaskDomainV2String(snapshot.Task.RoadmapNodeID), nullablePostgresTaskDomainV2String(snapshot.Task.NoteID),
-		snapshot.Task.Title, snapshot.Task.Description, string(attachmentLinksJSON), snapshot.Task.LifecycleStatus,
+		snapshot.Task.Title, snapshot.Task.Description, string(attachmentLinksJSON), string(completionRequirementsJSON), snapshot.Task.LifecycleStatus,
 		snapshot.Task.Priority, snapshot.Task.SortOrder, snapshot.Task.Revision,
 	); err != nil {
 		return err
@@ -1068,12 +1082,20 @@ func (w *postgresTaskDomainV2ProjectWriter) SaveTaskAggregate(ctx context.Contex
 		if marshalErr != nil {
 			return marshalErr
 		}
+		completionRequirements := task.CompletionRequirements
+		if completionRequirements == nil {
+			completionRequirements = []taskdomain.TaskCompletionRequirement{}
+		}
+		completionRequirementsJSON, marshalErr := json.Marshal(completionRequirements)
+		if marshalErr != nil {
+			return marshalErr
+		}
 		result, err = w.queryer.ExecContext(ctx, `UPDATE domain_tasks_v2 SET
-			project_id=$1,roadmap_node_id=$2,note_id=$3,title=$4,description=$5,attachment_links=$6::jsonb,priority=$7,sort_order=$8,lifecycle_status=$9,
+			project_id=$1,roadmap_node_id=$2,note_id=$3,title=$4,description=$5,attachment_links=$6::jsonb,completion_requirements=$7::jsonb,priority=$8,sort_order=$9,lifecycle_status=$10,
 			revision=revision+1,updated_at=now()
-			WHERE workspace_id=$10 AND id=$11 AND revision=$12`,
+			WHERE workspace_id=$11 AND id=$12 AND revision=$13`,
 			task.ProjectID, nullablePostgresTaskDomainV2String(task.RoadmapNodeID), nullablePostgresTaskDomainV2String(task.NoteID),
-			task.Title, task.Description, string(attachmentLinksJSON), task.Priority, task.SortOrder, task.LifecycleStatus,
+			task.Title, task.Description, string(attachmentLinksJSON), string(completionRequirementsJSON), task.Priority, task.SortOrder, task.LifecycleStatus,
 			w.workspaceID, write.Aggregate.TaskID, write.ExpectedRevisions.Task)
 	}
 	if err != nil {

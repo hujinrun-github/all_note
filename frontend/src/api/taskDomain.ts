@@ -96,6 +96,7 @@ export interface TaskV2 {
   title: string
   description?: string
   attachment_links?: TaskAttachmentLink[]
+  completion_requirements?: TaskCompletionRequirement[]
   priority: number
   sort_order: number
   lifecycle_status: TaskLifecycleStatus
@@ -106,6 +107,16 @@ export interface TaskV2 {
 export interface TaskAttachmentLink {
   name: string
   url: string
+}
+
+export type TaskCompletionRequirementKind = 'article' | 'video' | 'check'
+
+export interface TaskCompletionRequirement {
+  id: string
+  kind: TaskCompletionRequirementKind
+  title: string
+  url?: string
+  completed: boolean
 }
 
 export interface OccurrenceV2 {
@@ -184,6 +195,7 @@ export interface CreateTaskDefinitionInput {
   task_note_id?: string
   title: string
   description?: string
+  completion_requirements?: TaskCompletionRequirement[]
   priority: number
   sort_order?: number
   schedule: ScheduleV2Input
@@ -198,6 +210,7 @@ export interface UpdateTaskDefinitionInput extends TaskDefinitionExpectedRevisio
   title?: string
   description?: string
   attachment_links?: TaskAttachmentLink[]
+  completion_requirements?: TaskCompletionRequirement[]
   priority?: number
   sort_order?: number
   project_id?: string
@@ -571,6 +584,8 @@ export async function updateTaskDefinition(
   if (input.description !== undefined) body.description = input.description
   if (input.attachment_links !== undefined)
     body.attachment_links = input.attachment_links
+  if (input.completion_requirements !== undefined)
+    body.completion_requirements = input.completion_requirements
   if (input.priority !== undefined) body.priority = input.priority
   if (input.sort_order !== undefined) body.sort_order = input.sort_order
   if (input.project_id !== undefined) body.project_id = input.project_id

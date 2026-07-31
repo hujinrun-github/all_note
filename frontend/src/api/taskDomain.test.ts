@@ -405,6 +405,15 @@ describe('task definition update client', () => {
       roadmap_node_id: '',
       task_note_id: '',
       attachment_links: [{ name: '需求文档', url: 'https://example.com/spec' }],
+      completion_requirements: [
+        {
+          id: 'article-1',
+          kind: 'article',
+          title: '读完需求文档',
+          url: 'https://example.com/spec',
+          completed: false,
+        },
+      ],
       lifecycle_status: 'cancelled',
       schedule: { timing_type: 'unscheduled' },
       execution_status: 'done',
@@ -424,6 +433,15 @@ describe('task definition update client', () => {
       roadmap_node_id: '',
       task_note_id: '',
       attachment_links: [{ name: '需求文档', url: 'https://example.com/spec' }],
+      completion_requirements: [
+        {
+          id: 'article-1',
+          kind: 'article',
+          title: '读完需求文档',
+          url: 'https://example.com/spec',
+          completed: false,
+        },
+      ],
     })
   })
 

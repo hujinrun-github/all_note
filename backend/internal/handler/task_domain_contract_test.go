@@ -313,6 +313,7 @@ func TestMapTaskDomainErrorStatusAndStableCode(t *testing.T) {
 		{name: "task transition", err: taskdomain.ErrInvalidTaskTransition, status: http.StatusBadRequest, code: "invalid_transition"},
 		{name: "occurrence transition", err: taskdomain.ErrInvalidOccurrenceTransition, status: http.StatusBadRequest, code: "invalid_transition"},
 		{name: "occurrence requires reopen", err: taskdomain.ErrOccurrenceReopenRequired, status: http.StatusConflict, code: "occurrence_reopen_required"},
+		{name: "task requirements incomplete", err: taskdomain.ErrTaskCompletionRequirementsIncomplete, status: http.StatusConflict, code: "task_requirements_incomplete"},
 		{name: "invalid schedule", err: taskdomain.ErrInvalidSchedule, status: http.StatusBadRequest, code: "invalid_schedule"},
 		{name: "nonexistent local time", err: taskdomain.ErrNonexistentLocalTime, status: http.StatusUnprocessableEntity, code: "nonexistent_local_time"},
 		{name: "service epoch mismatch", err: taskdomain.ErrTaskRuntimeEpochConflict, status: http.StatusConflict, code: "tenant_epoch_mismatch", retryable: true},

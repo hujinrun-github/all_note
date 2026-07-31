@@ -139,6 +139,17 @@ describe('Project detail v2', () => {
     expect(screen.getByRole('tab', { name: '学习路线' })).toBeVisible()
   })
 
+  it('exposes completion requirements in a normal project task detail', async () => {
+    const user = userEvent.setup()
+    renderDetail()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+
+    expect(screen.getByText('完成门槛')).toBeVisible()
+    expect(screen.getByText('0 / 0')).toBeVisible()
+    expect(screen.getByRole('button', { name: '添加必选项' })).toBeEnabled()
+  })
+
   it('starts a planning project through the lifecycle command', async () => {
     vi.mocked(taskHooks.useProject).mockReturnValue({
       data: { ...project, status: 'planning' },

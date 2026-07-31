@@ -166,4 +166,39 @@ describe('V2 task inbox organizer', () => {
       },
     })
   })
+
+  it('shows the shared gate and blocks direct completion until it is satisfied', () => {
+    vi.mocked(useTaskDefinitions).mockReturnValue({
+      data: [
+        {
+          id: 'task-1',
+          project_id: 'system-inbox',
+          title: '整理新需求',
+          description: '确认范围和下一步',
+          priority: 2,
+          sort_order: 0,
+          lifecycle_status: 'active',
+          revision: 5,
+          schedule_revision: 3,
+          completion_requirements: [
+            {
+              id: 'video-1',
+              kind: 'video',
+              title: '看完需求讲解',
+              completed: false,
+            },
+          ],
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useTaskDefinitions>)
+
+    renderInbox()
+
+    expect(screen.getByText('完成门槛')).toBeVisible()
+    expect(screen.getByText('0 / 1')).toBeVisible()
+    expect(screen.getByRole('button', { name: '还差 1 项必选' })).toBeDisabled()
+    expect(completeOccurrenceMock).not.toHaveBeenCalled()
+  })
 })

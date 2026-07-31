@@ -36,15 +36,25 @@ import {
   type RoadmapRootFlowNode,
   type RoadmapTaskFlowNode,
 } from '../components/roadmapMindMap/RoadmapMindMapNodes'
-import { RoadmapTaskInspector } from '../components/roadmapMindMap/RoadmapTaskInspector'
+import {
+  RoadmapTaskInspector,
+  type RoadmapExecutionStatusChange,
+} from '../components/roadmapMindMap/RoadmapTaskInspector'
 import { roadmapNodeProgress } from '../components/roadmapPlan/RoadmapStageRail'
 import { useRoadmapV2 } from '../hooks/useRoadmapV2'
 import {
+  useBlockOccurrenceMutation,
+  useCancelOccurrenceMutation,
   useCancelTaskMutation,
+  useCompleteOccurrenceMutation,
   useCreateTaskMutation,
   useOccurrences,
   useProject,
+  useReopenOccurrenceMutation,
+  useSkipOccurrenceMutation,
+  useStartOccurrenceMutation,
   useTaskDefinitions,
+  useUnblockOccurrenceMutation,
   useUpdateTaskDefinitionMutation,
 } from '../hooks/useTaskDomain'
 
@@ -114,6 +124,22 @@ function preferredOccurrence(occurrences: OccurrenceV2[]) {
         occurrence.execution_status === 'open'
     ) ?? occurrences[0]
   )
+}
+
+function occurrenceCommandVariables(task: TaskV2, occurrence: OccurrenceV2) {
+  return {
+    projectID: occurrence.project_id ?? task.project_id,
+    taskID: task.id,
+    occurrenceID: occurrence.id,
+    expectedRevisions: {
+      expected_task_revision: occurrence.task_revision ?? task.revision,
+      expected_schedule_revision:
+        occurrence.schedule_revision ?? task.schedule_revision,
+      expected_occurrence_revisions: {
+        [occurrence.id]: occurrence.revision,
+      },
+    },
+  }
 }
 
 function buildFlow(
@@ -221,6 +247,13 @@ export default function RoadmapMindMap() {
   const createTask = useCreateTaskMutation()
   const updateTask = useUpdateTaskDefinitionMutation()
   const cancelTask = useCancelTaskMutation()
+  const startOccurrence = useStartOccurrenceMutation()
+  const blockOccurrence = useBlockOccurrenceMutation()
+  const unblockOccurrence = useUnblockOccurrenceMutation()
+  const completeOccurrence = useCompleteOccurrenceMutation()
+  const skipOccurrence = useSkipOccurrenceMutation()
+  const cancelOccurrence = useCancelOccurrenceMutation()
+  const reopenOccurrence = useReopenOccurrenceMutation()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [selectedNodeID, setSelectedNodeID] = useState('')
   const [inspectorOpen, setInspectorOpen] = useState(false)
@@ -291,6 +324,14 @@ export default function RoadmapMindMap() {
   const selectedTaskOccurrences = selectedTask
     ? (occurrencesByTask.get(selectedTask.id) ?? [])
     : []
+  const statusCommandBusy =
+    startOccurrence.isPending ||
+    blockOccurrence.isPending ||
+    unblockOccurrence.isPending ||
+    completeOccurrence.isPending ||
+    skipOccurrence.isPending ||
+    cancelOccurrence.isPending ||
+    reopenOccurrence.isPending
   const progress = roadmapNode ? roadmapNodeProgress(roadmapNode) : 0
 
   const beginDraftTask = useCallback((afterTaskID?: string) => {
@@ -528,6 +569,62 @@ export default function RoadmapMindMap() {
       ...current,
       [taskID]: (current[taskID] ?? 0) + 1,
     }))
+  }
+
+  async function changeSelectedOccurrenceStatus(
+    change: RoadmapExecutionStatusChange
+  ) {
+    if (!selectedTask) return
+    const occurrence = preferredOccurrence(selectedTaskOccurrences)
+    if (!occurrence || occurrence.execution_status === change.status) return
+
+    const variables = occurrenceCommandVariables(selectedTask, occurrence)
+    setInteractionError('')
+    try {
+      if (change.status === 'active') {
+        if (occurrence.execution_status === 'open') {
+          await startOccurrence.mutateAsync(variables)
+          return
+        }
+        if (occurrence.execution_status === 'blocked') {
+          await unblockOccurrence.mutateAsync(variables)
+          return
+        }
+      }
+      if (
+        change.status === 'blocked' &&
+        occurrence.execution_status === 'active'
+      ) {
+        await blockOccurrence.mutateAsync({
+          ...variables,
+          blockedReason: change.blockedReason ?? '',
+          nextAction: change.nextAction ?? '',
+        })
+        return
+      }
+      if (change.status === 'done') {
+        await completeOccurrence.mutateAsync(variables)
+        return
+      }
+      if (change.status === 'skipped') {
+        await skipOccurrence.mutateAsync(variables)
+        return
+      }
+      if (change.status === 'cancelled') {
+        await cancelOccurrence.mutateAsync(variables)
+        return
+      }
+      if (change.status === 'open') {
+        await reopenOccurrence.mutateAsync(variables)
+        return
+      }
+      throw new Error('当前状态不能执行这个操作。')
+    } catch (caught) {
+      setInteractionError(
+        caught instanceof Error ? caught.message : '状态更新失败，请稍后重试。'
+      )
+      throw caught
+    }
   }
 
   async function confirmCancelTask() {
@@ -837,6 +934,18 @@ export default function RoadmapMindMap() {
             onRename={() => requestRename(selectedTask.id)}
             onAddSibling={() => beginDraftTask(selectedTask.id)}
             onCancel={() => setCancelTaskID(selectedTask.id)}
+            isCompleting={completeOccurrence.isPending}
+            isStatusChanging={statusCommandBusy}
+            onStatusChange={changeSelectedOccurrenceStatus}
+            onComplete={async () => {
+              try {
+                await changeSelectedOccurrenceStatus({
+                  status: 'done',
+                })
+              } catch {
+                // The shared status handler renders the visible error.
+              }
+            }}
           />
         ) : null}
       </div>

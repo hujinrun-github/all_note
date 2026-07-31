@@ -115,6 +115,31 @@ func TestOccurrenceServiceSingleCompleteReopenAndCancelUpdateTaskAtomically(t *t
 	})
 }
 
+func TestOccurrenceServiceCompleteRequiresEveryTaskRequirement(t *testing.T) {
+	current := occurrenceServiceAggregate(false, TaskLifecycleActive, occurrenceServiceOccurrence("target", ExecutionStatusOpen, false, 11))
+	writer, fencer, reader := occurrenceServiceHarness(current)
+	reader.state.Task = TaskRecord{
+		WorkspaceID: "workspace-1", ID: "task-1", Revision: 5,
+		CompletionRequirements: []TaskCompletionRequirement{
+			{ID: "article", Kind: TaskCompletionRequirementArticle, Title: "Read article", Completed: true},
+			{ID: "video", Kind: TaskCompletionRequirementVideo, Title: "Watch video", Completed: false},
+		},
+	}
+
+	result, err := NewOccurrenceService(fencer, reader).Execute(context.Background(), occurrenceServiceRequest(OccurrenceCommandComplete, 11))
+	if !errors.Is(err, ErrTaskCompletionRequirementsIncomplete) || writer.saveCalls != 0 || !result.IsZero() {
+		t.Fatalf("incomplete gate = err:%v saves:%d result:%#v", err, writer.saveCalls, result)
+	}
+
+	reader.state.Task.CompletionRequirements[1].Completed = true
+	if _, err := NewOccurrenceService(fencer, reader).Execute(context.Background(), occurrenceServiceRequest(OccurrenceCommandComplete, 11)); err != nil {
+		t.Fatalf("complete after satisfying gate: %v", err)
+	}
+	if writer.saveCalls != 1 {
+		t.Fatalf("completed gate save calls = %d, want 1", writer.saveCalls)
+	}
+}
+
 func TestOccurrenceServiceRecurringReopenReactivatesNaturallyCompletedTask(t *testing.T) {
 	current := occurrenceServiceAggregate(true, TaskLifecycleCompleted,
 		occurrenceServiceOccurrence("target", ExecutionStatusDone, true, 11),

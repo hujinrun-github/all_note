@@ -63,6 +63,41 @@ func TestNormalizeTaskAttachmentLinks(t *testing.T) {
 	}
 }
 
+func TestNormalizeTaskCompletionRequirements(t *testing.T) {
+	got, err := NormalizeTaskCompletionRequirements([]TaskCompletionRequirement{{
+		ID: " article-1 ", Kind: TaskCompletionRequirementArticle, Title: " 读完并发编程实战 ",
+		URL: " https://example.com/article ", Completed: true,
+	}})
+	if err != nil {
+		t.Fatalf("NormalizeTaskCompletionRequirements() unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "article-1" || got[0].Title != "读完并发编程实战" ||
+		got[0].URL != "https://example.com/article" || !got[0].Completed {
+		t.Fatalf("normalized requirements = %#v", got)
+	}
+	if !TaskCompletionRequirementsSatisfied(got) {
+		t.Fatal("completed requirements should satisfy the completion gate")
+	}
+	got[0].Completed = false
+	if TaskCompletionRequirementsSatisfied(got) {
+		t.Fatal("incomplete requirement should keep the completion gate locked")
+	}
+
+	for _, requirements := range [][]TaskCompletionRequirement{
+		{{ID: "", Kind: TaskCompletionRequirementArticle, Title: "Article"}},
+		{{ID: "one", Kind: "unknown", Title: "Unknown"}},
+		{{ID: "one", Kind: TaskCompletionRequirementVideo, Title: "Video", URL: "file:///tmp/video.mp4"}},
+		{
+			{ID: "duplicate", Kind: TaskCompletionRequirementCheck, Title: "First"},
+			{ID: "duplicate", Kind: TaskCompletionRequirementCheck, Title: "Second"},
+		},
+	} {
+		if _, err := NormalizeTaskCompletionRequirements(requirements); !errors.Is(err, ErrInvalidTaskCompletionRequirements) {
+			t.Fatalf("requirements %#v error = %v, want %v", requirements, err, ErrInvalidTaskCompletionRequirements)
+		}
+	}
+}
+
 func TestValidateTaskAggregateSnapshotAllowsRecurringRuleBeforeInitialWindow(t *testing.T) {
 	snapshot := TaskAggregateSnapshot{
 		Task: TaskRecord{
