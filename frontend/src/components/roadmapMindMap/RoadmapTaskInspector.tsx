@@ -24,6 +24,7 @@ import {
   TaskCompletionGate,
   taskCompletionProgress,
 } from '../taskDomain/TaskCompletionGate'
+import { TaskRetentionActions } from '../taskDomain/TaskRetentionActions'
 import { useUpdateTaskDefinitionMutation } from '../../hooks/useTaskDomain'
 
 const statusLabels: Record<ExecutionStatus, string> = {
@@ -89,10 +90,13 @@ export function RoadmapTaskInspector({
   onRename,
   onAddSibling,
   onCancel,
+  onArchive,
+  onDelete,
   onComplete,
   onStatusChange,
   isCompleting = false,
   isStatusChanging = false,
+  isRetentionChanging = false,
 }: {
   task?: TaskV2
   status?: ExecutionStatus
@@ -102,10 +106,13 @@ export function RoadmapTaskInspector({
   onRename?: () => void
   onAddSibling?: () => void
   onCancel?: () => void
+  onArchive?: () => Promise<unknown> | void
+  onDelete?: () => Promise<unknown> | void
   onComplete?: () => Promise<void>
   onStatusChange?: (change: RoadmapExecutionStatusChange) => Promise<void>
   isCompleting?: boolean
   isStatusChanging?: boolean
+  isRetentionChanging?: boolean
 }) {
   const updateTask = useUpdateTaskDefinitionMutation()
   const [title, setTitle] = useState('')
@@ -568,6 +575,14 @@ export function RoadmapTaskInspector({
             </div>
           ) : null}
         </section>
+
+        <TaskRetentionActions
+          taskTitle={task.title}
+          archived={task.lifecycle_status === 'archived'}
+          onArchive={onArchive}
+          onDelete={onDelete}
+          busy={isRetentionChanging}
+        />
 
         <div className="mindmap-inspector-actions">
           <button

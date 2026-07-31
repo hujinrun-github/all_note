@@ -176,6 +176,21 @@ func (writer trackedTaskDomainWriter) SaveTaskAggregate(ctx context.Context, wri
 	return nil
 }
 
+func (writer trackedTaskDomainWriter) DeleteTaskAggregate(ctx context.Context, deletion taskdomain.TaskAggregateDelete) error {
+	deleter, ok := writer.delegate.(taskdomain.TaskAggregateDeleter)
+	if !ok {
+		return taskdomain.ErrInvalidTaskCommand
+	}
+	if err := deleter.DeleteTaskAggregate(ctx, deletion); err != nil {
+		return err
+	}
+	writer.changes.markDeleted("task", deletion.TaskID, deletion.ExpectedRevisions.Task+1)
+	for occurrenceID, revision := range deletion.ExpectedRevisions.Occurrences {
+		writer.changes.markDeleted("occurrence", occurrenceID, revision+1)
+	}
+	return nil
+}
+
 func (writer trackedTaskDomainWriter) InstallScheduleVersion(ctx context.Context, install taskdomain.ScheduleVersionInstall) error {
 	if err := writer.delegate.InstallScheduleVersion(ctx, install); err != nil {
 		return err

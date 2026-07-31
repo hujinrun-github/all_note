@@ -102,6 +102,9 @@ describe('Project detail v2', () => {
     vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.useArchiveTaskMutation>
     )
+    vi.mocked(taskHooks.useDeleteTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useDeleteTaskMutation>
+    )
     vi.mocked(roadmapHooks.useRoadmapV2).mockReturnValue({
       data: null,
       isLoading: false,

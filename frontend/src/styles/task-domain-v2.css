@@ -772,6 +772,140 @@
   height: 13px;
 }
 
+.td-retention-actions {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--td-line);
+  padding-top: 16px;
+}
+
+.td-retention-actions > header div {
+  display: grid;
+  gap: 3px;
+}
+
+.td-retention-actions > header strong {
+  color: var(--td-ink);
+  font-size: 12px;
+}
+
+.td-retention-actions > header span {
+  color: var(--td-muted);
+  font-size: 10px;
+}
+
+.td-retention-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.td-retention-buttons:has(> button:only-child) {
+  grid-template-columns: 1fr;
+}
+
+.td-retention-buttons button,
+.td-retention-confirm button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--td-line-strong);
+  border-radius: 7px;
+  padding: 0 11px;
+  background: var(--td-surface);
+  color: var(--td-muted);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.td-retention-buttons button.is-danger,
+.td-retention-confirm button.is-danger {
+  border-color: #d8a39c;
+  color: #a54236;
+}
+
+.td-retention-buttons svg,
+.td-retention-confirm button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.td-retention-confirm {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid #dfc3aa;
+  border-radius: 9px;
+  padding: 13px;
+  background: #fffaf4;
+  box-shadow: 0 12px 30px rgb(82 52 27 / 10%);
+}
+
+.td-retention-confirm.is-delete {
+  border-color: #e0aaa2;
+  background: #fff8f6;
+}
+
+.td-retention-confirm > svg {
+  width: 20px;
+  height: 20px;
+  color: var(--td-copper);
+}
+
+.td-retention-confirm.is-delete > svg {
+  color: #b34d41;
+}
+
+.td-retention-confirm > div {
+  display: grid;
+  gap: 8px;
+}
+
+.td-retention-confirm strong {
+  padding-right: 22px;
+  color: var(--td-ink);
+  font-size: 12px;
+}
+
+.td-retention-confirm p {
+  margin: 0;
+  color: var(--td-muted);
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+.td-retention-confirm > div > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.td-retention-confirm button.is-primary {
+  border-color: var(--td-copper);
+  background: var(--td-copper);
+  color: white;
+}
+
+.td-retention-confirm button.is-danger {
+  border-color: #ad493e;
+  background: #ad493e;
+  color: white;
+}
+
+.td-retention-confirm .td-retention-confirm-close {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  min-height: 26px;
+  width: 26px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
 .td-block-form,
 .td-reschedule-form {
   display: grid;

@@ -83,6 +83,9 @@ func (s taskServiceDelegateStub) PatchTask(context.Context, taskdomain.PatchTask
 func (s taskServiceDelegateStub) ExecuteLifecycleCommand(context.Context, taskdomain.LifecycleCommandRequest) (taskdomain.TaskCommandResult, error) {
 	return taskdomain.TaskCommandResult{}, s.err
 }
+func (s taskServiceDelegateStub) DeleteTask(context.Context, taskdomain.DeleteTaskRequest) (taskdomain.TaskCommandResult, error) {
+	return taskdomain.TaskCommandResult{}, s.err
+}
 
 type scheduleServiceDelegateStub struct{ err error }
 

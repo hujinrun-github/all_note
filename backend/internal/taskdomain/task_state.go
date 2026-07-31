@@ -32,10 +32,12 @@ func RestoreTask(current TaskLifecycleStatus) (TaskLifecycleStatus, error) {
 }
 
 func ArchiveTask(current TaskLifecycleStatus) (TaskLifecycleStatus, error) {
-	if current != TaskLifecycleCompleted && current != TaskLifecycleCancelled {
+	switch current {
+	case TaskLifecycleDraft, TaskLifecycleActive, TaskLifecyclePaused, TaskLifecycleCompleted, TaskLifecycleCancelled:
+		return TaskLifecycleArchived, nil
+	default:
 		return current, ErrInvalidTaskTransition
 	}
-	return TaskLifecycleArchived, nil
 }
 
 func PatchTaskDefinition(task TaskDefinition, patch TaskPatch) (TaskDefinition, error) {

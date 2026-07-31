@@ -524,6 +524,10 @@ func (routerTaskRuntimeServices) ExecuteLifecycleCommand(context.Context, taskdo
 	return taskapp.TaskCommandOutcome{}, nil
 }
 
+func (routerTaskRuntimeServices) DeleteTask(_ context.Context, request taskdomain.DeleteTaskRequest) (taskapp.TaskCommandOutcome, error) {
+	return taskapp.TaskCommandOutcome{TaskRevision: request.Expected.Task, ScheduleRevision: request.Expected.Schedule}, nil
+}
+
 func (routerTaskRuntimeServices) Execute(context.Context, taskdomain.OccurrenceCommandRequest) (taskapp.OccurrenceCommandOutcome, error) {
 	return taskapp.OccurrenceCommandOutcome{}, nil
 }

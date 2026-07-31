@@ -20,6 +20,7 @@ type taskServiceDelegate interface {
 	CreateTask(context.Context, taskdomain.CreateTaskRequest) (taskdomain.TaskCommandResult, error)
 	PatchTask(context.Context, taskdomain.PatchTaskRequest) (taskdomain.TaskCommandResult, error)
 	ExecuteLifecycleCommand(context.Context, taskdomain.LifecycleCommandRequest) (taskdomain.TaskCommandResult, error)
+	DeleteTask(context.Context, taskdomain.DeleteTaskRequest) (taskdomain.TaskCommandResult, error)
 }
 
 type taskServiceAdapter struct {
@@ -54,6 +55,11 @@ func (a taskServiceAdapter) PatchTask(ctx context.Context, request taskdomain.Pa
 
 func (a taskServiceAdapter) ExecuteLifecycleCommand(ctx context.Context, request taskdomain.LifecycleCommandRequest) (taskapp.TaskCommandOutcome, error) {
 	result, err := a.delegate.ExecuteLifecycleCommand(ctx, request)
+	return taskCommandOutcome(result), err
+}
+
+func (a taskServiceAdapter) DeleteTask(ctx context.Context, request taskdomain.DeleteTaskRequest) (taskapp.TaskCommandOutcome, error) {
+	result, err := a.delegate.DeleteTask(ctx, request)
 	return taskCommandOutcome(result), err
 }
 

@@ -201,6 +201,12 @@ describe('RoadmapMindMap', () => {
       mutateAsync: vi.fn().mockResolvedValue({}),
       isPending: false,
     } as never)
+    vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue(
+      idleMutation() as never
+    )
+    vi.mocked(taskHooks.useDeleteTaskMutation).mockReturnValue(
+      idleMutation() as never
+    )
     vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
       mutateAsync: vi.fn().mockResolvedValue({}),
       isPending: false,

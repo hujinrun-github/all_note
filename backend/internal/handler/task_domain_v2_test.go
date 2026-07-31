@@ -49,6 +49,7 @@ func TestRegisterTaskDomainV2RoutesDispatchesCommandsWithAuthenticatedScope(t *t
 		{"cancel task", http.MethodPost, "/api/tasks/task-1/cancel", revisionsJSON("occurrence-1"), http.StatusOK, "task-cancel"},
 		{"restore task", http.MethodPost, "/api/tasks/task-1/restore", revisionsJSON("occurrence-1"), http.StatusOK, "task-restore"},
 		{"archive task", http.MethodPost, "/api/tasks/task-1/archive", revisionsJSON("occurrence-1"), http.StatusOK, "task-archive"},
+		{"delete task", http.MethodDelete, "/api/tasks/task-1", revisionsJSON("occurrence-1"), http.StatusOK, "delete-task"},
 		{"start occurrence", http.MethodPost, "/api/task-occurrences/occurrence-1/start", revisionsJSON("occurrence-1"), http.StatusOK, "occurrence-start"},
 		{"block occurrence", http.MethodPost, "/api/task-occurrences/occurrence-1/block", strings.TrimSuffix(revisionsJSON("occurrence-1"), "}") + `,"blocked_reason":"waiting","next_action":"ask"}`, http.StatusOK, "occurrence-block"},
 		{"unblock occurrence", http.MethodPost, "/api/task-occurrences/occurrence-1/unblock", revisionsJSON("occurrence-1"), http.StatusOK, "occurrence-unblock"},
@@ -433,6 +434,7 @@ type taskDomainV2ApplicationFake struct {
 	listRequest   taskapp.OccurrenceQueryRequest
 	patchRequest  taskapp.PatchTaskRequest
 	createRequest taskapp.CreateTaskRequest
+	deleteRequest taskapp.DeleteTaskRequest
 }
 
 func (fake *taskDomainV2ApplicationFake) reset() {
@@ -577,6 +579,14 @@ func (fake *taskDomainV2ApplicationFake) ExecuteTaskLifecycle(_ context.Context,
 		return taskapp.TaskCommandOutcome{}, err
 	}
 	return taskapp.TaskCommandOutcome{TaskRevision: request.Expected.Task + 1, ScheduleRevision: request.Expected.Schedule, LifecycleStatus: taskdomain.TaskLifecycleActive}, nil
+}
+
+func (fake *taskDomainV2ApplicationFake) DeleteTask(_ context.Context, request taskapp.DeleteTaskRequest) (taskapp.TaskCommandOutcome, error) {
+	if err := fake.record("delete-task", request.WorkspaceID, request.ActorID); err != nil {
+		return taskapp.TaskCommandOutcome{}, err
+	}
+	fake.deleteRequest = request
+	return taskapp.TaskCommandOutcome{TaskRevision: request.Expected.Task, ScheduleRevision: request.Expected.Schedule}, nil
 }
 
 func (fake *taskDomainV2ApplicationFake) ExecuteOccurrenceByID(_ context.Context, request taskapp.OccurrenceByIDRequest) (taskapp.OccurrenceCommandOutcome, error) {

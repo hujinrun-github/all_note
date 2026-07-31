@@ -90,6 +90,32 @@ func TestCancelTaskStopsGenerationAndCancelsOnlyNonTerminalOccurrences(t *testin
 	}
 }
 
+func TestArchiveTaskStopsGenerationAndCancelsOnlyNonTerminalOccurrences(t *testing.T) {
+	t.Parallel()
+
+	now := aggregateTransition("fixture").At
+	current := recurringTaskAggregate(
+		occurrenceWithStatus("open", ExecutionStatusOpen, now, 10),
+		occurrenceWithStatus("done", ExecutionStatusDone, now, 11),
+	)
+	updated, logs, err := ArchiveTaskAggregate(
+		current,
+		AggregateExpectedRevisions{Task: 20, Occurrences: map[string]int64{"open": 10}},
+		map[string]ExecutionTransition{"open": aggregateTransition("archive-open")},
+	)
+	if err != nil {
+		t.Fatalf("ArchiveTaskAggregate() error = %v", err)
+	}
+	if updated.LifecycleStatus != TaskLifecycleArchived || updated.Revision != 21 || updated.GenerationEnabled {
+		t.Fatalf("archived task = %#v", updated)
+	}
+	assertOccurrenceState(t, updated, "open", ExecutionStatusCancelled, 11)
+	assertOccurrenceState(t, updated, "done", ExecutionStatusDone, 11)
+	if len(logs) != 1 || logs[0].ToStatus() != ExecutionStatusCancelled {
+		t.Fatalf("archive logs = %#v, want one cancellation", logs)
+	}
+}
+
 func TestPauseAndPauseWithFutureCancellationAreDifferentCommands(t *testing.T) {
 	t.Parallel()
 

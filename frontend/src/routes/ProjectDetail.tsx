@@ -35,6 +35,7 @@ import {
   useCompleteProjectMutation,
   useCreateTaskMutation,
   useDeleteProjectMutation,
+  useDeleteTaskMutation,
   useOccurrences,
   usePauseTaskMutation,
   useProject,
@@ -103,6 +104,7 @@ export default function ProjectDetail() {
   const resumeTask = useResumeTaskMutation()
   const restoreTask = useRestoreTaskMutation()
   const archiveTask = useArchiveTaskMutation()
+  const deleteTask = useDeleteTaskMutation()
 
   const [title, setTitle] = useState('')
   const [creating, setCreating] = useState(false)
@@ -214,6 +216,7 @@ export default function ProjectDetail() {
     cancelTask,
     restoreTask,
     archiveTask,
+    deleteTask,
   ].some((mutation) => mutation.isPending)
 
   function updateSearchParams(update: Record<string, string | null>) {
@@ -879,9 +882,14 @@ export default function ProjectDetail() {
               )
             }
             onArchive={() =>
-              handleTaskCommand(() =>
-                archiveTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
+              archiveTask
+                .mutateAsync(taskCommandVariables(selectedTask))
+                .then(() => updateSearchParams({ task_id: null }))
+            }
+            onDelete={() =>
+              deleteTask
+                .mutateAsync(taskCommandVariables(selectedTask))
+                .then(() => updateSearchParams({ task_id: null }))
             }
           />
         ) : null}

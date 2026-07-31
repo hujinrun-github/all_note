@@ -38,6 +38,7 @@ type TaskService interface {
 	CreateTask(context.Context, taskdomain.CreateTaskRequest) (TaskCommandOutcome, error)
 	PatchTask(context.Context, taskdomain.PatchTaskRequest) (TaskCommandOutcome, error)
 	ExecuteLifecycleCommand(context.Context, taskdomain.LifecycleCommandRequest) (TaskCommandOutcome, error)
+	DeleteTask(context.Context, taskdomain.DeleteTaskRequest) (TaskCommandOutcome, error)
 }
 
 type OccurrenceService interface {
@@ -584,6 +585,13 @@ type TaskLifecycleRequest struct {
 	Expected    taskdomain.LifecycleExpectedRevisions
 }
 
+type DeleteTaskRequest struct {
+	WorkspaceID string
+	ActorID     string
+	TaskID      string
+	Expected    taskdomain.LifecycleExpectedRevisions
+}
+
 type PatchTaskRequest struct {
 	WorkspaceID              string
 	ActorID                  string
@@ -673,6 +681,26 @@ func (facade *Facade) ExecuteTaskLifecycle(ctx context.Context, request TaskLife
 		WorkspaceID: request.WorkspaceID, TaskID: request.TaskID, Command: request.Command,
 		ExpectedRuntimeEpoch: runtime.Epoch, Expected: cloneLifecycleExpected(request.Expected),
 		CommandID: commandID, ActorID: request.ActorID, At: now,
+	})
+	if err != nil {
+		return TaskCommandOutcome{}, err
+	}
+	outcome.OccurrenceRevisions = cloneRevisions(outcome.OccurrenceRevisions)
+	outcome.CommandID = commandID
+	return outcome, nil
+}
+
+func (facade *Facade) DeleteTask(ctx context.Context, request DeleteTaskRequest) (TaskCommandOutcome, error) {
+	if !validWorkspaceActorEntity(request.WorkspaceID, request.ActorID, request.TaskID) {
+		return TaskCommandOutcome{}, ErrInvalidRequest
+	}
+	runtime, now, commandID, err := facade.resolveAudit(ctx, request.WorkspaceID)
+	if err != nil {
+		return TaskCommandOutcome{}, err
+	}
+	outcome, err := runtime.Tasks.DeleteTask(ctx, taskdomain.DeleteTaskRequest{
+		WorkspaceID: request.WorkspaceID, TaskID: request.TaskID, ExpectedRuntimeEpoch: runtime.Epoch,
+		Expected: cloneLifecycleExpected(request.Expected), CommandID: commandID, ActorID: request.ActorID, At: now,
 	})
 	if err != nil {
 		return TaskCommandOutcome{}, err
@@ -1391,6 +1419,17 @@ func (adapter DomainTaskServiceAdapter) ExecuteLifecycleCommand(ctx context.Cont
 		return TaskCommandOutcome{}, ErrInvalidRuntime
 	}
 	result, err := adapter.Service.ExecuteLifecycleCommand(ctx, request)
+	if err != nil {
+		return TaskCommandOutcome{}, err
+	}
+	return taskOutcome(result), nil
+}
+
+func (adapter DomainTaskServiceAdapter) DeleteTask(ctx context.Context, request taskdomain.DeleteTaskRequest) (TaskCommandOutcome, error) {
+	if adapter.Service == nil {
+		return TaskCommandOutcome{}, ErrInvalidRuntime
+	}
+	result, err := adapter.Service.DeleteTask(ctx, request)
 	if err != nil {
 		return TaskCommandOutcome{}, err
 	}

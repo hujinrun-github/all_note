@@ -53,6 +53,7 @@ func TestTaskServiceLifecycleCommandsUsePureTransitionsAndAtomicSave(t *testing.
 		{name: "restore", command: TaskCommandRestore, current: TaskLifecycleCancelled, want: TaskLifecycleActive, wantGeneration: true},
 		{name: "archive completed", command: TaskCommandArchive, current: TaskLifecycleCompleted, want: TaskLifecycleArchived},
 		{name: "archive cancelled", command: TaskCommandArchive, current: TaskLifecycleCancelled, want: TaskLifecycleArchived},
+		{name: "archive active", command: TaskCommandArchive, current: TaskLifecycleActive, generationEnabled: true, want: TaskLifecycleArchived},
 	}
 
 	for _, tt := range tests {
@@ -138,6 +139,71 @@ func TestTaskServiceCancelPersistsTaskOccurrencesAndLogsAtomically(t *testing.T)
 		t.Fatalf("OccurrenceRevisions() leaked mutable state: %d", got)
 	}
 	assertServiceAudit(t, result, TaskCommandCancel, "command-1", "task-1")
+}
+
+func TestTaskServiceArchivePersistsTaskOccurrencesAndLogsAtomically(t *testing.T) {
+	now := serviceCommandTime()
+	current := serviceTaskAggregate(TaskLifecycleActive)
+	current.Occurrences = []Occurrence{
+		serviceOccurrence("open", ExecutionStatusOpen, 10, now),
+		serviceOccurrence("done", ExecutionStatusDone, 11, now),
+	}
+	writer := &serviceWriter{}
+	fencer := &serviceFencer{writer: writer}
+	reader := &serviceStateReader{fencer: fencer, state: TaskAggregateState{Aggregate: current, ScheduleRevision: 7}}
+	service := NewTaskService(fencer, reader)
+	request := serviceLifecycleRequest(TaskCommandArchive)
+	request.Expected.Occurrences = map[string]int64{"open": 10, "done": 11}
+
+	result, err := service.ExecuteLifecycleCommand(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ExecuteLifecycleCommand(archive) unexpected error: %v", err)
+	}
+	write := writer.saved
+	if write.Aggregate.LifecycleStatus != TaskLifecycleArchived || write.Aggregate.GenerationEnabled || len(write.ExecutionLogs) != 1 {
+		t.Fatalf("archive atomic write = %#v", write)
+	}
+	assertServiceOccurrenceStatus(t, write.Aggregate, "open", ExecutionStatusCancelled, 11)
+	assertServiceOccurrenceStatus(t, write.Aggregate, "done", ExecutionStatusDone, 11)
+	if !reflect.DeepEqual(write.ExpectedRevisions.Occurrences, map[string]int64{"open": 10}) {
+		t.Fatalf("archive affected revisions = %#v", write.ExpectedRevisions.Occurrences)
+	}
+	assertServiceAudit(t, result, TaskCommandArchive, "command-1", "task-1")
+}
+
+func TestTaskServiceDeleteValidatesWholeAggregateAndUsesDeleteCapability(t *testing.T) {
+	now := serviceCommandTime()
+	current := serviceTaskAggregate(TaskLifecyclePaused)
+	current.Occurrences = []Occurrence{
+		serviceOccurrence("open", ExecutionStatusOpen, 10, now),
+		serviceOccurrence("done", ExecutionStatusDone, 11, now),
+	}
+	writer := &serviceWriter{}
+	fencer := &serviceFencer{writer: writer}
+	reader := &serviceStateReader{fencer: fencer, state: TaskAggregateState{
+		Task:      TaskRecord{WorkspaceID: "workspace-1", ID: "task-1", LifecycleStatus: TaskLifecyclePaused, Revision: 5},
+		Aggregate: current, ScheduleRevision: 7,
+	}}
+	service := NewTaskService(fencer, reader)
+	request := DeleteTaskRequest{
+		WorkspaceID: "workspace-1", TaskID: "task-1", ExpectedRuntimeEpoch: 9,
+		Expected:  LifecycleExpectedRevisions{Task: 5, Schedule: 7, Occurrences: map[string]int64{"open": 10, "done": 11}},
+		CommandID: "command-delete", ActorID: "user-1", At: now,
+	}
+
+	result, err := service.DeleteTask(context.Background(), request)
+	if err != nil {
+		t.Fatalf("DeleteTask() unexpected error: %v", err)
+	}
+	if writer.deleteCalls != 1 || !reflect.DeepEqual(writer.deleted.ExpectedRevisions.Occurrences, request.Expected.Occurrences) {
+		t.Fatalf("delete writer call = %#v", writer.deleted)
+	}
+	assertServiceAudit(t, result, TaskCommandDelete, "command-delete", "task-1")
+
+	request.Expected.Occurrences = map[string]int64{"open": 10}
+	if _, err := service.DeleteTask(context.Background(), request); !errors.Is(err, ErrOccurrenceRevisionConflict) {
+		t.Fatalf("DeleteTask() missing occurrence error = %v", err)
+	}
 }
 
 func TestTaskServiceRevisionAndEpochConflictsAreDistinctAndNeverSave(t *testing.T) {
@@ -488,6 +554,9 @@ type serviceWriter struct {
 	saveCalls   int
 	createError error
 	saveError   error
+	deleted     TaskAggregateDelete
+	deleteCalls int
+	deleteError error
 }
 
 func (w *serviceWriter) EnsureSystemProjects(context.Context) error         { return nil }
@@ -507,4 +576,10 @@ func (w *serviceWriter) SaveTaskAggregate(_ context.Context, write TaskAggregate
 	w.saveCalls++
 	w.saved = write
 	return w.saveError
+}
+
+func (w *serviceWriter) DeleteTaskAggregate(_ context.Context, deletion TaskAggregateDelete) error {
+	w.deleteCalls++
+	w.deleted = deletion
+	return w.deleteError
 }
