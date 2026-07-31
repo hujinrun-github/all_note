@@ -2,15 +2,21 @@ import {
   ArrowLeft,
   CheckCircle2,
   Circle,
+  CircleHelp,
   GitBranch,
   LayoutTemplate,
+  Maximize2,
+  Minus,
+  PanelRight,
+  Pencil,
   Plus,
   ShieldAlert,
   Timer,
+  Trash2,
+  X,
 } from 'lucide-react'
 import {
   Background,
-  Controls,
   MiniMap,
   ReactFlow,
   type Edge,
@@ -19,15 +25,11 @@ import {
   useEdgesState,
   useNodesState,
 } from '@xyflow/react'
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import '@xyflow/react/dist/style.css'
 
-import type {
-  ExecutionStatus,
-  OccurrenceV2,
-  TaskV2,
-} from '../api/taskDomain'
+import type { ExecutionStatus, OccurrenceV2, TaskV2 } from '../api/taskDomain'
 import {
   RoadmapRootNodeView,
   RoadmapTaskNodeView,
@@ -38,14 +40,33 @@ import { RoadmapTaskInspector } from '../components/roadmapMindMap/RoadmapTaskIn
 import { roadmapNodeProgress } from '../components/roadmapPlan/RoadmapStageRail'
 import { useRoadmapV2 } from '../hooks/useRoadmapV2'
 import {
+  useCancelTaskMutation,
   useCreateTaskMutation,
   useOccurrences,
   useProject,
   useTaskDefinitions,
+  useUpdateTaskDefinitionMutation,
 } from '../hooks/useTaskDomain'
 
 type MindMapNode = RoadmapRootFlowNode | RoadmapTaskFlowNode
 type StatusFilter = 'all' | 'open' | 'active' | 'done' | 'blocked'
+
+interface FlowCallbacks {
+  onAddTask: () => void
+  onToggleCollapse: () => void
+  onAddSibling: (taskID: string) => void
+  onCancelDraft: () => void
+  onCreateDraft: (title: string) => Promise<void>
+  onRename: (taskID: string, title: string) => Promise<void>
+}
+
+interface FlowOptions extends FlowCallbacks {
+  collapsed: boolean
+  draftAfterTaskID?: string
+  editRequests: Record<string, number>
+  selectedNodeID: string
+  totalTaskCount: number
+}
 
 const nodeTypes: NodeTypes = {
   roadmapRoot: RoadmapRootNodeView,
@@ -78,10 +99,7 @@ function resolveTaskStatus(
   if (statuses.length > 0 && statuses.every((status) => status === 'done')) {
     return 'done'
   }
-  if (
-    statuses.length > 0 &&
-    statuses.every((status) => status === 'skipped')
-  ) {
+  if (statuses.length > 0 && statuses.every((status) => status === 'skipped')) {
     return 'skipped'
   }
   return 'open'
@@ -103,50 +121,86 @@ function buildFlow(
   nodeTitle: string,
   progress: number,
   tasks: TaskV2[],
-  statusByTask: Map<string, ExecutionStatus>
+  statusByTask: Map<string, ExecutionStatus>,
+  options: FlowOptions
 ): { nodes: MindMapNode[]; edges: Edge[] } {
-  const rowGap = 108
-  const taskColumnX = 430
-  const rootY = Math.max(28, ((tasks.length - 1) * rowGap) / 2)
+  const rootID = `roadmap-root-${nodeID}`
+  const draftID = 'mindmap-draft-task'
+  const taskEntries: Array<{ task?: TaskV2; id: string }> = tasks.map(
+    (task) => ({ task, id: task.id })
+  )
+
+  if (options.draftAfterTaskID !== undefined) {
+    const selectedIndex = taskEntries.findIndex(
+      (entry) => entry.id === options.draftAfterTaskID
+    )
+    taskEntries.splice(
+      selectedIndex >= 0 ? selectedIndex + 1 : taskEntries.length,
+      0,
+      {
+        id: draftID,
+      }
+    )
+  }
+
+  const visibleEntries = options.collapsed ? [] : taskEntries
+  const rowGap = 98
+  const taskColumnX = 470
+  const rootY = Math.max(38, ((visibleEntries.length - 1) * rowGap) / 2)
   const nodes: MindMapNode[] = [
     {
-      id: `roadmap-root-${nodeID}`,
+      id: rootID,
       type: 'roadmapRoot',
-      position: { x: 48, y: rootY },
+      position: { x: 54, y: rootY },
+      selected: options.selectedNodeID === rootID,
       data: {
         title: nodeTitle,
-        taskCount: tasks.length,
+        taskCount: options.totalTaskCount,
         progress,
+        collapsed: options.collapsed,
+        onAddTask: options.onAddTask,
+        onToggleCollapse: options.onToggleCollapse,
       },
-      draggable: false,
     },
-    ...tasks.map(
-      (task, index): RoadmapTaskFlowNode => ({
-        id: task.id,
+    ...visibleEntries.map((entry, index): RoadmapTaskFlowNode => {
+      const task = entry.task
+      return {
+        id: entry.id,
         type: 'roadmapTask',
         position: { x: taskColumnX, y: index * rowGap },
+        selected: options.selectedNodeID === entry.id,
         data: {
-          sequence: index + 1,
-          title: task.title,
-          priority: task.priority,
-          status: statusByTask.get(task.id) ?? 'open',
+          taskID: task?.id ?? draftID,
+          sequence: task
+            ? tasks.findIndex((candidate) => candidate.id === task.id) + 1
+            : tasks.length + 1,
+          title: task?.title ?? '',
+          priority: task?.priority ?? 0,
+          status: task ? (statusByTask.get(task.id) ?? 'open') : 'open',
+          editRequest: task ? (options.editRequests[task.id] ?? 0) : 0,
+          isDraft: task === undefined,
+          onAddSibling: options.onAddSibling,
+          onCancelDraft: options.onCancelDraft,
+          onCreateDraft: options.onCreateDraft,
+          onRename: options.onRename,
         },
-      })
-    ),
+      }
+    }),
   ]
-  const edges = tasks.map(
-    (task): Edge => ({
-      id: `roadmap-task-edge-${task.id}`,
-      source: `roadmap-root-${nodeID}`,
-      target: task.id,
+  const edges = visibleEntries.map(
+    (entry): Edge => ({
+      id: `roadmap-task-edge-${entry.id}`,
+      source: rootID,
+      target: entry.id,
       type: 'smoothstep',
+      animated: entry.id === draftID,
       style: {
         stroke:
-          statusByTask.get(task.id) === 'done'
-            ? '#6b9b37'
-            : statusByTask.get(task.id) === 'blocked'
-              ? '#d4a017'
-              : '#9b7658',
+          entry.task && statusByTask.get(entry.task.id) === 'done'
+            ? '#6f8f4b'
+            : entry.task && statusByTask.get(entry.task.id) === 'blocked'
+              ? '#c79637'
+              : '#ad8b6d',
         strokeWidth: 1.6,
       },
     })
@@ -156,6 +210,7 @@ function buildFlow(
 
 export default function RoadmapMindMap() {
   const { projectID = '', roadmapNodeID = '' } = useParams()
+  const rootNodeID = `roadmap-root-${roadmapNodeID}`
   const project = useProject(projectID)
   const roadmap = useRoadmapV2(projectID)
   const tasks = useTaskDefinitions({ project_id: projectID })
@@ -164,17 +219,32 @@ export default function RoadmapMindMap() {
     { enabled: projectID !== '' }
   )
   const createTask = useCreateTaskMutation()
+  const updateTask = useUpdateTaskDefinitionMutation()
+  const cancelTask = useCancelTaskMutation()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [selectedTaskID, setSelectedTaskID] = useState('')
-  const [showCreateTask, setShowCreateTask] = useState(false)
-  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [selectedNodeID, setSelectedNodeID] = useState('')
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [branchCollapsed, setBranchCollapsed] = useState(false)
+  const [draftAfterTaskID, setDraftAfterTaskID] = useState<string>()
+  const [editRequests, setEditRequests] = useState<Record<string, number>>({})
+  const [contextMenu, setContextMenu] = useState<{
+    taskID: string
+    x: number
+    y: number
+  } | null>(null)
+  const [cancelTaskID, setCancelTaskID] = useState('')
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false)
+  const [interactionError, setInteractionError] = useState('')
+  const [zoomPercent, setZoomPercent] = useState(100)
   const [isCompactViewport, setIsCompactViewport] = useState(
     () =>
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(max-width: 820px)').matches
   )
-  const [flowInstance, setFlowInstance] =
-    useState<ReactFlowInstance<MindMapNode, Edge> | null>(null)
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<
+    MindMapNode,
+    Edge
+  > | null>(null)
 
   const roadmapNode = roadmap.data?.nodes.find(
     (candidate) => candidate.id === roadmapNodeID
@@ -184,8 +254,7 @@ export default function RoadmapMindMap() {
       [...(tasks.data ?? [])]
         .filter((task: TaskV2) => task.roadmap_node_id === roadmapNodeID)
         .sort(
-          (left: TaskV2, right: TaskV2) =>
-            left.sort_order - right.sort_order
+          (left: TaskV2, right: TaskV2) => left.sort_order - right.sort_order
         ),
     [roadmapNodeID, tasks.data]
   )
@@ -212,17 +281,95 @@ export default function RoadmapMindMap() {
     () =>
       statusFilter === 'all'
         ? nodeTasks
-        : nodeTasks.filter((task) => statusByTask.get(task.id) === statusFilter),
+        : nodeTasks.filter(
+            (task) => statusByTask.get(task.id) === statusFilter
+          ),
     [nodeTasks, statusByTask, statusFilter]
   )
-  const selectedTask =
-    visibleTasks.find((task) => task.id === selectedTaskID) ??
-    nodeTasks.find((task) => task.id === selectedTaskID) ??
-    visibleTasks[0]
+  const selectedTaskID = selectedNodeID !== rootNodeID ? selectedNodeID : ''
+  const selectedTask = nodeTasks.find((task) => task.id === selectedTaskID)
   const selectedTaskOccurrences = selectedTask
     ? (occurrencesByTask.get(selectedTask.id) ?? [])
     : []
   const progress = roadmapNode ? roadmapNodeProgress(roadmapNode) : 0
+
+  const beginDraftTask = useCallback((afterTaskID?: string) => {
+    setBranchCollapsed(false)
+    setDraftAfterTaskID(afterTaskID ?? '')
+    setSelectedNodeID('mindmap-draft-task')
+    setInspectorOpen(false)
+    setContextMenu(null)
+    setInteractionError('')
+  }, [])
+
+  const cancelDraftTask = useCallback(() => {
+    setDraftAfterTaskID(undefined)
+    setSelectedNodeID('')
+  }, [])
+
+  const createDraftTask = useCallback(
+    async (title: string) => {
+      setInteractionError('')
+      try {
+        const created = await createTask.mutateAsync({
+          project_id: projectID,
+          roadmap_node_id: roadmapNodeID,
+          title,
+          priority: 0,
+          sort_order: nodeTasks.length,
+          schedule: {
+            recurrence_type: 'none',
+            timing_type: 'unscheduled',
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          },
+        })
+        setDraftAfterTaskID(undefined)
+        setSelectedNodeID(created.task.id)
+        setInspectorOpen(true)
+      } catch (caught) {
+        setInteractionError(
+          caught instanceof Error
+            ? caught.message
+            : '创建任务失败，请稍后重试。'
+        )
+        throw caught
+      }
+    },
+    [createTask.mutateAsync, nodeTasks.length, projectID, roadmapNodeID]
+  )
+
+  const renameTask = useCallback(
+    async (taskID: string, title: string) => {
+      const task = nodeTasks.find((candidate) => candidate.id === taskID)
+      if (!task) return
+      setInteractionError('')
+      try {
+        await updateTask.mutateAsync({
+          projectID,
+          taskID,
+          input: {
+            title,
+            expected_task_revision: task.revision,
+            expected_schedule_revision: task.schedule_revision,
+          },
+        })
+      } catch (caught) {
+        setInteractionError(
+          caught instanceof Error ? caught.message : '重命名失败，请稍后重试。'
+        )
+        throw caught
+      }
+    },
+    [nodeTasks, projectID, updateTask.mutateAsync]
+  )
+
+  const toggleBranch = useCallback(() => {
+    setBranchCollapsed((current) => !current)
+    setDraftAfterTaskID(undefined)
+    setSelectedNodeID(rootNodeID)
+    setInspectorOpen(false)
+  }, [rootNodeID])
+
   const flowModel = useMemo(
     () =>
       roadmapNode
@@ -231,18 +378,56 @@ export default function RoadmapMindMap() {
             roadmapNode.title,
             progress,
             visibleTasks,
-            statusByTask
+            statusByTask,
+            {
+              collapsed: branchCollapsed,
+              draftAfterTaskID,
+              editRequests,
+              selectedNodeID,
+              totalTaskCount: nodeTasks.length,
+              onAddTask: () => beginDraftTask(),
+              onToggleCollapse: toggleBranch,
+              onAddSibling: beginDraftTask,
+              onCancelDraft: cancelDraftTask,
+              onCreateDraft: createDraftTask,
+              onRename: renameTask,
+            }
           )
         : { nodes: [], edges: [] },
-    [progress, roadmapNode, statusByTask, visibleTasks]
+    [
+      beginDraftTask,
+      branchCollapsed,
+      cancelDraftTask,
+      createDraftTask,
+      draftAfterTaskID,
+      editRequests,
+      nodeTasks.length,
+      progress,
+      renameTask,
+      roadmapNode,
+      selectedNodeID,
+      statusByTask,
+      toggleBranch,
+      visibleTasks,
+    ]
   )
-  const [flowNodes, setFlowNodes, onNodesChange] =
-    useNodesState<MindMapNode>(flowModel.nodes)
-  const [flowEdges, setFlowEdges, onEdgesChange] =
-    useEdgesState<Edge>(flowModel.edges)
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<MindMapNode>(
+    flowModel.nodes
+  )
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<Edge>(
+    flowModel.edges
+  )
 
   useEffect(() => {
-    setFlowNodes(flowModel.nodes)
+    setFlowNodes((currentNodes) => {
+      const positions = new Map(
+        currentNodes.map((node) => [node.id, node.position])
+      )
+      return flowModel.nodes.map((node) => ({
+        ...node,
+        position: positions.get(node.id) ?? node.position,
+      }))
+    })
     setFlowEdges(flowModel.edges)
   }, [flowModel.edges, flowModel.nodes, setFlowEdges, setFlowNodes])
 
@@ -253,6 +438,55 @@ export default function RoadmapMindMap() {
     media.addEventListener('change', updateViewportMode)
     return () => media.removeEventListener('change', updateViewportMode)
   }, [])
+
+  useEffect(() => {
+    function handleKeyboard(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null
+      if (
+        target?.closest('input, textarea, select, [contenteditable="true"]')
+      ) {
+        return
+      }
+      if (event.key === 'Escape') {
+        setContextMenu(null)
+        setShowShortcutHelp(false)
+        setInspectorOpen(false)
+        if (draftAfterTaskID !== undefined) cancelDraftTask()
+        return
+      }
+      if (cancelTaskID || draftAfterTaskID !== undefined) return
+      if (event.key === 'Tab' && selectedNodeID === rootNodeID) {
+        event.preventDefault()
+        beginDraftTask()
+      } else if (event.key === 'Enter' && selectedTask) {
+        event.preventDefault()
+        beginDraftTask(selectedTask.id)
+      } else if (event.key === ' ' && selectedTask) {
+        event.preventDefault()
+        setEditRequests((current) => ({
+          ...current,
+          [selectedTask.id]: (current[selectedTask.id] ?? 0) + 1,
+        }))
+      } else if ((event.metaKey || event.ctrlKey) && event.key === '/') {
+        event.preventDefault()
+        toggleBranch()
+      } else if (event.key === '?') {
+        setShowShortcutHelp((current) => !current)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyboard)
+    return () => window.removeEventListener('keydown', handleKeyboard)
+  }, [
+    beginDraftTask,
+    cancelDraftTask,
+    cancelTaskID,
+    draftAfterTaskID,
+    rootNodeID,
+    selectedNodeID,
+    selectedTask,
+    toggleBranch,
+  ])
 
   if (project.isLoading || roadmap.isLoading || tasks.isLoading) {
     return <p className="domain-empty">正在打开任务脑图…</p>
@@ -278,39 +512,58 @@ export default function RoadmapMindMap() {
     window.requestAnimationFrame(() => {
       if (isCompactViewport) {
         void flowInstance?.setViewport(
-          { x: -16, y: 18, zoom: 0.55 },
+          { x: -20, y: 28, zoom: 0.62 },
           { duration: 240 }
         )
         return
       }
-      void flowInstance?.fitView({ padding: 0.18, duration: 240 })
+      void flowInstance?.fitView({ padding: 0.2, duration: 240 })
     })
   }
 
-  async function addTask(event: FormEvent) {
-    event.preventDefault()
-    if (newTaskTitle.trim() === '') return
-    const created = await createTask.mutateAsync({
-      project_id: projectID,
-      roadmap_node_id: roadmapNodeID,
-      title: newTaskTitle.trim(),
-      priority: 0,
-      sort_order: nodeTasks.length,
-      schedule: {
-        recurrence_type: 'none',
-        timing_type: 'unscheduled',
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      },
-    })
-    setSelectedTaskID(created.task.id)
-    setNewTaskTitle('')
-    setShowCreateTask(false)
+  function requestRename(taskID: string) {
+    setContextMenu(null)
+    setSelectedNodeID(taskID)
+    setEditRequests((current) => ({
+      ...current,
+      [taskID]: (current[taskID] ?? 0) + 1,
+    }))
+  }
+
+  async function confirmCancelTask() {
+    const task = nodeTasks.find((candidate) => candidate.id === cancelTaskID)
+    if (!task) return
+    const taskOccurrences = occurrencesByTask.get(task.id) ?? []
+    setInteractionError('')
+    try {
+      await cancelTask.mutateAsync({
+        projectID,
+        taskID: task.id,
+        expectedRevisions: {
+          expected_task_revision: task.revision,
+          expected_schedule_revision: task.schedule_revision,
+          expected_occurrence_revisions: Object.fromEntries(
+            taskOccurrences.map((occurrence) => [
+              occurrence.id,
+              occurrence.revision,
+            ])
+          ),
+        },
+      })
+      setCancelTaskID('')
+      setSelectedNodeID('')
+      setInspectorOpen(false)
+    } catch (caught) {
+      setInteractionError(
+        caught instanceof Error ? caught.message : '取消任务失败，请稍后重试。'
+      )
+    }
   }
 
   return (
     <section className="mindmap-page">
       <header className="mindmap-page-header">
-        <div>
+        <div className="mindmap-title-group">
           <nav aria-label="当前位置">
             <Link
               to={`/projects/${encodeURIComponent(projectID)}/roadmap`}
@@ -324,15 +577,9 @@ export default function RoadmapMindMap() {
             <span aria-hidden="true">/</span>
             <strong>{roadmapNode.title}</strong>
           </nav>
-          <h1>{roadmapNode.title}</h1>
-          <div className="mindmap-page-progress">
-            <span>阶段进度 {progress}%</span>
-            <i aria-hidden="true">
-              <b style={{ width: `${progress}%` }} />
-            </i>
-            <span>
-              已完成 {roadmapNode.progress.done} / {roadmapNode.progress.total}
-            </span>
+          <div>
+            <h1>{roadmapNode.title}</h1>
+            <span>{progress}% 完成</span>
           </div>
         </div>
         <div className="mindmap-page-actions">
@@ -343,10 +590,19 @@ export default function RoadmapMindMap() {
           <button
             className="plan-primary-action"
             type="button"
-            onClick={() => setShowCreateTask(true)}
+            onClick={() => beginDraftTask(selectedTask?.id)}
           >
             <Plus aria-hidden="true" />
-            新建任务
+            添加任务
+          </button>
+          <button
+            className="mindmap-icon-action"
+            type="button"
+            aria-label="查看脑图快捷键"
+            aria-expanded={showShortcutHelp}
+            onClick={() => setShowShortcutHelp((current) => !current)}
+          >
+            <CircleHelp aria-hidden="true" />
           </button>
         </div>
       </header>
@@ -356,9 +612,8 @@ export default function RoadmapMindMap() {
           const count =
             value === 'all'
               ? nodeTasks.length
-              : nodeTasks.filter(
-                  (task) => statusByTask.get(task.id) === value
-                ).length
+              : nodeTasks.filter((task) => statusByTask.get(task.id) === value)
+                  .length
           return (
             <button
               type="button"
@@ -369,7 +624,9 @@ export default function RoadmapMindMap() {
               key={value}
               onClick={() => {
                 setStatusFilter(value)
-                setSelectedTaskID('')
+                setSelectedNodeID('')
+                setInspectorOpen(false)
+                setDraftAfterTaskID(undefined)
               }}
             >
               <Icon aria-hidden="true" />
@@ -381,7 +638,10 @@ export default function RoadmapMindMap() {
       </div>
 
       <div className="mindmap-workspace">
-        <main className="mindmap-canvas" aria-label={`${roadmapNode.title} 任务脑图`}>
+        <main
+          className="mindmap-canvas"
+          aria-label={`${roadmapNode.title} 任务脑图`}
+        >
           <ReactFlow
             nodes={flowNodes}
             edges={flowEdges}
@@ -389,55 +649,87 @@ export default function RoadmapMindMap() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onInit={setFlowInstance}
+            onMove={(_event, viewport) =>
+              setZoomPercent(Math.round(viewport.zoom * 100))
+            }
             onNodeClick={(_event, node) => {
-              if (node.type === 'roadmapTask') setSelectedTaskID(node.id)
+              setContextMenu(null)
+              setSelectedNodeID(node.id)
+              if (
+                node.type === 'roadmapTask' &&
+                node.id !== 'mindmap-draft-task'
+              ) {
+                setInspectorOpen(true)
+              } else {
+                setInspectorOpen(false)
+              }
+            }}
+            onNodeContextMenu={(event, node) => {
+              event.preventDefault()
+              if (
+                node.type !== 'roadmapTask' ||
+                node.id === 'mindmap-draft-task'
+              )
+                return
+              setSelectedNodeID(node.id)
+              setInspectorOpen(false)
+              setContextMenu({
+                taskID: node.id,
+                x: Math.min(event.clientX, window.innerWidth - 228),
+                y: Math.min(event.clientY, window.innerHeight - 220),
+              })
+            }}
+            onPaneClick={() => {
+              setContextMenu(null)
+              setSelectedNodeID('')
+              setInspectorOpen(false)
             }}
             nodesConnectable={false}
             elementsSelectable
+            zoomOnDoubleClick={false}
             fitView={!isCompactViewport}
-            fitViewOptions={{ padding: 0.18 }}
+            fitViewOptions={{ padding: 0.2 }}
             defaultViewport={
-              isCompactViewport
-                ? { x: -16, y: 18, zoom: 0.55 }
-                : undefined
+              isCompactViewport ? { x: -20, y: 28, zoom: 0.62 } : undefined
             }
             minZoom={0.32}
             maxZoom={1.8}
           >
-            <Background gap={24} size={1} color="#dfd4c4" />
+            <Background gap={24} size={1} color="#ded5c8" />
             <MiniMap
               className="mindmap-minimap"
               pannable
               zoomable
               nodeStrokeWidth={2}
               nodeColor={(node) =>
-                node.type === 'roadmapRoot' ? '#b87333' : '#fefdf8'
+                node.type === 'roadmapRoot' ? '#b87333' : '#fffdf8'
               }
             />
-            <Controls showInteractive={false} />
           </ReactFlow>
 
-          {visibleTasks.length === 0 ? (
+          {!branchCollapsed &&
+          visibleTasks.length === 0 &&
+          draftAfterTaskID === undefined ? (
             <div className="mindmap-canvas-empty">
               <GitBranch aria-hidden="true" />
               <strong>
                 {nodeTasks.length === 0
-                  ? '这个节点还没有任务'
+                  ? '从第一个任务开始展开'
                   : '当前筛选下没有任务'}
               </strong>
               <p>
                 {nodeTasks.length === 0
-                  ? '新建第一项任务，脑图会自动把它连接到路线节点。'
-                  : '切换状态筛选，或者清除当前筛选。'}
+                  ? '选择中心主题后按 Tab，或者直接添加任务。'
+                  : '切换状态筛选，或者查看全部任务。'}
               </p>
               {nodeTasks.length === 0 ? (
                 <button
                   className="plan-primary-action"
                   type="button"
-                  onClick={() => setShowCreateTask(true)}
+                  onClick={() => beginDraftTask()}
                 >
                   <Plus aria-hidden="true" />
-                  新建任务
+                  添加第一个任务
                 </button>
               ) : (
                 <button type="button" onClick={() => setStatusFilter('all')}>
@@ -446,49 +738,195 @@ export default function RoadmapMindMap() {
               )}
             </div>
           ) : null}
-        </main>
 
-        <RoadmapTaskInspector
-          task={selectedTask}
-          status={
-            selectedTask ? statusByTask.get(selectedTask.id) : undefined
-          }
-          occurrence={preferredOccurrence(selectedTaskOccurrences)}
-          roadmapNodeTitle={roadmapNode.title}
-          onClose={() => setSelectedTaskID('')}
-        />
-      </div>
+          <div className="mindmap-zoom-controls" aria-label="脑图缩放">
+            <button
+              type="button"
+              aria-label="缩小"
+              onClick={() => void flowInstance?.zoomOut({ duration: 160 })}
+            >
+              <Minus aria-hidden="true" />
+            </button>
+            <output>{zoomPercent}%</output>
+            <button
+              type="button"
+              aria-label="放大"
+              onClick={() => void flowInstance?.zoomIn({ duration: 160 })}
+            >
+              <Plus aria-hidden="true" />
+            </button>
+            <button type="button" aria-label="适应画布" onClick={resetLayout}>
+              <Maximize2 aria-hidden="true" />
+            </button>
+          </div>
 
-      {showCreateTask ? (
-        <div
-          className="domain-decision-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-label="在脑图中新建任务"
-        >
-          <form onSubmit={addTask}>
-            <h3>在“{roadmapNode.title}”下新建任务</h3>
-            <p>创建后会直接出现在当前脑图中，默认保持未安排状态。</p>
-            <input
-              aria-label="新任务标题"
-              value={newTaskTitle}
-              onChange={(event) => setNewTaskTitle(event.target.value)}
-              autoFocus
-            />
-            <div className="domain-form-actions">
-              <button type="button" onClick={() => setShowCreateTask(false)}>
-                取消
-              </button>
+          <div className="mindmap-shortcut-strip" aria-hidden="true">
+            <span>
+              <kbd>Tab</kbd> 添加任务
+            </span>
+            <span>
+              <kbd>Enter</kbd> 同级任务
+            </span>
+            <span>
+              <kbd>Space</kbd> 编辑标题
+            </span>
+            <span>滚轮缩放 · 拖动画布</span>
+          </div>
+
+          {showShortcutHelp ? (
+            <aside className="mindmap-shortcut-help" aria-label="脑图快捷键">
+              <header>
+                <strong>脑图快捷键</strong>
+                <button
+                  type="button"
+                  aria-label="关闭快捷键说明"
+                  onClick={() => setShowShortcutHelp(false)}
+                >
+                  <X aria-hidden="true" />
+                </button>
+              </header>
+              <dl>
+                <div>
+                  <dt>Tab</dt>
+                  <dd>为中心主题添加任务</dd>
+                </div>
+                <div>
+                  <dt>Enter</dt>
+                  <dd>新建同级任务</dd>
+                </div>
+                <div>
+                  <dt>Space / 双击</dt>
+                  <dd>编辑任务标题</dd>
+                </div>
+                <div>
+                  <dt>⌘ / Ctrl + /</dt>
+                  <dd>折叠或展开分支</dd>
+                </div>
+                <div>
+                  <dt>Esc</dt>
+                  <dd>退出当前操作</dd>
+                </div>
+              </dl>
+            </aside>
+          ) : null}
+
+          {interactionError ? (
+            <div className="mindmap-interaction-error" role="alert">
+              {interactionError}
               <button
-                className="domain-primary-button"
-                disabled={
-                  newTaskTitle.trim() === '' || createTask.isPending
-                }
+                type="button"
+                aria-label="关闭错误提示"
+                onClick={() => setInteractionError('')}
               >
-                创建任务
+                <X aria-hidden="true" />
               </button>
             </div>
-          </form>
+          ) : null}
+        </main>
+
+        {inspectorOpen && selectedTask ? (
+          <RoadmapTaskInspector
+            task={selectedTask}
+            status={statusByTask.get(selectedTask.id)}
+            occurrence={preferredOccurrence(selectedTaskOccurrences)}
+            roadmapNodeTitle={roadmapNode.title}
+            onClose={() => {
+              setInspectorOpen(false)
+              setSelectedNodeID('')
+            }}
+            onRename={() => requestRename(selectedTask.id)}
+            onAddSibling={() => beginDraftTask(selectedTask.id)}
+            onCancel={() => setCancelTaskID(selectedTask.id)}
+          />
+        ) : null}
+      </div>
+
+      {contextMenu ? (
+        <div
+          className="mindmap-context-menu"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => requestRename(contextMenu.taskID)}
+          >
+            <Pencil aria-hidden="true" />
+            <span>编辑标题</span>
+            <kbd>Space</kbd>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => beginDraftTask(contextMenu.taskID)}
+          >
+            <Plus aria-hidden="true" />
+            <span>新建同级任务</span>
+            <kbd>Enter</kbd>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setContextMenu(null)
+              setSelectedNodeID(contextMenu.taskID)
+              setInspectorOpen(true)
+            }}
+          >
+            <PanelRight aria-hidden="true" />
+            <span>打开任务详情</span>
+          </button>
+          <hr />
+          <button
+            className="is-danger"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setCancelTaskID(contextMenu.taskID)
+              setContextMenu(null)
+            }}
+          >
+            <Trash2 aria-hidden="true" />
+            <span>取消任务</span>
+          </button>
+        </div>
+      ) : null}
+
+      {cancelTaskID ? (
+        <div className="mindmap-cancel-overlay">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mindmap-cancel-title"
+          >
+            <header>
+              <span>
+                <Trash2 aria-hidden="true" />
+              </span>
+              <div>
+                <h2 id="mindmap-cancel-title">取消这个任务？</h2>
+                <p>任务及其执行记录会标记为已取消，不会从历史中删除。</p>
+              </div>
+            </header>
+            <div>
+              <button
+                type="button"
+                disabled={cancelTask.isPending}
+                onClick={() => setCancelTaskID('')}
+              >
+                保留任务
+              </button>
+              <button
+                className="is-danger"
+                type="button"
+                disabled={cancelTask.isPending}
+                onClick={() => void confirmCancelTask()}
+              >
+                {cancelTask.isPending ? '正在取消…' : '确认取消'}
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
     </section>
