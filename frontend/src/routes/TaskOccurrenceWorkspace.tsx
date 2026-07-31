@@ -2,7 +2,7 @@ import { CalendarClock, Filter, Inbox, ListChecks, Plus } from 'lucide-react'
 import { type FormEvent, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import type { OccurrenceV2, TaskV2 } from '../api/taskDomain'
+import type { OccurrenceV2, TaskV2, TimingType } from '../api/taskDomain'
 import { TaskDomainRevisionConflictError } from '../api/taskDomain'
 import {
   OccurrenceInspector,
@@ -70,6 +70,12 @@ export default function TaskOccurrenceWorkspace() {
 
   const [editingOccurrenceID, setEditingOccurrenceID] = useState('')
   const [rescheduleDate, setRescheduleDate] = useState('')
+  const [rescheduleTimingType, setRescheduleTimingType] =
+    useState<Exclude<TimingType, 'unscheduled'>>('date')
+  const [rescheduleTimeRange, setRescheduleTimeRange] = useState({
+    start: '09:00',
+    end: '10:00',
+  })
   const [rescheduleConflict, setRescheduleConflict] =
     useState<TaskDomainRevisionConflictError | null>(null)
   const [rescheduleError, setRescheduleError] = useState('')
@@ -273,6 +279,12 @@ export default function TaskOccurrenceWorkspace() {
     })
     setEditingOccurrenceID(occurrence.id)
     setRescheduleDate(occurrence.planned_date ?? '')
+    setRescheduleTimingType(
+      occurrence.timing_type === 'time_block' || occurrence.planned_start_at
+        ? 'time_block'
+        : 'date'
+    )
+    setRescheduleTimeRange(timeRangeForOccurrence(occurrence))
     setRescheduleConflict(null)
     setRescheduleError('')
     setShowComparison(false)
@@ -282,6 +294,14 @@ export default function TaskOccurrenceWorkspace() {
     event.preventDefault()
     if (!editingOccurrence || !editingDefinition || rescheduleDate === '')
       return
+    const durationMinutes = timeRangeMinutes(
+      rescheduleTimeRange.start,
+      rescheduleTimeRange.end
+    )
+    if (rescheduleTimingType === 'time_block' && durationMinutes <= 0) {
+      setRescheduleError('结束时间必须晚于开始时间。')
+      return
+    }
     setRescheduleConflict(null)
     setRescheduleError('')
     setShowComparison(false)
@@ -298,11 +318,17 @@ export default function TaskOccurrenceWorkspace() {
             editingDefinition.schedule_revision,
           expected_occurrence_revision: editingOccurrence.revision,
           timing: {
-            timing_type: 'date',
+            timing_type: rescheduleTimingType,
             timezone:
               editingOccurrence.timezone ??
               Intl.DateTimeFormat().resolvedOptions().timeZone,
             planned_date: rescheduleDate,
+            ...(rescheduleTimingType === 'time_block'
+              ? {
+                  local_start_time: rescheduleTimeRange.start,
+                  duration_minutes: durationMinutes,
+                }
+              : {}),
           },
         },
       })
@@ -657,18 +683,77 @@ export default function TaskOccurrenceWorkspace() {
             {editingOccurrence?.id === selectedOccurrence.id ? (
               <form className="td-reschedule-form" onSubmit={handleReschedule}>
                 <div>
-                  <strong>调整本次日期</strong>
-                  <span>只修改这一次执行，不改变任务定义。</span>
+                  <strong>调整本次安排</strong>
+                  <span>可设置全天日期或具体时间，只影响这一次执行。</span>
                 </div>
-                <label>
-                  <span>新的执行日期</span>
-                  <input
-                    type="date"
-                    aria-label="新的执行日期"
-                    value={rescheduleDate}
-                    onChange={(event) => setRescheduleDate(event.target.value)}
-                  />
-                </label>
+                <div className="td-reschedule-grid">
+                  <label>
+                    <span>安排方式</span>
+                    <select
+                      aria-label="新的安排方式"
+                      value={rescheduleTimingType}
+                      onChange={(event) =>
+                        setRescheduleTimingType(
+                          event.target.value as Exclude<
+                            TimingType,
+                            'unscheduled'
+                          >
+                        )
+                      }
+                    >
+                      <option value="date">全天</option>
+                      <option value="time_block">具体时间</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>新的执行日期</span>
+                    <input
+                      type="date"
+                      aria-label="新的执行日期"
+                      value={rescheduleDate}
+                      onChange={(event) =>
+                        setRescheduleDate(event.target.value)
+                      }
+                    />
+                  </label>
+                </div>
+                {rescheduleTimingType === 'time_block' ? (
+                  <div className="td-reschedule-time-row">
+                    <label>
+                      <span>开始时间</span>
+                      <input
+                        type="time"
+                        aria-label="新的开始时间"
+                        value={rescheduleTimeRange.start}
+                        onChange={(event) => {
+                          const start = event.target.value
+                          setRescheduleTimeRange((current) => ({
+                            start,
+                            end:
+                              timeRangeMinutes(start, current.end) > 0
+                                ? current.end
+                                : addMinutes(start, 60),
+                          }))
+                        }}
+                      />
+                    </label>
+                    <span aria-hidden="true">至</span>
+                    <label>
+                      <span>结束时间</span>
+                      <input
+                        type="time"
+                        aria-label="新的结束时间"
+                        value={rescheduleTimeRange.end}
+                        onChange={(event) =>
+                          setRescheduleTimeRange((current) => ({
+                            ...current,
+                            end: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                ) : null}
                 <div className="td-form-actions">
                   <button
                     type="button"
@@ -680,7 +765,13 @@ export default function TaskOccurrenceWorkspace() {
                     type="submit"
                     className="is-primary"
                     disabled={
-                      rescheduleDate === '' || rescheduleOccurrence.isPending
+                      rescheduleDate === '' ||
+                      (rescheduleTimingType === 'time_block' &&
+                        timeRangeMinutes(
+                          rescheduleTimeRange.start,
+                          rescheduleTimeRange.end
+                        ) <= 0) ||
+                      rescheduleOccurrence.isPending
                     }
                   >
                     保存改期
@@ -690,7 +781,12 @@ export default function TaskOccurrenceWorkspace() {
                   <div className="td-conflict" role="alert">
                     <strong>执行实例已在其他窗口更新</strong>
                     <p>
-                      你的日期仍保留为 {rescheduleDate}
+                      你的安排仍保留为{' '}
+                      {formatRescheduleDraft(
+                        rescheduleDate,
+                        rescheduleTimingType,
+                        rescheduleTimeRange
+                      )}
                       ，没有覆盖服务器版本。
                     </p>
                     <div className="td-form-actions">
@@ -822,4 +918,60 @@ function localISODate(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function timeRangeForOccurrence(occurrence: OccurrenceV2) {
+  const timezone =
+    occurrence.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const start = occurrence.planned_start_at
+    ? formatLocalTime(occurrence.planned_start_at, timezone)
+    : '09:00'
+  const duration = occurrenceDurationMinutes(occurrence)
+  return { start, end: addMinutes(start, duration) }
+}
+
+function occurrenceDurationMinutes(occurrence: OccurrenceV2) {
+  if (!occurrence.planned_start_at || !occurrence.planned_end_at) return 60
+  const start = new Date(occurrence.planned_start_at).getTime()
+  const end = new Date(occurrence.planned_end_at).getTime()
+  const duration = Math.round((end - start) / 60_000)
+  return duration > 0 ? duration : 60
+}
+
+function formatLocalTime(value: string, timezone: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '09:00'
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(date)
+}
+
+function timeRangeMinutes(start: string, end: string) {
+  return timeToMinutes(end) - timeToMinutes(start)
+}
+
+function timeToMinutes(value: string) {
+  const [hours, minutes] = value.split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0
+  return hours * 60 + minutes
+}
+
+function addMinutes(value: string, minutes: number) {
+  const total = Math.min(timeToMinutes(value) + minutes, 23 * 60 + 59)
+  const hours = Math.floor(total / 60)
+  const remainingMinutes = total % 60
+  return `${String(hours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}`
+}
+
+function formatRescheduleDraft(
+  date: string,
+  timingType: Exclude<TimingType, 'unscheduled'>,
+  timeRange: { start: string; end: string }
+) {
+  return timingType === 'date'
+    ? `${date} 全天`
+    : `${date} ${timeRange.start}–${timeRange.end}`
 }

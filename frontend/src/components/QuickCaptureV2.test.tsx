@@ -89,4 +89,34 @@ describe('QuickCaptureV2', () => {
       })
     )
   })
+
+  it('can create a task with a concrete date and time range', async () => {
+    render(<QuickCaptureV2 />)
+    const user = userEvent.setup()
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '任务安排方式' }),
+      'time_block'
+    )
+    await user.clear(screen.getByLabelText('任务执行日期'))
+    await user.type(screen.getByLabelText('任务执行日期'), '2026-08-03')
+    await user.clear(screen.getByLabelText('任务开始时间'))
+    await user.type(screen.getByLabelText('任务开始时间'), '14:30')
+    await user.clear(screen.getByLabelText('任务结束时间'))
+    await user.type(screen.getByLabelText('任务结束时间'), '16:00')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schedule: {
+          recurrence_type: 'none',
+          timing_type: 'time_block',
+          timezone: expect.any(String),
+          starts_on: '2026-08-03',
+          local_start_time: '14:30',
+          duration_minutes: 90,
+        },
+      })
+    )
+  })
 })
