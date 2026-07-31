@@ -4,7 +4,10 @@ import {
   FileText,
   GitBranch,
   Link2,
+  Pencil,
+  Plus,
   Save,
+  Trash2,
   X,
 } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
@@ -54,12 +57,18 @@ export function RoadmapTaskInspector({
   occurrence,
   roadmapNodeTitle,
   onClose,
+  onRename,
+  onAddSibling,
+  onCancel,
 }: {
   task?: TaskV2
   status?: ExecutionStatus
   occurrence?: OccurrenceV2
   roadmapNodeTitle: string
   onClose: () => void
+  onRename?: () => void
+  onAddSibling?: () => void
+  onCancel?: () => void
 }) {
   const updateTask = useUpdateTaskDefinitionMutation()
   const [title, setTitle] = useState('')
@@ -117,6 +126,21 @@ export function RoadmapTaskInspector({
           <X aria-hidden="true" />
         </button>
       </header>
+
+      <div className="mindmap-inspector-quick-actions">
+        <button type="button" onClick={onRename}>
+          <Pencil aria-hidden="true" />
+          重命名
+        </button>
+        <button type="button" onClick={onAddSibling}>
+          <Plus aria-hidden="true" />
+          同级任务
+        </button>
+        <button className="is-danger" type="button" onClick={onCancel}>
+          <Trash2 aria-hidden="true" />
+          取消
+        </button>
+      </div>
 
       <form onSubmit={save}>
         <label>
@@ -196,11 +220,7 @@ export function RoadmapTaskInspector({
               {task.attachment_links.map((attachment) => (
                 <li key={`${attachment.name}-${attachment.url}`}>
                   <Link2 aria-hidden="true" />
-                  <a
-                    href={attachment.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <a href={attachment.url} target="_blank" rel="noreferrer">
                     <span>{attachment.name}</span>
                     <ExternalLink aria-hidden="true" />
                   </a>
@@ -220,16 +240,10 @@ export function RoadmapTaskInspector({
           <button
             className="plan-primary-action"
             type="submit"
-            disabled={
-              !isDirty || title.trim() === '' || updateTask.isPending
-            }
+            disabled={!isDirty || title.trim() === '' || updateTask.isPending}
           >
             <Save aria-hidden="true" />
-            {updateTask.isPending
-              ? '正在保存…'
-              : saved
-                ? '已保存'
-                : '保存修改'}
+            {updateTask.isPending ? '正在保存…' : saved ? '已保存' : '保存修改'}
           </button>
           <Link to="/tasks">
             打开任务工作台

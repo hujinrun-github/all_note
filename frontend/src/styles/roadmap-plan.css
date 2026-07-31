@@ -1427,6 +1427,12 @@
   color: var(--plan-copy);
 }
 
+@keyframes mindmap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .mindmap-inspector {
   min-height: 0;
   overflow-y: auto;
@@ -2100,5 +2106,848 @@
 
   .mindmap-inspector-actions > a {
     display: none;
+  }
+}
+
+/* XMind-inspired canvas interaction */
+.mindmap-page {
+  grid-template-rows: 70px 46px minmax(0, 1fr);
+  background: #f7f2ea;
+}
+
+.mindmap-page-header {
+  min-height: 70px;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 20px;
+  background: rgba(255, 253, 248, 0.98);
+}
+
+.mindmap-title-group {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.mindmap-page-header .mindmap-title-group nav {
+  gap: 7px;
+  font-size: 10px;
+}
+
+.mindmap-page-header .mindmap-title-group nav a:first-child {
+  width: 25px;
+  height: 25px;
+}
+
+.mindmap-title-group > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-left: 35px;
+}
+
+.mindmap-page-header .mindmap-title-group h1 {
+  max-width: min(40vw, 580px);
+  margin: 0;
+  overflow: hidden;
+  font-size: 22px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mindmap-title-group > div > span {
+  color: var(--plan-muted);
+  font-family: var(--font-family-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.mindmap-page-actions {
+  align-items: center;
+  gap: 7px;
+}
+
+.mindmap-page-actions > button {
+  min-height: 35px;
+  border-radius: 7px;
+  padding: 0 11px;
+  font-size: 11px;
+}
+
+.mindmap-page-actions > button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mindmap-page-actions > .mindmap-icon-action {
+  width: 35px;
+  padding: 0;
+  justify-content: center;
+}
+
+.mindmap-filter-bar {
+  min-height: 46px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 20px;
+  background: #faf6f0;
+}
+
+.mindmap-filter-bar button,
+.mindmap-filter-bar button:first-child {
+  min-width: auto;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  padding: 0 10px;
+  font-size: 10px;
+}
+
+.mindmap-filter-bar button:hover,
+.mindmap-filter-bar button.is-active {
+  border-color: #dac6b4;
+  background: #fffdf8;
+  box-shadow: none;
+}
+
+.mindmap-filter-bar button.is-active {
+  color: #8e542b;
+}
+
+.mindmap-filter-bar button span {
+  min-width: 16px;
+  height: 16px;
+  background: #eee5da;
+  font-size: 8px;
+}
+
+.mindmap-workspace {
+  position: relative;
+  display: block;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mindmap-canvas {
+  width: 100%;
+  height: 100%;
+  background: #f8f4ed;
+}
+
+.mindmap-canvas .react-flow__viewport {
+  cursor: default;
+}
+
+.mindmap-canvas .react-flow__pane {
+  cursor: grab;
+}
+
+.mindmap-canvas .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.mindmap-root-node {
+  position: relative;
+  width: 272px;
+  min-height: 76px;
+  grid-template-columns: 30px minmax(0, 1fr) 26px;
+  gap: 10px;
+  border: 1px solid #965d32;
+  border-radius: 12px;
+  padding: 13px 12px 13px 15px;
+  box-shadow: 0 12px 30px rgba(90, 55, 27, 0.14);
+  transition:
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.mindmap-root-node.is-selected {
+  box-shadow:
+    0 0 0 4px rgba(184, 115, 51, 0.18),
+    0 12px 30px rgba(90, 55, 27, 0.14);
+}
+
+.mindmap-root-node > svg {
+  width: 20px;
+}
+
+.mindmap-root-node strong {
+  font-size: 16px;
+}
+
+.mindmap-root-collapse,
+.mindmap-root-add,
+.mindmap-task-add {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+}
+
+.mindmap-root-collapse {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  background: rgba(111, 61, 25, 0.28);
+  color: white;
+}
+
+.mindmap-root-collapse svg,
+.mindmap-root-add svg,
+.mindmap-task-add svg {
+  width: 13px;
+  height: 13px;
+}
+
+.mindmap-root-collapse span {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  min-width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: #fff8ef;
+  color: #8e542b;
+  font-size: 8px;
+}
+
+.mindmap-root-add {
+  position: absolute;
+  top: 50%;
+  right: -31px;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  border-color: #c6966c;
+  background: #fffdf8;
+  color: #9a5c2f;
+  box-shadow: 0 4px 12px rgba(90, 55, 27, 0.12);
+}
+
+.mindmap-task-node {
+  position: relative;
+  width: 322px;
+  min-height: 58px;
+  grid-template-columns: 24px minmax(0, 1fr) 16px 28px;
+  gap: 8px;
+  border: 1px solid #d9c9b9;
+  border-left: 2px solid #ad8b6d;
+  border-radius: 10px;
+  padding: 10px 11px;
+  box-shadow: 0 7px 18px rgba(76, 46, 24, 0.055);
+}
+
+.mindmap-task-node:hover {
+  transform: translateY(-1px);
+  border-color: #c6a485;
+}
+
+.mindmap-task-node.is-selected {
+  border-color: #b87333;
+  border-left-color: #b87333;
+  box-shadow:
+    0 0 0 3px rgba(184, 115, 51, 0.15),
+    0 8px 22px rgba(76, 46, 24, 0.08);
+}
+
+.mindmap-task-node.is-draft {
+  border-style: dashed;
+  background: #fffaf2;
+}
+
+.mindmap-task-status {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #f2ebe2;
+}
+
+.mindmap-task-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mindmap-task-copy {
+  min-width: 0;
+}
+
+.mindmap-task-copy strong {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mindmap-task-copy input {
+  width: 100%;
+  height: 30px;
+  border: 1px solid #b87333;
+  border-radius: 5px;
+  padding: 0 8px;
+  outline: 0;
+  background: #fffdf8;
+  color: var(--plan-ink);
+  font: inherit;
+  font-size: 12px;
+  box-shadow: 0 0 0 3px rgba(184, 115, 51, 0.12);
+}
+
+.mindmap-task-priority {
+  width: 13px;
+  color: #c26a3d;
+}
+
+.mindmap-task-sequence {
+  width: 27px;
+  height: 27px;
+  font-size: 8px;
+}
+
+.mindmap-task-add {
+  position: absolute;
+  top: 50%;
+  right: -31px;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  border-color: #c6966c;
+  background: #fffdf8;
+  color: #9a5c2f;
+  box-shadow: 0 4px 12px rgba(90, 55, 27, 0.1);
+}
+
+.mindmap-root-add:hover,
+.mindmap-task-add:hover {
+  background: #b87333;
+  color: white;
+}
+
+.mindmap-node-handle {
+  width: 6px;
+  height: 6px;
+}
+
+.mindmap-minimap {
+  right: auto !important;
+  bottom: 18px !important;
+  left: 18px !important;
+  width: 150px !important;
+  height: 94px !important;
+  border-radius: 10px !important;
+  background: rgba(255, 253, 248, 0.94) !important;
+}
+
+.mindmap-zoom-controls {
+  position: absolute;
+  z-index: 8;
+  right: 18px;
+  bottom: 18px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #d6c5b4;
+  border-radius: 9px;
+  background: rgba(255, 253, 248, 0.96);
+  box-shadow: 0 8px 24px rgba(76, 46, 24, 0.08);
+}
+
+.mindmap-zoom-controls button {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid #e4d8cc;
+  padding: 0;
+  background: transparent;
+  color: var(--plan-copy);
+}
+
+.mindmap-zoom-controls button:first-child {
+  border-left: 0;
+}
+
+.mindmap-zoom-controls button:hover {
+  background: #f2e9de;
+  color: #8e542b;
+}
+
+.mindmap-zoom-controls svg {
+  width: 14px;
+}
+
+.mindmap-zoom-controls output {
+  min-width: 48px;
+  border-left: 1px solid #e4d8cc;
+  color: var(--plan-muted);
+  font-family: var(--font-family-mono);
+  font-size: 9px;
+  text-align: center;
+}
+
+.mindmap-shortcut-strip {
+  position: absolute;
+  z-index: 6;
+  bottom: 18px;
+  left: 50%;
+  display: flex;
+  gap: 15px;
+  border: 1px solid rgba(214, 197, 180, 0.8);
+  border-radius: 9px;
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  background: rgba(255, 253, 248, 0.9);
+  color: var(--plan-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.mindmap-shortcut-strip kbd,
+.mindmap-context-menu kbd {
+  border: 1px solid #d8cabd;
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: #f6efe7;
+  color: var(--plan-copy);
+  font-family: var(--font-family-mono);
+  font-size: 8px;
+}
+
+.mindmap-shortcut-help {
+  position: absolute;
+  z-index: 16;
+  top: 14px;
+  right: 14px;
+  width: 280px;
+  border: 1px solid #d5c3b1;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fffdf8;
+  box-shadow: 0 18px 48px rgba(76, 46, 24, 0.16);
+}
+
+.mindmap-shortcut-help header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.mindmap-shortcut-help header strong {
+  font-size: 13px;
+}
+
+.mindmap-shortcut-help header button {
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--plan-muted);
+}
+
+.mindmap-shortcut-help header svg {
+  width: 14px;
+}
+
+.mindmap-shortcut-help dl {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.mindmap-shortcut-help dl div {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  align-items: center;
+  border-top: 1px solid #eee5dc;
+  font-size: 10px;
+}
+
+.mindmap-shortcut-help dt {
+  color: #8e542b;
+  font-family: var(--font-family-mono);
+}
+
+.mindmap-shortcut-help dd {
+  margin: 0;
+  color: var(--plan-muted);
+}
+
+.mindmap-context-menu {
+  position: fixed;
+  z-index: 80;
+  width: 214px;
+  border: 1px solid #d4c1ae;
+  border-radius: 11px;
+  padding: 6px;
+  background: #fffdf8;
+  box-shadow: 0 18px 50px rgba(76, 46, 24, 0.18);
+}
+
+.mindmap-context-menu button {
+  width: 100%;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--plan-copy);
+  font-size: 11px;
+  text-align: left;
+}
+
+.mindmap-context-menu button:hover {
+  background: #f3ebe2;
+}
+
+.mindmap-context-menu button svg {
+  width: 14px;
+}
+
+.mindmap-context-menu hr {
+  height: 1px;
+  border: 0;
+  margin: 4px 6px;
+  background: #e7dbcf;
+}
+
+.mindmap-context-menu button.is-danger,
+.mindmap-inspector-quick-actions button.is-danger {
+  color: #a84638;
+}
+
+.mindmap-inspector {
+  position: absolute;
+  z-index: 14;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 350px;
+  border-left: 1px solid #d5c3b1;
+  padding: 18px 18px 24px;
+  background: #fffdf8;
+  box-shadow: -16px 0 42px rgba(76, 46, 24, 0.1);
+}
+
+.mindmap-inspector-quick-actions {
+  display: flex;
+  gap: 5px;
+  border-bottom: 1px solid var(--plan-line);
+  padding: 9px 0;
+}
+
+.mindmap-inspector-quick-actions button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--plan-copy);
+  font-size: 9px;
+}
+
+.mindmap-inspector-quick-actions button:hover {
+  background: #f3ebe2;
+}
+
+.mindmap-inspector-quick-actions svg {
+  width: 13px;
+}
+
+.mindmap-interaction-error {
+  position: absolute;
+  z-index: 30;
+  top: 14px;
+  left: 50%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #d69a8e;
+  border-radius: 8px;
+  padding: 0 8px 0 12px;
+  transform: translateX(-50%);
+  background: #fff8f5;
+  color: #8f3e33;
+  font-size: 11px;
+  box-shadow: 0 10px 28px rgba(76, 46, 24, 0.1);
+}
+
+.mindmap-interaction-error button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.mindmap-interaction-error svg {
+  width: 13px;
+}
+
+.mindmap-cancel-overlay {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(45, 34, 25, 0.34);
+  backdrop-filter: blur(4px);
+}
+
+.mindmap-cancel-overlay > section {
+  width: min(430px, 100%);
+  border: 1px solid #d5c3b1;
+  border-radius: 14px;
+  padding: 20px;
+  background: #fffdf8;
+  box-shadow: 0 24px 70px rgba(45, 34, 25, 0.22);
+}
+
+.mindmap-cancel-overlay header {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.mindmap-cancel-overlay header > span {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #f9e9e5;
+  color: #a84638;
+}
+
+.mindmap-cancel-overlay header svg {
+  width: 17px;
+}
+
+.mindmap-cancel-overlay h2 {
+  margin: 0;
+  font-family: var(--font-family-heading);
+  font-size: 19px;
+}
+
+.mindmap-cancel-overlay p {
+  margin: 6px 0 0;
+  color: var(--plan-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.mindmap-cancel-overlay > section > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.mindmap-cancel-overlay > section > div button {
+  min-height: 36px;
+  border: 1px solid #d5c3b1;
+  border-radius: 7px;
+  padding: 0 13px;
+  background: #fffdf8;
+  color: var(--plan-copy);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mindmap-cancel-overlay > section > div button.is-danger {
+  border-color: #a84638;
+  background: #a84638;
+  color: white;
+}
+
+.is-spinning {
+  animation: mindmap-spin 850ms linear infinite;
+}
+
+@media (max-width: 820px) {
+  .mindmap-page {
+    grid-template-rows: 64px 43px minmax(0, 1fr);
+  }
+
+  .mindmap-page-header {
+    min-height: 64px;
+    align-items: center;
+    padding: 8px 12px;
+  }
+
+  .mindmap-page-header .mindmap-title-group nav a:not(:first-child),
+  .mindmap-page-header .mindmap-title-group nav > span,
+  .mindmap-page-header .mindmap-title-group nav > strong,
+  .mindmap-title-group > div > span {
+    display: none;
+  }
+
+  .mindmap-title-group > div {
+    padding-left: 35px;
+  }
+
+  .mindmap-page-header .mindmap-title-group h1 {
+    max-width: calc(100vw - 168px);
+    font-size: 18px;
+  }
+
+  .mindmap-page-actions {
+    gap: 5px;
+  }
+
+  .mindmap-page-actions > button {
+    width: 34px;
+    min-height: 34px;
+    justify-content: center;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .mindmap-filter-bar {
+    min-height: 43px;
+    gap: 3px;
+    padding: 0 10px;
+  }
+
+  .mindmap-filter-bar button {
+    min-width: max-content;
+    min-height: 28px;
+    padding: 0 8px;
+  }
+
+  .mindmap-canvas {
+    padding-bottom: 0;
+  }
+
+  .mindmap-shortcut-strip,
+  .mindmap-minimap {
+    display: none;
+  }
+
+  .mindmap-zoom-controls {
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .mindmap-shortcut-help {
+    top: 10px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+
+  .mindmap-inspector {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-height: min(54dvh, 470px);
+    border-top: 1px solid #d5c3b1;
+    border-left: 0;
+    border-radius: 18px 18px 0 0;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    box-shadow: 0 -18px 46px rgba(76, 46, 24, 0.16);
+  }
+
+  .mindmap-inspector::before {
+    margin-top: -7px;
+  }
+
+  .mindmap-inspector > form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mindmap-context-menu {
+    right: 12px;
+    bottom: 12px;
+    left: 12px !important;
+    top: auto !important;
+    width: auto;
+    border-radius: 14px;
+    padding: 8px;
+  }
+
+  .mindmap-context-menu button {
+    min-height: 42px;
+  }
+
+  .mindmap-cancel-overlay {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .mindmap-cancel-overlay > section {
+    border-radius: 16px 16px 10px 10px;
+    padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 520px) {
+  .mindmap-page-actions > button:first-child {
+    display: none;
+  }
+
+  .mindmap-filter-bar button svg {
+    display: none;
+  }
+
+  .mindmap-root-node {
+    width: 246px;
+  }
+
+  .mindmap-task-node {
+    width: 286px;
+  }
+
+  .mindmap-inspector {
+    max-height: min(56dvh, 490px);
+  }
+
+  .mindmap-inspector-quick-actions {
+    justify-content: space-between;
+  }
+
+  .mindmap-inspector > form {
+    grid-template-columns: 1fr;
+  }
+
+  .mindmap-inspector-grid,
+  .mindmap-inspector-facts,
+  .mindmap-inspector-actions {
+    grid-column: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mindmap-root-node,
+  .mindmap-task-node,
+  .is-spinning {
+    animation: none;
+    transition: none;
   }
 }
