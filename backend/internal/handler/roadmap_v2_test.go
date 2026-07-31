@@ -104,8 +104,43 @@ func TestRoadmapV2GenerationAllowsFullAIResponseWindow(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST status=%d body=%s", w.Code, w.Body.String())
 	}
-	if chat.remaining < time.Minute {
-		t.Fatalf("AI generation window=%s, want at least one minute", chat.remaining)
+	if chat.remaining < 2*time.Minute {
+		t.Fatalf("AI generation window=%s, want at least two minutes", chat.remaining)
+	}
+}
+
+func TestRoadmapV2GenerationReturnsActionableTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousTimeout := roadmapGenerationTimeout
+	roadmapGenerationTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { roadmapGenerationTimeout = previousTimeout })
+
+	app := &roadmapV2AppFake{
+		taskDomainV2ApplicationFake: taskDomainV2ApplicationFake{},
+		roadmapMissing:              true,
+	}
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		ctx := auth.ContextWithIdentity(c.Request.Context(), auth.RequestIdentity{UserID: "u1", WorkspaceID: "w1"})
+		ctx = auth.ContextWithWorkspaceScope(ctx, "w1")
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	})
+	RegisterTaskDomainV2RoutesWithAI(r.Group("/api"), app, timeoutRoadmapChat{})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/p1/roadmap/generate",
+		strings.NewReader(`{"prompt":"include distributed training"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout ||
+		!strings.Contains(w.Body.String(), `"code":"ROADMAP_GENERATION_TIMEOUT"`) ||
+		!strings.Contains(w.Body.String(), "补充要求已保留") {
+		t.Fatalf("POST status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -181,6 +216,17 @@ func (c *deadlineRecordingRoadmapChat) Generate(ctx context.Context, _, _, _ str
 }
 
 func (*deadlineRecordingRoadmapChat) ResolveFeature(context.Context, string, string) (bool, string, error) {
+	return true, "template", nil
+}
+
+type timeoutRoadmapChat struct{}
+
+func (timeoutRoadmapChat) Generate(ctx context.Context, _, _, _ string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func (timeoutRoadmapChat) ResolveFeature(context.Context, string, string) (bool, string, error) {
 	return true, "template", nil
 }
 

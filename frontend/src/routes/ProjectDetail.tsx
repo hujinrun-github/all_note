@@ -49,6 +49,16 @@ import {
 
 const terminalStatuses = new Set(['done', 'skipped', 'cancelled'])
 
+function roadmapGenerationErrorMessage(caught: unknown) {
+  const fallback = '学习路线生成失败，请稍后重试。'
+  if (!(caught instanceof Error)) return fallback
+
+  if (/context deadline|timed?\s*out|timeout/i.test(caught.message)) {
+    return 'AI 生成超时。补充要求已保留，请稍后重试；若仍超时，可适当精简要求。'
+  }
+  return caught.message || fallback
+}
+
 type ProjectSection =
   | 'overview'
   | 'tasks'
@@ -252,11 +262,7 @@ export default function ProjectDetail() {
       setRoadmapPrompt('')
       void navigate(`/projects/${encodeURIComponent(projectID)}/roadmap`)
     } catch (caught) {
-      setRoadmapError(
-        caught instanceof Error
-          ? caught.message
-          : '学习路线生成失败，请稍后重试。'
-      )
+      setRoadmapError(roadmapGenerationErrorMessage(caught))
     }
   }
 

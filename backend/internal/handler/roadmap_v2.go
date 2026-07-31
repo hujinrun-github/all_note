@@ -28,7 +28,7 @@ type RoadmapV2Application interface {
 
 var _ RoadmapV2Application = (*taskapp.Facade)(nil)
 
-const roadmapGenerationTimeout = 90 * time.Second
+var roadmapGenerationTimeout = 130 * time.Second
 
 type roadmapCreateDTO struct {
 	Title       string `json:"title"`
@@ -199,6 +199,15 @@ func (h taskDomainV2Handler) generateRoadmap(c *gin.Context) {
 	)
 	if err != nil {
 		log.Printf("roadmap v2 generation failed workspace=%s project=%s: %v", id.workspaceID, project.Project.ID, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			errorResponse(
+				c,
+				http.StatusGatewayTimeout,
+				"ROADMAP_GENERATION_TIMEOUT",
+				"AI 生成超时。补充要求已保留，请稍后重试；若仍超时，可适当精简要求。",
+			)
+			return
+		}
 		internalError(c, err.Error())
 		return
 	}

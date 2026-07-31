@@ -233,6 +233,37 @@ describe('Project detail v2', () => {
     )
   })
 
+  it('keeps generation guidance and explains an AI timeout in Chinese', async () => {
+    generateRoadmap.mockRejectedValue(
+      new Error(
+        'custom roadmap prompt could not be applied: decode AI response: context deadline exceeded'
+      )
+    )
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(
+      screen.getAllByRole('button', { name: '生成学习 Roadmap' })[0]
+    )
+    const dialog = screen.getByRole('dialog', {
+      name: '生成学习 Roadmap',
+    })
+    const guidance = within(dialog).getByRole('textbox', {
+      name: '补充生成要求',
+    })
+    await user.type(guidance, '优先覆盖训练 Infra')
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: '生成学习 Roadmap',
+      })
+    )
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'AI 生成超时。补充要求已保留，请稍后重试；若仍超时，可适当精简要求。'
+    )
+    expect(guidance).toHaveValue('优先覆盖训练 Infra')
+  })
+
   it('opens each project action from the overflow menu', async () => {
     renderDetail()
     const user = userEvent.setup()
@@ -454,9 +485,10 @@ describe('Project detail v2', () => {
     await user.click(screen.getByRole('tab', { name: '笔记' }))
 
     expect(await screen.findByText('N2 复习记录')).toBeVisible()
-    expect(
-      screen.getByRole('link', { name: /N2 复习记录/ })
-    ).toHaveAttribute('href', '/editor/note-1')
+    expect(screen.getByRole('link', { name: /N2 复习记录/ })).toHaveAttribute(
+      'href',
+      '/editor/note-1'
+    )
   })
 })
 
