@@ -40,6 +40,16 @@ type TaskAggregateWrite struct {
 	ExecutionLogs            []ExecutionLog
 }
 
+// TaskAggregateDelete carries every revision observed by the caller. Storage
+// adapters validate the whole aggregate again inside the fenced transaction
+// before permanently removing it.
+type TaskAggregateDelete struct {
+	WorkspaceID              string
+	TaskID                   string
+	ExpectedRevisions        AggregateExpectedRevisions
+	ExpectedScheduleRevision int64
+}
+
 type ProjectReader interface {
 	GetProject(context.Context, string) (ProjectSnapshot, error)
 }
@@ -71,6 +81,12 @@ type TaskDomainWriter interface {
 	CreateTaskAggregate(context.Context, TaskAggregateSnapshot) error
 	SaveTaskAggregate(context.Context, TaskAggregateWrite) error
 	InstallScheduleVersion(context.Context, ScheduleVersionInstall) error
+}
+
+// TaskAggregateDeleter is intentionally optional so repositories that only
+// participate in non-destructive commands do not gain a delete capability.
+type TaskAggregateDeleter interface {
+	DeleteTaskAggregate(context.Context, TaskAggregateDelete) error
 }
 
 // TaskDomainReadRuntime is the complete task-domain capability exposed by a

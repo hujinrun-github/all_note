@@ -24,6 +24,9 @@ func TestTaskLifecycleLegalTransitions(t *testing.T) {
 		{name: "restore cancelled", from: TaskLifecycleCancelled, want: TaskLifecycleActive, act: RestoreTask},
 		{name: "archive completed", from: TaskLifecycleCompleted, want: TaskLifecycleArchived, act: ArchiveTask},
 		{name: "archive cancelled", from: TaskLifecycleCancelled, want: TaskLifecycleArchived, act: ArchiveTask},
+		{name: "archive draft", from: TaskLifecycleDraft, want: TaskLifecycleArchived, act: ArchiveTask},
+		{name: "archive active", from: TaskLifecycleActive, want: TaskLifecycleArchived, act: ArchiveTask},
+		{name: "archive paused", from: TaskLifecyclePaused, want: TaskLifecycleArchived, act: ArchiveTask},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := tc.act(tc.from)
@@ -46,7 +49,7 @@ func TestTaskLifecycleIllegalTransitionsReturnStableError(t *testing.T) {
 		act  func(TaskLifecycleStatus) (TaskLifecycleStatus, error)
 	}{
 		{name: "draft cannot complete", from: TaskLifecycleDraft, act: CompleteTask},
-		{name: "active cannot archive", from: TaskLifecycleActive, act: ArchiveTask},
+		{name: "archived cannot archive again", from: TaskLifecycleArchived, act: ArchiveTask},
 		{name: "cancelled task cannot reopen via occurrence", from: TaskLifecycleCancelled, act: ReopenTaskFromOccurrence},
 		{name: "completed cannot publish", from: TaskLifecycleCompleted, act: PublishTask},
 		{name: "archived cannot restore", from: TaskLifecycleArchived, act: RestoreTask},

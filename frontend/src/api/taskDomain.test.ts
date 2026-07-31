@@ -34,6 +34,7 @@ import {
   updateTaskDefinition,
   blockOccurrence,
   archiveTaskDefinition,
+  deleteTaskDefinition,
 } from './taskDomain'
 
 afterEach(() => {
@@ -533,7 +534,6 @@ describe('task lifecycle command client', () => {
     ['pause', pauseTaskDefinition],
     ['resume', resumeTaskDefinition],
     ['restore', restoreTaskDefinition],
-    ['archive', archiveTaskDefinition],
   ] as const)(
     'posts the explicit %s command without unrelated occurrence revisions',
     async (command, invoke) => {
@@ -555,6 +555,18 @@ describe('task lifecycle command client', () => {
     }
   )
 
+  it('includes every occurrence revision when archiving a task', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ data: commandResultFixture() }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await archiveTaskDefinition('task-1', revisions)
+
+    expect(requestPath(fetchMock, 0)).toBe('/api/tasks/task-1/archive')
+    expect(requestBody(fetchMock, 0)).toEqual(revisions)
+  })
+
   it('includes every occurrence revision when cancelling a task', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -564,6 +576,24 @@ describe('task lifecycle command client', () => {
     await cancelTaskDefinition('task-1', revisions)
 
     expect(requestPath(fetchMock, 0)).toBe('/api/tasks/task-1/cancel')
+    expect(requestBody(fetchMock, 0)).toEqual(revisions)
+  })
+
+  it('deletes a whole task with every aggregate revision', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        data: { task_id: 'task-1', deleted: true, task_revision: 5 },
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deleteTaskDefinition('task-1', revisions)).resolves.toEqual({
+      task_id: 'task-1',
+      deleted: true,
+      task_revision: 5,
+    })
+    expect(requestPath(fetchMock, 0)).toBe('/api/tasks/task-1')
+    expect(requestInit(fetchMock, 0).method).toBe('DELETE')
     expect(requestBody(fetchMock, 0)).toEqual(revisions)
   })
 

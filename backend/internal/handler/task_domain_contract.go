@@ -454,6 +454,12 @@ type TaskAggregateCommandResponse struct {
 	OccurrenceRevisions map[string]int64 `json:"occurrence_revisions,omitempty"`
 }
 
+type TaskDeleteResponse struct {
+	TaskID       string `json:"task_id"`
+	Deleted      bool   `json:"deleted"`
+	TaskRevision int64  `json:"task_revision"`
+}
+
 // CalendarEntryV2DTO is a read projection over an occurrence rather than a
 // second event write model.
 type CalendarEntryV2DTO struct {

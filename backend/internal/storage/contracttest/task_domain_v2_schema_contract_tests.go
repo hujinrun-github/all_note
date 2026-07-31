@@ -35,6 +35,7 @@ func RunTaskDomainV2SchemaSuite(t *testing.T, db *sql.DB, dialect TaskDomainV2Di
 		"domain_task_schedule_versions_v2",
 		"domain_task_occurrences_v2",
 		"domain_task_execution_logs_v2",
+		"domain_task_delete_context_v2",
 		"mobile_v2_commit_heads",
 		"mobile_v2_command_receipts",
 		"mobile_v2_change_batches",

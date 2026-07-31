@@ -141,6 +141,41 @@ func RunTaskDomainV2AggregateSuite(t *testing.T, fixture TaskDomainV2AggregateFi
 		}
 		assertAggregateCounts(t, fixture.DB, crossWorkspace.Task.ID, 0, 0, 0, 0)
 	})
+
+	t.Run("permanent_delete_removes_the_whole_aggregate_and_execution_history", func(t *testing.T) {
+		snapshot := unscheduledAggregate("aggregate-w1", "task-delete")
+		if err := create("aggregate-w1", snapshot); err != nil {
+			t.Fatalf("create delete fixture: %v", err)
+		}
+		mustExec(t, fixture.DB, `INSERT INTO domain_task_execution_logs_v2
+			(workspace_id,id,occurrence_id,from_status,to_status,actor_id,metadata,created_at)
+			VALUES ('aggregate-w1','log-task-delete','occ-task-delete','open','active','user-1','{}',CURRENT_TIMESTAMP)`)
+		err := fixture.Writer.BeginFencedWrite(ctx, "aggregate-w1", 1, func(tx storage.TenantWriteTx) error {
+			deleter, ok := tx.TaskDomainWriter().(taskdomain.TaskAggregateDeleter)
+			if !ok {
+				return fmt.Errorf("task writer does not support permanent delete")
+			}
+			return deleter.DeleteTaskAggregate(ctx, taskdomain.TaskAggregateDelete{
+				WorkspaceID: "aggregate-w1", TaskID: "task-delete",
+				ExpectedRevisions:        taskdomain.AggregateExpectedRevisions{Task: 1, Occurrences: map[string]int64{"occ-task-delete": 1}},
+				ExpectedScheduleRevision: 1,
+			})
+		})
+		if err != nil {
+			t.Fatalf("delete aggregate: %v", err)
+		}
+		assertAggregateCounts(t, fixture.DB, snapshot.Task.ID, 0, 0, 0, 0)
+		var logs, contexts int
+		if err := fixture.DB.QueryRow(`SELECT COUNT(*) FROM domain_task_execution_logs_v2 WHERE id='log-task-delete'`).Scan(&logs); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.DB.QueryRow(`SELECT COUNT(*) FROM domain_task_delete_context_v2 WHERE task_id='task-delete'`).Scan(&contexts); err != nil {
+			t.Fatal(err)
+		}
+		if logs != 0 || contexts != 0 {
+			t.Fatalf("delete remnants logs=%d contexts=%d", logs, contexts)
+		}
+	})
 }
 
 func unscheduledAggregate(workspaceID, taskID string) taskdomain.TaskAggregateSnapshot {

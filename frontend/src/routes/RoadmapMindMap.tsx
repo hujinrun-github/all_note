@@ -43,11 +43,13 @@ import {
 import { roadmapNodeProgress } from '../components/roadmapPlan/RoadmapStageRail'
 import { useRoadmapV2 } from '../hooks/useRoadmapV2'
 import {
+  useArchiveTaskMutation,
   useBlockOccurrenceMutation,
   useCancelOccurrenceMutation,
   useCancelTaskMutation,
   useCompleteOccurrenceMutation,
   useCreateTaskMutation,
+  useDeleteTaskMutation,
   useOccurrences,
   useProject,
   useReopenOccurrenceMutation,
@@ -247,6 +249,8 @@ export default function RoadmapMindMap() {
   const createTask = useCreateTaskMutation()
   const updateTask = useUpdateTaskDefinitionMutation()
   const cancelTask = useCancelTaskMutation()
+  const archiveTask = useArchiveTaskMutation()
+  const deleteTask = useDeleteTaskMutation()
   const startOccurrence = useStartOccurrenceMutation()
   const blockOccurrence = useBlockOccurrenceMutation()
   const unblockOccurrence = useUnblockOccurrenceMutation()
@@ -285,7 +289,11 @@ export default function RoadmapMindMap() {
   const nodeTasks = useMemo(
     () =>
       [...(tasks.data ?? [])]
-        .filter((task: TaskV2) => task.roadmap_node_id === roadmapNodeID)
+        .filter(
+          (task: TaskV2) =>
+            task.roadmap_node_id === roadmapNodeID &&
+            task.lifecycle_status !== 'archived'
+        )
         .sort(
           (left: TaskV2, right: TaskV2) => left.sort_order - right.sort_order
         ),
@@ -657,6 +665,23 @@ export default function RoadmapMindMap() {
     }
   }
 
+  function taskCommandVariables(task: TaskV2, taskOccurrences: OccurrenceV2[]) {
+    return {
+      projectID,
+      taskID: task.id,
+      expectedRevisions: {
+        expected_task_revision: task.revision,
+        expected_schedule_revision: task.schedule_revision,
+        expected_occurrence_revisions: Object.fromEntries(
+          taskOccurrences.map((occurrence) => [
+            occurrence.id,
+            occurrence.revision,
+          ])
+        ),
+      },
+    }
+  }
+
   return (
     <section className="mindmap-page">
       <header className="mindmap-page-header">
@@ -936,6 +961,27 @@ export default function RoadmapMindMap() {
             onCancel={() => setCancelTaskID(selectedTask.id)}
             isCompleting={completeOccurrence.isPending}
             isStatusChanging={statusCommandBusy}
+            isRetentionChanging={archiveTask.isPending || deleteTask.isPending}
+            onArchive={() =>
+              archiveTask
+                .mutateAsync(
+                  taskCommandVariables(selectedTask, selectedTaskOccurrences)
+                )
+                .then(() => {
+                  setInspectorOpen(false)
+                  setSelectedNodeID('')
+                })
+            }
+            onDelete={() =>
+              deleteTask
+                .mutateAsync(
+                  taskCommandVariables(selectedTask, selectedTaskOccurrences)
+                )
+                .then(() => {
+                  setInspectorOpen(false)
+                  setSelectedNodeID('')
+                })
+            }
             onStatusChange={changeSelectedOccurrenceStatus}
             onComplete={async () => {
               try {

@@ -368,11 +368,9 @@ function useTaskCommandMutation(
         lifecycleStatus,
         response
       )
-      void invalidateAffectedTaskDomain(
-        queryClient,
-        variables,
-        response
-      ).catch(() => undefined)
+      void invalidateAffectedTaskDomain(queryClient, variables, response).catch(
+        () => undefined
+      )
     },
   })
 }
@@ -388,10 +386,7 @@ function useOccurrenceCommandMutation(command: OccurrenceCommand) {
 }
 
 export function usePublishTaskMutation() {
-  return useTaskCommandMutation(
-    taskDomainAPI.publishTaskDefinition,
-    'active'
-  )
+  return useTaskCommandMutation(taskDomainAPI.publishTaskDefinition, 'active')
 }
 
 export function usePauseTaskMutation() {
@@ -403,10 +398,7 @@ export function useResumeTaskMutation() {
 }
 
 export function useCancelTaskMutation() {
-  return useTaskCommandMutation(
-    taskDomainAPI.cancelTaskDefinition,
-    'cancelled'
-  )
+  return useTaskCommandMutation(taskDomainAPI.cancelTaskDefinition, 'cancelled')
 }
 
 export function useRestoreTaskMutation() {
@@ -414,10 +406,32 @@ export function useRestoreTaskMutation() {
 }
 
 export function useArchiveTaskMutation() {
-  return useTaskCommandMutation(
-    taskDomainAPI.archiveTaskDefinition,
-    'archived'
-  )
+  return useTaskCommandMutation(taskDomainAPI.archiveTaskDefinition, 'archived')
+}
+
+export function useDeleteTaskMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (variables: TaskCommandVariables) =>
+      taskDomainAPI.deleteTaskDefinition(
+        variables.taskID,
+        variables.expectedRevisions
+      ),
+    onSuccess: async (_response, variables) => {
+      queryClient.removeQueries({
+        queryKey: taskDomainQueryKeys.task(variables.taskID),
+      })
+      const queryKeys: ReadonlyArray<readonly unknown[]> = [
+        taskDomainQueryKeys.project(variables.projectID),
+        taskDomainQueryKeys.taskLists(),
+        taskDomainQueryKeys.occurrenceLists(),
+        taskDomainQueryKeys.calendar(),
+      ]
+      await Promise.all(
+        queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+      )
+    },
+  })
 }
 
 export function useStartOccurrenceMutation() {

@@ -1136,6 +1136,65 @@ func (w *postgresTaskDomainV2ProjectWriter) SaveTaskAggregate(ctx context.Contex
 	return nil
 }
 
+func (w *postgresTaskDomainV2ProjectWriter) DeleteTaskAggregate(ctx context.Context, deletion taskdomain.TaskAggregateDelete) error {
+	if w.closed() {
+		return storage.ErrTenantWriteTxClosed
+	}
+	if deletion.WorkspaceID != w.workspaceID || strings.TrimSpace(deletion.TaskID) == "" ||
+		deletion.ExpectedRevisions.Task < 1 || deletion.ExpectedScheduleRevision < 1 {
+		return taskdomain.ErrInvalidTaskCommand
+	}
+	if err := requirePostgresTaskDomainV2ScheduleRevision(ctx, w.queryer, w.workspaceID, deletion.TaskID, deletion.ExpectedScheduleRevision); err != nil {
+		return err
+	}
+	rows, err := w.queryer.QueryContext(ctx, `SELECT id,revision FROM domain_task_occurrences_v2 WHERE workspace_id=$1 AND task_id=$2`, w.workspaceID, deletion.TaskID)
+	if err != nil {
+		return err
+	}
+	current := make(map[string]int64)
+	for rows.Next() {
+		var occurrenceID string
+		var revision int64
+		if err := rows.Scan(&occurrenceID, &revision); err != nil {
+			rows.Close()
+			return err
+		}
+		current[occurrenceID] = revision
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(current) != len(deletion.ExpectedRevisions.Occurrences) {
+		return taskdomain.ErrOccurrenceRevisionConflict
+	}
+	for occurrenceID, revision := range current {
+		if deletion.ExpectedRevisions.Occurrences[occurrenceID] != revision {
+			return taskdomain.ErrOccurrenceRevisionConflict
+		}
+	}
+	if _, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_task_delete_context_v2(workspace_id,task_id) VALUES ($1,$2)`, w.workspaceID, deletion.TaskID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_task_execution_logs_v2 WHERE workspace_id=$1 AND occurrence_id IN (
+		SELECT id FROM domain_task_occurrences_v2 WHERE workspace_id=$1 AND task_id=$2
+	)`, w.workspaceID, deletion.TaskID); err != nil {
+		return err
+	}
+	result, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_tasks_v2 WHERE workspace_id=$1 AND id=$2 AND revision=$3`, w.workspaceID, deletion.TaskID, deletion.ExpectedRevisions.Task)
+	if err != nil {
+		return err
+	}
+	if err := requirePostgresTaskDomainV2Changed(result); err != nil {
+		return err
+	}
+	_, err = w.queryer.ExecContext(ctx, `DELETE FROM domain_task_delete_context_v2 WHERE workspace_id=$1 AND task_id=$2`, w.workspaceID, deletion.TaskID)
+	return err
+}
+
 func (w *postgresTaskDomainV2ProjectWriter) validateTaskAttributeReferences(ctx context.Context, task taskdomain.TaskRecord) error {
 	var projectExists bool
 	if err := w.queryer.QueryRowContext(ctx, `SELECT EXISTS(

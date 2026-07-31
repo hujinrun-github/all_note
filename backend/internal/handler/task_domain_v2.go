@@ -32,6 +32,7 @@ type TaskDomainV2Application interface {
 	DeleteProject(context.Context, taskapp.ExistingProjectRequest) (taskapp.ProjectCommandOutcome, error)
 	CreateTask(context.Context, taskapp.CreateTaskRequest) (taskapp.CreateTaskResult, error)
 	ExecuteTaskLifecycle(context.Context, taskapp.TaskLifecycleRequest) (taskapp.TaskCommandOutcome, error)
+	DeleteTask(context.Context, taskapp.DeleteTaskRequest) (taskapp.TaskCommandOutcome, error)
 	ExecuteOccurrenceByID(context.Context, taskapp.OccurrenceByIDRequest) (taskapp.OccurrenceCommandOutcome, error)
 	RescheduleOccurrence(context.Context, taskapp.RescheduleOccurrenceRequest) (taskapp.ScheduleCommandOutcome, error)
 	RescheduleThisAndFollowing(context.Context, taskapp.RescheduleThisAndFollowingRequest) (taskapp.ScheduleCommandOutcome, error)
@@ -128,6 +129,7 @@ func RegisterTaskDomainV2RoutesWithAI(
 	routes.POST("/tasks", handler.createTask)
 	routes.GET("/tasks/:taskID", handler.getTask)
 	routes.PATCH("/tasks/:taskID", handler.patchTask)
+	routes.DELETE("/tasks/:taskID", handler.deleteTask)
 	for _, command := range []taskdomain.TaskLifecycleCommand{
 		taskdomain.TaskCommandPublish, taskdomain.TaskCommandPause, taskdomain.TaskCommandResume,
 		taskdomain.TaskCommandCancel, taskdomain.TaskCommandRestore, taskdomain.TaskCommandArchive,
@@ -431,6 +433,32 @@ func (handler taskDomainV2Handler) taskLifecycle(command taskdomain.TaskLifecycl
 		}
 		success(c, TaskAggregateCommandResponse{TaskRevision: outcome.TaskRevision, ScheduleRevision: optionalPositiveRevision(outcome.ScheduleRevision), OccurrenceRevisions: outcome.OccurrenceRevisions})
 	}
+}
+
+func (handler taskDomainV2Handler) deleteTask(c *gin.Context) {
+	identity, ok := taskDomainAuthenticatedIdentity(c)
+	if !ok {
+		return
+	}
+	var request TaskAggregateCommandRequest
+	if !decodeTaskDomainRequest(c, &request) {
+		return
+	}
+	scheduleRevision := int64(0)
+	if request.ExpectedScheduleRevision != nil {
+		scheduleRevision = *request.ExpectedScheduleRevision
+	}
+	outcome, err := handler.application.DeleteTask(c.Request.Context(), taskapp.DeleteTaskRequest{
+		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, TaskID: c.Param("taskID"),
+		Expected: taskdomain.LifecycleExpectedRevisions{
+			Task: request.ExpectedTaskRevision, Schedule: scheduleRevision, Occurrences: request.ExpectedOccurrenceRevisions,
+		},
+	})
+	if err != nil {
+		writeTaskDomainError(c, err)
+		return
+	}
+	success(c, TaskDeleteResponse{TaskID: c.Param("taskID"), Deleted: true, TaskRevision: outcome.TaskRevision})
 }
 
 func (handler taskDomainV2Handler) occurrenceCommand(command taskdomain.OccurrenceCommand) gin.HandlerFunc {

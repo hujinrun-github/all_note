@@ -943,6 +943,9 @@ type taskServiceFake struct {
 	lifecycleEpochs  []int64
 	lifecycleResult  TaskCommandOutcome
 	lifecycleErr     error
+	deleteRequest    taskdomain.DeleteTaskRequest
+	deleteResult     TaskCommandOutcome
+	deleteErr        error
 }
 
 func (service *taskServiceFake) CreateTask(_ context.Context, request taskdomain.CreateTaskRequest) (TaskCommandOutcome, error) {
@@ -961,6 +964,11 @@ func (service *taskServiceFake) ExecuteLifecycleCommand(_ context.Context, reque
 	service.lifecycleRequest = request
 	service.lifecycleEpochs = append(service.lifecycleEpochs, request.ExpectedRuntimeEpoch)
 	return service.lifecycleResult, service.lifecycleErr
+}
+
+func (service *taskServiceFake) DeleteTask(_ context.Context, request taskdomain.DeleteTaskRequest) (TaskCommandOutcome, error) {
+	service.deleteRequest = request
+	return service.deleteResult, service.deleteErr
 }
 
 type occurrenceServiceFake struct {

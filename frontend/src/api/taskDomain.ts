@@ -235,6 +235,12 @@ export interface TaskAggregateCommandResponse {
   occurrence_revisions: Record<string, number>
 }
 
+export interface TaskDeleteResponse {
+  task_id: string
+  deleted: boolean
+  task_revision: number
+}
+
 export interface BlockOccurrenceInput extends TaskDomainExpectedRevisions {
   blocked_reason: string
   next_action: string
@@ -643,6 +649,18 @@ export function archiveTaskDefinition(
   return taskLifecycleCommand(taskID, 'archive', revisions)
 }
 
+export function deleteTaskDefinition(
+  taskID: string,
+  revisions: TaskDomainExpectedRevisions
+) {
+  assertTaskDomainExpectedRevisions(revisions)
+  return requestData<TaskDeleteResponse>(
+    `/api/tasks/${encodeURIComponent(taskID)}`,
+    jsonRequest('DELETE', revisions),
+    revisions
+  )
+}
+
 export function startOccurrence(
   occurrenceID: string,
   revisions: TaskDomainExpectedRevisions
@@ -721,7 +739,7 @@ function taskLifecycleCommand(
   revisions: TaskDomainExpectedRevisions
 ) {
   const commandRevisions =
-    command === 'cancel'
+    command === 'cancel' || command === 'archive'
       ? revisions
       : {
           ...revisions,
@@ -732,6 +750,22 @@ function taskLifecycleCommand(
     jsonPost(commandRevisions),
     commandRevisions
   )
+}
+
+function assertTaskDomainExpectedRevisions(
+  revisions: TaskDomainExpectedRevisions
+) {
+  assertTaskDefinitionExpectedRevisions(revisions)
+  if (
+    !isRecord(revisions.expected_occurrence_revisions) ||
+    Object.values(revisions.expected_occurrence_revisions).some(
+      (revision) => !Number.isSafeInteger(revision) || revision < 1
+    )
+  ) {
+    throw new TypeError(
+      'expected_occurrence_revisions must contain positive integers'
+    )
+  }
 }
 
 type OccurrenceCommand =

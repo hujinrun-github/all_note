@@ -128,6 +128,48 @@ func CancelTaskAggregate(
 	return next, logs, nil
 }
 
+// ArchiveTaskAggregate removes a task from active views while preserving its
+// definition. Any executable occurrence is cancelled in the same atomic
+// write so an archived task can never leave runnable work behind.
+func ArchiveTaskAggregate(
+	current TaskAggregate,
+	expected AggregateExpectedRevisions,
+	transitions map[string]ExecutionTransition,
+) (TaskAggregate, []ExecutionLog, error) {
+	affectedIDs := make([]string, 0, len(current.Occurrences))
+	for _, occurrence := range current.Occurrences {
+		if !isTerminalExecutionStatus(occurrence.ExecutionStatus) {
+			affectedIDs = append(affectedIDs, occurrence.ID)
+		}
+	}
+	if err := validateAggregateRevisions(current, expected, affectedIDs); err != nil {
+		return current, nil, err
+	}
+
+	nextTaskStatus, err := ArchiveTask(current.LifecycleStatus)
+	if err != nil {
+		return current, nil, err
+	}
+	next := cloneTaskAggregate(current)
+	logs := make([]ExecutionLog, 0, len(affectedIDs))
+	for index, occurrence := range current.Occurrences {
+		if isTerminalExecutionStatus(occurrence.ExecutionStatus) {
+			continue
+		}
+		updated, log, err := CancelOccurrence(occurrence, transitions[occurrence.ID])
+		if err != nil {
+			return current, nil, err
+		}
+		next.Occurrences[index] = updated
+		logs = append(logs, log)
+	}
+
+	next.LifecycleStatus = nextTaskStatus
+	next.GenerationEnabled = false
+	next.Revision++
+	return next, logs, nil
+}
+
 // PauseTaskAggregate only pauses future materialization. Existing occurrences
 // remain executable and retain their revisions.
 func PauseTaskAggregate(current TaskAggregate, expectedTaskRevision int64) (TaskAggregate, []ExecutionLog, error) {

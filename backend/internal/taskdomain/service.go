@@ -30,6 +30,7 @@ const (
 	TaskCommandCancel  TaskLifecycleCommand = "cancel"
 	TaskCommandRestore TaskLifecycleCommand = "restore"
 	TaskCommandArchive TaskLifecycleCommand = "archive"
+	TaskCommandDelete  TaskLifecycleCommand = "delete"
 )
 
 // TaskDomainCommandFencer is the task-domain adapter surface over a tenant
@@ -81,6 +82,16 @@ type LifecycleCommandRequest struct {
 	WorkspaceID          string
 	TaskID               string
 	Command              TaskLifecycleCommand
+	ExpectedRuntimeEpoch int64
+	Expected             LifecycleExpectedRevisions
+	CommandID            string
+	ActorID              string
+	At                   time.Time
+}
+
+type DeleteTaskRequest struct {
+	WorkspaceID          string
+	TaskID               string
 	ExpectedRuntimeEpoch int64
 	Expected             LifecycleExpectedRevisions
 	CommandID            string
@@ -159,6 +170,61 @@ func (result TaskCommandResult) ExecutionLogs() []ExecutionLog {
 func (result TaskCommandResult) IsZero() bool {
 	return reflect.DeepEqual(result.task, TaskRecord{}) && result.taskRevision == 0 && result.scheduleRevision == 0 && result.lifecycleStatus == "" &&
 		len(result.occurrenceRevisions) == 0 && len(result.executionLogs) == 0 && result.audit == (TaskCommandAudit{})
+}
+
+func (service *TaskService) DeleteTask(ctx context.Context, request DeleteTaskRequest) (TaskCommandResult, error) {
+	if service == nil || service.fencer == nil || service.reader == nil || strings.TrimSpace(request.WorkspaceID) == "" ||
+		strings.TrimSpace(request.TaskID) == "" || request.ExpectedRuntimeEpoch < 1 || request.Expected.Task < 1 ||
+		request.Expected.Schedule < 1 || !validCommandAudit(request.CommandID, request.ActorID, request.At) {
+		return TaskCommandResult{}, ErrInvalidTaskCommand
+	}
+
+	var result TaskCommandResult
+	err := service.fencer.BeginFencedWrite(ctx, request.WorkspaceID, request.ExpectedRuntimeEpoch, func(tx TaskDomainFencedTx) error {
+		if tx == nil || tx.TaskDomainWriter() == nil {
+			return ErrInvalidTaskCommand
+		}
+		deleter, ok := tx.TaskDomainWriter().(TaskAggregateDeleter)
+		if !ok {
+			return ErrInvalidTaskCommand
+		}
+		state, err := service.reader.GetTaskAggregateState(ctx, request.TaskID)
+		if err != nil {
+			return err
+		}
+		if state.Task.WorkspaceID != request.WorkspaceID || state.Task.ID != request.TaskID ||
+			state.Aggregate.WorkspaceID != request.WorkspaceID || state.Aggregate.TaskID != request.TaskID ||
+			state.Task.Revision != state.Aggregate.Revision {
+			return ErrInvalidTaskCommand
+		}
+		if state.Aggregate.Revision != request.Expected.Task {
+			return ErrTaskRevisionConflict
+		}
+		if state.ScheduleRevision != request.Expected.Schedule {
+			return ErrScheduleRevisionConflict
+		}
+		expectedOccurrences, err := validateAllOccurrenceRevisions(state.Aggregate, request.Expected.Occurrences)
+		if err != nil {
+			return err
+		}
+		if err := deleter.DeleteTaskAggregate(ctx, TaskAggregateDelete{
+			WorkspaceID:              request.WorkspaceID,
+			TaskID:                   request.TaskID,
+			ExpectedRevisions:        AggregateExpectedRevisions{Task: request.Expected.Task, Occurrences: expectedOccurrences},
+			ExpectedScheduleRevision: request.Expected.Schedule,
+		}); err != nil {
+			return err
+		}
+		result = newTaskCommandResult(
+			request.Expected.Task+1, request.Expected.Schedule, state.Aggregate.LifecycleStatus, expectedOccurrences, nil,
+			TaskCommandDelete, request.CommandID, request.TaskID, request.ActorID, request.At,
+		)
+		return nil
+	})
+	if err != nil {
+		return TaskCommandResult{}, err
+	}
+	return result, nil
 }
 
 func (service *TaskService) CreateTask(ctx context.Context, request CreateTaskRequest) (TaskCommandResult, error) {
@@ -408,7 +474,7 @@ func (service *TaskService) ExecuteLifecycleCommand(ctx context.Context, request
 }
 
 func executeLifecycleTransition(current TaskAggregate, request LifecycleCommandRequest) (TaskAggregate, []ExecutionLog, map[string]int64, error) {
-	if request.Command == TaskCommandCancel {
+	if request.Command == TaskCommandCancel || request.Command == TaskCommandArchive {
 		expectedOccurrences, err := validateCancelOccurrenceRevisions(current, request.Expected.Occurrences)
 		if err != nil {
 			return current, nil, nil, err
@@ -426,11 +492,14 @@ func executeLifecycleTransition(current TaskAggregate, request LifecycleCommandR
 				At:      request.At,
 			}
 		}
-		next, logs, err := CancelTaskAggregate(
-			current,
-			AggregateExpectedRevisions{Task: request.Expected.Task, Occurrences: expectedOccurrences},
-			transitions,
-		)
+		expected := AggregateExpectedRevisions{Task: request.Expected.Task, Occurrences: expectedOccurrences}
+		var next TaskAggregate
+		var logs []ExecutionLog
+		if request.Command == TaskCommandArchive {
+			next, logs, err = ArchiveTaskAggregate(current, expected, transitions)
+		} else {
+			next, logs, err = CancelTaskAggregate(current, expected, transitions)
+		}
 		return next, logs, expectedOccurrences, err
 	}
 	if len(request.Expected.Occurrences) != 0 {
@@ -452,8 +521,6 @@ func executeLifecycleTransition(current TaskAggregate, request LifecycleCommandR
 	switch request.Command {
 	case TaskCommandPublish, TaskCommandResume, TaskCommandRestore:
 		next.GenerationEnabled = next.Recurring
-	case TaskCommandArchive:
-		next.GenerationEnabled = false
 	}
 	return next, nil, map[string]int64{}, nil
 }
@@ -476,19 +543,39 @@ func lifecycleStatusTransition(command TaskLifecycleCommand, current TaskLifecyc
 func validateCancelOccurrenceRevisions(current TaskAggregate, expected map[string]int64) (map[string]int64, error) {
 	affected := make(map[string]int64)
 	for _, occurrence := range current.Occurrences {
+		revision, exists := expected[occurrence.ID]
+		if exists && revision != occurrence.Revision {
+			return nil, ErrOccurrenceRevisionConflict
+		}
 		if isTerminalExecutionStatus(occurrence.ExecutionStatus) {
 			continue
 		}
-		revision, exists := expected[occurrence.ID]
 		if !exists || revision != occurrence.Revision {
 			return nil, ErrOccurrenceRevisionConflict
 		}
 		affected[occurrence.ID] = revision
 	}
-	if len(affected) != len(expected) {
-		return nil, ErrOccurrenceRevisionConflict
+	for occurrenceID := range expected {
+		if occurrenceIndex(current.Occurrences, occurrenceID) < 0 {
+			return nil, ErrOccurrenceRevisionConflict
+		}
 	}
 	return affected, nil
+}
+
+func validateAllOccurrenceRevisions(current TaskAggregate, expected map[string]int64) (map[string]int64, error) {
+	if len(expected) != len(current.Occurrences) {
+		return nil, ErrOccurrenceRevisionConflict
+	}
+	validated := make(map[string]int64, len(current.Occurrences))
+	for _, occurrence := range current.Occurrences {
+		revision, exists := expected[occurrence.ID]
+		if !exists || revision != occurrence.Revision {
+			return nil, ErrOccurrenceRevisionConflict
+		}
+		validated[occurrence.ID] = revision
+	}
+	return validated, nil
 }
 
 func validateLifecycleCommandRequest(service *TaskService, request LifecycleCommandRequest) error {

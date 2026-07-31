@@ -15,6 +15,7 @@ import {
   useBlockOccurrenceMutation,
   useCancelTaskMutation,
   useCompleteOccurrenceMutation,
+  useDeleteTaskMutation,
   useOccurrences,
   usePauseTaskMutation,
   useProjects,
@@ -104,6 +105,7 @@ export default function TaskOccurrenceWorkspace() {
   const cancelTask = useCancelTaskMutation()
   const restoreTask = useRestoreTaskMutation()
   const archiveTask = useArchiveTaskMutation()
+  const deleteTask = useDeleteTaskMutation()
   const updateTask = useUpdateTaskDefinitionMutation()
 
   const occurrenceQueries = {
@@ -206,6 +208,7 @@ export default function TaskOccurrenceWorkspace() {
     cancelTask,
     restoreTask,
     archiveTask,
+    deleteTask,
   ].some((mutation) => mutation.isPending)
 
   function updateSearchParams(update: Record<string, string | null>) {
@@ -779,9 +782,18 @@ export default function TaskOccurrenceWorkspace() {
               )
             }
             onArchive={() =>
-              handleTaskCommand(() =>
-                archiveTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
+              archiveTask
+                .mutateAsync(taskCommandVariables(selectedTask))
+                .then(() =>
+                  updateSearchParams({ occurrence_id: null, task_id: null })
+                )
+            }
+            onDelete={() =>
+              deleteTask
+                .mutateAsync(taskCommandVariables(selectedTask))
+                .then(() =>
+                  updateSearchParams({ occurrence_id: null, task_id: null })
+                )
             }
           />
         ) : null}

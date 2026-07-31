@@ -15,6 +15,7 @@ import {
   useCreateTaskMutation,
   useCreateProjectMutation,
   useDeleteProjectMutation,
+  useDeleteTaskMutation,
   useOccurrence,
   useOccurrences,
   usePauseTaskMutation,
@@ -62,6 +63,7 @@ vi.mock('../api/taskDomain', async () => {
     cancelTaskDefinition: vi.fn(),
     restoreTaskDefinition: vi.fn(),
     archiveTaskDefinition: vi.fn(),
+    deleteTaskDefinition: vi.fn(),
     startOccurrence: vi.fn(),
     blockOccurrence: vi.fn(),
     unblockOccurrence: vi.fn(),
@@ -314,6 +316,43 @@ describe('task-domain mutation hooks', () => {
         taskDomainQueryKeys.taskLists(),
         taskDomainQueryKeys.occurrenceLists(),
         taskDomainQueryKeys.occurrence('occurrence-1'),
+        taskDomainQueryKeys.calendar(),
+      ]
+    )
+  })
+
+  it('removes deleted task detail and invalidates every affected projection', async () => {
+    vi.mocked(taskDomainAPI.deleteTaskDefinition).mockResolvedValue({
+      task_id: 'task-1',
+      deleted: true,
+      task_revision: 7,
+    })
+    const { client, wrapper } = createQueryWrapper()
+    client.setQueryData(taskDomainQueryKeys.task('task-1'), taskFixture)
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useDeleteTaskMutation(), { wrapper })
+    const expectedRevisions = revisionsFixture()
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        expectedRevisions,
+      })
+    })
+
+    expect(taskDomainAPI.deleteTaskDefinition).toHaveBeenCalledWith(
+      'task-1',
+      expectedRevisions
+    )
+    expect(
+      client.getQueryData(taskDomainQueryKeys.task('task-1'))
+    ).toBeUndefined()
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      [
+        taskDomainQueryKeys.project('project-1'),
+        taskDomainQueryKeys.taskLists(),
+        taskDomainQueryKeys.occurrenceLists(),
         taskDomainQueryKeys.calendar(),
       ]
     )

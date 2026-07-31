@@ -92,6 +92,9 @@ describe('Task occurrence workspace', () => {
     vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.useArchiveTaskMutation>
     )
+    vi.mocked(taskHooks.useDeleteTaskMutation).mockReturnValue(
+      idleMutation() as ReturnType<typeof taskHooks.useDeleteTaskMutation>
+    )
     vi.mocked(taskHooks.useUpdateTaskDefinitionMutation).mockReturnValue(
       idleMutation() as ReturnType<
         typeof taskHooks.useUpdateTaskDefinitionMutation

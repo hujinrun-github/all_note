@@ -1,6 +1,5 @@
 import {
   AlertOctagon,
-  Archive,
   Ban,
   CalendarDays,
   Check,
@@ -41,6 +40,7 @@ import {
   TaskCompletionGate,
   taskCompletionProgress,
 } from './TaskCompletionGate'
+import { TaskRetentionActions } from './TaskRetentionActions'
 
 export interface OccurrenceRowProps {
   occurrence: OccurrenceV2
@@ -396,6 +396,7 @@ export interface TaskDefinitionInspectorProps {
   onCancel?: () => Promise<unknown> | void
   onRestore?: () => Promise<unknown> | void
   onArchive?: () => Promise<unknown> | void
+  onDelete?: () => Promise<unknown> | void
   onUpdate?: (input: TaskDefinitionEditInput) => Promise<unknown>
   busy?: boolean
 }
@@ -417,6 +418,7 @@ export function TaskDefinitionInspector({
   onCancel,
   onRestore,
   onArchive,
+  onDelete,
   onUpdate,
   busy = false,
 }: TaskDefinitionInspectorProps) {
@@ -608,7 +610,6 @@ export function TaskDefinitionInspector({
           onResume={onResume}
           onCancel={onCancel}
           onRestore={onRestore}
-          onArchive={onArchive}
           busy={busy}
         />
         <dl className="td-field-list">
@@ -686,6 +687,13 @@ export function TaskDefinitionInspector({
             <p>发布后会在这里显示执行实例。</p>
           )}
         </div>
+        <TaskRetentionActions
+          taskTitle={task.title}
+          archived={task.lifecycle_status === 'archived'}
+          onArchive={onArchive}
+          onDelete={onDelete}
+          busy={busy}
+        />
       </div>
     </aside>
   )
@@ -707,7 +715,6 @@ function TaskLifecycleActions({
   onResume,
   onCancel,
   onRestore,
-  onArchive,
   busy,
 }: {
   status: TaskLifecycleStatus
@@ -716,7 +723,6 @@ function TaskLifecycleActions({
   onResume?: () => Promise<unknown> | void
   onCancel?: () => Promise<unknown> | void
   onRestore?: () => Promise<unknown> | void
-  onArchive?: () => Promise<unknown> | void
   busy: boolean
 }) {
   if (status === 'draft') {
@@ -767,7 +773,7 @@ function TaskLifecycleActions({
   }
   if (status === 'cancelled') {
     return (
-      <div className="td-command-grid is-two">
+      <div className="td-command-grid is-one">
         <button
           type="button"
           className="is-primary"
@@ -777,31 +783,10 @@ function TaskLifecycleActions({
           <RotateCcw aria-hidden="true" />
           恢复
         </button>
-        <button
-          type="button"
-          disabled={!onArchive || busy}
-          onClick={() => void onArchive?.()}
-        >
-          <Archive aria-hidden="true" />
-          归档
-        </button>
       </div>
     )
   }
-  if (status === 'completed') {
-    return (
-      <div className="td-command-grid is-one">
-        <button
-          type="button"
-          disabled={!onArchive || busy}
-          onClick={() => void onArchive?.()}
-        >
-          <Archive aria-hidden="true" />
-          归档
-        </button>
-      </div>
-    )
-  }
+  if (status === 'completed' || status === 'archived') return null
   return (
     <div className="td-command-grid is-two">
       <button
