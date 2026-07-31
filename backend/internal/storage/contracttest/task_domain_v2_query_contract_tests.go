@@ -302,6 +302,10 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 			Name: "需求文档",
 			URL:  "https://example.com/spec",
 		}}
+		task.CompletionRequirements = []taskdomain.TaskCompletionRequirement{{
+			ID: "article-1", Kind: taskdomain.TaskCompletionRequirementArticle,
+			Title: "读完需求文档", URL: "https://example.com/spec", Completed: true,
+		}}
 		task.Revision++
 		next := current.Aggregate
 		next.Revision++
@@ -325,6 +329,9 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		}
 		if !reflect.DeepEqual(updated.Task.AttachmentLinks, task.AttachmentLinks) {
 			t.Fatalf("task attachment links were not persisted: %#v", updated.Task.AttachmentLinks)
+		}
+		if !reflect.DeepEqual(updated.Task.CompletionRequirements, task.CompletionRequirements) {
+			t.Fatalf("task completion requirements were not persisted: %#v", updated.Task.CompletionRequirements)
 		}
 		moved, err := reader.ListTaskDefinitions(ctx, taskdomain.TaskDefinitionListFilter{ProjectID: "query-other"})
 		if err != nil {

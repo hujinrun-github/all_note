@@ -30,17 +30,18 @@ type ScheduleV2Input struct {
 // CreateTaskV2Request submits the stable definition and schedule together so
 // the application service can create the aggregate atomically.
 type CreateTaskV2Request struct {
-	ProjectID       string          `json:"project_id"`
-	RoadmapNodeID   *string         `json:"roadmap_node_id,omitempty"`
-	TaskNoteID      *string         `json:"task_note_id,omitempty"`
-	Title           string          `json:"title"`
-	Description     string          `json:"description,omitempty"`
-	Priority        int             `json:"priority"`
-	SortOrder       float64         `json:"sort_order,omitempty"`
-	Schedule        ScheduleV2Input `json:"schedule"`
-	AllDayEndDate   string          `json:"all_day_end_date,omitempty"`
-	DueAt           *time.Time      `json:"due_at,omitempty"`
-	SelectedOffsets map[string]int  `json:"selected_offsets,omitempty"`
+	ProjectID              string                                 `json:"project_id"`
+	RoadmapNodeID          *string                                `json:"roadmap_node_id,omitempty"`
+	TaskNoteID             *string                                `json:"task_note_id,omitempty"`
+	Title                  string                                 `json:"title"`
+	Description            string                                 `json:"description,omitempty"`
+	CompletionRequirements []taskdomain.TaskCompletionRequirement `json:"completion_requirements,omitempty"`
+	Priority               int                                    `json:"priority"`
+	SortOrder              float64                                `json:"sort_order,omitempty"`
+	Schedule               ScheduleV2Input                        `json:"schedule"`
+	AllDayEndDate          string                                 `json:"all_day_end_date,omitempty"`
+	DueAt                  *time.Time                             `json:"due_at,omitempty"`
+	SelectedOffsets        map[string]int                         `json:"selected_offsets,omitempty"`
 }
 
 // CreateProjectV2Request mirrors the frontend create contract. Terminal
@@ -202,6 +203,9 @@ func (request *CreateTaskV2Request) validateTaskDomainRequest() error {
 		request.Priority < 0 || request.Priority > 3 || invalidOptionalIdentity(request.RoadmapNodeID) ||
 		invalidOptionalIdentity(request.TaskNoteID) || validateSelectedOffsets(request.SelectedOffsets) != nil {
 		return errors.New("invalid task creation")
+	}
+	if _, err := taskdomain.NormalizeTaskCompletionRequirements(request.CompletionRequirements); err != nil {
+		return err
 	}
 	schedule, err := request.Schedule.domainInput()
 	if err != nil {
@@ -395,18 +399,19 @@ type ProjectV2DTO struct {
 // TaskV2DTO uses task_note_id for the stable definition-level note. It must
 // never be conflated with an occurrence-specific note.
 type TaskV2DTO struct {
-	ID               string                          `json:"id"`
-	ProjectID        string                          `json:"project_id"`
-	RoadmapNodeID    *string                         `json:"roadmap_node_id,omitempty"`
-	TaskNoteID       *string                         `json:"task_note_id,omitempty"`
-	Title            string                          `json:"title"`
-	Description      string                          `json:"description,omitempty"`
-	AttachmentLinks  []taskdomain.TaskAttachmentLink `json:"attachment_links,omitempty"`
-	Priority         int                             `json:"priority"`
-	SortOrder        float64                         `json:"sort_order"`
-	LifecycleStatus  taskdomain.TaskLifecycleStatus  `json:"lifecycle_status"`
-	Revision         int64                           `json:"revision"`
-	ScheduleRevision int64                           `json:"schedule_revision"`
+	ID                     string                                 `json:"id"`
+	ProjectID              string                                 `json:"project_id"`
+	RoadmapNodeID          *string                                `json:"roadmap_node_id,omitempty"`
+	TaskNoteID             *string                                `json:"task_note_id,omitempty"`
+	Title                  string                                 `json:"title"`
+	Description            string                                 `json:"description,omitempty"`
+	AttachmentLinks        []taskdomain.TaskAttachmentLink        `json:"attachment_links,omitempty"`
+	CompletionRequirements []taskdomain.TaskCompletionRequirement `json:"completion_requirements,omitempty"`
+	Priority               int                                    `json:"priority"`
+	SortOrder              float64                                `json:"sort_order"`
+	LifecycleStatus        taskdomain.TaskLifecycleStatus         `json:"lifecycle_status"`
+	Revision               int64                                  `json:"revision"`
+	ScheduleRevision       int64                                  `json:"schedule_revision"`
 }
 
 // OccurrenceV2DTO exposes both note relationships with explicit names and
@@ -580,6 +585,9 @@ func MapTaskDomainError(err error) TaskDomainHTTPError {
 	}
 	if errors.Is(err, taskdomain.ErrOccurrenceReopenRequired) {
 		return taskDomainHTTPError(http.StatusConflict, "occurrence_reopen_required", "reopen the occurrence before changing its schedule", false, nil)
+	}
+	if errors.Is(err, taskdomain.ErrTaskCompletionRequirementsIncomplete) {
+		return taskDomainHTTPError(http.StatusConflict, "task_requirements_incomplete", "complete every required item before completing the task", false, nil)
 	}
 	if errors.Is(err, taskdomain.ErrInvalidTaskCommand) {
 		return taskDomainHTTPError(http.StatusBadRequest, "invalid_task_command", "the task command is invalid", false, nil)

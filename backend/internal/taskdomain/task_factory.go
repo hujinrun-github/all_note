@@ -22,13 +22,14 @@ type TaskCreationInput struct {
 	Roadmap     *Roadmap
 	TaskNote    *TaskNoteIdentity
 
-	TaskID      string
-	ActorID     string
-	ActorTime   time.Time
-	Title       string
-	Description string
-	Priority    int
-	SortOrder   float64
+	TaskID                 string
+	ActorID                string
+	ActorTime              time.Time
+	Title                  string
+	Description            string
+	CompletionRequirements []TaskCompletionRequirement
+	Priority               int
+	SortOrder              float64
 
 	Schedule        ScheduleInput
 	AllDayEndDate   string
@@ -87,7 +88,8 @@ func buildTaskAggregateSnapshot(input TaskCreationInput) (TaskAggregateSnapshot,
 		Task: TaskRecord{
 			WorkspaceID: input.WorkspaceID, ID: input.TaskID, ProjectID: input.Project.ProjectID,
 			Title: strings.TrimSpace(input.Title), Description: input.Description,
-			LifecycleStatus: TaskLifecycleDraft, Priority: input.Priority, SortOrder: input.SortOrder, Revision: 1,
+			CompletionRequirements: append([]TaskCompletionRequirement(nil), input.CompletionRequirements...),
+			LifecycleStatus:        TaskLifecycleDraft, Priority: input.Priority, SortOrder: input.SortOrder, Revision: 1,
 		},
 		Schedule: ScheduleHeader{
 			WorkspaceID: input.WorkspaceID, TaskID: input.TaskID, Revision: 1, CurrentScheduleRevision: 1,
@@ -136,6 +138,9 @@ func validateTaskCreationInput(input TaskCreationInput) error {
 		return ErrInvalidTaskCreation
 	}
 	if input.TaskNote != nil && (input.TaskNote.WorkspaceID != input.WorkspaceID || strings.TrimSpace(input.TaskNote.NoteID) == "") {
+		return ErrInvalidTaskCreation
+	}
+	if _, err := NormalizeTaskCompletionRequirements(input.CompletionRequirements); err != nil {
 		return ErrInvalidTaskCreation
 	}
 	return nil

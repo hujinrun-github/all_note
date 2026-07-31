@@ -15,6 +15,10 @@ import {
   occurrenceTitle,
 } from '../components/taskDomain/TaskDomainWorkspace'
 import {
+  TaskCompletionGate,
+  taskCompletionProgress,
+} from '../components/taskDomain/TaskCompletionGate'
+import {
   useCompleteOccurrenceMutation,
   useTaskDefinitions,
   useUpdateTaskDefinitionMutation,
@@ -60,6 +64,7 @@ export default function Inbox() {
   const selectedTask = selectedOccurrence
     ? tasksByID.get(selectedOccurrence.task_id)
     : undefined
+  const selectedCompletionProgress = taskCompletionProgress(selectedTask)
   const organizeTargets = (projectsQuery.data ?? []).filter(
     (project) =>
       !project.system_role &&
@@ -109,7 +114,12 @@ export default function Inbox() {
   }
 
   async function completeSelectedOccurrence() {
-    if (!selectedTask || !selectedOccurrence) return
+    if (
+      !selectedTask ||
+      !selectedOccurrence ||
+      selectedCompletionProgress.remaining > 0
+    )
+      return
     setError('')
     try {
       await completeOccurrence.mutateAsync(
@@ -286,6 +296,8 @@ export default function Inbox() {
                 </div>
               </dl>
 
+              <TaskCompletionGate task={selectedTask} />
+
               <label className="inbox-v2-project-field">
                 <span>归入项目</span>
                 <select
@@ -333,11 +345,23 @@ export default function Inbox() {
                 <button
                   type="button"
                   className="secondary-action"
-                  disabled={completeOccurrence.isPending}
+                  disabled={
+                    completeOccurrence.isPending ||
+                    selectedCompletionProgress.remaining > 0
+                  }
+                  title={
+                    selectedCompletionProgress.remaining > 0
+                      ? '还需完成 ' +
+                        selectedCompletionProgress.remaining +
+                        ' 个必选项'
+                      : undefined
+                  }
                   onClick={() => void completeSelectedOccurrence()}
                 >
                   <Check aria-hidden="true" />
-                  直接完成
+                  {selectedCompletionProgress.remaining > 0
+                    ? '还差 ' + selectedCompletionProgress.remaining + ' 项必选'
+                    : '直接完成'}
                 </button>
               </div>
 

@@ -8,6 +8,7 @@ import {
   Folder,
   ExternalLink,
   Link2,
+  LockKeyhole,
   MoreHorizontal,
   Pause,
   Pencil,
@@ -36,6 +37,10 @@ import type {
   TaskLifecycleStatus,
   TaskV2,
 } from '../../api/taskDomain'
+import {
+  TaskCompletionGate,
+  taskCompletionProgress,
+} from './TaskCompletionGate'
 
 export interface OccurrenceRowProps {
   occurrence: OccurrenceV2
@@ -60,8 +65,11 @@ export function OccurrenceRow({
 }: OccurrenceRowProps) {
   const title = occurrenceTitle(occurrence, task)
   const schedule = formatOccurrenceSchedule(occurrence)
+  const completionProgress = taskCompletionProgress(task)
   const canComplete =
-    onComplete !== undefined && occurrence.execution_status !== 'done'
+    onComplete !== undefined &&
+    occurrence.execution_status !== 'done' &&
+    completionProgress.remaining === 0
 
   function handleKeyboard(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== 'Enter' && event.key !== ' ') return
@@ -84,6 +92,11 @@ export function OccurrenceRow({
           occurrence.execution_status === 'done' ? 'is-done' : ''
         }`}
         aria-label={`完成${title}`}
+        title={
+          completionProgress.remaining > 0
+            ? '还需完成 ' + completionProgress.remaining + ' 个必选项'
+            : undefined
+        }
         disabled={!canComplete}
         onClick={(event) => {
           event.stopPropagation()
@@ -92,6 +105,8 @@ export function OccurrenceRow({
       >
         {occurrence.execution_status === 'done' ? (
           <Check aria-hidden="true" />
+        ) : completionProgress.remaining > 0 ? (
+          <LockKeyhole aria-hidden="true" />
         ) : (
           <Circle aria-hidden="true" />
         )}
@@ -112,6 +127,12 @@ export function OccurrenceRow({
           ) : null}
           {showDefinitionState && task ? (
             <span>定义：{taskLifecycleLabel(task.lifecycle_status)}</span>
+          ) : null}
+          {completionProgress.total > 0 ? (
+            <span>
+              <LockKeyhole aria-hidden="true" />
+              完成门槛 {completionProgress.completed}/{completionProgress.total}
+            </span>
           ) : null}
         </div>
         {occurrence.execution_status === 'blocked' ? (
@@ -175,6 +196,7 @@ export function OccurrenceInspector({
   const terminal = ['done', 'skipped', 'cancelled'].includes(
     occurrence.execution_status
   )
+  const completionProgress = taskCompletionProgress(task)
 
   return (
     <aside
@@ -240,15 +262,30 @@ export function OccurrenceInspector({
               <button
                 type="button"
                 className="is-success"
-                disabled={!onComplete || busy}
+                disabled={
+                  !onComplete || busy || completionProgress.remaining > 0
+                }
+                title={
+                  completionProgress.remaining > 0
+                    ? '还需完成 ' + completionProgress.remaining + ' 个必选项'
+                    : undefined
+                }
                 onClick={() => void onComplete?.()}
               >
-                <Check aria-hidden="true" />
-                完成
+                {completionProgress.remaining > 0 ? (
+                  <LockKeyhole aria-hidden="true" />
+                ) : (
+                  <Check aria-hidden="true" />
+                )}
+                {completionProgress.remaining > 0
+                  ? '还差 ' + completionProgress.remaining + ' 项'
+                  : '完成'}
               </button>
             </>
           )}
         </div>
+
+        {task ? <TaskCompletionGate task={task} /> : null}
 
         {blocking ? (
           <form
@@ -607,6 +644,7 @@ export function TaskDefinitionInspector({
             </div>
           ) : null}
         </dl>
+        <TaskCompletionGate task={task} />
         <div className="td-task-attachments">
           <div className="td-task-attachments-heading">
             <span>附件</span>

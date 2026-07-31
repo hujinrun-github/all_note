@@ -64,6 +64,11 @@ describe('Dashboard v2 today projection', () => {
     vi.mocked(taskHooks.useReopenOccurrenceMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.useReopenOccurrenceMutation>
     )
+    vi.mocked(taskHooks.useUpdateTaskDefinitionMutation).mockReturnValue(
+      idleMutation() as ReturnType<
+        typeof taskHooks.useUpdateTaskDefinitionMutation
+      >
+    )
     vi.mocked(taskHooks.useCreateTaskMutation).mockReturnValue({
       mutateAsync: createTaskMock,
       isPending: false,
@@ -122,6 +127,37 @@ describe('Dashboard v2 today projection', () => {
         duration_minutes: 90,
       },
     })
+  })
+
+  it('locks quick completion when a normal task still has required items', () => {
+    const complete = vi.fn()
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [
+        {
+          ...task('today', '今天处理'),
+          completion_requirements: [
+            {
+              id: 'article-1',
+              kind: 'article',
+              title: '读完方案',
+              completed: false,
+            },
+          ],
+        },
+        task('overdue', '补交周报'),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
+      mutateAsync: complete,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useCompleteOccurrenceMutation>)
+
+    renderDashboard()
+
+    expect(screen.getByRole('button', { name: '完成今天处理' })).toBeDisabled()
+    expect(screen.getByText('完成门槛 0/1')).toBeVisible()
+    expect(complete).not.toHaveBeenCalled()
   })
 })
 

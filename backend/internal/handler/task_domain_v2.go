@@ -48,21 +48,22 @@ type TaskDomainV2Application interface {
 var _ TaskDomainV2Application = (*taskapp.Facade)(nil)
 
 type PatchTaskV2Request struct {
-	ExpectedTaskRevision     int64                            `json:"expected_task_revision"`
-	ExpectedScheduleRevision int64                            `json:"expected_schedule_revision"`
-	Title                    *string                          `json:"title,omitempty"`
-	Description              *string                          `json:"description,omitempty"`
-	AttachmentLinks          *[]taskdomain.TaskAttachmentLink `json:"attachment_links,omitempty"`
-	Priority                 *int                             `json:"priority,omitempty"`
-	SortOrder                *float64                         `json:"sort_order,omitempty"`
-	ProjectID                *string                          `json:"project_id,omitempty"`
-	RoadmapNodeID            *string                          `json:"roadmap_node_id,omitempty"`
-	TaskNoteID               *string                          `json:"task_note_id,omitempty"`
+	ExpectedTaskRevision     int64                                   `json:"expected_task_revision"`
+	ExpectedScheduleRevision int64                                   `json:"expected_schedule_revision"`
+	Title                    *string                                 `json:"title,omitempty"`
+	Description              *string                                 `json:"description,omitempty"`
+	AttachmentLinks          *[]taskdomain.TaskAttachmentLink        `json:"attachment_links,omitempty"`
+	CompletionRequirements   *[]taskdomain.TaskCompletionRequirement `json:"completion_requirements,omitempty"`
+	Priority                 *int                                    `json:"priority,omitempty"`
+	SortOrder                *float64                                `json:"sort_order,omitempty"`
+	ProjectID                *string                                 `json:"project_id,omitempty"`
+	RoadmapNodeID            *string                                 `json:"roadmap_node_id,omitempty"`
+	TaskNoteID               *string                                 `json:"task_note_id,omitempty"`
 }
 
 func (request *PatchTaskV2Request) validateTaskDomainRequest() error {
 	if request == nil || request.ExpectedTaskRevision < 1 || request.ExpectedScheduleRevision < 1 ||
-		(request.Title == nil && request.Description == nil && request.AttachmentLinks == nil && request.Priority == nil && request.SortOrder == nil &&
+		(request.Title == nil && request.Description == nil && request.AttachmentLinks == nil && request.CompletionRequirements == nil && request.Priority == nil && request.SortOrder == nil &&
 			request.ProjectID == nil && request.RoadmapNodeID == nil && request.TaskNoteID == nil) {
 		return errors.New("invalid task patch")
 	}
@@ -74,6 +75,11 @@ func (request *PatchTaskV2Request) validateTaskDomainRequest() error {
 	}
 	if request.AttachmentLinks != nil {
 		if _, err := taskdomain.NormalizeTaskAttachmentLinks(*request.AttachmentLinks); err != nil {
+			return err
+		}
+	}
+	if request.CompletionRequirements != nil {
+		if _, err := taskdomain.NormalizeTaskCompletionRequirements(*request.CompletionRequirements); err != nil {
 			return err
 		}
 	}
@@ -347,7 +353,7 @@ func (handler taskDomainV2Handler) patchTask(c *gin.Context) {
 	task, err := handler.application.PatchTask(c.Request.Context(), taskapp.PatchTaskRequest{
 		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, TaskID: c.Param("taskID"),
 		ExpectedTaskRevision: request.ExpectedTaskRevision, ExpectedScheduleRevision: request.ExpectedScheduleRevision,
-		Title: request.Title, Description: request.Description, AttachmentLinks: request.AttachmentLinks,
+		Title: request.Title, Description: request.Description, AttachmentLinks: request.AttachmentLinks, CompletionRequirements: request.CompletionRequirements,
 		Priority: request.Priority, SortOrder: request.SortOrder,
 		ProjectID: request.ProjectID, RoadmapNodeID: request.RoadmapNodeID, NoteID: request.TaskNoteID,
 	})
@@ -376,7 +382,8 @@ func (handler taskDomainV2Handler) createTask(c *gin.Context) {
 		WorkspaceID: identity.workspaceID, ActorID: identity.actorID,
 		Project: taskdomain.ProjectIdentity{WorkspaceID: identity.workspaceID, ProjectID: request.ProjectID},
 		Title:   request.Title, Description: request.Description, Priority: request.Priority, SortOrder: request.SortOrder,
-		Schedule: schedule, AllDayEndDate: request.AllDayEndDate, DueAt: request.DueAt, SelectedOffsets: request.SelectedOffsets,
+		CompletionRequirements: append([]taskdomain.TaskCompletionRequirement(nil), request.CompletionRequirements...),
+		Schedule:               schedule, AllDayEndDate: request.AllDayEndDate, DueAt: request.DueAt, SelectedOffsets: request.SelectedOffsets,
 	}
 	if request.RoadmapNodeID != nil {
 		applicationRequest.Roadmap = &taskdomain.Roadmap{WorkspaceID: identity.workspaceID, ID: *request.RoadmapNodeID, ProjectID: request.ProjectID, Current: true}
@@ -391,7 +398,8 @@ func (handler taskDomainV2Handler) createTask(c *gin.Context) {
 	}
 	task := TaskV2DTO{ID: outcome.TaskID, ProjectID: request.ProjectID, RoadmapNodeID: request.RoadmapNodeID, TaskNoteID: request.TaskNoteID,
 		Title: request.Title, Description: request.Description, Priority: request.Priority, SortOrder: request.SortOrder,
-		LifecycleStatus: outcome.LifecycleStatus, Revision: outcome.TaskRevision, ScheduleRevision: outcome.ScheduleRevision}
+		CompletionRequirements: append([]taskdomain.TaskCompletionRequirement(nil), request.CompletionRequirements...),
+		LifecycleStatus:        outcome.LifecycleStatus, Revision: outcome.TaskRevision, ScheduleRevision: outcome.ScheduleRevision}
 	occurrences := make([]OccurrenceV2DTO, 0, len(outcome.Occurrences))
 	for _, occurrence := range outcome.Occurrences {
 		occurrences = append(occurrences, createdOccurrenceV2DTO(occurrence, request.TaskNoteID))
@@ -622,8 +630,9 @@ func projectSnapshotV2DTO(snapshot taskdomain.ProjectSnapshot) ProjectV2DTO {
 func taskReadModelV2DTO(model taskdomain.TaskDefinitionSnapshot) TaskV2DTO {
 	return TaskV2DTO{ID: model.Task.ID, ProjectID: model.Task.ProjectID, RoadmapNodeID: optionalString(model.Task.RoadmapNodeID),
 		TaskNoteID: optionalString(model.Task.NoteID), Title: model.Task.Title, Description: model.Task.Description,
-		AttachmentLinks: append([]taskdomain.TaskAttachmentLink(nil), model.Task.AttachmentLinks...),
-		Priority:        model.Task.Priority, SortOrder: model.Task.SortOrder, LifecycleStatus: model.Task.LifecycleStatus,
+		AttachmentLinks:        append([]taskdomain.TaskAttachmentLink(nil), model.Task.AttachmentLinks...),
+		CompletionRequirements: append([]taskdomain.TaskCompletionRequirement(nil), model.Task.CompletionRequirements...),
+		Priority:               model.Task.Priority, SortOrder: model.Task.SortOrder, LifecycleStatus: model.Task.LifecycleStatus,
 		Revision: model.Task.Revision, ScheduleRevision: model.ScheduleRevision}
 }
 

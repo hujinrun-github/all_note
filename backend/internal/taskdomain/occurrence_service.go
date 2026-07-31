@@ -133,6 +133,9 @@ func (service *OccurrenceService) Execute(ctx context.Context, request Occurrenc
 		if currentOccurrence.Revision != request.Expected.Occurrence {
 			return ErrOccurrenceRevisionConflict
 		}
+		if request.Command == OccurrenceCommandComplete && !TaskCompletionRequirementsSatisfied(state.Task.CompletionRequirements) {
+			return ErrTaskCompletionRequirementsIncomplete
+		}
 
 		next, logs, err := executeOccurrenceCommand(state.Aggregate, occurrenceIndex, request)
 		if err != nil {
