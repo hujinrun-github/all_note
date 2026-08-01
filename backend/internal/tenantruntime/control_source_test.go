@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -34,6 +35,24 @@ func TestControlSourceLoadsVersionAndConsistentBindingSnapshot(t *testing.T) {
 		snapshot.ChatEndpointID != "" || snapshot.TranscriptionMode != "reuse_chat" ||
 		snapshot.TranscriptionEndpointID != "" {
 		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+func TestControlSourceListsOnlyActiveWorkspaces(t *testing.T) {
+	db := openControlSourceTestDB(t)
+	seedControlSourceRuntime(t, db)
+	mustControlSourceExec(t, db, `INSERT INTO workspace_runtime_state(workspace_id,mode,epoch,binding_revision)
+		VALUES('workspace-disabled','disabled',1,1),('workspace-2','active',1,1)`)
+	source, err := NewControlSource(db, ControlSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceIDs, err := source.ListActiveWorkspaceIDs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"workspace-1", "workspace-2"}; !reflect.DeepEqual(workspaceIDs, want) {
+		t.Fatalf("workspace ids = %v, want %v", workspaceIDs, want)
 	}
 }
 

@@ -6,6 +6,7 @@ import {
   Database,
   ExternalLink,
   HardDrive,
+  KeyRound,
   MessageCircleMore,
   Sparkles,
   UserRound,
@@ -26,11 +27,14 @@ import {
   type ServiceKind,
   type UserProfile,
 } from '../api/settings'
+import { resetOwnPassword } from '../api/auth'
+import { APIError } from '../api/client'
 
-type SettingsTab = 'profile' | 'database' | 'objects' | 'ai'
+type SettingsTab = 'profile' | 'security' | 'database' | 'objects' | 'ai'
 
 const tabs = [
   { id: 'profile', label: '个人资料', icon: UserRound },
+  { id: 'security', label: '账号安全', icon: KeyRound },
   { id: 'database', label: '数据库', icon: Database },
   { id: 'objects', label: '对象存储', icon: HardDrive },
   { id: 'ai', label: 'AI 服务', icon: Sparkles },
@@ -82,6 +86,7 @@ export default function Settings() {
             error={profile.isError}
           />
         ) : null}
+        {activeTab === 'security' ? <SecuritySettings /> : null}
         {activeTab === 'database' ? (
           <ServiceSettingsCard
             kind="data_store"
@@ -115,6 +120,109 @@ export default function Settings() {
         ) : null}
       </section>
     </div>
+  )
+}
+
+function SecuritySettings() {
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const reset = useMutation({
+    mutationFn: () => resetOwnPassword(newPassword),
+    onSuccess: () => {
+      setNewPassword('')
+      setConfirmPassword('')
+      setError('')
+      setNotice('密码已重置，当前会话会保留，其他设备需要重新登录。')
+    },
+    onError: (caught) => {
+      setNotice('')
+      setError(
+        caught instanceof APIError
+          ? caught.message
+          : '密码重置失败，请稍后重试。'
+      )
+    },
+  })
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    if (newPassword !== confirmPassword) {
+      setError('两次输入的新密码不一致')
+      return
+    }
+    if (!isStrongPassword(newPassword)) {
+      setError('新密码需要为 8–72 个字符，并同时包含字母和数字')
+      return
+    }
+    reset.mutate()
+  }
+
+  return (
+    <form className="settings-card security-settings-card" onSubmit={submit}>
+      <header className="settings-section-header">
+        <h2>重置登录密码</h2>
+        <p>验证当前登录会话后即可设置新密码，无需再次输入原密码。</p>
+      </header>
+      <div className="settings-field-grid security-password-grid">
+        <label>
+          <span>新密码</span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={newPassword}
+            maxLength={72}
+            required
+            onChange={(event) => setNewPassword(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>确认新密码</span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            maxLength={72}
+            required
+            onChange={(event) => setConfirmPassword(event.target.value)}
+          />
+        </label>
+      </div>
+      <p className="settings-hint">
+        密码策略：8–72 个字符，至少包含一个字母和一个数字。
+      </p>
+      {error ? (
+        <p className="settings-message is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="settings-message" role="status">
+          {notice}
+        </p>
+      ) : null}
+      <footer className="settings-actions">
+        <button
+          className="primary-button"
+          type="submit"
+          disabled={reset.isPending}
+        >
+          {reset.isPending ? '重置中…' : '重置密码'}
+        </button>
+      </footer>
+    </form>
+  )
+}
+
+function isStrongPassword(password: string) {
+  return (
+    password.length >= 8 &&
+    password.length <= 72 &&
+    /[A-Za-z]/.test(password) &&
+    /\d/.test(password)
   )
 }
 

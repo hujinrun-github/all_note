@@ -149,6 +149,20 @@ func main() {
 		if err != nil {
 			log.Fatalf("mobile-v2 command service: %v", err)
 		}
+		retentionWorker, err := mobilev2service.NewContentRetentionWorker(mobilev2service.ContentRetentionWorkerConfig{
+			Workspaces:              taskDomainRuntime.workspaces,
+			Runtime:                 taskDomainRuntime.application,
+			Objects:                 runtimeObjects,
+			DeletedContentRetention: nativeCfg.DeletedContentRetention,
+		})
+		if err != nil {
+			log.Fatalf("mobile-v2 content retention worker: %v", err)
+		}
+		retentionCtx, stopRetention := context.WithCancel(context.Background())
+		defer stopRetention()
+		go retentionWorker.Run(retentionCtx, time.Hour, func(err error) {
+			log.Printf("mobile-v2 content retention worker: %v", err)
+		})
 		routerConfig.MobileSyncV2, err = mobilev2service.New(mobilev2service.Config{
 			Runtime:     taskDomainRuntime.application,
 			Commands:    commandService,
@@ -157,6 +171,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("mobile-v2 service: %v", err)
 		}
+		log.Printf("mobile-v2 content retention worker initialized")
 		log.Printf("mobile-v2 concrete service initialized")
 	}
 	if err := validateMobileV2Wiring(nativeCfg, routerConfig.MobileSyncV2); err != nil {
@@ -244,6 +259,7 @@ func databaseStorageConfig(environment string, cfg config.DatabaseConfig) storag
 type taskDomainRuntimeBundle struct {
 	application *taskruntime.Resolver
 	models      *taskruntime.DurableModelSelector
+	workspaces  mobilev2service.ActiveWorkspaceLister
 	tenants     interface{ Close() error }
 	generation  interface{ Close() error }
 }
@@ -468,7 +484,8 @@ func openWorkspaceSettings(ctx context.Context, registry *storagepkg.Registry, c
 			return fail(err)
 		}
 		taskDomainRuntime = &taskDomainRuntimeBundle{
-			application: application, models: models, tenants: tenants, generation: generation,
+			application: application, models: models, workspaces: controlRuntimeSource,
+			tenants: tenants, generation: generation,
 		}
 	}
 	return service, codexService, aiGenerator, runtimeTranscriber, runtimeObjects, taskDomainRuntime, controlStore, identityProvisioner, nil

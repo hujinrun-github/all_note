@@ -29,7 +29,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import '@xyflow/react/dist/style.css'
 
-import type { ExecutionStatus, OccurrenceV2, TaskV2 } from '../api/taskDomain'
+import type {
+  ExecutionStatus,
+  OccurrenceTimingInput,
+  OccurrenceV2,
+  TaskV2,
+} from '../api/taskDomain'
 import {
   RoadmapRootNodeView,
   RoadmapTaskNodeView,
@@ -53,6 +58,7 @@ import {
   useOccurrences,
   useProject,
   useReopenOccurrenceMutation,
+  useRescheduleOccurrenceMutation,
   useSkipOccurrenceMutation,
   useStartOccurrenceMutation,
   useTaskDefinitions,
@@ -258,6 +264,7 @@ export default function RoadmapMindMap() {
   const skipOccurrence = useSkipOccurrenceMutation()
   const cancelOccurrence = useCancelOccurrenceMutation()
   const reopenOccurrence = useReopenOccurrenceMutation()
+  const rescheduleOccurrence = useRescheduleOccurrenceMutation()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [selectedNodeID, setSelectedNodeID] = useState('')
   const [inspectorOpen, setInspectorOpen] = useState(false)
@@ -635,6 +642,40 @@ export default function RoadmapMindMap() {
     }
   }
 
+  async function changeSelectedOccurrenceSchedule(
+    timing: OccurrenceTimingInput
+  ) {
+    if (!selectedTask) return
+    const occurrence = preferredOccurrence(selectedTaskOccurrences)
+    if (!occurrence) {
+      const error = new Error('尚未生成执行实例，请稍后再试。')
+      setInteractionError(error.message)
+      throw error
+    }
+
+    setInteractionError('')
+    try {
+      await rescheduleOccurrence.mutateAsync({
+        projectID: occurrence.project_id ?? selectedTask.project_id,
+        taskID: selectedTask.id,
+        occurrenceID: occurrence.id,
+        input: {
+          expected_task_revision:
+            occurrence.task_revision ?? selectedTask.revision,
+          expected_schedule_revision:
+            occurrence.schedule_revision ?? selectedTask.schedule_revision,
+          expected_occurrence_revision: occurrence.revision,
+          timing,
+        },
+      })
+    } catch (caught) {
+      setInteractionError(
+        caught instanceof Error ? caught.message : '时间保存失败，请稍后重试。'
+      )
+      throw caught
+    }
+  }
+
   async function confirmCancelTask() {
     const task = nodeTasks.find((candidate) => candidate.id === cancelTaskID)
     if (!task) return
@@ -961,6 +1002,7 @@ export default function RoadmapMindMap() {
             onCancel={() => setCancelTaskID(selectedTask.id)}
             isCompleting={completeOccurrence.isPending}
             isStatusChanging={statusCommandBusy}
+            isScheduleChanging={rescheduleOccurrence.isPending}
             isRetentionChanging={archiveTask.isPending || deleteTask.isPending}
             onArchive={() =>
               archiveTask
@@ -983,6 +1025,7 @@ export default function RoadmapMindMap() {
                 })
             }
             onStatusChange={changeSelectedOccurrenceStatus}
+            onScheduleChange={changeSelectedOccurrenceSchedule}
             onComplete={async () => {
               try {
                 await changeSelectedOccurrenceStatus({

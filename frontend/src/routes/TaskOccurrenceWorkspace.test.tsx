@@ -196,6 +196,71 @@ describe('Task occurrence workspace', () => {
     expect(screen.getByRole('button', { name: '还差 1 项' })).toBeDisabled()
   })
 
+  it('offers task archive and delete from a completed execution', async () => {
+    const completedTask = task('completed-task', '部署语音转文字服务')
+    const completedOccurrence = occurrence(
+      'completed-occurrence',
+      completedTask.id,
+      'done'
+    )
+    const archive = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [...taskDefinitions, completedTask],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(taskHooks.useOccurrences).mockImplementation(
+      (params) =>
+        ({
+          data:
+            params?.task_id === completedTask.id ||
+            params?.scope === 'completed'
+              ? [completedOccurrence]
+              : (occurrencesByScope[params?.scope ?? 'all'] ?? []),
+          isLoading: false,
+          isError: false,
+        }) as ReturnType<typeof taskHooks.useOccurrences>
+    )
+    vi.mocked(taskHooks.useArchiveTaskMutation).mockReturnValue({
+      mutateAsync: archive,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useArchiveTaskMutation>)
+    const user = userEvent.setup()
+    renderWorkspace()
+
+    await user.click(screen.getByRole('tab', { name: '已完成 1' }))
+    await user.click(screen.getByText(completedTask.title))
+
+    expect(
+      screen.getByRole('complementary', {
+        name: `执行详情：${completedTask.title}`,
+      })
+    ).toBeVisible()
+    expect(screen.getByRole('button', { name: '归档任务' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '永久删除' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '归档任务' }))
+    await user.click(screen.getByRole('button', { name: '确认归档' }))
+
+    expect(archive).toHaveBeenCalledWith({
+      projectID: completedTask.project_id,
+      taskID: completedTask.id,
+      expectedRevisions: {
+        expected_task_revision: completedTask.revision,
+        expected_schedule_revision: completedTask.schedule_revision,
+        expected_occurrence_revisions: {
+          [completedOccurrence.id]: completedOccurrence.revision,
+        },
+      },
+    })
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('complementary', {
+          name: `执行详情：${completedTask.title}`,
+        })
+      ).not.toBeInTheDocument()
+    )
+  })
+
   it('preserves the local date and offers refresh/compare when reschedule conflicts', async () => {
     const conflict = new (
       await import('../api/taskDomain')

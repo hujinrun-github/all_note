@@ -166,6 +166,13 @@ func TestSQLiteWebNoteWritePublishesAtomicMobileV2ContentChange(t *testing.T) {
 			published_at INTEGER,
 			UNIQUE (workspace_id, mutation_id, entity_type, entity_client_id)
 		);
+		CREATE TABLE mobile_retired_ids (
+			workspace_id TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			client_id TEXT NOT NULL,
+			retired_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, entity_type, client_id)
+		);
 		INSERT INTO folders(id,workspace_id,name) VALUES('__uncategorized','w1','Uncategorized');
 	`); err != nil {
 		t.Fatal(err)
@@ -184,6 +191,80 @@ func TestSQLiteWebNoteWritePublishesAtomicMobileV2ContentChange(t *testing.T) {
 	}
 	if sequence != 1 || !strings.Contains(entities, `"entity_id":"note-web-v2"`) {
 		t.Fatalf("sequence=%d entities=%s", sequence, entities)
+	}
+	taskTimestamp := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO domain_projects_v2
+		(workspace_id,id,name,description,kind,horizon,status,revision,created_at,updated_at)
+		VALUES('w1','project-web-v2','Project','Description','standard','short','active',2,?,?)`,
+		taskTimestamp, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domain_tasks_v2
+		(workspace_id,id,project_id,note_id,title,description,lifecycle_status,priority,sort_order,revision,created_at,updated_at)
+		VALUES('w1','task-web-v2','project-web-v2','note-web-v2','Task','Description','active',1,0,3,?,?)`,
+		taskTimestamp, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	taskTx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskTx.Exec(`INSERT INTO domain_task_schedules_v2
+		(workspace_id,task_id,revision,current_schedule_revision,generation_status,updated_at)
+		VALUES('w1','task-web-v2',4,1,'idle',?)`, taskTimestamp); err != nil {
+		taskTx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := taskTx.Exec(`INSERT INTO domain_task_schedule_versions_v2
+		(workspace_id,task_id,schedule_revision,recurrence_type,timing_type,timezone,starts_on,recurrence_rule,created_at)
+		VALUES('w1','task-web-v2',1,'none','date','Asia/Shanghai','2026-08-01','{}',?)`, taskTimestamp); err != nil {
+		taskTx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := taskTx.Exec(`INSERT INTO domain_task_occurrences_v2
+		(workspace_id,id,task_id,occurrence_key,planned_date,execution_status,note_id,revision,generated_schedule_revision,created_at,updated_at)
+		VALUES('w1','occurrence-web-v2','task-web-v2','2026-08-01','2026-08-01','open','note-web-v2',5,1,?,?)`,
+		taskTimestamp, taskTimestamp); err != nil {
+		taskTx.Rollback()
+		t.Fatal(err)
+	}
+	if err := taskTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks(id,workspace_id,note_id,title,updated_at)
+		VALUES('legacy-task-web-v2','w1','note-web-v2','Legacy task',?)`, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	if err := (noteRepository{db: db}).Delete(ctx, note.ID); err != nil {
+		t.Fatal(err)
+	}
+	var taskNoteID, occurrenceNoteID, legacyNoteID sql.NullString
+	var taskRevision, occurrenceRevision int64
+	if err := db.QueryRow(`SELECT note_id,revision FROM domain_tasks_v2
+		WHERE workspace_id='w1' AND id='task-web-v2'`).Scan(&taskNoteID, &taskRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT note_id,revision FROM domain_task_occurrences_v2
+		WHERE workspace_id='w1' AND id='occurrence-web-v2'`).Scan(&occurrenceNoteID, &occurrenceRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT note_id FROM tasks
+		WHERE workspace_id='w1' AND id='legacy-task-web-v2'`).Scan(&legacyNoteID); err != nil {
+		t.Fatal(err)
+	}
+	if taskNoteID.Valid || occurrenceNoteID.Valid || legacyNoteID.Valid || taskRevision != 4 || occurrenceRevision != 6 {
+		t.Fatalf("web delete refs: task=%v/%d occurrence=%v/%d legacy=%v",
+			taskNoteID, taskRevision, occurrenceNoteID, occurrenceRevision, legacyNoteID)
+	}
+	for _, scope := range []string{"iphone-content", "iphone-task-core", "iphone-occurrence-window", "watch-occurrence-window"} {
+		var changed string
+		if err := db.QueryRow(`SELECT entities_json FROM mobile_v2_scope_change_batches
+			WHERE workspace_id='w1' AND scope=? AND sequence=2`, scope).Scan(&changed); err != nil {
+			t.Fatal(err)
+		}
+		if scope != "iphone-content" && !strings.Contains(changed, `"note_id":null`) {
+			t.Fatalf("web delete scope %s = %s", scope, changed)
+		}
 	}
 }
 

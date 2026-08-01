@@ -64,6 +64,61 @@ func TestWorkerTreatsAlreadyMissingObjectAsSuccessfulCleanup(t *testing.T) {
 	}
 }
 
+func TestWorkerRemovesUploadedNoteAttachmentForDurableCleanupJob(t *testing.T) {
+	store, ctx, objects, _, _, now := newCleanupWorkerFixture(t)
+	initialWorker := NewWorker(store, objects, "initial-voice-cleanup-worker")
+	initialWorker.Now = func() time.Time { return now }
+	initialWorker.NewLeaseToken = func() string { return "initial-voice-cleanup-lease" }
+	if claimed, err := initialWorker.RunOne(context.Background()); err != nil || !claimed {
+		t.Fatalf("initial voice cleanup claimed=%v err=%v", claimed, err)
+	}
+	note, err := store.Notes().Create(ctx, &model.CreateNoteRequest{
+		Title: "Attachment cleanup", Body: "private", Tags: "[]",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlStore, ok := store.(storage.SQLStore)
+	if !ok {
+		t.Fatal("sqlite store does not expose SQLStore")
+	}
+	const attachmentID = "cleanup-attachment-1"
+	const objectKey = "note-attachments/private.mov"
+	if _, err := sqlStore.SQLDB().Exec(`INSERT INTO note_attachments
+		(id,workspace_id,note_id,kind,original_name,mime_type,size_bytes,sha256,object_key,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`, attachmentID, "voice_cleanup_workspace", note.ID, "video", "private.mov",
+		"video/quicktime", 5, "sha", objectKey, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := objects.Put(ctx, objectKey, bytes.NewBufferString("video"), 5, "video/quicktime"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlStore.SQLDB().Exec(`INSERT INTO voice_audio_cleanup_jobs
+		(job_id,workspace_id,voice_note_id,object_key,state,revision,attempt,max_attempts,error_code,next_attempt_at,lease_owner,lease_token,created_at,updated_at)
+		VALUES(?,?,?,?, 'queued',1,0,6,'',?,'','',?,?)`, "attachment-cleanup-job", "voice_cleanup_workspace",
+		storage.NoteAttachmentCleanupSubject(attachmentID), objectKey, now.Unix(), now.Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	worker := NewWorker(store, objects, "attachment-cleanup-worker")
+	worker.Now = func() time.Time { return now }
+	worker.NewLeaseToken = func() string { return "attachment-cleanup-lease" }
+	claimed, err := worker.RunOne(context.Background())
+	if err != nil || !claimed {
+		t.Fatalf("attachment cleanup claimed=%v err=%v", claimed, err)
+	}
+	if _, err := objects.Get(ctx, objectKey); !errors.Is(err, objectstore.ErrNotFound) {
+		t.Fatalf("attachment object after cleanup error=%v", err)
+	}
+	var attachmentCount int
+	if err := sqlStore.SQLDB().QueryRow(`SELECT COUNT(*) FROM note_attachments
+		WHERE workspace_id=? AND id=?`, "voice_cleanup_workspace", attachmentID).Scan(&attachmentCount); err != nil {
+		t.Fatal(err)
+	}
+	if attachmentCount != 0 {
+		t.Fatalf("attachment rows after cleanup = %d", attachmentCount)
+	}
+}
+
 func newCleanupWorkerFixture(t *testing.T) (storage.Store, context.Context, *objectstore.MemoryStore, string, string, time.Time) {
 	t.Helper()
 	store, err := (sqlite.Provider{}).Open(context.Background(), storage.Config{

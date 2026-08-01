@@ -49,12 +49,17 @@ type transcriptionCommandPayload struct {
 }
 
 type contentCommandOutcome struct {
-	Result    mobilev2command.DomainResult
-	EntityIDs map[string]map[string]struct{}
+	Result        mobilev2command.DomainResult
+	EntityIDs     map[string]map[string]struct{}
+	TaskIDs       map[string]struct{}
+	OccurrenceIDs map[string]struct{}
 }
 
 func newContentCommandOutcome() contentCommandOutcome {
-	return contentCommandOutcome{EntityIDs: make(map[string]map[string]struct{})}
+	return contentCommandOutcome{
+		EntityIDs: make(map[string]map[string]struct{}),
+		TaskIDs:   make(map[string]struct{}), OccurrenceIDs: make(map[string]struct{}),
+	}
 }
 
 func (outcome *contentCommandOutcome) include(entityType, entityID string) {
@@ -130,7 +135,7 @@ func (executor *CommandExecutor) applyContentCommand(
 		if err != nil {
 			return err
 		}
-		scopeChange, afterImages, err := projectContentCommandOutcome(
+		scopeChanges, afterImages, err := projectContentCommandOutcome(
 			ctx, runner, dialect, runtime.WorkspaceID, currentSequence+1, outcome,
 		)
 		if err != nil {
@@ -140,7 +145,7 @@ func (executor *CommandExecutor) applyContentCommand(
 		response, err = ledger.FinalizeOnRunner(ctx, runner, command, executor.now().UTC(),
 			mobilev2command.DynamicCommitResult{
 				DomainResult: outcome.Result,
-				ScopeChanges: []mobilev2command.ScopeChange{scopeChange},
+				ScopeChanges: scopeChanges,
 			})
 		return err
 	})
@@ -181,6 +186,7 @@ func dispatchNoteCommand(
 	now time.Time,
 ) (contentCommandOutcome, error) {
 	outcome := newContentCommandOutcome()
+	additionalRevisions := make([]mobilev2command.AffectedRevision, 0)
 	var payload noteCommandPayload
 	if err := decodeCommandPayload(envelope.Payload, &payload); err != nil {
 		return outcome, err
@@ -188,6 +194,14 @@ func dispatchNoteCommand(
 	if envelope.CommandType == "note.create" {
 		if envelope.Target.ClientID == nil {
 			return outcome, mobilev2command.ErrInvalidCommandEnvelope
+		}
+		retired, err := contentClientRetired(ctx, runner, dialect, workspaceID, "note", *envelope.Target.ClientID)
+		if err != nil {
+			return outcome, err
+		}
+		if retired {
+			outcome.Result.Status = mobilev2command.StatusConflict
+			return outcome, nil
 		}
 		entityID := uuid.NewString()
 		title, body := optionalPatchValue(payload.Title), optionalPatchValue(payload.Body)
@@ -285,8 +299,11 @@ func dispatchNoteCommand(
 		if err := decodeEmptyPayload(envelope.Payload); err != nil {
 			return outcome, err
 		}
+		if err := enqueueNoteAttachmentCleanup(ctx, runner, dialect, workspaceID, entityID, now); err != nil {
+			return outcome, err
+		}
 		result, err := runner.ExecContext(ctx, bindContentSQL(dialect, `UPDATE notes
-			SET deleted_at=?,updated_at=?,revision=revision+1
+			SET deleted_at=?,updated_at=?,revision=revision+1,`+noteRedactionAssignments(dialect)+`
 			WHERE workspace_id=? AND id=? AND revision=? AND deleted_at IS NULL`),
 			timestamp, timestamp, workspaceID, entityID, expected)
 		if err != nil {
@@ -296,6 +313,17 @@ func dispatchNoteCommand(
 			outcome.Result.Status = mobilev2command.StatusConflict
 			return outcome, nil
 		}
+		clientID, err := contentEntityClientID(ctx, runner, dialect, "notes", "id", workspaceID, entityID)
+		if err != nil {
+			return outcome, err
+		}
+		if err := upsertContentTombstone(ctx, runner, dialect, workspaceID, "note", entityID, clientID, expected+1, now); err != nil {
+			return outcome, err
+		}
+		additionalRevisions, err = detachNoteReferences(ctx, runner, dialect, workspaceID, entityID, now, &outcome)
+		if err != nil {
+			return outcome, err
+		}
 	default:
 		return outcome, mobilev2command.ErrInvalidCommandEnvelope
 	}
@@ -303,6 +331,7 @@ func dispatchNoteCommand(
 	outcome.Result.AffectedRevisions = []mobilev2command.AffectedRevision{{
 		EntityType: "note", EntityID: entityID, Revision: strconv.FormatInt(expected+1, 10),
 	}}
+	outcome.Result.AffectedRevisions = append(outcome.Result.AffectedRevisions, additionalRevisions...)
 	return outcome, nil
 }
 
@@ -322,6 +351,14 @@ func dispatchInboxCommand(
 	if envelope.CommandType == "inbox.create" {
 		if envelope.Target.ClientID == nil {
 			return outcome, mobilev2command.ErrInvalidCommandEnvelope
+		}
+		retired, err := contentClientRetired(ctx, runner, dialect, workspaceID, "inbox", *envelope.Target.ClientID)
+		if err != nil {
+			return outcome, err
+		}
+		if retired {
+			outcome.Result.Status = mobilev2command.StatusConflict
+			return outcome, nil
 		}
 		entityID := uuid.NewString()
 		kind := "note"
@@ -403,7 +440,7 @@ func dispatchInboxCommand(
 			return outcome, err
 		}
 		result, err := runner.ExecContext(ctx, bindContentSQL(dialect, `UPDATE inbox
-			SET deleted_at=?,updated_at=?,revision=revision+1
+			SET deleted_at=?,updated_at=?,revision=revision+1,kind='note',title='',body=NULL,source='',converted_to=NULL
 			WHERE workspace_id=? AND id=? AND revision=? AND deleted_at IS NULL`),
 			timestamp, timestamp, workspaceID, entityID, expected)
 		if err != nil {
@@ -412,6 +449,13 @@ func dispatchInboxCommand(
 		if !exactlyOneRow(result) {
 			outcome.Result.Status = mobilev2command.StatusConflict
 			return outcome, nil
+		}
+		clientID, err := contentEntityClientID(ctx, runner, dialect, "inbox", "id", workspaceID, entityID)
+		if err != nil {
+			return outcome, err
+		}
+		if err := upsertContentTombstone(ctx, runner, dialect, workspaceID, "inbox", entityID, clientID, expected+1, now); err != nil {
+			return outcome, err
 		}
 	default:
 		return outcome, mobilev2command.ErrInvalidCommandEnvelope
@@ -435,6 +479,14 @@ func dispatchVoiceCommand(
 	if envelope.CommandType == "voice.create" {
 		if envelope.Target.ClientID == nil {
 			return outcome, mobilev2command.ErrInvalidCommandEnvelope
+		}
+		retired, err := contentClientRetired(ctx, runner, dialect, workspaceID, "voice_note", *envelope.Target.ClientID)
+		if err != nil {
+			return outcome, err
+		}
+		if retired {
+			outcome.Result.Status = mobilev2command.StatusConflict
+			return outcome, nil
 		}
 		var payload voiceCreateCommandPayload
 		if err := decodeCommandPayload(envelope.Payload, &payload); err != nil {
@@ -582,7 +634,12 @@ func dispatchVoiceCommand(
 	}
 	unixNow := now.Unix()
 	audioState := "deleted"
+	nextCleanupAt := unixNow
 	if objectKey != "" {
+		nextCleanupAt = unixNow + 600
+		if envelope.CommandType == "voice_note.delete" {
+			nextCleanupAt = unixNow
+		}
 		audioState = "delete_requested"
 	}
 	setDeleted := ""
@@ -601,6 +658,10 @@ func dispatchVoiceCommand(
 		audio_size=CASE WHEN ?='' THEN 0 ELSE audio_size END,
 		audio_sha256=CASE WHEN ?='' THEN '' ELSE audio_sha256 END,
 		upload_state=CASE WHEN ?='' THEN 'failed' ELSE upload_state END,
+		duration_ms=CASE WHEN `+deletedVoiceExpression(envelope.CommandType)+` THEN 0 ELSE duration_ms END,
+		recorded_at=CASE WHEN `+deletedVoiceExpression(envelope.CommandType)+` THEN 0 ELSE recorded_at END,
+		language=CASE WHEN `+deletedVoiceExpression(envelope.CommandType)+` THEN '' ELSE language END,
+		transcription_error=CASE WHEN `+deletedVoiceExpression(envelope.CommandType)+` THEN '' ELSE transcription_error END,
 		revision=revision+1,updated_at=?
 		WHERE workspace_id=? AND id=? AND revision=? AND deleted_at IS NULL`), args...)
 	if err != nil {
@@ -610,13 +671,24 @@ func dispatchVoiceCommand(
 		outcome.Result.Status = mobilev2command.StatusConflict
 		return outcome, nil
 	}
+	if envelope.CommandType == "voice_note.delete" {
+		if err := upsertContentTombstone(ctx, runner, dialect, workspaceID, "voice_note", voiceID, &clientID, expected+1, now); err != nil {
+			return outcome, err
+		}
+	}
 	if _, err := runner.ExecContext(ctx, bindContentSQL(dialect, `UPDATE transcription_jobs
 		SET state='canceled',revision=revision+1,error_code='voice_audio_deleted',
-		    next_attempt_at=NULL,lease_owner='',lease_token='',lease_expires_at=NULL,heartbeat_at=NULL,updated_at=?
+		    language='',next_attempt_at=NULL,lease_owner='',lease_token='',lease_expires_at=NULL,heartbeat_at=NULL,updated_at=?
 		WHERE workspace_id=? AND voice_note_id=?
 		  AND state IN ('waiting_for_audio','queued','processing','retry_waiting')`),
 		unixNow, workspaceID, clientID); err != nil {
 		return outcome, err
+	}
+	if envelope.CommandType == "voice_note.delete" {
+		if _, err := runner.ExecContext(ctx, bindContentSQL(dialect, `DELETE FROM transcription_results
+			WHERE workspace_id=? AND voice_note_id=?`), workspaceID, clientID); err != nil {
+			return outcome, err
+		}
 	}
 	if objectKey != "" {
 		insert := `INSERT OR IGNORE INTO voice_audio_cleanup_jobs
@@ -629,7 +701,7 @@ func dispatchVoiceCommand(
 				ON CONFLICT (workspace_id,voice_note_id,object_key) DO NOTHING`
 		}
 		if _, err := runner.ExecContext(ctx, bindContentSQL(dialect, insert),
-			uuid.NewString(), workspaceID, clientID, objectKey, unixNow+600, unixNow, unixNow); err != nil {
+			uuid.NewString(), workspaceID, clientID, objectKey, nextCleanupAt, unixNow, unixNow); err != nil {
 			return outcome, err
 		}
 	}
@@ -638,19 +710,31 @@ func dispatchVoiceCommand(
 	}}
 	if envelope.CommandType == "voice_note.delete" {
 		outcome.include("note", noteID)
+		if err := enqueueNoteAttachmentCleanup(ctx, runner, dialect, workspaceID, noteID, now); err != nil {
+			return outcome, err
+		}
 		noteTimestamp := contentTimestamp(dialect, now)
 		var noteRevision int64
+		var noteClientID sql.NullString
 		err := runner.QueryRowContext(ctx, bindContentSQL(dialect, `UPDATE notes
-			SET deleted_at=?,updated_at=?,revision=revision+1
+			SET deleted_at=?,updated_at=?,revision=revision+1,`+noteRedactionAssignments(dialect)+`
 			WHERE workspace_id=? AND id=? AND deleted_at IS NULL
-			RETURNING revision`), noteTimestamp, noteTimestamp, workspaceID, noteID).Scan(&noteRevision)
+			RETURNING revision,client_id`), noteTimestamp, noteTimestamp, workspaceID, noteID).Scan(&noteRevision, &noteClientID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return outcome, err
 		}
 		if err == nil {
+			if err := upsertContentTombstone(ctx, runner, dialect, workspaceID, "note", noteID, optionalClientIDValue(noteClientID), noteRevision, now); err != nil {
+				return outcome, err
+			}
 			revisions = append(revisions, mobilev2command.AffectedRevision{
 				EntityType: "note", EntityID: noteID, Revision: strconv.FormatInt(noteRevision, 10),
 			})
+			detachedRevisions, err := detachNoteReferences(ctx, runner, dialect, workspaceID, noteID, now, &outcome)
+			if err != nil {
+				return outcome, err
+			}
+			revisions = append(revisions, detachedRevisions...)
 		}
 	}
 	outcome.Result.Status = mobilev2command.StatusApplied
@@ -764,7 +848,7 @@ func projectContentCommandOutcome(
 	workspaceID string,
 	sequence uint64,
 	outcome contentCommandOutcome,
-) (mobilev2command.ScopeChange, [][]byte, error) {
+) ([]mobilev2command.ScopeChange, [][]byte, error) {
 	projected, err := mobilev2projection.Project(ctx, runner, dialect, mobilev2projection.Projection{
 		WorkspaceID: workspaceID,
 		Scope:       mobilev2sync.ScopeIPhoneContent,
@@ -772,7 +856,7 @@ func projectContentCommandOutcome(
 		Sequence:    sequence,
 	})
 	if err != nil {
-		return mobilev2command.ScopeChange{}, nil, err
+		return nil, nil, err
 	}
 	filtered := make([][]byte, 0)
 	for _, image := range projected {
@@ -781,15 +865,119 @@ func projectContentCommandOutcome(
 			EntityID   string `json:"entity_id"`
 		}
 		if err := json.Unmarshal(image, &header); err != nil {
-			return mobilev2command.ScopeChange{}, nil, err
+			return nil, nil, err
 		}
 		if _, include := outcome.EntityIDs[header.EntityType][header.EntityID]; include {
 			filtered = append(filtered, append([]byte(nil), image...))
 		}
 	}
-	return mobilev2command.ScopeChange{
+	scopeChanges := []mobilev2command.ScopeChange{{
 		Scope: mobilev2sync.ScopeIPhoneContent, AfterImages: filtered,
-	}, filtered, nil
+	}}
+	allImages := append([][]byte(nil), filtered...)
+	taskOutcome := newTaskCommandOutcome()
+	taskOutcome.TaskIDs = outcome.TaskIDs
+	taskOutcome.OccurrenceIDs = outcome.OccurrenceIDs
+	if len(outcome.TaskIDs) > 0 {
+		taskOutcome.Scopes = append(taskOutcome.Scopes, mobilev2sync.ScopeIPhoneTaskCore)
+	}
+	if len(outcome.OccurrenceIDs) > 0 {
+		taskOutcome.Scopes = append(taskOutcome.Scopes,
+			mobilev2sync.ScopeIPhoneOccurrenceWindow,
+			mobilev2sync.ScopeWatchOccurrenceWindow,
+		)
+	}
+	if len(taskOutcome.Scopes) > 0 {
+		taskChanges, taskImages, err := projectTaskCommandOutcome(
+			ctx, runner, dialect, workspaceID, sequence, taskOutcome,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		scopeChanges = append(scopeChanges, taskChanges...)
+		allImages = append(allImages, taskImages...)
+	}
+	return scopeChanges, allImages, nil
+}
+
+func detachNoteReferences(
+	ctx context.Context,
+	runner storage.TenantSQLRunner,
+	dialect mobilev2projection.Dialect,
+	workspaceID string,
+	noteID string,
+	now time.Time,
+	outcome *contentCommandOutcome,
+) ([]mobilev2command.AffectedRevision, error) {
+	timestamp := taskReferenceTimestamp(dialect, now)
+	revisions := make([]mobilev2command.AffectedRevision, 0)
+	taskRows, err := runner.QueryContext(ctx, bindContentSQL(dialect, `UPDATE domain_tasks_v2
+		SET note_id=NULL,revision=revision+1,updated_at=?
+		WHERE workspace_id=? AND note_id=?
+		RETURNING id,revision`), timestamp, workspaceID, noteID)
+	if err != nil {
+		return nil, err
+	}
+	for taskRows.Next() {
+		var taskID string
+		var revision int64
+		if err := taskRows.Scan(&taskID, &revision); err != nil {
+			taskRows.Close()
+			return nil, err
+		}
+		outcome.TaskIDs[taskID] = struct{}{}
+		revisions = append(revisions, mobilev2command.AffectedRevision{
+			EntityType: "task", EntityID: taskID, Revision: strconv.FormatInt(revision, 10),
+		})
+	}
+	if err := taskRows.Err(); err != nil {
+		taskRows.Close()
+		return nil, err
+	}
+	if err := taskRows.Close(); err != nil {
+		return nil, err
+	}
+
+	occurrenceRows, err := runner.QueryContext(ctx, bindContentSQL(dialect, `UPDATE domain_task_occurrences_v2
+		SET note_id=NULL,revision=revision+1,updated_at=?
+		WHERE workspace_id=? AND note_id=?
+		RETURNING id,revision`), timestamp, workspaceID, noteID)
+	if err != nil {
+		return nil, err
+	}
+	for occurrenceRows.Next() {
+		var occurrenceID string
+		var revision int64
+		if err := occurrenceRows.Scan(&occurrenceID, &revision); err != nil {
+			occurrenceRows.Close()
+			return nil, err
+		}
+		outcome.OccurrenceIDs[occurrenceID] = struct{}{}
+		revisions = append(revisions, mobilev2command.AffectedRevision{
+			EntityType: "task_occurrence", EntityID: occurrenceID, Revision: strconv.FormatInt(revision, 10),
+		})
+	}
+	if err := occurrenceRows.Err(); err != nil {
+		occurrenceRows.Close()
+		return nil, err
+	}
+	if err := occurrenceRows.Close(); err != nil {
+		return nil, err
+	}
+
+	if _, err := runner.ExecContext(ctx, bindContentSQL(dialect, `UPDATE tasks
+		SET note_id=NULL,updated_at=?
+		WHERE workspace_id=? AND note_id=?`), timestamp, workspaceID, noteID); err != nil {
+		return nil, err
+	}
+	return revisions, nil
+}
+
+func taskReferenceTimestamp(dialect mobilev2projection.Dialect, now time.Time) any {
+	if dialect == mobilev2projection.DialectSQLite {
+		return now.UTC().Format(time.RFC3339Nano)
+	}
+	return now.UTC()
 }
 
 func contentEntityState(
@@ -868,6 +1056,122 @@ func nullableStringArgument(value any) any {
 	default:
 		return typed
 	}
+}
+
+func noteRedactionAssignments(dialect mobilev2projection.Dialect) string {
+	if dialect == mobilev2projection.DialectPostgres {
+		return "title='',body='',tags='{}'::text[],content='{}'::jsonb,content_text=''"
+	}
+	return "title='',body='',tags='[]',content='',content_text=''"
+}
+
+func deletedVoiceExpression(commandType string) string {
+	if commandType == "voice_note.delete" {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
+func optionalClientIDValue(value sql.NullString) *string {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	result := value.String
+	return &result
+}
+
+func contentEntityClientID(
+	ctx context.Context,
+	runner storage.TenantSQLRunner,
+	dialect mobilev2projection.Dialect,
+	table, idColumn, workspaceID, entityID string,
+) (*string, error) {
+	var clientID sql.NullString
+	query := fmt.Sprintf(`SELECT client_id FROM %s WHERE workspace_id=? AND %s=?`, table, idColumn)
+	if err := runner.QueryRowContext(ctx, bindContentSQL(dialect, query), workspaceID, entityID).Scan(&clientID); err != nil {
+		return nil, err
+	}
+	return optionalClientIDValue(clientID), nil
+}
+
+func contentClientRetired(
+	ctx context.Context,
+	runner storage.TenantSQLRunner,
+	dialect mobilev2projection.Dialect,
+	workspaceID, entityType, clientID string,
+) (bool, error) {
+	var retired bool
+	err := runner.QueryRowContext(ctx, bindContentSQL(dialect, `SELECT EXISTS(
+		SELECT 1 FROM mobile_v2_content_tombstones
+		WHERE workspace_id=? AND entity_type=? AND client_id=?
+	)`), workspaceID, entityType, clientID).Scan(&retired)
+	return retired, err
+}
+
+func upsertContentTombstone(
+	ctx context.Context,
+	runner storage.TenantSQLRunner,
+	dialect mobilev2projection.Dialect,
+	workspaceID, entityType, entityID string,
+	clientID *string,
+	revision int64,
+	deletedAt time.Time,
+) error {
+	_, err := runner.ExecContext(ctx, bindContentSQL(dialect, `INSERT INTO mobile_v2_content_tombstones
+		(workspace_id,entity_type,entity_id,client_id,revision,deleted_at)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT(workspace_id,entity_type,entity_id) DO UPDATE SET
+			client_id=excluded.client_id,revision=excluded.revision,deleted_at=excluded.deleted_at`),
+		workspaceID, entityType, entityID, nullableStringArgument(clientID), revision, contentTimestamp(dialect, deletedAt))
+	return err
+}
+
+func enqueueNoteAttachmentCleanup(
+	ctx context.Context,
+	runner storage.TenantSQLRunner,
+	dialect mobilev2projection.Dialect,
+	workspaceID, noteID string,
+	now time.Time,
+) error {
+	rows, err := runner.QueryContext(ctx, bindContentSQL(dialect, `SELECT id,object_key
+		FROM note_attachments WHERE workspace_id=? AND note_id=? AND object_key<>''`), workspaceID, noteID)
+	if err != nil {
+		return err
+	}
+	type attachmentObject struct{ id, key string }
+	objects := make([]attachmentObject, 0)
+	for rows.Next() {
+		var item attachmentObject
+		if err := rows.Scan(&item.id, &item.key); err != nil {
+			rows.Close()
+			return err
+		}
+		objects = append(objects, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range objects {
+		insert := `INSERT OR IGNORE INTO voice_audio_cleanup_jobs
+			(job_id,workspace_id,voice_note_id,object_key,state,revision,attempt,max_attempts,error_code,next_attempt_at,lease_owner,lease_token,created_at,updated_at)
+			VALUES (?,?,?,?,'queued',1,0,6,'',?,'','',?,?)`
+		if dialect == mobilev2projection.DialectPostgres {
+			insert = `INSERT INTO voice_audio_cleanup_jobs
+				(job_id,workspace_id,voice_note_id,object_key,state,revision,attempt,max_attempts,error_code,next_attempt_at,lease_owner,lease_token,created_at,updated_at)
+				VALUES (?,?,?,?,'queued',1,0,6,'',?,'','',?,?)
+				ON CONFLICT (workspace_id,voice_note_id,object_key) DO NOTHING`
+		}
+		unixNow := now.UTC().Unix()
+		if _, err := runner.ExecContext(ctx, bindContentSQL(dialect, insert), uuid.NewString(), workspaceID,
+			storage.NoteAttachmentCleanupSubject(item.id), item.key, unixNow, unixNow, unixNow); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func contentTimestamp(dialect mobilev2projection.Dialect, now time.Time) any {

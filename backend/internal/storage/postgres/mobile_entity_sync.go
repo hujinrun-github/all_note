@@ -743,7 +743,7 @@ func deletePostgresVoiceAudio(ctx context.Context, tx *sql.Tx, workspaceID strin
 		return nil, err
 	}
 	if objectKey != "" {
-		if err := enqueuePostgresVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now.Unix()); err != nil {
+		if err := enqueuePostgresVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now.Unix()+600, now.Unix()); err != nil {
 			return nil, err
 		}
 	}
@@ -752,11 +752,11 @@ func deletePostgresVoiceAudio(ctx context.Context, tx *sql.Tx, workspaceID strin
 
 func deletePostgresVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID string, mutation model.MobileEntityMutation) (*model.MobileEntityEnvelope, error) {
 	var revision int64
-	var noteID string
+	var voiceID, noteID string
 	var objectKey string
 	var deletedAt sql.NullTime
-	err := tx.QueryRowContext(ctx, `SELECT revision, note_id, object_key, deleted_at FROM voice_notes WHERE workspace_id = $1 AND client_id = $2 FOR UPDATE`, workspaceID, mutation.EntityClientID).
-		Scan(&revision, &noteID, &objectKey, &deletedAt)
+	err := tx.QueryRowContext(ctx, `SELECT id,revision,note_id,object_key,deleted_at FROM voice_notes WHERE workspace_id=$1 AND client_id=$2 FOR UPDATE`, workspaceID, mutation.EntityClientID).
+		Scan(&voiceID, &revision, &noteID, &objectKey, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		if mutation.BaseRevision == nil || *mutation.BaseRevision != 0 {
 			return nil, storage.ErrMobileEntityNotFound
@@ -784,6 +784,7 @@ func deletePostgresVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID string
 			audio_size = CASE WHEN $3 = '' THEN 0 ELSE audio_size END,
 			audio_sha256 = CASE WHEN $3 = '' THEN '' ELSE audio_sha256 END,
 			upload_state = CASE WHEN $3 = '' THEN 'failed' ELSE upload_state END,
+			duration_ms=0,recorded_at=0,language='',transcription_error='',
 			revision = revision + 1, updated_at = $4
 		WHERE workspace_id = $5 AND client_id = $6 AND revision = $7 AND deleted_at IS NULL
 	`, now, audioState, objectKey, now.Unix(), workspaceID, mutation.EntityClientID, revision)
@@ -799,8 +800,14 @@ func deletePostgresVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID string
 	if err := cancelPostgresVoiceTranscriptionJobs(ctx, tx, workspaceID, mutation.EntityClientID, now.Unix()); err != nil {
 		return nil, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM transcription_results WHERE workspace_id=$1 AND voice_note_id=$2`, workspaceID, mutation.EntityClientID); err != nil {
+		return nil, err
+	}
+	if err := upsertPostgresContentTombstone(ctx, tx, workspaceID, "voice_note", voiceID, mutation.EntityClientID, revision+1, now); err != nil {
+		return nil, err
+	}
 	if objectKey != "" {
-		if err := enqueuePostgresVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now.Unix()); err != nil {
+		if err := enqueuePostgresVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now.Unix(), now.Unix()); err != nil {
 			return nil, err
 		}
 	}
@@ -822,17 +829,24 @@ func pretombstonePostgresVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID,
 	noteClientID := deterministicPostgresMobileNoteClientID(workspaceID, noteID)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO notes (id, client_id, revision, deleted_at, title, body, folder_id, tags, created_at, updated_at, workspace_id)
-		VALUES ($1, $2, 1, $3, '[deleted voice]', '', '__uncategorized', ARRAY['voice']::text[], $3, $3, $4)
+		VALUES ($1, $2, 1, $3, '', '', '__uncategorized', '{}'::text[], $3, $3, $4)
 	`, noteID, noteClientID, now, workspaceID); err != nil {
 		return nil, err
 	}
+	voiceID := uuid.NewString()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO voice_notes (
 			id, workspace_id, client_id, revision, deleted_at, audio_revision, audio_state, note_id,
 			duration_ms, recorded_at, language, object_key, mime_type, audio_size, audio_sha256,
 			upload_state, transcription_state, transcription_error, created_at, updated_at
-		) VALUES ($1, $2, $3, 1, $4, 1, 'deleted', $5, 0, $6, '', '', '', 0, '', 'failed', 'not_started', '', $6, $6)
-	`, uuid.NewString(), workspaceID, clientID, now, noteID, now.Unix()); err != nil {
+		) VALUES ($1, $2, $3, 1, $4, 1, 'deleted', $5, 0, 0, '', '', '', 0, '', 'failed', 'not_started', '', $6, $6)
+	`, voiceID, workspaceID, clientID, now, noteID, now.Unix()); err != nil {
+		return nil, err
+	}
+	if err := upsertPostgresContentTombstone(ctx, tx, workspaceID, "note", noteID, noteClientID, 1, now); err != nil {
+		return nil, err
+	}
+	if err := upsertPostgresContentTombstone(ctx, tx, workspaceID, "voice_note", voiceID, clientID, 1, now); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -847,20 +861,20 @@ func pretombstonePostgresVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID,
 func cancelPostgresVoiceTranscriptionJobs(ctx context.Context, tx *sql.Tx, workspaceID, clientID string, now int64) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE transcription_jobs SET state = 'canceled', revision = revision + 1, error_code = 'voice_audio_deleted',
-			next_attempt_at = NULL, lease_owner = '', lease_token = '', lease_expires_at = NULL, heartbeat_at = NULL, updated_at = $1
+			language='',next_attempt_at = NULL, lease_owner = '', lease_token = '', lease_expires_at = NULL, heartbeat_at = NULL, updated_at = $1
 		WHERE workspace_id = $2 AND voice_note_id = $3 AND state IN ('waiting_for_audio', 'queued', 'processing', 'retry_waiting')
 	`, now, workspaceID, clientID)
 	return err
 }
 
-func enqueuePostgresVoiceAudioCleanup(ctx context.Context, tx *sql.Tx, workspaceID, clientID, objectKey string, now int64) error {
+func enqueuePostgresVoiceAudioCleanup(ctx context.Context, tx *sql.Tx, workspaceID, clientID, objectKey string, nextAttemptAt, now int64) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO voice_audio_cleanup_jobs (
 			job_id, workspace_id, voice_note_id, object_key, state, revision, attempt, max_attempts,
 			error_code, next_attempt_at, lease_owner, lease_token, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 'retry_waiting', 1, 0, 6, '', $5 + 600, '', '', $5, $5)
+		) VALUES ($1, $2, $3, $4, 'retry_waiting', 1, 0, 6, '', $5, '', '', $6, $6)
 		ON CONFLICT (workspace_id, voice_note_id, object_key) DO NOTHING
-	`, uuid.NewString(), workspaceID, clientID, objectKey, now)
+	`, uuid.NewString(), workspaceID, clientID, objectKey, nextAttemptAt, now)
 	return err
 }
 

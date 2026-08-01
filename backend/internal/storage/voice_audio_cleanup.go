@@ -3,9 +3,24 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/hujinrun/flowspace/internal/model"
 )
+
+const noteAttachmentCleanupPrefix = "note_attachment:"
+
+func NoteAttachmentCleanupSubject(attachmentID string) string {
+	return noteAttachmentCleanupPrefix + strings.TrimSpace(attachmentID)
+}
+
+func ParseNoteAttachmentCleanupSubject(subject string) (string, bool) {
+	if !strings.HasPrefix(subject, noteAttachmentCleanupPrefix) {
+		return "", false
+	}
+	attachmentID := strings.TrimSpace(strings.TrimPrefix(subject, noteAttachmentCleanupPrefix))
+	return attachmentID, attachmentID != ""
+}
 
 var (
 	ErrVoiceAudioCleanupStorage   = errors.New("voice audio cleanup storage is unavailable")

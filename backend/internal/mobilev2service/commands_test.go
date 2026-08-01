@@ -13,6 +13,8 @@ import (
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/mobilev2command"
 	"github.com/hujinrun/flowspace/internal/mobilev2contract"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
+	"github.com/hujinrun/flowspace/internal/mobilev2sync"
 	"github.com/hujinrun/flowspace/internal/storage"
 	storagesqlite "github.com/hujinrun/flowspace/internal/storage/sqlite"
 	"github.com/hujinrun/flowspace/internal/taskapp"
@@ -306,6 +308,261 @@ func TestContentCommandExecutorCommitsNoteVoiceAndTranscriptionChanges(t *testin
 	}
 	if receiptCount != 5 || contentScopeCount != 5 || jobCount != 1 {
 		t.Fatalf("receipts=%d content_scopes=%d jobs=%d", receiptCount, contentScopeCount, jobCount)
+	}
+}
+
+func TestContentDeleteRedactsPayloadCleansAttachmentsAndRetainsMinimalTombstone(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tenant-content-retention.db")
+	cfg := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: path}
+	if err := (storagesqlite.Provider{}).MigrateTenant(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const workspaceID = "workspace-content-retention"
+	if _, err := db.Exec(`INSERT INTO tenant_workspaces(workspace_id,epoch,state) VALUES(?,1,'active')`, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	resolver := mobileV2RuntimeResolverFake{snapshot: taskruntime.MobileRuntimeSnapshot{
+		WorkspaceID: workspaceID, Epoch: 1, Driver: storage.DriverSQLite, DB: db,
+		Writer: storagesqlite.NewTenantWriter(cfg),
+	}}
+	executor, err := NewCommandExecutor(CommandExecutorConfig{
+		Runtime: resolver,
+		Now:     func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := handler.MobileV2Identity{WorkspaceID: workspaceID, UserID: "user-content-retention"}
+	const noteClientID = "71000000-0000-4000-8000-000000000001"
+	create := signedCommand(t, `{
+		"command_id":"71000000-0000-4000-8000-000000000002",
+		"request_digest":"DIGEST",
+		"origin_device_client_id":"71000000-0000-4000-8000-000000000003",
+		"workspace_id":"workspace-content-retention",
+		"command_type":"note.create",
+		"target":{"entity_id":null,"client_id":"71000000-0000-4000-8000-000000000001"},
+		"created_runtime_epoch":"1",
+		"expected":{},
+		"depends_on_command_id":null,
+		"supersedes_command_id":null,
+		"payload":{"title":"private title","body":"private body","tags":["private-tag"]}
+	}`)
+	createdValue, err := executor.ApplyCommand(ctx, handler.MobileV2CommandRequest{Identity: identity, RawEnvelope: create})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteID := *commandResponseWire(t, createdValue).Receipt.IdentityMappings[0].EntityID
+	if _, err := db.Exec(`INSERT INTO note_attachments
+		(id,workspace_id,note_id,kind,original_name,mime_type,size_bytes,sha256,object_key,created_at)
+		VALUES('attachment-1',?,?, 'video','private.mov','video/quicktime',12,'sha','attachments/private.mov',?)`,
+		workspaceID, noteID, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	taskTimestamp := now.Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO domain_projects_v2
+		(workspace_id,id,name,description,kind,horizon,status,revision,created_at,updated_at)
+		VALUES(?,'project-1','Project','Description','standard','short','active',2,?,?)`,
+		workspaceID, taskTimestamp, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domain_tasks_v2
+		(workspace_id,id,project_id,note_id,title,description,lifecycle_status,priority,sort_order,revision,created_at,updated_at)
+		VALUES(?,'task-1','project-1',?,'Task','Description','active',1,0,3,?,?)`,
+		workspaceID, noteID, taskTimestamp, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	taskTx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskTx.Exec(`INSERT INTO domain_task_schedules_v2
+		(workspace_id,task_id,revision,current_schedule_revision,generation_status,updated_at)
+		VALUES(?,'task-1',4,1,'idle',?)`, workspaceID, taskTimestamp); err != nil {
+		taskTx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := taskTx.Exec(`INSERT INTO domain_task_schedule_versions_v2
+		(workspace_id,task_id,schedule_revision,recurrence_type,timing_type,timezone,starts_on,recurrence_rule,created_at)
+		VALUES(?,'task-1',1,'none','date','Asia/Shanghai','2026-08-01','{}',?)`,
+		workspaceID, taskTimestamp); err != nil {
+		taskTx.Rollback()
+		t.Fatal(err)
+	}
+	if err := taskTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domain_task_occurrences_v2
+		(workspace_id,id,task_id,occurrence_key,planned_date,execution_status,note_id,revision,generated_schedule_revision,created_at,updated_at)
+		VALUES(?,'occurrence-1','task-1','2026-08-01','2026-08-01','open',?,5,1,?,?)`,
+		workspaceID, noteID, taskTimestamp, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks
+		(id,workspace_id,note_id,title,updated_at) VALUES('legacy-task-1',?,?,'Legacy task',?)`,
+		workspaceID, noteID, taskTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	deleteCommand := signedCommand(t, strings.ReplaceAll(`{
+		"command_id":"71000000-0000-4000-8000-000000000004",
+		"request_digest":"DIGEST",
+		"origin_device_client_id":"71000000-0000-4000-8000-000000000003",
+		"workspace_id":"workspace-content-retention",
+		"command_type":"note.delete",
+		"target":{"entity_id":"NOTE_ID","client_id":null},
+		"created_runtime_epoch":"1",
+		"expected":{"entity_revision":{"source":"exact","value":"1","dependency_command_id":null}},
+		"depends_on_command_id":null,
+		"supersedes_command_id":null,
+		"payload":{}
+	}`, "NOTE_ID", noteID))
+	deletedValue, err := executor.ApplyCommand(ctx, handler.MobileV2CommandRequest{Identity: identity, RawEnvelope: deleteCommand})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteReceipt := commandResponseWire(t, deletedValue).Receipt
+	if deleteReceipt.Status != mobilev2command.StatusApplied {
+		t.Fatalf("delete receipt = %#v", deleteReceipt)
+	}
+	affected := make(map[string]string, len(deleteReceipt.AffectedRevisions))
+	for _, revision := range deleteReceipt.AffectedRevisions {
+		affected[revision.EntityType+":"+revision.EntityID] = revision.Revision
+	}
+	if affected["note:"+noteID] != "2" || affected["task:task-1"] != "4" ||
+		affected["task_occurrence:occurrence-1"] != "6" {
+		t.Fatalf("delete affected revisions = %#v", affected)
+	}
+	var taskNoteID, occurrenceNoteID, legacyTaskNoteID sql.NullString
+	var taskRevision, occurrenceRevision int64
+	if err := db.QueryRow(`SELECT note_id,revision FROM domain_tasks_v2
+		WHERE workspace_id=? AND id='task-1'`, workspaceID).Scan(&taskNoteID, &taskRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT note_id,revision FROM domain_task_occurrences_v2
+		WHERE workspace_id=? AND id='occurrence-1'`, workspaceID).Scan(&occurrenceNoteID, &occurrenceRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT note_id FROM tasks
+		WHERE workspace_id=? AND id='legacy-task-1'`, workspaceID).Scan(&legacyTaskNoteID); err != nil {
+		t.Fatal(err)
+	}
+	if taskNoteID.Valid || occurrenceNoteID.Valid || legacyTaskNoteID.Valid || taskRevision != 4 || occurrenceRevision != 6 {
+		t.Fatalf("detached refs: task=%v/%d occurrence=%v/%d legacy=%v",
+			taskNoteID, taskRevision, occurrenceNoteID, occurrenceRevision, legacyTaskNoteID)
+	}
+	var title, body, tags, content, contentText string
+	var deletedAt sql.NullInt64
+	if err := db.QueryRow(`SELECT title,body,tags,content,content_text,deleted_at FROM notes
+		WHERE workspace_id=? AND id=?`, workspaceID, noteID).
+		Scan(&title, &body, &tags, &content, &contentText, &deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if title != "" || body != "" || tags != "[]" || content != "" || contentText != "" || !deletedAt.Valid {
+		t.Fatalf("redacted note = title:%q body:%q tags:%q content:%q text:%q deleted:%v",
+			title, body, tags, content, contentText, deletedAt.Valid)
+	}
+	var tombstoneCount, cleanupCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM mobile_v2_content_tombstones
+		WHERE workspace_id=? AND entity_type='note' AND entity_id=? AND client_id=? AND revision=2`,
+		workspaceID, noteID, noteClientID).Scan(&tombstoneCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM voice_audio_cleanup_jobs
+		WHERE workspace_id=? AND voice_note_id=? AND object_key='attachments/private.mov' AND state='queued'`,
+		workspaceID, storage.NoteAttachmentCleanupSubject("attachment-1")).Scan(&cleanupCount); err != nil {
+		t.Fatal(err)
+	}
+	if tombstoneCount != 1 || cleanupCount != 1 {
+		t.Fatalf("tombstones=%d cleanup_jobs=%d", tombstoneCount, cleanupCount)
+	}
+	var deleteImages string
+	if err := db.QueryRow(`SELECT entities_json FROM mobile_v2_scope_change_batches
+		WHERE workspace_id=? AND scope='iphone-content' AND sequence=2`, workspaceID).Scan(&deleteImages); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(deleteImages, "private title") || strings.Contains(deleteImages, "private body") ||
+		!strings.Contains(deleteImages, `"payload":null`) {
+		t.Fatalf("delete after-image leaked content: %s", deleteImages)
+	}
+	for _, scope := range []string{"iphone-task-core", "iphone-occurrence-window", "watch-occurrence-window"} {
+		var scopeImages string
+		if err := db.QueryRow(`SELECT entities_json FROM mobile_v2_scope_change_batches
+			WHERE workspace_id=? AND scope=? AND sequence=2`, workspaceID, scope).Scan(&scopeImages); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(scopeImages, `"note_id":null`) {
+			t.Fatalf("scope %s did not publish detached note reference: %s", scope, scopeImages)
+		}
+	}
+
+	if _, err := db.Exec(`DELETE FROM note_attachments WHERE workspace_id=? AND id='attachment-1'`, workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE voice_audio_cleanup_jobs SET state='completed',updated_at=?
+		WHERE workspace_id=?`, now.Unix(), workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(25 * time.Hour)
+	worker, err := NewContentRetentionWorker(ContentRetentionWorkerConfig{
+		Workspaces:              retentionWorkspaceListerStub{workspaceIDs: []string{workspaceID}},
+		Runtime:                 resolver,
+		DeletedContentRetention: 24 * time.Hour,
+		Now:                     func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var noteCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM notes WHERE workspace_id=? AND id=?`, workspaceID, noteID).Scan(&noteCount); err != nil {
+		t.Fatal(err)
+	}
+	if noteCount != 0 {
+		t.Fatalf("expired redacted note count = %d", noteCount)
+	}
+	entities, err := mobilev2projection.Project(ctx, db, mobilev2projection.DialectSQLite, mobilev2projection.Projection{
+		WorkspaceID: workspaceID, Scope: mobilev2sync.ScopeIPhoneContent, AsOf: now, Sequence: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTombstone := false
+	for _, entity := range entities {
+		if strings.Contains(string(entity), `"entity_id":"`+noteID+`"`) {
+			foundTombstone = strings.Contains(string(entity), `"payload":null`) && !strings.Contains(string(entity), "private")
+		}
+	}
+	if !foundTombstone {
+		t.Fatalf("purged note tombstone missing from projection: %s", entities)
+	}
+
+	lateCreate := signedCommand(t, `{
+		"command_id":"71000000-0000-4000-8000-000000000007",
+		"request_digest":"DIGEST",
+		"origin_device_client_id":"71000000-0000-4000-8000-000000000003",
+		"workspace_id":"workspace-content-retention",
+		"command_type":"note.create",
+		"target":{"entity_id":null,"client_id":"71000000-0000-4000-8000-000000000001"},
+		"created_runtime_epoch":"1",
+		"expected":{},
+		"depends_on_command_id":null,
+		"supersedes_command_id":null,
+		"payload":{"title":"must not resurrect"}
+	}`)
+	lateValue, err := executor.ApplyCommand(ctx, handler.MobileV2CommandRequest{Identity: identity, RawEnvelope: lateCreate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt := commandResponseWire(t, lateValue).Receipt; receipt.Status != mobilev2command.StatusConflict {
+		t.Fatalf("late create receipt = %#v", receipt)
 	}
 }
 

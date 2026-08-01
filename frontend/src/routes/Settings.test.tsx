@@ -14,6 +14,7 @@ import {
   verifyServiceProfile,
 } from '../api/settings'
 import Settings from './Settings'
+import { resetOwnPassword } from '../api/auth'
 
 vi.mock('../api/settings', () => ({
   getUserProfile: vi.fn(),
@@ -27,6 +28,10 @@ vi.mock('../api/settings', () => ({
   setServiceBinding: vi.fn(),
   startCodexSubscription: vi.fn(),
   pollCodexSubscription: vi.fn(),
+}))
+
+vi.mock('../api/auth', () => ({
+  resetOwnPassword: vi.fn(),
 }))
 
 function renderSettings() {
@@ -124,6 +129,41 @@ describe('Settings', () => {
       has_credentials: true,
       revision: 2,
     })
+    vi.mocked(resetOwnPassword).mockReset()
+    vi.mocked(resetOwnPassword).mockResolvedValue(undefined)
+  })
+
+  it('resets the signed-in user password without asking for the old password', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await screen.findByRole('heading', { name: '个人资料' })
+    await user.click(screen.getByRole('button', { name: '账号安全' }))
+
+    expect(screen.getByRole('heading', { name: '重置登录密码' })).toBeVisible()
+    expect(screen.queryByLabelText('当前密码')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('新密码'), 'resetPass123')
+    await user.type(screen.getByLabelText('确认新密码'), 'resetPass123')
+    await user.click(screen.getByRole('button', { name: '重置密码' }))
+
+    await waitFor(() =>
+      expect(resetOwnPassword).toHaveBeenCalledWith('resetPass123')
+    )
+    expect(await screen.findByText(/其他设备需要重新登录/)).toBeVisible()
+  })
+
+  it('validates matching reset passwords before calling the API', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await screen.findByRole('heading', { name: '个人资料' })
+    await user.click(screen.getByRole('button', { name: '账号安全' }))
+    await user.type(screen.getByLabelText('新密码'), 'resetPass123')
+    await user.type(screen.getByLabelText('确认新密码'), 'different123')
+    await user.click(screen.getByRole('button', { name: '重置密码' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '两次输入的新密码不一致'
+    )
+    expect(resetOwnPassword).not.toHaveBeenCalled()
   })
 
   it('loads and saves the profile without a request waterfall', async () => {

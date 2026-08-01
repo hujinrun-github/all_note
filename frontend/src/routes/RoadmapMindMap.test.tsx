@@ -229,6 +229,9 @@ describe('RoadmapMindMap', () => {
     vi.mocked(taskHooks.useReopenOccurrenceMutation).mockReturnValue(
       idleMutation() as never
     )
+    vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue(
+      idleMutation() as never
+    )
   })
 
   it('opens task details only after selecting a node', async () => {
@@ -414,6 +417,68 @@ describe('RoadmapMindMap', () => {
         expected_occurrence_revisions: { o1: 3 },
       },
     })
+  })
+
+  it('schedules a learning task time block from the mind-map inspector', async () => {
+    const reschedule = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: [
+        {
+          id: 'o1',
+          task_id: 't1',
+          project_id: 'p1',
+          occurrence_key: 'unscheduled',
+          execution_status: 'open',
+          revision: 3,
+          generated_schedule_revision: 2,
+          timing_type: 'unscheduled',
+          timezone: 'Asia/Shanghai',
+          task_revision: 4,
+          schedule_revision: 2,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    } as never)
+    vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue({
+      mutateAsync: reschedule,
+      isPending: false,
+    } as never)
+    const user = userEvent.setup()
+    renderRoute()
+
+    await user.click(screen.getByText('Concurrency model basics'))
+    await user.click(screen.getByRole('button', { name: '安排时间' }))
+    await user.selectOptions(
+      screen.getByLabelText('学习任务安排方式'),
+      'time_block'
+    )
+    await user.clear(screen.getByLabelText('学习任务执行日期'))
+    await user.type(screen.getByLabelText('学习任务执行日期'), '2026-08-03')
+    await user.clear(screen.getByLabelText('学习任务开始时间'))
+    await user.type(screen.getByLabelText('学习任务开始时间'), '14:30')
+    await user.clear(screen.getByLabelText('学习任务结束时间'))
+    await user.type(screen.getByLabelText('学习任务结束时间'), '16:00')
+    await user.click(screen.getByRole('button', { name: '保存并同步日历' }))
+
+    expect(reschedule).toHaveBeenCalledWith({
+      projectID: 'p1',
+      taskID: 't1',
+      occurrenceID: 'o1',
+      input: {
+        expected_task_revision: 4,
+        expected_schedule_revision: 2,
+        expected_occurrence_revision: 3,
+        timing: {
+          timing_type: 'time_block',
+          timezone: 'Asia/Shanghai',
+          planned_date: '2026-08-03',
+          local_start_time: '14:30',
+          duration_minutes: 90,
+        },
+      },
+    })
+    expect(screen.getByText('已保存，并同步到日历')).toBeInTheDocument()
   })
 
   it('collects blocking details and keeps completion locked by requirements', async () => {

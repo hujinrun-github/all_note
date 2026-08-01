@@ -49,6 +49,12 @@ export async function changePassword(body: {
   await api.post<void>('/api/auth/change-password', body)
 }
 
+export async function resetOwnPassword(newPassword: string) {
+  await api.post<void>('/api/auth/reset-password', {
+    new_password: newPassword,
+  })
+}
+
 export async function logout() {
   await api.post<void>('/api/auth/logout')
 }

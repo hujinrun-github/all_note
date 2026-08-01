@@ -15,9 +15,11 @@ import (
 	"github.com/hujinrun/flowspace/internal/mobilev2command"
 	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/mobilev2sync"
+	"github.com/hujinrun/flowspace/internal/objectstore"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
 	"github.com/hujinrun/flowspace/internal/taskruntime"
+	"github.com/hujinrun/flowspace/internal/voiceaudiocleanup"
 )
 
 type CommandExecutorConfig struct {
@@ -38,6 +40,28 @@ func NewCommandExecutor(config CommandExecutorConfig) (*CommandExecutor, error) 
 		config.Now = func() time.Time { return time.Now().UTC() }
 	}
 	return &CommandExecutor{runtime: config.Runtime, now: config.Now}, nil
+}
+
+func drainTenantObjectCleanup(
+	ctx context.Context,
+	runtime taskruntime.MobileRuntimeSnapshot,
+	objects objectstore.Store,
+	now func() time.Time,
+	owner string,
+	limit int,
+) error {
+	if objects == nil || runtime.Store == nil || limit < 1 {
+		return nil
+	}
+	worker := voiceaudiocleanup.NewWorker(runtime.Store, objects, owner)
+	worker.Now = now
+	for processed := 0; processed < limit; processed++ {
+		claimed, err := worker.RunOne(ctx)
+		if err != nil || !claimed {
+			return err
+		}
+	}
+	return nil
 }
 
 func (executor *CommandExecutor) ApplyCommand(ctx context.Context, request handler.MobileV2CommandRequest) (any, error) {

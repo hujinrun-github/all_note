@@ -317,6 +317,18 @@ func (repository *SQLRepository) ReadChanges(
 	if after > latest {
 		return StoredChangePage{}, ErrCursorMismatch
 	}
+	var compactedThrough uint64
+	err = repository.db.QueryRowContext(ctx, repository.bind(`SELECT compacted_through_sequence
+		FROM mobile_v2_scope_retention WHERE workspace_id=? AND scope=?`),
+		binding.WorkspaceID, binding.Scope).Scan(&compactedThrough)
+	if errors.Is(err, sql.ErrNoRows) {
+		compactedThrough = 0
+	} else if err != nil {
+		return StoredChangePage{}, err
+	}
+	if after < compactedThrough {
+		return StoredChangePage{}, ErrCursorMismatch
+	}
 	rows, err := repository.db.QueryContext(ctx, repository.bind(`SELECT
 		sequence,caused_by_command_id,origin_device_client_id,receipt_json,entities_json
 		FROM mobile_v2_scope_change_batches

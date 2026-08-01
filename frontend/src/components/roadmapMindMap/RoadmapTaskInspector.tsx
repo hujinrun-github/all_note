@@ -16,9 +16,11 @@ import { Link } from 'react-router-dom'
 
 import type {
   ExecutionStatus,
+  OccurrenceTimingInput,
   OccurrenceV2,
   TaskAttachmentLink,
   TaskV2,
+  TimingType,
 } from '../../api/taskDomain'
 import {
   TaskCompletionGate,
@@ -60,25 +62,72 @@ export function roadmapExecutionStatusTargets(
 }
 
 function formatOccurrenceTime(occurrence?: OccurrenceV2) {
-  const value =
-    occurrence?.planned_start_at ??
-    occurrence?.planned_date ??
-    occurrence?.due_at
+  if (occurrence?.planned_date && !occurrence.planned_start_at) {
+    const [year, month, day] = occurrence.planned_date.split('-').map(Number)
+    if (year && month && day) return `${month}月${day}日 · 全天`
+    return occurrence.planned_date
+  }
+  const value = occurrence?.planned_start_at ?? occurrence?.due_at
   if (!value) return '未安排'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat('zh-CN', {
     month: 'short',
     day: 'numeric',
-    hour:
-      occurrence?.planned_start_at || occurrence?.due_at
-        ? '2-digit'
-        : undefined,
-    minute:
-      occurrence?.planned_start_at || occurrence?.due_at
-        ? '2-digit'
-        : undefined,
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: occurrence?.timezone,
   }).format(date)
+}
+
+function localISODate(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function timeRangeForOccurrence(occurrence?: OccurrenceV2) {
+  if (!occurrence) return { start: '09:00', end: '10:00' }
+  const timezone =
+    occurrence.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const start = occurrence.planned_start_at
+    ? formatLocalTime(occurrence.planned_start_at, timezone)
+    : '09:00'
+  const duration = occurrenceDurationMinutes(occurrence)
+  return { start, end: addMinutes(start, duration) }
+}
+
+function occurrenceDurationMinutes(occurrence: OccurrenceV2) {
+  if (!occurrence.planned_start_at || !occurrence.planned_end_at) return 60
+  const start = new Date(occurrence.planned_start_at).getTime()
+  const end = new Date(occurrence.planned_end_at).getTime()
+  const duration = Math.round((end - start) / 60_000)
+  return duration > 0 ? duration : 60
+}
+
+function formatLocalTime(value: string, timezone: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '09:00'
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(date)
+}
+
+function timeToMinutes(value: string) {
+  const [hours, minutes] = value.split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0
+  return hours * 60 + minutes
+}
+
+function addMinutes(value: string, minutes: number) {
+  const total = Math.min(timeToMinutes(value) + minutes, 23 * 60 + 59)
+  const hours = Math.floor(total / 60)
+  const remainingMinutes = total % 60
+  return `${String(hours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}`
 }
 
 export function RoadmapTaskInspector({
@@ -94,8 +143,10 @@ export function RoadmapTaskInspector({
   onDelete,
   onComplete,
   onStatusChange,
+  onScheduleChange,
   isCompleting = false,
   isStatusChanging = false,
+  isScheduleChanging = false,
   isRetentionChanging = false,
 }: {
   task?: TaskV2
@@ -110,8 +161,10 @@ export function RoadmapTaskInspector({
   onDelete?: () => Promise<unknown> | void
   onComplete?: () => Promise<void>
   onStatusChange?: (change: RoadmapExecutionStatusChange) => Promise<void>
+  onScheduleChange?: (timing: OccurrenceTimingInput) => Promise<void>
   isCompleting?: boolean
   isStatusChanging?: boolean
+  isScheduleChanging?: boolean
   isRetentionChanging?: boolean
 }) {
   const updateTask = useUpdateTaskDefinitionMutation()
@@ -127,6 +180,16 @@ export function RoadmapTaskInspector({
   )
   const [editingResources, setEditingResources] = useState(false)
   const [resourceError, setResourceError] = useState('')
+  const [editingSchedule, setEditingSchedule] = useState(false)
+  const [scheduleTimingType, setScheduleTimingType] =
+    useState<Exclude<TimingType, 'unscheduled'>>('date')
+  const [scheduleDate, setScheduleDate] = useState(localISODate)
+  const [scheduleTimeRange, setScheduleTimeRange] = useState({
+    start: '09:00',
+    end: '10:00',
+  })
+  const [scheduleSaved, setScheduleSaved] = useState(false)
+  const [scheduleError, setScheduleError] = useState('')
 
   useEffect(() => {
     setTitle(task?.title ?? '')
@@ -151,6 +214,23 @@ export function RoadmapTaskInspector({
     setBlockedReason('')
     setNextAction('')
   }, [status, task?.id])
+
+  useEffect(() => {
+    setScheduleTimingType(
+      occurrence?.timing_type === 'time_block' || occurrence?.planned_start_at
+        ? 'time_block'
+        : 'date'
+    )
+    setScheduleDate(
+      occurrence?.planned_date ??
+        occurrence?.planned_start_at?.slice(0, 10) ??
+        localISODate()
+    )
+    setScheduleTimeRange(timeRangeForOccurrence(occurrence))
+    setEditingSchedule(false)
+    setScheduleSaved(false)
+    setScheduleError('')
+  }, [occurrence?.id, task?.id])
 
   if (!task) {
     return (
@@ -260,6 +340,39 @@ export function RoadmapTaskInspector({
       setBlocking(false)
     } catch {
       // Preserve the entered details so the user can retry.
+    }
+  }
+
+  async function saveSchedule() {
+    if (!occurrence || !onScheduleChange || scheduleDate === '') return
+    const durationMinutes =
+      timeToMinutes(scheduleTimeRange.end) -
+      timeToMinutes(scheduleTimeRange.start)
+    if (scheduleTimingType === 'time_block' && durationMinutes <= 0) {
+      setScheduleError('结束时间必须晚于开始时间。')
+      return
+    }
+
+    setScheduleError('')
+    setScheduleSaved(false)
+    try {
+      await onScheduleChange({
+        timing_type: scheduleTimingType,
+        timezone:
+          occurrence.timezone ??
+          Intl.DateTimeFormat().resolvedOptions().timeZone,
+        planned_date: scheduleDate,
+        ...(scheduleTimingType === 'time_block'
+          ? {
+              local_start_time: scheduleTimeRange.start,
+              duration_minutes: durationMinutes,
+            }
+          : {}),
+      })
+      setEditingSchedule(false)
+      setScheduleSaved(true)
+    } catch {
+      setScheduleError('保存失败，请刷新任务后重试。')
     }
   }
 
@@ -440,12 +553,122 @@ export function RoadmapTaskInspector({
           />
         </label>
 
+        <section className="mindmap-schedule-card">
+          <header>
+            <div>
+              <CalendarDays aria-hidden="true" />
+              <div>
+                <span>计划时间</span>
+                <strong>{formatOccurrenceTime(occurrence)}</strong>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={!occurrence || !onScheduleChange}
+              onClick={() => {
+                setScheduleError('')
+                setEditingSchedule((current) => !current)
+              }}
+            >
+              {editingSchedule ? '收起' : '安排时间'}
+            </button>
+          </header>
+
+          {scheduleSaved ? (
+            <p className="mindmap-schedule-success" role="status">
+              已保存，并同步到日历
+            </p>
+          ) : null}
+
+          {!occurrence ? (
+            <p>尚未生成执行实例，请稍后再试。</p>
+          ) : editingSchedule ? (
+            <div className="mindmap-schedule-editor">
+              <label>
+                <span>安排方式</span>
+                <select
+                  aria-label="学习任务安排方式"
+                  value={scheduleTimingType}
+                  onChange={(event) =>
+                    setScheduleTimingType(
+                      event.target.value as Exclude<TimingType, 'unscheduled'>
+                    )
+                  }
+                >
+                  <option value="date">全天任务</option>
+                  <option value="time_block">具体时间</option>
+                </select>
+              </label>
+              <label>
+                <span>执行日期</span>
+                <input
+                  aria-label="学习任务执行日期"
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(event) => setScheduleDate(event.target.value)}
+                />
+              </label>
+              {scheduleTimingType === 'time_block' ? (
+                <div className="mindmap-schedule-time-range">
+                  <label>
+                    <span>开始</span>
+                    <input
+                      aria-label="学习任务开始时间"
+                      type="time"
+                      value={scheduleTimeRange.start}
+                      onChange={(event) =>
+                        setScheduleTimeRange((current) => ({
+                          ...current,
+                          start: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>结束</span>
+                    <input
+                      aria-label="学习任务结束时间"
+                      type="time"
+                      value={scheduleTimeRange.end}
+                      onChange={(event) =>
+                        setScheduleTimeRange((current) => ({
+                          ...current,
+                          end: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
+              {scheduleError ? (
+                <p className="mindmap-schedule-error" role="alert">
+                  {scheduleError}
+                </p>
+              ) : null}
+              <div className="mindmap-schedule-actions">
+                <button type="button" onClick={() => setEditingSchedule(false)}>
+                  取消
+                </button>
+                <button
+                  className="is-primary"
+                  type="button"
+                  disabled={scheduleDate === '' || isScheduleChanging}
+                  onClick={() => void saveSchedule()}
+                >
+                  {isScheduleChanging ? '正在同步…' : '保存并同步日历'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p>
+              {formatOccurrenceTime(occurrence) === '未安排'
+                ? '安排后，任务会出现在对应日期的日历中。'
+                : '修改后，任务工作台和日历会同步更新。'}
+            </p>
+          )}
+        </section>
+
         <div className="mindmap-inspector-facts">
-          <div>
-            <CalendarDays aria-hidden="true" />
-            <span>计划时间</span>
-            <strong>{formatOccurrenceTime(occurrence)}</strong>
-          </div>
           <div>
             <GitBranch aria-hidden="true" />
             <span>所属节点</span>

@@ -673,7 +673,7 @@ func deleteSQLiteVoiceAudio(ctx context.Context, tx *sql.Tx, workspaceID string,
 		return nil, err
 	}
 	if objectKey != "" {
-		if err := enqueueSQLiteVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now); err != nil {
+		if err := enqueueSQLiteVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now+600, now); err != nil {
 			return nil, err
 		}
 	}
@@ -682,11 +682,11 @@ func deleteSQLiteVoiceAudio(ctx context.Context, tx *sql.Tx, workspaceID string,
 
 func deleteSQLiteVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID string, mutation model.MobileEntityMutation) (*model.MobileEntityEnvelope, error) {
 	var revision int64
-	var noteID string
+	var voiceID, noteID string
 	var objectKey string
 	var deletedAt sql.NullInt64
-	err := tx.QueryRowContext(ctx, `SELECT revision, note_id, object_key, deleted_at FROM voice_notes WHERE workspace_id = ? AND client_id = ?`, workspaceID, mutation.EntityClientID).
-		Scan(&revision, &noteID, &objectKey, &deletedAt)
+	err := tx.QueryRowContext(ctx, `SELECT id,revision,note_id,object_key,deleted_at FROM voice_notes WHERE workspace_id=? AND client_id=?`, workspaceID, mutation.EntityClientID).
+		Scan(&voiceID, &revision, &noteID, &objectKey, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		if mutation.BaseRevision == nil || *mutation.BaseRevision != 0 {
 			return nil, storage.ErrMobileEntityNotFound
@@ -714,6 +714,7 @@ func deleteSQLiteVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID string, 
 			audio_size = CASE WHEN ? = '' THEN 0 ELSE audio_size END,
 			audio_sha256 = CASE WHEN ? = '' THEN '' ELSE audio_sha256 END,
 			upload_state = CASE WHEN ? = '' THEN 'failed' ELSE upload_state END,
+			duration_ms=0,recorded_at=0,language='',transcription_error='',
 			revision = revision + 1, updated_at = ?
 		WHERE workspace_id = ? AND client_id = ? AND revision = ? AND deleted_at IS NULL
 	`, now, audioState, objectKey, objectKey, objectKey, objectKey, objectKey, now, workspaceID, mutation.EntityClientID, revision)
@@ -729,8 +730,14 @@ func deleteSQLiteVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID string, 
 	if err := cancelSQLiteVoiceTranscriptionJobs(ctx, tx, workspaceID, mutation.EntityClientID, now); err != nil {
 		return nil, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM transcription_results WHERE workspace_id=? AND voice_note_id=?`, workspaceID, mutation.EntityClientID); err != nil {
+		return nil, err
+	}
+	if err := upsertSQLiteContentTombstone(ctx, tx, workspaceID, "voice_note", voiceID, mutation.EntityClientID, revision+1, now); err != nil {
+		return nil, err
+	}
 	if objectKey != "" {
-		if err := enqueueSQLiteVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now); err != nil {
+		if err := enqueueSQLiteVoiceAudioCleanup(ctx, tx, workspaceID, mutation.EntityClientID, objectKey, now, now); err != nil {
 			return nil, err
 		}
 	}
@@ -749,17 +756,24 @@ func pretombstoneSQLiteVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID, c
 	noteClientID := deterministicSQLiteMobileNoteClientID(workspaceID, noteID)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO notes (id, client_id, revision, deleted_at, title, body, folder_id, tags, created_at, updated_at, workspace_id)
-		VALUES (?, ?, 1, ?, '[deleted voice]', '', '__uncategorized', '["voice"]', ?, ?, ?)
+		VALUES (?, ?, 1, ?, '', '', '__uncategorized', '[]', ?, ?, ?)
 	`, noteID, noteClientID, now, now, now, workspaceID); err != nil {
 		return nil, err
 	}
+	voiceID := uuid.NewString()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO voice_notes (
 			id, workspace_id, client_id, revision, deleted_at, audio_revision, audio_state, note_id,
 			duration_ms, recorded_at, language, object_key, mime_type, audio_size, audio_sha256,
 			upload_state, transcription_state, transcription_error, created_at, updated_at
-		) VALUES (?, ?, ?, 1, ?, 1, 'deleted', ?, 0, ?, '', '', '', 0, '', 'failed', 'not_started', '', ?, ?)
-	`, uuid.NewString(), workspaceID, clientID, now, noteID, now, now, now); err != nil {
+		) VALUES (?, ?, ?, 1, ?, 1, 'deleted', ?, 0, 0, '', '', '', 0, '', 'failed', 'not_started', '', ?, ?)
+	`, voiceID, workspaceID, clientID, now, noteID, now, now); err != nil {
+		return nil, err
+	}
+	if err := upsertSQLiteContentTombstone(ctx, tx, workspaceID, "note", noteID, noteClientID, 1, now); err != nil {
+		return nil, err
+	}
+	if err := upsertSQLiteContentTombstone(ctx, tx, workspaceID, "voice_note", voiceID, clientID, 1, now); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES (?, 'voice_note', ?, ?)`, workspaceID, clientID, now); err != nil {
@@ -771,19 +785,19 @@ func pretombstoneSQLiteVoiceNote(ctx context.Context, tx *sql.Tx, workspaceID, c
 func cancelSQLiteVoiceTranscriptionJobs(ctx context.Context, tx *sql.Tx, workspaceID, clientID string, now int64) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE transcription_jobs SET state = 'canceled', revision = revision + 1, error_code = 'voice_audio_deleted',
-			next_attempt_at = NULL, lease_owner = '', lease_token = '', lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?
+			language='',next_attempt_at = NULL, lease_owner = '', lease_token = '', lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?
 		WHERE workspace_id = ? AND voice_note_id = ? AND state IN ('waiting_for_audio', 'queued', 'processing', 'retry_waiting')
 	`, now, workspaceID, clientID)
 	return err
 }
 
-func enqueueSQLiteVoiceAudioCleanup(ctx context.Context, tx *sql.Tx, workspaceID, clientID, objectKey string, now int64) error {
+func enqueueSQLiteVoiceAudioCleanup(ctx context.Context, tx *sql.Tx, workspaceID, clientID, objectKey string, nextAttemptAt, now int64) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO voice_audio_cleanup_jobs (
 			job_id, workspace_id, voice_note_id, object_key, state, revision, attempt, max_attempts,
 			error_code, next_attempt_at, lease_owner, lease_token, created_at, updated_at
 		) VALUES (?, ?, ?, ?, 'retry_waiting', 1, 0, 6, '', ?, '', '', ?, ?)
-	`, uuid.NewString(), workspaceID, clientID, objectKey, now+600, now, now)
+	`, uuid.NewString(), workspaceID, clientID, objectKey, nextAttemptAt, now, now)
 	return err
 }
 

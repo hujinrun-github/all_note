@@ -219,6 +219,57 @@ func ChangePassword(store storage.Store) gin.HandlerFunc {
 	}
 }
 
+func ResetOwnPassword(store storage.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		identity, ok := auth.IdentityFromContext(c.Request.Context())
+		if !ok || identity.SessionID == "" {
+			errorResponse(c, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+			return
+		}
+		if store == nil {
+			errorResponse(c, http.StatusInternalServerError, "PASSWORD_RESET_FAILED", "password reset failed")
+			return
+		}
+
+		var req model.ResetOwnPasswordRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			badRequest(c, "new_password is required")
+			return
+		}
+		newHash, err := auth.HashPassword(req.NewPassword)
+		if err != nil {
+			if errors.Is(err, auth.ErrWeakPassword) {
+				errorResponse(c, http.StatusBadRequest, "WEAK_PASSWORD", "new password does not meet policy")
+				return
+			}
+			errorResponse(c, http.StatusInternalServerError, "PASSWORD_RESET_FAILED", "password reset failed")
+			return
+		}
+
+		ctx := c.Request.Context()
+		err = store.Transact(ctx, func(tx storage.Store) error {
+			if err := tx.Auth().UpdateUserPassword(ctx, identity.UserID, newHash, false); err != nil {
+				return err
+			}
+			if err := tx.Auth().RevokeUserSessionsExcept(ctx, identity.UserID, identity.SessionID); err != nil {
+				return err
+			}
+			return tx.Auth().RecordAuditEvent(ctx, &model.AuditEvent{
+				ActorUserID:  &identity.UserID,
+				TargetUserID: &identity.UserID,
+				WorkspaceID:  &identity.WorkspaceID,
+				Action:       "auth.reset_password",
+				Metadata:     authAuditMetadata(c),
+			})
+		})
+		if err != nil {
+			errorResponse(c, http.StatusInternalServerError, "PASSWORD_RESET_FAILED", "password reset failed")
+			return
+		}
+		noContent(c)
+	}
+}
+
 func sessionTTL(authCfg config.AuthConfig, remember bool) time.Duration {
 	if remember {
 		if authCfg.Session.RememberTTL > 0 {

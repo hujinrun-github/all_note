@@ -178,6 +178,7 @@ func TestPasswordChangeRequiredAllowsAuthRoutes(t *testing.T) {
 	}{
 		{name: "me", method: http.MethodGet, path: "/api/auth/me", want: http.StatusOK},
 		{name: "change password", method: http.MethodPost, path: "/api/auth/change-password", body: `{"current_password":"abc12345","new_password":"newpass123"}`, want: http.StatusNoContent},
+		{name: "reset password", method: http.MethodPost, path: "/api/auth/reset-password", body: `{"new_password":"newpass123"}`, want: http.StatusNoContent},
 		{name: "logout", method: http.MethodPost, path: "/api/auth/logout", want: http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,6 +362,63 @@ func TestChangePasswordRevokesOtherSessionsUsingCurrentSessionID(t *testing.T) {
 	}
 }
 
+func TestResetOwnPasswordDoesNotRequireCurrentPassword(t *testing.T) {
+	env := setupAuthTestEnv(t, func(user *model.User) {
+		user.PasswordSet = false
+	})
+	keptToken := "reset-password-kept-token"
+	otherToken := "reset-password-other-token"
+	keptSessionID := "session_reset_keep"
+	createAuthTestSession(t, env, authTestUserID, keptSessionID, keptToken, time.Now().UTC().Add(time.Hour), false)
+	createAuthTestSession(t, env, authTestUserID, "session_reset_other", otherToken, time.Now().UTC().Add(time.Hour), false)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", strings.NewReader(`{"new_password":"resetPass123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(authTestCookie(env, keptToken))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", w.Code, w.Body.String())
+	}
+	if sessionRevoked(t, env, keptToken) {
+		t.Fatal("current session should be kept")
+	}
+	if !sessionRevoked(t, env, otherToken) {
+		t.Fatal("other session should be revoked")
+	}
+	loaded, err := env.store.Auth().GetUserByID(t.Context(), authTestUserID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if !loaded.PasswordSet || loaded.MustChangePassword {
+		t.Fatalf("password flags after reset = set:%v must_change:%v", loaded.PasswordSet, loaded.MustChangePassword)
+	}
+	if err := authpkg.VerifyPassword(loaded.PasswordHash, "resetPass123"); err != nil {
+		t.Fatalf("reset password hash did not verify: %v", err)
+	}
+	if !auditEventRecorded(t, env.dbPath, "auth.reset_password", authTestUserID) {
+		t.Fatal("auth.reset_password audit event was not recorded")
+	}
+}
+
+func TestResetOwnPasswordRejectsWeakPassword(t *testing.T) {
+	env := setupAuthTestEnv(t)
+	token := "reset-password-weak-token"
+	createAuthTestSession(t, env, authTestUserID, "session_reset_weak", token, time.Now().UTC().Add(time.Hour), false)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", strings.NewReader(`{"new_password":"weak"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(authTestCookie(env, token))
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w.Body.String(), "WEAK_PASSWORD")
+}
+
 type authTestEnv struct {
 	router *gin.Engine
 	store  storage.Store
@@ -424,6 +482,7 @@ func setupAuthTestEnv(t *testing.T, opts ...authTestOption) *authTestEnv {
 	authRoutes.POST("/logout", authMiddleware.Optional(), Logout(store, cfg.Cookie))
 	authRoutes.GET("/me", authMiddleware.Required(), Me(store))
 	authRoutes.POST("/change-password", authMiddleware.Required(), ChangePassword(store))
+	authRoutes.POST("/reset-password", authMiddleware.Required(), ResetOwnPassword(store))
 	protected := r.Group("/api")
 	protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
 	protected.GET("/notes", func(c *gin.Context) {

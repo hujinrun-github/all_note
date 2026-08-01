@@ -121,14 +121,20 @@ func (r inboxRepository) Delete(ctx context.Context, id string) error {
 	now := nowUnix()
 	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
 		var clientID string
-		err := tx.QueryRowContext(ctx, `SELECT client_id FROM inbox WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, workspaceID, id).Scan(&clientID)
+		var revision int64
+		err := tx.QueryRowContext(ctx, `SELECT client_id,revision FROM inbox WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, workspaceID, id).Scan(&clientID, &revision)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE inbox SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, now, now, workspaceID, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE inbox SET deleted_at = ?, updated_at = ?, revision = revision + 1,
+			kind='note',title='',body=NULL,source='',converted_to=NULL
+			WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL`, now, now, workspaceID, id); err != nil {
+			return err
+		}
+		if err := upsertSQLiteContentTombstone(ctx, tx, workspaceID, "inbox", id, clientID, revision+1, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES (?, 'inbox', ?, ?)`, workspaceID, clientID, now); err != nil {
@@ -206,9 +212,30 @@ func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, 
 		for _, id := range ids {
 			updateArgs = append(updateArgs, id)
 		}
-		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ? AND deleted_at IS NULL AND id IN (%s)", placeholders), updateArgs...)
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET deleted_at = ?, updated_at = ?, revision = revision + 1, kind='note',title='',body=NULL,source='',converted_to=NULL WHERE workspace_id = ? AND deleted_at IS NULL AND id IN (%s)", placeholders), updateArgs...)
 		if err != nil {
 			return err
+		}
+		retentionAvailable, err := sqliteContentRetentionAvailable(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if retentionAvailable {
+			tombstoneArgs := make([]interface{}, 0, len(ids)+2)
+			tombstoneArgs = append(tombstoneArgs, workspaceID, now)
+			for _, id := range ids {
+				tombstoneArgs = append(tombstoneArgs, id)
+			}
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO mobile_v2_content_tombstones
+				(workspace_id,entity_type,entity_id,client_id,revision,deleted_at)
+				SELECT workspace_id,'inbox',id,client_id,revision,deleted_at FROM inbox
+				WHERE workspace_id=? AND deleted_at=? AND id IN (%s)
+				ON CONFLICT(workspace_id,entity_type,entity_id) DO UPDATE SET
+					client_id=excluded.client_id,
+					revision=MAX(mobile_v2_content_tombstones.revision,excluded.revision),
+					deleted_at=MIN(mobile_v2_content_tombstones.deleted_at,excluded.deleted_at)`, placeholders), tombstoneArgs...); err != nil {
+				return err
+			}
 		}
 		affected, err = result.RowsAffected()
 		if err != nil {

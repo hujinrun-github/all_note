@@ -81,6 +81,14 @@ func (r voiceAudioCleanupRepository) Complete(ctx context.Context, completion mo
 			}
 			return storage.ErrVoiceAudioCleanupLeaseLost
 		}
+		if attachmentID, attachmentCleanup := storage.ParseNoteAttachmentCleanupSubject(current.VoiceNoteID); attachmentCleanup {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM note_attachments
+				WHERE workspace_id=$1 AND id=$2 AND object_key=$3`, workspaceID, attachmentID, current.ObjectKey); err != nil {
+				return err
+			}
+			job, err = scanPostgresVoiceAudioCleanupJob(tx.QueryRowContext(ctx, postgresVoiceAudioCleanupSelect+` WHERE workspace_id = $1 AND job_id = $2`, workspaceID, completion.JobID))
+			return err
+		}
 		voiceResult, err := tx.ExecContext(ctx, `
 			UPDATE voice_notes SET audio_state = 'deleted', audio_revision = audio_revision + 1,
 				object_key = '', mime_type = '', audio_size = 0, audio_sha256 = '', upload_state = 'failed',

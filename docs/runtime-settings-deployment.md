@@ -36,6 +36,7 @@ server boundary:
 ```text
 FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING=false
 FLOWSPACE_ENABLE_MOBILE_SYNC_V2=false
+FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS=30
 ```
 
 Leave this flag disabled until every target tenant endpoint has the verified
@@ -48,6 +49,15 @@ disabled until the concrete mobile-v2 snapshot/change/command/receipt service
 has been deployed. The server refuses to start if this flag is true while
 task-domain v2 routing is false or the concrete service is not injected; this
 prevents an enabled deployment from silently returning `404`.
+
+`FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS` controls how long redacted
+mobile-v2 content rows and change batches remain before physical compaction.
+Deletion clears sensitive payload fields immediately; the retained minimum is
+used as a synchronization tombstone so offline clients cannot recreate a
+deleted entity. Values from 1 through 3650 days are accepted, and the default
+is 30 days. The retention worker runs once at server startup and then hourly
+for every active tenant. Apply tenant migration
+`0012_mobile_v2_content_retention.sql` before deploying this server version.
 
 When enabled, the server resolves the durable model independently for every
 authenticated workspace. Only an explicit stable `legacy + idle` state may
