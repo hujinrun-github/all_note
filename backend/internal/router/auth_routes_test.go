@@ -31,6 +31,7 @@ func TestAuthRoutesAreRegistered(t *testing.T) {
 		"POST /api/auth/logout",
 		"GET /api/auth/me",
 		"POST /api/auth/change-password",
+		"POST /api/auth/reset-password",
 	}
 
 	registered := registeredRoutes(Setup(env.config))

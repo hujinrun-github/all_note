@@ -63,6 +63,7 @@ func Setup(cfg Config) *gin.Engine {
 		authRoutes.POST("/logout", authMiddleware.Optional(), handler.Logout(identityStore, cfg.Auth.Cookie))
 		authRoutes.GET("/me", authMiddleware.Required(), handler.Me(identityStore))
 		authRoutes.POST("/change-password", authMiddleware.Required(), handler.ChangePassword(identityStore))
+		authRoutes.POST("/reset-password", authMiddleware.Required(), handler.ResetOwnPassword(identityStore))
 		authRoutes.GET("/providers", handler.AuthProviders(cfg.Auth))
 		authRoutes.GET("/github/start", handler.GitHubOAuthStart(identityStore, cfg.Auth, cfg.OAuthStateStore))
 		authRoutes.GET("/github/callback", handler.GitHubOAuthCallbackAcrossStores(identityStore, cfg.Store, cfg.ProvisionControlIdentity, cfg.Auth, cfg.OAuthStateStore, cfg.GitHubClient))

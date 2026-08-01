@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 )
@@ -271,17 +274,22 @@ func (r noteRepository) Delete(ctx context.Context, id string) error {
 	now := nowUnix()
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		var clientID string
+		var revision int64
 		err := tx.QueryRowContext(ctx, `
-			SELECT client_id FROM notes WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
-		`, workspaceID, id).Scan(&clientID)
+			SELECT client_id, revision FROM notes WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
+		`, workspaceID, id).Scan(&clientID, &revision)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		if err := enqueueSQLiteNoteAttachmentCleanup(ctx, tx, workspaceID, id, now); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `
-			UPDATE notes SET deleted_at = ?, updated_at = ?, revision = revision + 1
+			UPDATE notes SET deleted_at = ?, updated_at = ?, revision = revision + 1,
+				title = '', body = '', tags = '[]'
 			WHERE workspace_id = ? AND id = ? AND deleted_at IS NULL
 		`, now, now, workspaceID, id)
 		if err != nil {
@@ -294,16 +302,314 @@ func (r noteRepository) Delete(ctx context.Context, id string) error {
 		if affected != 1 {
 			return nil
 		}
+		if err := redactSQLiteExtendedNoteContent(ctx, tx, workspaceID, id); err != nil {
+			return err
+		}
+		if err := upsertSQLiteContentTombstone(ctx, tx, workspaceID, "note", id, clientID, revision+1, now); err != nil {
+			return err
+		}
+		taskChanges, err := detachSQLiteNoteTaskReferences(ctx, tx, workspaceID, id, now)
+		if err != nil {
+			return err
+		}
+		voiceChanges, err := deleteSQLiteVoiceNotesForDeletedNote(ctx, tx, workspaceID, id, now)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at)
 			VALUES (?, 'note', ?, ?)
 		`, workspaceID, clientID, now); err != nil {
 			return err
 		}
-		return persistSQLiteServerNoteChange(
+		if err := persistSQLiteServerNoteChange(
 			ctx, tx, workspaceID, uuid.NewString(), model.MobileOperationNoteServerDeleted, clientID, now,
-		)
+		); err != nil {
+			return err
+		}
+		if err := mobilev2change.AppendTaskChangesAtCurrentSequence(
+			ctx, tx, mobilev2projection.DialectSQLite, workspaceID, taskChanges, time.Unix(now, 0).UTC(),
+		); err != nil {
+			return err
+		}
+		return persistSQLiteDeletedVoiceNoteChanges(ctx, tx, workspaceID, voiceChanges, now)
 	})
+}
+
+type deletedSQLiteVoiceNoteChange struct {
+	ClientID string
+}
+
+func deleteSQLiteVoiceNotesForDeletedNote(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	noteID string,
+	now int64,
+) ([]deletedSQLiteVoiceNoteChange, error) {
+	ready, err := sqliteNoteTableAvailable(ctx, tx, "voice_notes")
+	if err != nil || !ready {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, client_id, revision, object_key
+		FROM voice_notes
+		WHERE workspace_id = ? AND note_id = ? AND deleted_at IS NULL
+	`, workspaceID, noteID)
+	if err != nil {
+		return nil, err
+	}
+	type voiceRow struct {
+		id        string
+		clientID  string
+		revision  int64
+		objectKey string
+	}
+	voices := make([]voiceRow, 0)
+	for rows.Next() {
+		var voice voiceRow
+		if err := rows.Scan(&voice.id, &voice.clientID, &voice.revision, &voice.objectKey); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		voices = append(voices, voice)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	changes := make([]deletedSQLiteVoiceNoteChange, 0, len(voices))
+	for _, voice := range voices {
+		audioState := model.VoiceAudioDeleted
+		if voice.objectKey != "" {
+			audioState = model.VoiceAudioDeleteRequested
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE voice_notes SET deleted_at = ?, audio_state = ?, audio_revision = audio_revision + 1,
+				object_key = CASE WHEN ? = '' THEN '' ELSE object_key END,
+				mime_type = CASE WHEN ? = '' THEN '' ELSE mime_type END,
+				audio_size = CASE WHEN ? = '' THEN 0 ELSE audio_size END,
+				audio_sha256 = CASE WHEN ? = '' THEN '' ELSE audio_sha256 END,
+				upload_state = CASE WHEN ? = '' THEN 'failed' ELSE upload_state END,
+				duration_ms = 0, recorded_at = 0, language = '', transcription_error = '',
+				revision = revision + 1, updated_at = ?
+			WHERE workspace_id = ? AND id = ? AND revision = ? AND deleted_at IS NULL
+		`, now, audioState, voice.objectKey, voice.objectKey, voice.objectKey, voice.objectKey, voice.objectKey, now, workspaceID, voice.id, voice.revision)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected != 1 {
+			continue
+		}
+		if err := cancelSQLiteVoiceTranscriptionJobs(ctx, tx, workspaceID, voice.clientID, now); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM transcription_results WHERE workspace_id = ? AND voice_note_id = ?
+		`, workspaceID, voice.clientID); err != nil {
+			return nil, err
+		}
+		if err := upsertSQLiteContentTombstone(ctx, tx, workspaceID, "voice_note", voice.id, voice.clientID, voice.revision+1, now); err != nil {
+			return nil, err
+		}
+		if voice.objectKey != "" {
+			if err := enqueueSQLiteVoiceAudioCleanup(ctx, tx, workspaceID, voice.clientID, voice.objectKey, now, now); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at)
+			VALUES (?, 'voice_note', ?, ?)
+		`, workspaceID, voice.clientID, now); err != nil {
+			return nil, err
+		}
+		changes = append(changes, deletedSQLiteVoiceNoteChange{ClientID: voice.clientID})
+	}
+	return changes, nil
+}
+
+func persistSQLiteDeletedVoiceNoteChanges(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	changes []deletedSQLiteVoiceNoteChange,
+	now int64,
+) error {
+	for _, change := range changes {
+		if err := persistSQLiteServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "voice_note", "voice_note.server_deleted", change.ClientID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func detachSQLiteNoteTaskReferences(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	noteID string,
+	now int64,
+) (storage.MobileV2TaskChangeSnapshot, error) {
+	changes := storage.MobileV2TaskChangeSnapshot{
+		TaskIDs: make(map[string]struct{}), OccurrenceIDs: make(map[string]struct{}),
+	}
+	timestamp := time.Unix(now, 0).UTC().Format(time.RFC3339Nano)
+	tasksReady, err := sqliteNoteTableAvailable(ctx, tx, "domain_tasks_v2")
+	if err != nil {
+		return changes, err
+	}
+	if tasksReady {
+		if err := collectSQLiteDetachedNoteReferenceIDs(ctx, tx, `UPDATE domain_tasks_v2
+			SET note_id=NULL,revision=revision+1,updated_at=?
+			WHERE workspace_id=? AND note_id=?
+			RETURNING id`, changes.TaskIDs, timestamp, workspaceID, noteID); err != nil {
+			return changes, err
+		}
+	}
+	occurrencesReady, err := sqliteNoteTableAvailable(ctx, tx, "domain_task_occurrences_v2")
+	if err != nil {
+		return changes, err
+	}
+	if occurrencesReady {
+		if err := collectSQLiteDetachedNoteReferenceIDs(ctx, tx, `UPDATE domain_task_occurrences_v2
+			SET note_id=NULL,revision=revision+1,updated_at=?
+			WHERE workspace_id=? AND note_id=?
+			RETURNING id`, changes.OccurrenceIDs, timestamp, workspaceID, noteID); err != nil {
+			return changes, err
+		}
+	}
+	legacyReady, err := sqliteNoteTableAvailable(ctx, tx, "tasks")
+	if err != nil {
+		return changes, err
+	}
+	if legacyReady {
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET note_id=NULL,updated_at=?
+			WHERE workspace_id=? AND note_id=?`, timestamp, workspaceID, noteID); err != nil {
+			return changes, err
+		}
+	}
+	return changes, nil
+}
+
+func collectSQLiteDetachedNoteReferenceIDs(
+	ctx context.Context,
+	tx *sql.Tx,
+	query string,
+	ids map[string]struct{},
+	args ...any,
+) error {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids[id] = struct{}{}
+	}
+	return rows.Err()
+}
+
+func sqliteNoteTableAvailable(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name=?`, table).Scan(&count)
+	return count == 1, err
+}
+
+func upsertSQLiteContentTombstone(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID, entityType, entityID, clientID string,
+	revision, deletedAt int64,
+) error {
+	available, err := sqliteContentRetentionAvailable(ctx, tx)
+	if err != nil || !available {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO mobile_v2_content_tombstones
+		(workspace_id,entity_type,entity_id,client_id,revision,deleted_at)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT(workspace_id,entity_type,entity_id) DO UPDATE SET
+			client_id=excluded.client_id,
+			revision=MAX(mobile_v2_content_tombstones.revision,excluded.revision),
+			deleted_at=MIN(mobile_v2_content_tombstones.deleted_at,excluded.deleted_at)`,
+		workspaceID, entityType, entityID, clientID, revision, deletedAt)
+	return err
+}
+
+func sqliteContentRetentionAvailable(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='mobile_v2_content_tombstones'`).Scan(&count)
+	return count == 1, err
+}
+
+func redactSQLiteExtendedNoteContent(ctx context.Context, tx *sql.Tx, workspaceID, noteID string) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('notes')
+		WHERE name IN ('content','content_text')`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 2 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE notes SET content='',content_text=''
+		WHERE workspace_id=? AND id=?`, workspaceID, noteID)
+	return err
+}
+
+func enqueueSQLiteNoteAttachmentCleanup(ctx context.Context, tx *sql.Tx, workspaceID, noteID string, now int64) error {
+	attachmentsReady, err := sqliteNoteTableAvailable(ctx, tx, "note_attachments")
+	if err != nil || !attachmentsReady {
+		return err
+	}
+	cleanupReady, err := sqliteNoteTableAvailable(ctx, tx, "voice_audio_cleanup_jobs")
+	if err != nil || !cleanupReady {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,object_key FROM note_attachments
+		WHERE workspace_id=? AND note_id=? AND object_key<>''`, workspaceID, noteID)
+	if err != nil {
+		return err
+	}
+	type attachmentObject struct{ id, key string }
+	objects := make([]attachmentObject, 0)
+	for rows.Next() {
+		var item attachmentObject
+		if err := rows.Scan(&item.id, &item.key); err != nil {
+			rows.Close()
+			return err
+		}
+		objects = append(objects, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range objects {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO voice_audio_cleanup_jobs
+			(job_id,workspace_id,voice_note_id,object_key,state,revision,attempt,max_attempts,error_code,next_attempt_at,lease_owner,lease_token,created_at,updated_at)
+			VALUES(?,?,?,?,'queued',1,0,6,'',?,'','',?,?)`, uuid.NewString(), workspaceID,
+			storage.NoteAttachmentCleanupSubject(item.id), item.key, now, now, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r noteRepository) withTx(ctx context.Context, fn func(*sql.Tx) error) error {

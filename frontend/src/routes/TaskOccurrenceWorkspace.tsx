@@ -679,6 +679,20 @@ export default function TaskOccurrenceWorkspace() {
                 occurrence_id: null,
               })
             }
+            onArchive={() =>
+              archiveTask
+                .mutateAsync(taskCommandVariables(selectedTask))
+                .then(() =>
+                  updateSearchParams({ occurrence_id: null, task_id: null })
+                )
+            }
+            onDelete={() =>
+              deleteTask
+                .mutateAsync(taskCommandVariables(selectedTask))
+                .then(() =>
+                  updateSearchParams({ occurrence_id: null, task_id: null })
+                )
+            }
           >
             {editingOccurrence?.id === selectedOccurrence.id ? (
               <form className="td-reschedule-form" onSubmit={handleReschedule}>

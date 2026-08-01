@@ -84,6 +84,47 @@ func AppendTaskChanges(
 		WHERE workspace_id=? RETURNING latest_sequence`), workspaceID).Scan(&sequence); err != nil {
 		return err
 	}
+	return appendTaskChangesAtSequence(ctx, runner, dialect, workspaceID, sequence, changes, now)
+}
+
+// AppendTaskChangesAtCurrentSequence adds task scopes to a server-originated
+// content change that already advanced the workspace head in the same
+// transaction. It is used when deleting a note also detaches task references.
+func AppendTaskChangesAtCurrentSequence(
+	ctx context.Context,
+	runner Runner,
+	dialect mobilev2projection.Dialect,
+	workspaceID string,
+	changes storage.MobileV2TaskChangeSnapshot,
+	now time.Time,
+) error {
+	if changes.Empty() {
+		return nil
+	}
+	ready, err := contentChangeSchemaReady(ctx, runner, dialect, workspaceID)
+	if err != nil || !ready {
+		return err
+	}
+	var sequence uint64
+	if err := runner.QueryRowContext(ctx, bind(dialect,
+		`SELECT latest_sequence FROM mobile_v2_commit_heads WHERE workspace_id=?`), workspaceID).Scan(&sequence); err != nil {
+		return err
+	}
+	if sequence < 1 {
+		return errors.New("mobile-v2 content change did not reserve a sequence")
+	}
+	return appendTaskChangesAtSequence(ctx, runner, dialect, workspaceID, sequence, changes, now)
+}
+
+func appendTaskChangesAtSequence(
+	ctx context.Context,
+	runner Runner,
+	dialect mobilev2projection.Dialect,
+	workspaceID string,
+	sequence uint64,
+	changes storage.MobileV2TaskChangeSnapshot,
+	now time.Time,
+) error {
 	now = now.UTC().Truncate(time.Millisecond)
 	taskCoreTombstones, occurrenceTombstones, err := deletedTaskImages(changes.Deleted, now)
 	if err != nil {

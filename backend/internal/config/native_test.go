@@ -30,6 +30,9 @@ func TestLoadNativeConfigDefaultsToOptionalServicesDisabled(t *testing.T) {
 	if cfg.TaskDomainV2RoutingEnabled {
 		t.Fatal("task-domain v2 routing must be disabled by default")
 	}
+	if cfg.DeletedContentRetention != 30*24*time.Hour {
+		t.Fatalf("DeletedContentRetention = %s", cfg.DeletedContentRetention)
+	}
 }
 
 func TestLoadNativeConfigParsesMobileSyncV1FeatureFlag(t *testing.T) {
@@ -80,6 +83,22 @@ func TestLoadNativeConfigParsesTaskDomainV2RoutingFeatureFlag(t *testing.T) {
 	t.Setenv("FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING", "sometimes")
 	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING") {
 		t.Fatalf("invalid task-domain v2 routing feature flag error = %v", err)
+	}
+}
+
+func TestLoadNativeConfigParsesDeletedContentRetention(t *testing.T) {
+	clearNativeConfigEnvironment(t)
+	t.Setenv("FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS", "45")
+	cfg, err := LoadNativeConfig()
+	if err != nil {
+		t.Fatalf("LoadNativeConfig: %v", err)
+	}
+	if cfg.DeletedContentRetention != 45*24*time.Hour {
+		t.Fatalf("DeletedContentRetention = %s", cfg.DeletedContentRetention)
+	}
+	t.Setenv("FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS", "0")
+	if _, err := LoadNativeConfig(); err == nil || !strings.Contains(err.Error(), "FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS") {
+		t.Fatalf("invalid deleted content retention error = %v", err)
 	}
 }
 
@@ -142,6 +161,7 @@ func clearNativeConfigEnvironment(t *testing.T) {
 		"FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING",
 		"FLOWSPACE_VOICE_MAX_BYTES",
 		"FLOWSPACE_ATTACHMENT_MAX_BYTES",
+		"FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS",
 		"FLOWSPACE_MINIO_ENDPOINT",
 		"FLOWSPACE_MINIO_ACCESS_KEY",
 		"FLOWSPACE_MINIO_SECRET_KEY",

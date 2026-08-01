@@ -20,6 +20,7 @@ func projectContent(
 		appendVoiceNotes,
 		appendInbox,
 		appendTranscriptionJobs,
+		appendContentTombstones,
 	}
 	var err error
 	for _, appendEntities := range appenders {
@@ -58,18 +59,22 @@ func appendNotes(ctx context.Context, runner Runner, dialect Dialect, projection
 		); err != nil {
 			return nil, err
 		}
-		tags, err := decodeStrings(tagsRaw)
-		if err != nil {
-			return nil, err
+		var payload any
+		if !deletedAt.Valid {
+			tags, err := decodeStrings(tagsRaw)
+			if err != nil {
+				return nil, err
+			}
+			payload = map[string]any{
+				"title": title, "body": body, "folder_id": folderID, "tags": tags,
+				"created_at": requiredInstantString(createdAt), "updated_at": requiredInstantString(updatedAt),
+			}
 		}
 		result, err = appendEnvelope(result, entityEnvelope{
 			EntityType: "note", EntityID: id, ClientID: optionalClientID(clientID),
 			EntityRevision:     strconv.FormatInt(entityRevision, 10),
 			AggregateRevisions: aggregateRevisions{}, DeletedAt: instantString(deletedAt),
-			Payload: map[string]any{
-				"title": title, "body": body, "folder_id": folderID, "tags": tags,
-				"created_at": requiredInstantString(createdAt), "updated_at": requiredInstantString(updatedAt),
-			},
+			Payload: payload,
 		})
 		if err != nil {
 			return nil, err
@@ -106,11 +111,9 @@ func appendVoiceNotes(ctx context.Context, runner Runner, dialect Dialect, proje
 		); err != nil {
 			return nil, err
 		}
-		result, err = appendEnvelope(result, entityEnvelope{
-			EntityType: "voice_note", EntityID: id, ClientID: optionalClientID(clientID),
-			EntityRevision:     strconv.FormatInt(entityRevision, 10),
-			AggregateRevisions: aggregateRevisions{}, DeletedAt: instantString(deletedAt),
-			Payload: map[string]any{
+		var payload any
+		if !deletedAt.Valid {
+			payload = map[string]any{
 				"note_id": noteID, "title": title, "body": body,
 				"duration_ms": strconv.FormatInt(durationMS, 10), "recorded_at": requiredInstantString(recordedAt),
 				"language": language, "upload_state": uploadState, "audio_state": audioState,
@@ -118,7 +121,13 @@ func appendVoiceNotes(ctx context.Context, runner Runner, dialect Dialect, proje
 				"transcription_error": transcriptionError, "mime_type": mimeType,
 				"audio_size": strconv.FormatInt(audioSize, 10), "audio_sha256": audioSHA256,
 				"created_at": requiredInstantString(createdAt), "updated_at": requiredInstantString(updatedAt),
-			},
+			}
+		}
+		result, err = appendEnvelope(result, entityEnvelope{
+			EntityType: "voice_note", EntityID: id, ClientID: optionalClientID(clientID),
+			EntityRevision:     strconv.FormatInt(entityRevision, 10),
+			AggregateRevisions: aggregateRevisions{}, DeletedAt: instantString(deletedAt),
+			Payload: payload,
 		})
 		if err != nil {
 			return nil, err
@@ -149,14 +158,60 @@ func appendInbox(ctx context.Context, runner Runner, dialect Dialect, projection
 		); err != nil {
 			return nil, err
 		}
+		var payload any
+		if !deletedAt.Valid {
+			payload = map[string]any{
+				"kind": kind, "title": title, "body": optionalString(body), "archived": archived,
+				"created_at": requiredInstantString(createdAt), "updated_at": requiredInstantString(updatedAt),
+			}
+		}
 		result, err = appendEnvelope(result, entityEnvelope{
 			EntityType: "inbox", EntityID: id, ClientID: optionalClientID(clientID),
 			EntityRevision:     strconv.FormatInt(entityRevision, 10),
 			AggregateRevisions: aggregateRevisions{}, DeletedAt: instantString(deletedAt),
-			Payload: map[string]any{
-				"kind": kind, "title": title, "body": optionalString(body), "archived": archived,
-				"created_at": requiredInstantString(createdAt), "updated_at": requiredInstantString(updatedAt),
-			},
+			Payload: payload,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, rows.Err()
+}
+
+func appendContentTombstones(ctx context.Context, runner Runner, dialect Dialect, projection Projection, result []json.RawMessage) ([]json.RawMessage, error) {
+	rows, err := runner.QueryContext(ctx, bind(dialect, `SELECT
+		t.entity_type,t.entity_id,t.client_id,t.revision,t.deleted_at
+		FROM mobile_v2_content_tombstones t
+		WHERE t.workspace_id=? AND (
+			(t.entity_type='note' AND NOT EXISTS (
+				SELECT 1 FROM notes n WHERE n.workspace_id=t.workspace_id AND n.id=t.entity_id
+			)) OR
+			(t.entity_type='voice_note' AND NOT EXISTS (
+				SELECT 1 FROM voice_notes v WHERE v.workspace_id=t.workspace_id AND v.id=t.entity_id
+			)) OR
+			(t.entity_type='inbox' AND NOT EXISTS (
+				SELECT 1 FROM inbox i WHERE i.workspace_id=t.workspace_id AND i.id=t.entity_id
+			))
+		)
+		ORDER BY t.entity_type,t.entity_id`), projection.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			entityType, entityID string
+			clientID             sql.NullString
+			revision             int64
+			deletedAt            flexibleInstant
+		)
+		if err := rows.Scan(&entityType, &entityID, &clientID, &revision, &deletedAt); err != nil {
+			return nil, err
+		}
+		result, err = appendEnvelope(result, entityEnvelope{
+			EntityType: entityType, EntityID: entityID, ClientID: optionalClientID(clientID),
+			EntityRevision: strconv.FormatInt(revision, 10), AggregateRevisions: aggregateRevisions{},
+			DeletedAt: instantString(deletedAt), Payload: nil,
 		})
 		if err != nil {
 			return nil, err

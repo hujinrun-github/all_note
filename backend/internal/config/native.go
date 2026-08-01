@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	defaultMaxVoiceAudioBytes int64 = 50 * 1024 * 1024
-	defaultMaxAttachmentBytes int64 = 200 * 1024 * 1024
+	defaultMaxVoiceAudioBytes      int64 = 50 * 1024 * 1024
+	defaultMaxAttachmentBytes      int64 = 200 * 1024 * 1024
+	defaultDeletedContentRetention       = 30 * 24 * time.Hour
 )
 
 type NativeConfig struct {
@@ -20,6 +21,7 @@ type NativeConfig struct {
 	MobileSyncV1Enabled        bool
 	MobileSyncV2Enabled        bool
 	TaskDomainV2RoutingEnabled bool
+	DeletedContentRetention    time.Duration
 	MinIO                      MinIOConfig
 	Transcription              TranscriptionConfig
 }
@@ -78,6 +80,14 @@ func LoadNativeConfig() (NativeConfig, error) {
 		}
 		maxAttachmentBytes = parsed
 	}
+	deletedContentRetention := defaultDeletedContentRetention
+	if value := strings.TrimSpace(os.Getenv("FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS")); value != "" {
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 || days > 3650 {
+			return NativeConfig{}, errors.New("FLOWSPACE_DELETED_CONTENT_RETENTION_DAYS must be between 1 and 3650")
+		}
+		deletedContentRetention = time.Duration(days) * 24 * time.Hour
+	}
 
 	minioCfg, err := loadMinIOConfig()
 	if err != nil {
@@ -93,6 +103,7 @@ func LoadNativeConfig() (NativeConfig, error) {
 		MobileSyncV1Enabled:        mobileSyncV1Enabled,
 		MobileSyncV2Enabled:        mobileSyncV2Enabled,
 		TaskDomainV2RoutingEnabled: taskDomainV2RoutingEnabled,
+		DeletedContentRetention:    deletedContentRetention,
 		MinIO:                      minioCfg,
 		Transcription:              transcriptionCfg,
 	}, nil

@@ -40,6 +40,32 @@ func (source *ControlSource) LoadVersion(ctx context.Context, workspaceID string
 	return source.loadVersion(ctx, source.db, workspaceID)
 }
 
+func (source *ControlSource) ListActiveWorkspaceIDs(ctx context.Context) ([]string, error) {
+	if source == nil || source.db == nil {
+		return nil, fmt.Errorf("%w: runtime workspace list is unavailable", ErrRuntimeUnavailable)
+	}
+	rows, err := source.db.QueryContext(ctx, `SELECT workspace_id FROM workspace_runtime_state
+		WHERE mode='active' ORDER BY workspace_id`)
+	if err != nil {
+		return nil, fmt.Errorf("%w: list active workspaces: %v", ErrRuntimeUnavailable, err)
+	}
+	defer rows.Close()
+	workspaceIDs := make([]string, 0)
+	for rows.Next() {
+		var workspaceID string
+		if err := rows.Scan(&workspaceID); err != nil {
+			return nil, fmt.Errorf("%w: scan active workspace: %v", ErrRuntimeUnavailable, err)
+		}
+		if strings.TrimSpace(workspaceID) != "" {
+			workspaceIDs = append(workspaceIDs, workspaceID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: read active workspaces: %v", ErrRuntimeUnavailable, err)
+	}
+	return workspaceIDs, nil
+}
+
 func (source *ControlSource) LoadSnapshot(ctx context.Context, expected Version) (Snapshot, error) {
 	if source == nil || source.db == nil || strings.TrimSpace(expected.WorkspaceID) == "" ||
 		expected.Epoch < 1 || expected.BindingRevision < 1 {

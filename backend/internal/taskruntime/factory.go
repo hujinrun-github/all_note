@@ -16,7 +16,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/tenantruntime"
 )
 
-const ExpectedTenantSchemaVersion = "0007_mobile_v2_content_domain.sql"
+const ExpectedTenantSchemaVersion = "0012_mobile_v2_content_retention.sql"
 
 var (
 	ErrTaskDomainNotServingV2  = errors.New("workspace task domain is not serving v2")
@@ -279,6 +279,7 @@ type MobileRuntimeSnapshot struct {
 	Epoch       int64
 	Driver      storage.Driver
 	DB          *sql.DB
+	Store       storage.Store
 	Writer      storage.TenantFencedWriter
 	Application taskapp.RuntimeSnapshot
 }
@@ -322,6 +323,7 @@ func (r *Resource) MobileRuntimeSnapshot(ctx context.Context) (MobileRuntimeSnap
 	epoch := r.epoch
 	driver := r.driver
 	db := r.db
+	store := r.store
 	writer := r.writer
 	application := r.application
 	r.mu.RUnlock()
@@ -340,6 +342,7 @@ func (r *Resource) MobileRuntimeSnapshot(ctx context.Context) (MobileRuntimeSnap
 		Epoch:       epoch,
 		Driver:      driver,
 		DB:          db,
+		Store:       store,
 		Writer:      writer,
 		Application: application,
 	}, nil

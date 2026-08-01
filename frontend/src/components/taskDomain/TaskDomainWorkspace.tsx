@@ -168,6 +168,8 @@ export interface OccurrenceInspectorProps {
   onUnblock?: () => Promise<unknown> | void
   onReschedule?: () => void
   onViewTask?: () => void
+  onArchive?: () => Promise<unknown> | void
+  onDelete?: () => Promise<unknown> | void
   busy?: boolean
   children?: ReactNode
 }
@@ -184,6 +186,8 @@ export function OccurrenceInspector({
   onUnblock,
   onReschedule,
   onViewTask,
+  onArchive,
+  onDelete,
   busy = false,
   children,
 }: OccurrenceInspectorProps) {
@@ -380,6 +384,15 @@ export function OccurrenceInspector({
           ) : null}
         </div>
         {children}
+        {task && (onArchive || onDelete) ? (
+          <TaskRetentionActions
+            taskTitle={task.title}
+            archived={task.lifecycle_status === 'archived'}
+            onArchive={onArchive}
+            onDelete={onDelete}
+            busy={busy}
+          />
+        ) : null}
       </div>
     </aside>
   )

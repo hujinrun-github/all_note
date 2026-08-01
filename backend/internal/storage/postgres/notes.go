@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hujinrun/flowspace/internal/auth"
+	"github.com/hujinrun/flowspace/internal/mobilev2change"
+	"github.com/hujinrun/flowspace/internal/mobilev2projection"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/lib/pq"
@@ -325,18 +327,23 @@ func (r noteRepository) Delete(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	return r.withTx(ctx, func(tx *sql.Tx) error {
 		var clientID string
+		var revision int64
 		err := tx.QueryRowContext(ctx, `
-			SELECT client_id FROM notes WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL
+			SELECT client_id, revision FROM notes WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL
 			FOR UPDATE
-		`, workspaceID, id).Scan(&clientID)
+		`, workspaceID, id).Scan(&clientID, &revision)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		if err := enqueuePostgresNoteAttachmentCleanup(ctx, tx, workspaceID, id, now.Unix()); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `
-			UPDATE notes SET deleted_at = $1, updated_at = $1, revision = revision + 1
+			UPDATE notes SET deleted_at = $1, updated_at = $1, revision = revision + 1,
+				title = '', body = '', tags = '{}'
 			WHERE workspace_id = $2 AND id = $3 AND deleted_at IS NULL
 		`, now, workspaceID, id)
 		if err != nil {
@@ -349,6 +356,20 @@ func (r noteRepository) Delete(ctx context.Context, id string) error {
 		if affected != 1 {
 			return nil
 		}
+		if err := redactPostgresExtendedNoteContent(ctx, tx, workspaceID, id); err != nil {
+			return err
+		}
+		if err := upsertPostgresContentTombstone(ctx, tx, workspaceID, "note", id, clientID, revision+1, now); err != nil {
+			return err
+		}
+		taskChanges, err := detachPostgresNoteTaskReferences(ctx, tx, workspaceID, id, now)
+		if err != nil {
+			return err
+		}
+		voiceChanges, err := deletePostgresVoiceNotesForDeletedNote(ctx, tx, workspaceID, id, now)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at)
 			VALUES ($1, 'note', $2, $3)
@@ -359,10 +380,298 @@ func (r noteRepository) Delete(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE workspace_id = $1 AND entity_type = 'note' AND entity_id = $2`, workspaceID, id); err != nil {
 			return err
 		}
-		return persistPostgresServerNoteChange(
+		if err := persistPostgresServerNoteChange(
 			ctx, tx, workspaceID, uuid.NewString(), model.MobileOperationNoteServerDeleted, clientID, now,
-		)
+		); err != nil {
+			return err
+		}
+		if err := mobilev2change.AppendTaskChangesAtCurrentSequence(
+			ctx, tx, mobilev2projection.DialectPostgres, workspaceID, taskChanges, now,
+		); err != nil {
+			return err
+		}
+		return persistPostgresDeletedVoiceNoteChanges(ctx, tx, workspaceID, voiceChanges, now)
 	})
+}
+
+type deletedPostgresVoiceNoteChange struct {
+	ClientID string
+}
+
+func deletePostgresVoiceNotesForDeletedNote(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	noteID string,
+	now time.Time,
+) ([]deletedPostgresVoiceNoteChange, error) {
+	ready, err := postgresNoteTableAvailable(ctx, tx, "voice_notes")
+	if err != nil || !ready {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, client_id, revision, object_key
+		FROM voice_notes
+		WHERE workspace_id = $1 AND note_id = $2 AND deleted_at IS NULL
+		FOR UPDATE
+	`, workspaceID, noteID)
+	if err != nil {
+		return nil, err
+	}
+	type voiceRow struct {
+		id        string
+		clientID  string
+		revision  int64
+		objectKey string
+	}
+	voices := make([]voiceRow, 0)
+	for rows.Next() {
+		var voice voiceRow
+		if err := rows.Scan(&voice.id, &voice.clientID, &voice.revision, &voice.objectKey); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		voices = append(voices, voice)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	nowUnix := now.Unix()
+	changes := make([]deletedPostgresVoiceNoteChange, 0, len(voices))
+	for _, voice := range voices {
+		audioState := model.VoiceAudioDeleted
+		if voice.objectKey != "" {
+			audioState = model.VoiceAudioDeleteRequested
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE voice_notes SET deleted_at = $1, audio_state = $2, audio_revision = audio_revision + 1,
+				object_key = CASE WHEN $3 = '' THEN '' ELSE object_key END,
+				mime_type = CASE WHEN $3 = '' THEN '' ELSE mime_type END,
+				audio_size = CASE WHEN $3 = '' THEN 0 ELSE audio_size END,
+				audio_sha256 = CASE WHEN $3 = '' THEN '' ELSE audio_sha256 END,
+				upload_state = CASE WHEN $3 = '' THEN 'failed' ELSE upload_state END,
+				duration_ms = 0, recorded_at = 0, language = '', transcription_error = '',
+				revision = revision + 1, updated_at = $4
+			WHERE workspace_id = $5 AND id = $6 AND revision = $7 AND deleted_at IS NULL
+		`, now, audioState, voice.objectKey, nowUnix, workspaceID, voice.id, voice.revision)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected != 1 {
+			continue
+		}
+		if err := cancelPostgresVoiceTranscriptionJobs(ctx, tx, workspaceID, voice.clientID, nowUnix); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM transcription_results WHERE workspace_id = $1 AND voice_note_id = $2
+		`, workspaceID, voice.clientID); err != nil {
+			return nil, err
+		}
+		if err := upsertPostgresContentTombstone(ctx, tx, workspaceID, "voice_note", voice.id, voice.clientID, voice.revision+1, now); err != nil {
+			return nil, err
+		}
+		if voice.objectKey != "" {
+			if err := enqueuePostgresVoiceAudioCleanup(ctx, tx, workspaceID, voice.clientID, voice.objectKey, nowUnix, nowUnix); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at)
+			VALUES ($1, 'voice_note', $2, $3)
+			ON CONFLICT DO NOTHING
+		`, workspaceID, voice.clientID, now); err != nil {
+			return nil, err
+		}
+		changes = append(changes, deletedPostgresVoiceNoteChange{ClientID: voice.clientID})
+	}
+	return changes, nil
+}
+
+func persistPostgresDeletedVoiceNoteChanges(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	changes []deletedPostgresVoiceNoteChange,
+	now time.Time,
+) error {
+	for _, change := range changes {
+		if err := persistPostgresServerEntityChange(ctx, tx, workspaceID, uuid.NewString(), "voice_note", "voice_note.server_deleted", change.ClientID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func detachPostgresNoteTaskReferences(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID string,
+	noteID string,
+	now time.Time,
+) (storage.MobileV2TaskChangeSnapshot, error) {
+	changes := storage.MobileV2TaskChangeSnapshot{
+		TaskIDs: make(map[string]struct{}), OccurrenceIDs: make(map[string]struct{}),
+	}
+	tasksReady, err := postgresNoteTableAvailable(ctx, tx, "domain_tasks_v2")
+	if err != nil {
+		return changes, err
+	}
+	if tasksReady {
+		if err := collectPostgresDetachedNoteReferenceIDs(ctx, tx, `UPDATE domain_tasks_v2
+			SET note_id=NULL,revision=revision+1,updated_at=$1
+			WHERE workspace_id=$2 AND note_id=$3
+			RETURNING id`, changes.TaskIDs, now, workspaceID, noteID); err != nil {
+			return changes, err
+		}
+	}
+	occurrencesReady, err := postgresNoteTableAvailable(ctx, tx, "domain_task_occurrences_v2")
+	if err != nil {
+		return changes, err
+	}
+	if occurrencesReady {
+		if err := collectPostgresDetachedNoteReferenceIDs(ctx, tx, `UPDATE domain_task_occurrences_v2
+			SET note_id=NULL,revision=revision+1,updated_at=$1
+			WHERE workspace_id=$2 AND note_id=$3
+			RETURNING id`, changes.OccurrenceIDs, now, workspaceID, noteID); err != nil {
+			return changes, err
+		}
+	}
+	legacyReady, err := postgresNoteTableAvailable(ctx, tx, "tasks")
+	if err != nil {
+		return changes, err
+	}
+	if legacyReady {
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET note_id=NULL,updated_at=$1
+			WHERE workspace_id=$2 AND note_id=$3`, now, workspaceID, noteID); err != nil {
+			return changes, err
+		}
+	}
+	return changes, nil
+}
+
+func collectPostgresDetachedNoteReferenceIDs(
+	ctx context.Context,
+	tx *sql.Tx,
+	query string,
+	ids map[string]struct{},
+	args ...any,
+) error {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids[id] = struct{}{}
+	}
+	return rows.Err()
+}
+
+func postgresNoteTableAvailable(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	var available bool
+	err := tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&available)
+	return available, err
+}
+
+func upsertPostgresContentTombstone(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID, entityType, entityID, clientID string,
+	revision int64,
+	deletedAt time.Time,
+) error {
+	available, err := postgresContentRetentionAvailable(ctx, tx)
+	if err != nil || !available {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO mobile_v2_content_tombstones
+		(workspace_id,entity_type,entity_id,client_id,revision,deleted_at)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT(workspace_id,entity_type,entity_id) DO UPDATE SET
+			client_id=EXCLUDED.client_id,
+			revision=GREATEST(mobile_v2_content_tombstones.revision,EXCLUDED.revision),
+			deleted_at=LEAST(mobile_v2_content_tombstones.deleted_at,EXCLUDED.deleted_at)`,
+		workspaceID, entityType, entityID, clientID, revision, deletedAt.UTC())
+	return err
+}
+
+func postgresContentRetentionAvailable(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var available bool
+	err := tx.QueryRowContext(ctx, `SELECT to_regclass('mobile_v2_content_tombstones') IS NOT NULL`).Scan(&available)
+	return available, err
+}
+
+func redactPostgresExtendedNoteContent(ctx context.Context, tx *sql.Tx, workspaceID, noteID string) error {
+	var available bool
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(DISTINCT column_name)=2
+		FROM information_schema.columns
+		WHERE table_schema=ANY(current_schemas(false)) AND table_name='notes'
+			AND column_name IN ('content','content_text')`).Scan(&available); err != nil {
+		return err
+	}
+	if !available {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE notes SET content='{}'::jsonb,content_text=''
+		WHERE workspace_id=$1 AND id=$2`, workspaceID, noteID)
+	return err
+}
+
+func enqueuePostgresNoteAttachmentCleanup(ctx context.Context, tx *sql.Tx, workspaceID, noteID string, now int64) error {
+	attachmentsReady, err := postgresNoteTableAvailable(ctx, tx, "note_attachments")
+	if err != nil || !attachmentsReady {
+		return err
+	}
+	cleanupReady, err := postgresNoteTableAvailable(ctx, tx, "voice_audio_cleanup_jobs")
+	if err != nil || !cleanupReady {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,object_key FROM note_attachments
+		WHERE workspace_id=$1 AND note_id=$2 AND object_key<>''`, workspaceID, noteID)
+	if err != nil {
+		return err
+	}
+	type attachmentObject struct{ id, key string }
+	objects := make([]attachmentObject, 0)
+	for rows.Next() {
+		var item attachmentObject
+		if err := rows.Scan(&item.id, &item.key); err != nil {
+			rows.Close()
+			return err
+		}
+		objects = append(objects, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range objects {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO voice_audio_cleanup_jobs
+			(job_id,workspace_id,voice_note_id,object_key,state,revision,attempt,max_attempts,error_code,next_attempt_at,lease_owner,lease_token,created_at,updated_at)
+			VALUES($1,$2,$3,$4,'queued',1,0,6,'',$5,'','',$5,$5)
+			ON CONFLICT(workspace_id,voice_note_id,object_key) DO NOTHING`, uuid.NewString(), workspaceID,
+			storage.NoteAttachmentCleanupSubject(item.id), item.key, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r noteRepository) ListAll(ctx context.Context) ([]model.Note, error) {

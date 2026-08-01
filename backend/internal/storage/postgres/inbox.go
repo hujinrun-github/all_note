@@ -123,14 +123,20 @@ func (r inboxRepository) Delete(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	return (mobileSyncRepository{db: r.db}).withTx(ctx, func(tx *sql.Tx) error {
 		var clientID string
-		err := tx.QueryRowContext(ctx, `SELECT client_id FROM inbox WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`, workspaceID, id).Scan(&clientID)
+		var revision int64
+		err := tx.QueryRowContext(ctx, `SELECT client_id,revision FROM inbox WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`, workspaceID, id).Scan(&clientID, &revision)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE inbox SET deleted_at = $1, updated_at = $1, revision = revision + 1 WHERE workspace_id = $2 AND id = $3 AND deleted_at IS NULL`, now, workspaceID, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE inbox SET deleted_at = $1, updated_at = $1, revision = revision + 1,
+			kind='note',title='',body=NULL,source='',converted_to=NULL
+			WHERE workspace_id = $2 AND id = $3 AND deleted_at IS NULL`, now, workspaceID, id); err != nil {
+			return err
+		}
+		if err := upsertPostgresContentTombstone(ctx, tx, workspaceID, "inbox", id, clientID, revision+1, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mobile_retired_ids (workspace_id, entity_type, client_id, retired_at) VALUES ($1, 'inbox', $2, $3) ON CONFLICT DO NOTHING`, workspaceID, clientID, now); err != nil {
@@ -205,9 +211,25 @@ func (r inboxRepository) BatchDelete(ctx context.Context, ids []string) (int64, 
 		for _, id := range ids {
 			updateArgs = append(updateArgs, id)
 		}
-		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET deleted_at = $1, updated_at = $1, revision = revision + 1 WHERE workspace_id = $2 AND deleted_at IS NULL AND %s", clause), updateArgs...)
+		result, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE inbox SET deleted_at = $1, updated_at = $1, revision = revision + 1, kind='note',title='',body=NULL,source='',converted_to=NULL WHERE workspace_id = $2 AND deleted_at IS NULL AND %s", clause), updateArgs...)
 		if err != nil {
 			return err
+		}
+		retentionAvailable, err := postgresContentRetentionAvailable(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if retentionAvailable {
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO mobile_v2_content_tombstones
+				(workspace_id,entity_type,entity_id,client_id,revision,deleted_at)
+				SELECT workspace_id,'inbox',id,client_id,revision,deleted_at FROM inbox
+				WHERE workspace_id=$2 AND deleted_at=$1 AND %s
+				ON CONFLICT(workspace_id,entity_type,entity_id) DO UPDATE SET
+					client_id=EXCLUDED.client_id,
+					revision=GREATEST(mobile_v2_content_tombstones.revision,EXCLUDED.revision),
+					deleted_at=LEAST(mobile_v2_content_tombstones.deleted_at,EXCLUDED.deleted_at)`, clause), updateArgs...); err != nil {
+				return err
+			}
 		}
 		affected, err = result.RowsAffected()
 		if err != nil {

@@ -1633,6 +1633,125 @@
   color: white;
 }
 
+.mindmap-schedule-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #ddcbb9;
+  border-radius: 10px;
+  padding: 12px;
+  background: linear-gradient(145deg, #fffdfa, #faf3ea);
+}
+
+.mindmap-schedule-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mindmap-schedule-card > header > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.mindmap-schedule-card > header svg {
+  width: 18px;
+  flex: 0 0 auto;
+  color: var(--plan-copper);
+}
+
+.mindmap-schedule-card > header > div > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.mindmap-schedule-card > header span {
+  color: var(--plan-muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.mindmap-schedule-card > header strong {
+  overflow: hidden;
+  color: var(--plan-ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mindmap-schedule-card > header > button,
+.mindmap-schedule-actions button {
+  min-height: 32px;
+  border: 1px solid #d5c3b1;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #fffefa;
+  color: var(--plan-copy);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mindmap-schedule-card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.mindmap-schedule-card > p {
+  margin: 0;
+  color: var(--plan-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.mindmap-schedule-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  border-top: 1px solid var(--plan-line);
+  padding-top: 11px;
+}
+
+.mindmap-schedule-time-range {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mindmap-schedule-error,
+.mindmap-schedule-success {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.mindmap-schedule-card > .mindmap-schedule-success {
+  color: var(--plan-sage);
+  font-weight: 700;
+}
+
+.mindmap-schedule-error {
+  color: #a74436;
+}
+
+.mindmap-schedule-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.mindmap-schedule-actions button.is-primary {
+  border-color: var(--plan-copper);
+  background: var(--plan-copper);
+  color: white;
+}
+
 .mindmap-inspector-facts {
   display: grid;
   border-top: 1px solid var(--plan-line);
@@ -2103,6 +2222,7 @@
 
   .mindmap-inspector > form > label:first-child,
   .mindmap-inspector > form > label:nth-of-type(2),
+  .mindmap-schedule-card,
   .mindmap-inspector-facts,
   .mindmap-resources,
   .mindmap-capability-note,
@@ -2116,7 +2236,7 @@
   }
 
   .mindmap-inspector-facts {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
 
   .mindmap-inspector-facts > div {
@@ -3167,6 +3287,7 @@
   }
 
   .mindmap-inspector-grid,
+  .mindmap-schedule-card,
   .mindmap-inspector-facts,
   .mindmap-inspector-actions {
     grid-column: 1;

@@ -201,4 +201,15 @@ func TestSQLRepositoryAppendsAndReadsIndependentScopeChanges(t *testing.T) {
 	if _, err := repository.ReadChanges(ctx, mismatch, second.NextCursor, 2); !errors.Is(err, mobilev2sync.ErrCursorMismatch) {
 		t.Fatalf("scope generation mismatch error = %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO mobile_v2_scope_retention
+		(workspace_id,scope,compacted_through_sequence,updated_at) VALUES(?,?,?,?)`,
+		"workspace-1", mobilev2sync.ScopeIPhoneTaskCore, 4, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ReadChanges(ctx, binding, "", 2); !errors.Is(err, mobilev2sync.ErrCursorMismatch) {
+		t.Fatalf("compacted cursor error = %v", err)
+	}
+	if page, err := repository.ReadChanges(ctx, binding, second.NextCursor, 2); err != nil || len(page.Changes) != 0 {
+		t.Fatalf("cursor at compaction boundary page=%#v err=%v", page, err)
+	}
 }
