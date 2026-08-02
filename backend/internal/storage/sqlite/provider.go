@@ -114,17 +114,24 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		_ = db.Close()
 		return nil, err
 	}
+	legacyWritesFenced, err := sqliteLegacyTaskDomainWritesFenced(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureSQLiteSyncColumnsBeforeSchema(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := initializeLegacySchema(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := repository.RunLegacySQLiteMigrations(db); err != nil {
-		_ = db.Close()
-		return nil, err
+	if !legacyWritesFenced {
+		if err := initializeLegacySchema(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if err := repository.RunLegacySQLiteMigrations(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	if err := ensureSQLiteSyncSchema(db); err != nil {
 		_ = db.Close()
@@ -167,6 +174,32 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		return nil, err
 	}
 	return newStore(db), nil
+}
+
+func sqliteLegacyTaskDomainWritesFenced(ctx context.Context, db *sql.DB) (bool, error) {
+	var stateTableExists int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'workspace_task_domain_state'
+	`).Scan(&stateTableExists); err != nil {
+		return false, fmt.Errorf("detect SQLite task-domain state table: %w", err)
+	}
+	if stateTableExists == 0 {
+		return false, nil
+	}
+
+	var fencedWorkspaceExists int
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM workspace_task_domain_state
+			WHERE accept_legacy_writes = 0
+		)
+	`).Scan(&fencedWorkspaceExists); err != nil {
+		return false, fmt.Errorf("detect closed SQLite legacy task-domain fence: %w", err)
+	}
+	return fencedWorkspaceExists == 1, nil
 }
 
 func (p Provider) Migrate(ctx context.Context, cfg storage.Config) error {

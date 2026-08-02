@@ -381,13 +381,18 @@ func (r authRepository) GetSessionByTokenHash(ctx context.Context, tokenHash str
 
 func (r authRepository) GetWorkspaceMembership(ctx context.Context, workspaceID, userID string) (*model.WorkspaceMember, error) {
 	var member model.WorkspaceMember
+	var createdAt any
 	err := r.db.QueryRowContext(ctx, `
 		SELECT workspace_id, user_id, role, created_at
 		FROM workspace_members
 		WHERE workspace_id = ? AND user_id = ?
-	`, workspaceID, userID).Scan(&member.WorkspaceID, &member.UserID, &member.Role, &member.CreatedAt)
+	`, workspaceID, userID).Scan(&member.WorkspaceID, &member.UserID, &member.Role, &createdAt)
 	if err != nil {
 		return nil, err
+	}
+	member.CreatedAt, err = sqliteUnixTimestamp(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan workspace membership created_at: %w", err)
 	}
 	return &member, nil
 }

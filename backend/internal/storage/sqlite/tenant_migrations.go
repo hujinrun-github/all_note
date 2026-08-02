@@ -120,9 +120,23 @@ func applySQLiteTenantMigration(ctx context.Context, db *sql.DB, migration tenan
 }
 
 func prepareSQLiteTenantMigration(ctx context.Context, tx *sql.Tx, version string) error {
-	if version != "0007_mobile_v2_content_domain.sql" {
+	switch version {
+	case "0007_mobile_v2_content_domain.sql":
+		return prepareSQLiteContentDomainMigration(ctx, tx)
+	case "0012_mobile_v2_content_retention.sql":
+		return ensureSQLiteTenantNoteColumns(ctx, tx, []struct {
+			name       string
+			definition string
+		}{
+			{name: "content", definition: "TEXT NOT NULL DEFAULT ''"},
+			{name: "content_text", definition: "TEXT NOT NULL DEFAULT ''"},
+		})
+	default:
 		return nil
 	}
+}
+
+func prepareSQLiteContentDomainMigration(ctx context.Context, tx *sql.Tx) error {
 	columns := []struct {
 		name       string
 		definition string
@@ -133,6 +147,25 @@ func prepareSQLiteTenantMigration(ctx context.Context, tx *sql.Tx, version strin
 		{name: "revision", definition: "INTEGER NOT NULL DEFAULT 1"},
 		{name: "deleted_at", definition: "INTEGER"},
 	}
+	if err := ensureSQLiteTenantNoteColumns(ctx, tx, columns); err != nil {
+		return err
+	}
+	contentTextExists, err := sqliteTenantColumnExists(ctx, tx, "notes", "content_text")
+	if err != nil {
+		return err
+	}
+	if contentTextExists {
+		if _, err := tx.ExecContext(ctx, `UPDATE notes SET body=content_text WHERE body='' AND content_text<>''`); err != nil {
+			return fmt.Errorf("backfill notes.body: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureSQLiteTenantNoteColumns(ctx context.Context, tx *sql.Tx, columns []struct {
+	name       string
+	definition string
+}) error {
 	for _, column := range columns {
 		exists, err := sqliteTenantColumnExists(ctx, tx, "notes", column.name)
 		if err != nil {
@@ -143,15 +176,6 @@ func prepareSQLiteTenantMigration(ctx context.Context, tx *sql.Tx, version strin
 		}
 		if _, err := tx.ExecContext(ctx, "ALTER TABLE notes ADD COLUMN "+column.name+" "+column.definition); err != nil {
 			return fmt.Errorf("add notes.%s: %w", column.name, err)
-		}
-	}
-	contentTextExists, err := sqliteTenantColumnExists(ctx, tx, "notes", "content_text")
-	if err != nil {
-		return err
-	}
-	if contentTextExists {
-		if _, err := tx.ExecContext(ctx, `UPDATE notes SET body=content_text WHERE body='' AND content_text<>''`); err != nil {
-			return fmt.Errorf("backfill notes.body: %w", err)
 		}
 	}
 	return nil
