@@ -110,12 +110,44 @@ WHERE n.workspace_id=o.workspace_id
   AND n.id=o.note_id
   AND n.deleted_at IS NOT NULL;
 
-UPDATE tasks t
-SET note_id=NULL,updated_at=now()
-FROM notes n
-WHERE n.workspace_id=t.workspace_id
-  AND n.id=t.note_id
-  AND n.deleted_at IS NOT NULL;
+-- Adopted legacy tenants are allowed to have a narrower tasks table than the
+-- native tenant baseline. Detach legacy note references only when that column
+-- exists, and do not require updated_at on the narrowest adopted schemas.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema=current_schema()
+      AND table_name='tasks'
+      AND column_name='note_id'
+  ) THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema=current_schema()
+        AND table_name='tasks'
+        AND column_name='updated_at'
+    ) THEN
+      EXECUTE $sql$
+        UPDATE tasks t
+        SET note_id=NULL,updated_at=now()
+        FROM notes n
+        WHERE n.workspace_id=t.workspace_id
+          AND n.id=t.note_id
+          AND n.deleted_at IS NOT NULL
+      $sql$;
+    ELSE
+      EXECUTE $sql$
+        UPDATE tasks t
+        SET note_id=NULL
+        FROM notes n
+        WHERE n.workspace_id=t.workspace_id
+          AND n.id=t.note_id
+          AND n.deleted_at IS NOT NULL
+      $sql$;
+    END IF;
+  END IF;
+END
+$$;
 
 -- The updates above predate command receipts, so advance the head and compact
 -- task scopes to an unreachable boundary. Existing cursors must snapshot once;
@@ -147,8 +179,40 @@ WHERE r.workspace_id=b.workspace_id
   AND b.sequence<=r.compacted_through_sequence;
 
 UPDATE notes
-SET title='',body='',tags='{}'::text[],content='{}'::jsonb,content_text=''
+SET body='',tags='{}'::text[]
 WHERE deleted_at IS NOT NULL;
+
+-- Native tenant notes include title/content/content_text, while adopted
+-- legacy schemas may omit one or more of them. Redact every available field
+-- without making optional legacy columns a migration prerequisite.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema=current_schema()
+      AND table_name='notes'
+      AND column_name='title'
+  ) THEN
+    EXECUTE 'UPDATE notes SET title='''' WHERE deleted_at IS NOT NULL';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema=current_schema()
+      AND table_name='notes'
+      AND column_name='content'
+  ) THEN
+    EXECUTE 'UPDATE notes SET content=''{}''::jsonb WHERE deleted_at IS NOT NULL';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema=current_schema()
+      AND table_name='notes'
+      AND column_name='content_text'
+  ) THEN
+    EXECUTE 'UPDATE notes SET content_text='''' WHERE deleted_at IS NOT NULL';
+  END IF;
+END
+$$;
 
 UPDATE voice_notes
 SET duration_ms=0,recorded_at=0,language='',transcription_error=''
