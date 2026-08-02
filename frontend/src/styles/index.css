@@ -800,12 +800,32 @@
   backdrop-filter: blur(4px);
 }
 
-.domain-decision-dialog > div {
+.domain-decision-dialog > div,
+.domain-decision-dialog > form {
   width: min(520px, calc(100vw - 32px));
   border-radius: 20px;
   background: #fffdf9;
   padding: 24px;
   box-shadow: 0 30px 80px rgba(66, 43, 25, 0.2);
+}
+
+.domain-task-create-form {
+  display: grid;
+  gap: 16px;
+}
+
+.domain-task-create-form h3 {
+  margin: 0;
+}
+
+.domain-task-create-form > input {
+  min-height: 44px;
+  border: 1px solid rgba(225, 202, 171, 0.88);
+  border-radius: 11px;
+  padding: 0 13px;
+  color: var(--color-fs-text);
+  background: white;
+  font: inherit;
 }
 
 .project-completion-move,
@@ -1099,6 +1119,101 @@
   font-weight: 500;
 }
 
+.task-schedule-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.task-schedule-fields label {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.task-schedule-fields label > span {
+  color: var(--color-fs-text-secondary);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.task-schedule-fields input,
+.task-schedule-fields select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid rgba(196, 116, 47, 0.28);
+  border-radius: 9px;
+  padding: 0 10px;
+  color: var(--color-fs-text);
+  background: #fffdfa;
+  font: inherit;
+  font-size: 13px;
+}
+
+.task-schedule-time-range {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 10px;
+}
+
+.task-schedule-time-range > span {
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+  color: var(--color-fs-text-muted);
+}
+
+.task-schedule-fields > small {
+  grid-column: 1 / -1;
+  color: var(--color-fs-text-secondary);
+  font-size: 12px;
+}
+
+.task-schedule-disclosure {
+  border: 1px solid rgba(196, 116, 47, 0.2);
+  border-radius: 11px;
+  background: rgba(255, 253, 250, 0.76);
+}
+
+.task-schedule-disclosure summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  color: var(--color-fs-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 760;
+  list-style: none;
+}
+
+.task-schedule-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-schedule-disclosure summary::before {
+  content: '＋';
+  color: var(--color-fs-accent);
+}
+
+.task-schedule-disclosure[open] summary::before {
+  content: '−';
+}
+
+.task-schedule-disclosure summary > span {
+  margin-left: auto;
+  color: var(--color-fs-text-muted);
+  font-weight: 600;
+}
+
+.task-schedule-disclosure .task-schedule-fields {
+  border-top: 1px solid rgba(196, 116, 47, 0.14);
+  padding: 12px;
+}
+
 @media (max-width: 760px) {
   .domain-page-heading,
   .task-v2-capture-note,
@@ -1123,6 +1238,10 @@
   }
 
   .quick-capture-v2-schedule {
+    grid-template-columns: 1fr;
+  }
+
+  .task-schedule-fields {
     grid-template-columns: 1fr;
   }
 
@@ -4869,6 +4988,12 @@ body {
   text-align: right;
 }
 
+.schedule-create-destination select {
+  min-width: 0;
+  color: #a7531c;
+  font-weight: 700;
+}
+
 .schedule-create-destination small {
   grid-column: 1 / -1;
   color: #927b65;
@@ -4881,6 +5006,10 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   gap: 14px;
+}
+
+.schedule-create-date-row {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.85fr);
 }
 
 .schedule-create-time-row {

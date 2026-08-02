@@ -543,6 +543,51 @@ describe('RoadmapMindMap', () => {
     )
   })
 
+  it('creates a recurring task directly in the roadmap mind map', async () => {
+    const create = vi.fn().mockResolvedValue({
+      task: { ...task, id: 't2', title: 'Weekly lab' },
+      occurrences: [],
+    })
+    vi.mocked(taskHooks.useCreateTaskMutation).mockReturnValue({
+      mutateAsync: create,
+      isPending: false,
+    } as never)
+    const user = userEvent.setup()
+    renderRoute()
+
+    await user.click(screen.getByRole('button', { name: '添加任务' }))
+    await user.type(
+      screen.getByRole('textbox', { name: '新任务标题' }),
+      'Weekly lab'
+    )
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '新任务重复方式' }),
+      'weekly'
+    )
+    await user.clear(screen.getByLabelText('新任务重复起始日期'))
+    await user.type(
+      screen.getByLabelText('新任务重复起始日期'),
+      '2026-08-03'
+    )
+    await user.click(screen.getByRole('textbox', { name: '新任务标题' }))
+    await user.keyboard('{Enter}')
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_id: 'p1',
+        roadmap_node_id: 'n1',
+        title: 'Weekly lab',
+        schedule: {
+          recurrence_type: 'weekly',
+          timing_type: 'date',
+          timezone: expect.any(String),
+          starts_on: '2026-08-03',
+          rule: { interval: 1, weekdays: [1] },
+        },
+      })
+    )
+  })
+
   it('dismisses inline task creation with Escape', async () => {
     const user = userEvent.setup()
     renderRoute()

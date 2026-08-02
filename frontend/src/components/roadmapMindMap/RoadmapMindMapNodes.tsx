@@ -20,6 +20,11 @@ import {
 } from 'react'
 
 import type { ExecutionStatus } from '../../api/taskDomain'
+import {
+  createTaskScheduleDraft,
+  TaskRecurrenceField,
+  type TaskScheduleDraft,
+} from '../taskDomain/TaskScheduleFields'
 
 export interface RoadmapRootNodeData extends Record<string, unknown> {
   title: string
@@ -40,7 +45,10 @@ export interface RoadmapTaskNodeData extends Record<string, unknown> {
   isDraft?: boolean
   onAddSibling: (taskID: string) => void
   onCancelDraft?: () => void
-  onCreateDraft?: (title: string) => Promise<void>
+  onCreateDraft?: (
+    title: string,
+    schedule: TaskScheduleDraft
+  ) => Promise<void>
   onRename: (taskID: string, title: string) => Promise<void>
 }
 
@@ -118,6 +126,7 @@ export function RoadmapTaskNodeView({
 }: NodeProps<RoadmapTaskFlowNode>) {
   const [editing, setEditing] = useState(Boolean(data.isDraft))
   const [draftTitle, setDraftTitle] = useState(data.title)
+  const [draftSchedule, setDraftSchedule] = useState(createTaskScheduleDraft)
   const [saving, setSaving] = useState(false)
   const latestEditRequest = useRef(data.editRequest)
   const committing = useRef(false)
@@ -155,7 +164,7 @@ export function RoadmapTaskNodeView({
     setSaving(true)
     try {
       try {
-        if (data.isDraft) await data.onCreateDraft?.(title)
+        if (data.isDraft) await data.onCreateDraft?.(title, draftSchedule)
         else await data.onRename(data.taskID, title)
         setEditing(false)
       } catch {
@@ -200,6 +209,11 @@ export function RoadmapTaskNodeView({
         selected ? ' is-selected' : ''
       }${data.isDraft ? ' is-draft' : ''}`}
       onDoubleClick={startEditing}
+      onBlur={(event) => {
+        if (editing && !event.currentTarget.contains(event.relatedTarget)) {
+          void commitTitle()
+        }
+      }}
     >
       <Handle
         className="mindmap-node-handle"
@@ -225,7 +239,6 @@ export function RoadmapTaskNodeView({
             value={draftTitle}
             placeholder="输入任务名称"
             disabled={saving}
-            onBlur={() => void commitTitle()}
             onChange={(event) => setDraftTitle(event.target.value)}
             onKeyDown={handleEditKeyDown}
             onMouseDown={(event) => event.stopPropagation()}
@@ -235,6 +248,24 @@ export function RoadmapTaskNodeView({
           <strong>{data.title}</strong>
         )}
       </div>
+      {editing && data.isDraft ? (
+        <div className="mindmap-draft-schedule nodrag nopan">
+          <TaskRecurrenceField
+            value={draftSchedule}
+            onChange={(next) =>
+              setDraftSchedule({
+                ...next,
+                timingType:
+                  next.recurrenceType === 'none'
+                    ? 'unscheduled'
+                    : next.timingType,
+              })
+            }
+            labelPrefix="新任务"
+            showStartDate
+          />
+        </div>
+      ) : null}
       {data.priority >= 2 ? (
         <Flag className="mindmap-task-priority" aria-label="高优先级" />
       ) : null}

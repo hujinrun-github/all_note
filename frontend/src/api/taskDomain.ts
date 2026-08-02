@@ -140,6 +140,7 @@ export interface OccurrenceV2 {
   location?: string
   calendar_kind?: string
   calendar_notes?: string
+  recurrence_type?: RecurrenceType
   recurring?: boolean
   task_revision?: number
   schedule_revision?: number

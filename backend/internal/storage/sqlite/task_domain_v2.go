@@ -338,7 +338,7 @@ const sqliteTaskDomainV2OccurrenceSelect = `SELECT
 		WHEN o.planned_start_at IS NOT NULL THEN 'time_block'
 		WHEN o.planned_date IS NOT NULL THEN 'date'
 		ELSE 'unscheduled'
-	END,v.timezone,o.planned_date,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
+	END,v.timezone,o.planned_date,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,v.recurrence_type,
 	CASE WHEN v.recurrence_type <> 'none' THEN 1 ELSE 0 END,
 	o.revision,p.revision,t.revision,s.revision,o.generated_schedule_revision,t.lifecycle_status,t.priority,t.sort_order,
 	o.actual_start_at,o.completed_at,o.blocked_reason,o.next_action,o.location,o.calendar_kind,o.calendar_notes,
@@ -356,14 +356,14 @@ type sqliteTaskDomainV2Scanner interface {
 
 func scanSQLiteTaskDomainV2Occurrence(scanner sqliteTaskDomainV2Scanner) (taskdomain.QueryOccurrenceSnapshot, error) {
 	var item taskdomain.QueryOccurrenceSnapshot
-	var timingType, executionStatus, lifecycleStatus string
+	var timingType, executionStatus, lifecycleStatus, recurrenceType string
 	var recurring int
 	var plannedDate, plannedStart, plannedEnd, dueAt, actualStart, completedAt sql.NullString
 	var blockedReason, nextAction, location, calendarKind, calendarNotes, taskNoteID, occurrenceNoteID, allDayEndDate sql.NullString
 	err := scanner.Scan(
 		&item.WorkspaceID, &item.ProjectID, &item.TaskID, &item.OccurrenceID, &item.OccurrenceKey,
 		&item.Title, &item.Description, &timingType, &item.Timezone, &plannedDate, &plannedStart, &plannedEnd, &dueAt, &executionStatus,
-		&recurring, &item.Revision, &item.ProjectRevision, &item.TaskRevision, &item.ScheduleRevision, &item.GeneratedScheduleRevision,
+		&recurrenceType, &recurring, &item.Revision, &item.ProjectRevision, &item.TaskRevision, &item.ScheduleRevision, &item.GeneratedScheduleRevision,
 		&lifecycleStatus, &item.Priority, &item.SortOrder, &actualStart, &completedAt, &blockedReason, &nextAction,
 		&location, &calendarKind, &calendarNotes, &taskNoteID, &occurrenceNoteID, &allDayEndDate,
 	)
@@ -372,6 +372,7 @@ func scanSQLiteTaskDomainV2Occurrence(scanner sqliteTaskDomainV2Scanner) (taskdo
 	}
 	item.TimingType = taskdomain.TimingType(timingType)
 	item.Status = taskdomain.ExecutionStatus(executionStatus)
+	item.RecurrenceType = taskdomain.RecurrenceType(recurrenceType)
 	item.LifecycleStatus = taskdomain.TaskLifecycleStatus(lifecycleStatus)
 	item.Recurring = recurring != 0
 	item.PlannedDate = plannedDate.String
@@ -1475,9 +1476,10 @@ func (w *sqliteTaskDomainV2ProjectWriter) ApplyScheduleVersionChange(ctx context
 	if err := requireSQLiteTaskDomainV2ScheduleChanged(result); err != nil {
 		return err
 	}
-	result, err = w.queryer.ExecContext(ctx, `UPDATE domain_task_schedule_versions_v2 SET effective_to=?
+	result, err = w.queryer.ExecContext(ctx, `UPDATE domain_task_schedule_versions_v2 SET effective_from=?,effective_to=?
 		WHERE workspace_id=? AND task_id=? AND schedule_revision=? AND effective_to IS NULL`,
-		write.ClosedVersion.EffectiveTo, w.workspaceID, write.TaskID, write.ClosedVersion.ScheduleRevision)
+		nullableSQLiteTaskDomainV2String(write.ClosedVersion.EffectiveFrom), write.ClosedVersion.EffectiveTo,
+		w.workspaceID, write.TaskID, write.ClosedVersion.ScheduleRevision)
 	if err != nil {
 		return err
 	}

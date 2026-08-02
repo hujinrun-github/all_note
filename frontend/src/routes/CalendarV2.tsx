@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties, type DragEvent } from 'react'
-import { ChevronLeft, ChevronRight, Globe2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Globe2, Plus } from 'lucide-react'
 
 import {
   TaskDomainAPIError,
@@ -9,10 +9,12 @@ import {
 } from '../api/taskDomain'
 import {
   useCalendarEntries,
+  useProjects,
   useReopenOccurrenceMutation,
   useRescheduleOccurrenceMutation,
   useRescheduleThisAndFollowingMutation,
 } from '../hooks/useTaskDomain'
+import { ScheduleCreateDialog } from '../components/taskDomain/ScheduleCreateDialog'
 
 type ScheduleScope = 'only-this' | 'this-and-following'
 type CalendarView = 'week' | 'month' | 'year'
@@ -36,7 +38,20 @@ interface ScheduleDraft {
   selectedOffsetSeconds?: number
 }
 
+interface CalendarCreateScheduleDefaults {
+  startsOn: string
+  startTime?: string
+  endTime?: string
+}
+
 const weekHours = Array.from({ length: 15 }, (_, index) => index + 7)
+const weekStartMinute = 7 * 60
+const weekEndMinute = 22 * 60
+const defaultScheduleDuration = 30
+const weekTimeSlots = Array.from(
+  { length: (weekEndMinute - weekStartMinute) / defaultScheduleDuration },
+  (_, index) => weekStartMinute + index * defaultScheduleDuration
+)
 const calendarWeekdays = [
   '周一',
   '周二',
@@ -69,6 +84,30 @@ function addDays(value: string, days: number) {
   const date = parseLocalDate(value)
   date.setDate(date.getDate() + days)
   return localDateValue(date)
+}
+
+function timeInputValue(minuteOfDay: number) {
+  const hours = Math.floor(minuteOfDay / 60)
+  const minutes = minuteOfDay % 60
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+export function createCalendarSlotDefaults(
+  startsOn: string,
+  requestedMinuteOfDay: number
+): CalendarCreateScheduleDefaults {
+  const snappedMinute =
+    Math.round(requestedMinuteOfDay / defaultScheduleDuration) *
+    defaultScheduleDuration
+  const startMinute = Math.max(
+    weekStartMinute,
+    Math.min(weekEndMinute - defaultScheduleDuration, snappedMinute)
+  )
+  return {
+    startsOn,
+    startTime: timeInputValue(startMinute),
+    endTime: timeInputValue(startMinute + defaultScheduleDuration),
+  }
 }
 
 function addMonths(value: string, months: number) {
@@ -274,7 +313,10 @@ export default function CalendarV2({
     Array<{ offset_seconds: number; utc: string }>
   >([])
   const [editorError, setEditorError] = useState('')
+  const [createScheduleDefaults, setCreateScheduleDefaults] =
+    useState<CalendarCreateScheduleDefaults | null>(null)
 
+  const projectsQuery = useProjects()
   const onlyThis = useRescheduleOccurrenceMutation()
   const thisAndFollowing = useRescheduleThisAndFollowingMutation()
   const reopen = useReopenOccurrenceMutation()
@@ -415,6 +457,11 @@ export default function CalendarV2({
     setDraft(null)
     setOffsetCandidates([])
     setEditorError('')
+  }
+
+  function openCreateSchedule(defaults: CalendarCreateScheduleDefaults) {
+    closeEditor()
+    setCreateScheduleDefaults(defaults)
   }
 
   function updateDraft(update: Partial<ScheduleDraft>) {
@@ -648,6 +695,14 @@ export default function CalendarV2({
               >
                 <ChevronRight size={16} aria-hidden="true" />
               </button>
+              <button
+                type="button"
+                className="calendar-v2-create"
+                onClick={() => openCreateSchedule({ startsOn: anchorDate })}
+              >
+                <Plus size={15} aria-hidden="true" />
+                新增日程
+              </button>
             </div>
             <strong aria-live="polite">{periodTitle}</strong>
             {entriesQuery.isFetching ? (
@@ -763,6 +818,31 @@ export default function CalendarV2({
                       {weekHours.map((hour) => (
                         <i key={hour} aria-hidden="true" />
                       ))}
+                      {weekTimeSlots.map((minute) => {
+                        const time = timeInputValue(minute)
+                        return (
+                          <button
+                            key={minute}
+                            type="button"
+                            className="calendar-v2-create-slot"
+                            style={
+                              {
+                                '--calendar-slot-minute':
+                                  minute - weekStartMinute,
+                              } as CSSProperties
+                            }
+                            aria-label={`新增日程：${formatDate(date)} ${time}`}
+                            title={`${time} 新增日程`}
+                            onClick={() =>
+                              openCreateSchedule(
+                                createCalendarSlotDefaults(date, minute)
+                              )
+                            }
+                          >
+                            <span aria-hidden="true">＋ 新增</span>
+                          </button>
+                        )
+                      })}
                       {timeEntries
                         .filter((entry) => entry.planned_date === date)
                         .map((entry) => (
@@ -1162,6 +1242,15 @@ export default function CalendarV2({
           </section>
         ) : null}
       </div>
+
+      {createScheduleDefaults ? (
+        <ScheduleCreateDialog
+          projects={projectsQuery.data ?? []}
+          initialSchedule={createScheduleDefaults}
+          timezone={timezone}
+          onClose={() => setCreateScheduleDefaults(null)}
+        />
+      ) : null}
     </section>
   )
 }

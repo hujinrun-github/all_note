@@ -259,6 +259,10 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 			return err
 		}
 		closed := current
+		if closed.EffectiveFrom == "" {
+			effectiveFrom, _ := parseLocalDate(request.EffectiveFrom)
+			closed.EffectiveFrom = formatLocalDate(effectiveFrom.AddDate(0, 0, -1))
+		}
 		closed.EffectiveTo = request.EffectiveFrom
 		write, candidates, err := reconcileScheduleOccurrences(state, request, normalized, closed, newVersion)
 		if err != nil {
@@ -508,12 +512,16 @@ func nextScheduleVersion(versions []ScheduleVersion) int64 {
 }
 
 func scheduleOccurrenceMustBePreserved(occurrence ScheduleOccurrenceSnapshot, effectiveFrom string) bool {
-	if occurrence.Record.PlannedDate == "" || occurrence.Record.PlannedDate < effectiveFrom {
-		return true
-	}
-	return occurrence.ManuallyOverridden || occurrence.ActualStartAt != nil || occurrence.CompletedAt != nil ||
+	protected := occurrence.ManuallyOverridden || occurrence.ActualStartAt != nil || occurrence.CompletedAt != nil ||
 		occurrence.Record.ExecutionStatus == ExecutionStatusActive || occurrence.Record.ExecutionStatus == ExecutionStatusBlocked ||
 		isTerminalExecutionStatus(occurrence.Record.ExecutionStatus)
+	if occurrence.Record.PlannedDate == "" {
+		return protected
+	}
+	if occurrence.Record.PlannedDate < effectiveFrom {
+		return true
+	}
+	return protected
 }
 
 func cloneScheduleServiceTime(value *time.Time) *time.Time {

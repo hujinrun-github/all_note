@@ -309,7 +309,7 @@ const postgresTaskDomainV2OccurrenceSelect = `SELECT
 		WHEN o.planned_start_at IS NOT NULL THEN 'time_block'
 		WHEN o.planned_date IS NOT NULL THEN 'date'
 		ELSE 'unscheduled'
-	END,v.timezone,o.planned_date::text,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,
+	END,v.timezone,o.planned_date::text,o.planned_start_at,o.planned_end_at,o.due_at,o.execution_status,v.recurrence_type,
 	(v.recurrence_type <> 'none'),
 	o.revision,p.revision,t.revision,s.revision,o.generated_schedule_revision,t.lifecycle_status,t.priority,t.sort_order,
 	o.actual_start_at,o.completed_at,o.blocked_reason,o.next_action,o.location,o.calendar_kind,o.calendar_notes,
@@ -327,13 +327,13 @@ type postgresTaskDomainV2Scanner interface {
 
 func scanPostgresTaskDomainV2Occurrence(scanner postgresTaskDomainV2Scanner) (taskdomain.QueryOccurrenceSnapshot, error) {
 	var item taskdomain.QueryOccurrenceSnapshot
-	var timingType, executionStatus, lifecycleStatus string
+	var timingType, executionStatus, lifecycleStatus, recurrenceType string
 	var plannedDate, blockedReason, nextAction, location, calendarKind, calendarNotes, taskNoteID, occurrenceNoteID, allDayEndDate sql.NullString
 	var plannedStart, plannedEnd, dueAt, actualStart, completedAt sql.NullTime
 	err := scanner.Scan(
 		&item.WorkspaceID, &item.ProjectID, &item.TaskID, &item.OccurrenceID, &item.OccurrenceKey,
 		&item.Title, &item.Description, &timingType, &item.Timezone, &plannedDate, &plannedStart, &plannedEnd, &dueAt, &executionStatus,
-		&item.Recurring, &item.Revision, &item.ProjectRevision, &item.TaskRevision, &item.ScheduleRevision, &item.GeneratedScheduleRevision,
+		&recurrenceType, &item.Recurring, &item.Revision, &item.ProjectRevision, &item.TaskRevision, &item.ScheduleRevision, &item.GeneratedScheduleRevision,
 		&lifecycleStatus, &item.Priority, &item.SortOrder, &actualStart, &completedAt, &blockedReason, &nextAction,
 		&location, &calendarKind, &calendarNotes, &taskNoteID, &occurrenceNoteID, &allDayEndDate,
 	)
@@ -342,6 +342,7 @@ func scanPostgresTaskDomainV2Occurrence(scanner postgresTaskDomainV2Scanner) (ta
 	}
 	item.TimingType = taskdomain.TimingType(timingType)
 	item.Status = taskdomain.ExecutionStatus(executionStatus)
+	item.RecurrenceType = taskdomain.RecurrenceType(recurrenceType)
 	item.LifecycleStatus = taskdomain.TaskLifecycleStatus(lifecycleStatus)
 	item.PlannedDate = plannedDate.String
 	item.AllDayEndDate = allDayEndDate.String
@@ -1471,9 +1472,10 @@ func (w *postgresTaskDomainV2ProjectWriter) ApplyScheduleVersionChange(ctx conte
 	if err := requirePostgresTaskDomainV2ScheduleChanged(result); err != nil {
 		return err
 	}
-	result, err = w.queryer.ExecContext(ctx, `UPDATE domain_task_schedule_versions_v2 SET effective_to=$1
-		WHERE workspace_id=$2 AND task_id=$3 AND schedule_revision=$4 AND effective_to IS NULL`,
-		write.ClosedVersion.EffectiveTo, w.workspaceID, write.TaskID, write.ClosedVersion.ScheduleRevision)
+	result, err = w.queryer.ExecContext(ctx, `UPDATE domain_task_schedule_versions_v2 SET effective_from=$1,effective_to=$2
+		WHERE workspace_id=$3 AND task_id=$4 AND schedule_revision=$5 AND effective_to IS NULL`,
+		nullablePostgresTaskDomainV2String(write.ClosedVersion.EffectiveFrom), write.ClosedVersion.EffectiveTo,
+		w.workspaceID, write.TaskID, write.ClosedVersion.ScheduleRevision)
 	if err != nil {
 		return err
 	}

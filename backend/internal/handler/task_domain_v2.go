@@ -404,7 +404,7 @@ func (handler taskDomainV2Handler) createTask(c *gin.Context) {
 		LifecycleStatus:        outcome.LifecycleStatus, Revision: outcome.TaskRevision, ScheduleRevision: outcome.ScheduleRevision}
 	occurrences := make([]OccurrenceV2DTO, 0, len(outcome.Occurrences))
 	for _, occurrence := range outcome.Occurrences {
-		occurrences = append(occurrences, createdOccurrenceV2DTO(occurrence, request.TaskNoteID))
+		occurrences = append(occurrences, createdOccurrenceV2DTO(occurrence, task, schedule))
 	}
 	created(c, gin.H{"task": task, "occurrences": occurrences})
 }
@@ -827,18 +827,25 @@ func parseTaskDomainCalendarDate(value, timezone string) (time.Time, error) {
 }
 
 func occurrenceV2DTO(snapshot taskdomain.QueryOccurrenceSnapshot) OccurrenceV2DTO {
-	return OccurrenceV2DTO{ID: snapshot.OccurrenceID, TaskID: snapshot.TaskID, OccurrenceKey: snapshot.OccurrenceKey,
+	return OccurrenceV2DTO{ID: snapshot.OccurrenceID, TaskID: snapshot.TaskID, ProjectID: snapshot.ProjectID,
+		OccurrenceKey: snapshot.OccurrenceKey, Title: snapshot.Title,
 		TaskNoteID: optionalString(snapshot.TaskNoteID), OccurrenceNoteID: optionalString(snapshot.OccurrenceNoteID),
-		ExecutionStatus: snapshot.Status, Revision: snapshot.Revision, GeneratedScheduleRevision: snapshot.GeneratedScheduleRevision,
+		ExecutionStatus: snapshot.Status, Revision: snapshot.Revision, TaskRevision: snapshot.TaskRevision,
+		ScheduleRevision: snapshot.ScheduleRevision, GeneratedScheduleRevision: snapshot.GeneratedScheduleRevision,
+		RecurrenceType: snapshot.RecurrenceType, Recurring: snapshot.Recurring,
+		TimingType: snapshot.TimingType, Timezone: snapshot.Timezone,
 		PlannedDate: snapshot.PlannedDate, AllDayEndDate: snapshot.AllDayEndDate, PlannedStartAt: snapshot.PlannedStartAt,
 		PlannedEndAt: snapshot.PlannedEndAt, DueAt: snapshot.DueAt, BlockedReason: snapshot.BlockedReason,
 		NextAction: snapshot.NextAction, Location: snapshot.Location, CalendarKind: snapshot.CalendarKind, CalendarNotes: snapshot.CalendarNotes}
 }
 
-func createdOccurrenceV2DTO(record taskdomain.OccurrenceRecord, taskNoteID *string) OccurrenceV2DTO {
-	return OccurrenceV2DTO{ID: record.ID, TaskID: record.TaskID, OccurrenceKey: record.OccurrenceKey,
-		TaskNoteID: taskNoteID, OccurrenceNoteID: optionalString(record.NoteID), ExecutionStatus: record.ExecutionStatus,
-		Revision: record.Revision, GeneratedScheduleRevision: record.GeneratedScheduleRevision, PlannedDate: record.PlannedDate,
+func createdOccurrenceV2DTO(record taskdomain.OccurrenceRecord, task TaskV2DTO, schedule taskdomain.ScheduleInput) OccurrenceV2DTO {
+	return OccurrenceV2DTO{ID: record.ID, TaskID: record.TaskID, ProjectID: task.ProjectID, OccurrenceKey: record.OccurrenceKey,
+		Title: task.Title, TaskNoteID: task.TaskNoteID, OccurrenceNoteID: optionalString(record.NoteID), ExecutionStatus: record.ExecutionStatus,
+		Revision: record.Revision, TaskRevision: task.Revision, ScheduleRevision: task.ScheduleRevision,
+		GeneratedScheduleRevision: record.GeneratedScheduleRevision, RecurrenceType: schedule.RecurrenceType,
+		Recurring: schedule.RecurrenceType != taskdomain.RecurrenceNone, TimingType: schedule.TimingType, Timezone: schedule.Timezone,
+		PlannedDate:   record.PlannedDate,
 		AllDayEndDate: record.AllDayEndDate, PlannedStartAt: record.PlannedStartAt, PlannedEndAt: record.PlannedEndAt, DueAt: record.DueAt}
 }
 

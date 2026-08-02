@@ -27,6 +27,7 @@ const generateRoadmap = vi.fn()
 const updateProject = vi.fn()
 const archiveProject = vi.fn()
 const deleteProject = vi.fn()
+const rescheduleThisAndFollowing = vi.fn()
 
 describe('Project detail v2', () => {
   beforeEach(() => {
@@ -105,6 +106,12 @@ describe('Project detail v2', () => {
     vi.mocked(taskHooks.useDeleteTaskMutation).mockReturnValue(
       idleMutation() as ReturnType<typeof taskHooks.useDeleteTaskMutation>
     )
+    vi.mocked(taskHooks.useRescheduleThisAndFollowingMutation).mockReturnValue({
+      mutateAsync: rescheduleThisAndFollowing,
+      isPending: false,
+    } as unknown as ReturnType<
+      typeof taskHooks.useRescheduleThisAndFollowingMutation
+    >)
     vi.mocked(roadmapHooks.useRoadmapV2).mockReturnValue({
       data: null,
       isLoading: false,
@@ -130,6 +137,39 @@ describe('Project detail v2', () => {
       expect.objectContaining({
         project_id: 'project-1',
         title: '完成领域评审',
+      })
+    )
+  })
+
+  it('creates a recurring task from the project page', async () => {
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '打开添加任务' }))
+    await user.type(screen.getByLabelText('任务标题'), '每周复习词汇')
+    await user.click(screen.getByText('安排与重复'))
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '新任务重复方式' }),
+      'weekly'
+    )
+    await user.clear(screen.getByLabelText('新任务重复起始日期'))
+    await user.type(
+      screen.getByLabelText('新任务重复起始日期'),
+      '2026-08-03'
+    )
+    await user.click(screen.getByRole('button', { name: '添加任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_id: 'project-1',
+        title: '每周复习词汇',
+        schedule: {
+          recurrence_type: 'weekly',
+          timing_type: 'date',
+          timezone: expect.any(String),
+          starts_on: '2026-08-03',
+          rule: { interval: 1, weekdays: [1] },
+        },
       })
     )
   })
@@ -476,6 +516,85 @@ describe('Project detail v2', () => {
         },
       })
     )
+  })
+
+  it('turns a one-time task into a weekly recurring schedule from the inspector', async () => {
+    rescheduleThisAndFollowing.mockResolvedValue({
+      task_revision: 4,
+      schedule_revision: 3,
+      schedule_version: 3,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '设置重复' }))
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '重复频率' }),
+      'weekly'
+    )
+    const startsOn = screen.getByLabelText('重复开始日期')
+    await user.clear(startsOn)
+    await user.type(startsOn, '2026-08-03')
+
+    expect(screen.getByText('从开始日期起，每周一重复。')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '保存安排' }))
+
+    await waitFor(() =>
+      expect(rescheduleThisAndFollowing).toHaveBeenCalledWith({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        input: {
+          expected_task_revision: 4,
+          expected_schedule_revision: 2,
+          effective_from: '2026-08-03',
+          generate_through_exclusive: '2026-11-02',
+          schedule: {
+            recurrence_type: 'weekly',
+            timing_type: 'date',
+            timezone: expect.any(String),
+            starts_on: '2026-08-03',
+            rule: { interval: 1, weekdays: [1] },
+          },
+        },
+      })
+    )
+  })
+
+  it('shows and restores the current recurring schedule metadata', async () => {
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: [
+        {
+          ...openOccurrence,
+          occurrence_key: '2026-08-03',
+          planned_date: '2026-08-03',
+          planned_start_at: '2026-08-03T03:00:00Z',
+          planned_end_at: '2026-08-03T03:30:00Z',
+          recurrence_type: 'weekly',
+          recurring: true,
+          timing_type: 'time_block',
+          timezone: 'Asia/Shanghai',
+        },
+      ],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useOccurrences>)
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+
+    expect(screen.getByText('每周 · 固定时间')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '设置重复' }))
+
+    expect(screen.getByRole('combobox', { name: '重复频率' })).toHaveValue(
+      'weekly'
+    )
+    expect(screen.getByRole('combobox', { name: '重复安排方式' })).toHaveValue(
+      'time_block'
+    )
+    expect(screen.getByLabelText('重复开始日期')).toHaveValue('2026-08-03')
+    expect(screen.getByLabelText('重复开始时间')).toHaveValue('11:00')
+    expect(screen.getByLabelText('重复时长（分钟）')).toHaveValue(30)
   })
 
   it('lists notes linked through tasks in the project notes section', async () => {

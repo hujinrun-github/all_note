@@ -247,17 +247,29 @@ func TestCutOverWorkspaceLegacyWebMutationsAre410WhileRevisionAwareV2RoutesRemai
 	env.config.TaskDomainModelSelector = &routerTaskDomainModelSelector{models: map[string]taskapp.ModelVersion{routerTestWorkspaceID: taskapp.ModelV2}}
 	router := Setup(env.config)
 
-	legacy := taskDomainAuthenticatedJSONRequest(t, router, env.auth.Cookie.Name, token, http.MethodPatch, "/api/tasks/task-1", `{"title":"old request"}`)
-	if legacy.Code != http.StatusGone {
-		t.Fatalf("legacy mutation status = %d, want %d; body = %s", legacy.Code, http.StatusGone, legacy.Body.String())
-	}
-	assertRouterErrorCode(t, legacy.Body.String(), "legacy_contract_revision_required")
+	for _, test := range []struct {
+		name       string
+		method     string
+		legacyBody string
+		v2Body     string
+	}{
+		{name: "patch", method: http.MethodPatch, legacyBody: `{"title":"old request"}`, v2Body: `{"expected_task_revision":2,"expected_schedule_revision":3,"title":"v2 request"}`},
+		{name: "delete", method: http.MethodDelete, legacyBody: `{}`, v2Body: `{"expected_task_revision":2,"expected_schedule_revision":3,"expected_occurrence_revisions":{"occurrence-1":4}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			legacy := taskDomainAuthenticatedJSONRequest(t, router, env.auth.Cookie.Name, token, test.method, "/api/tasks/task-1", test.legacyBody)
+			if legacy.Code != http.StatusGone {
+				t.Fatalf("legacy mutation status = %d, want %d; body = %s", legacy.Code, http.StatusGone, legacy.Body.String())
+			}
+			assertRouterErrorCode(t, legacy.Body.String(), "legacy_contract_revision_required")
 
-	// Native v2 commands remain independently addressable and are not routed
-	// through the compatibility handler.
-	v2 := taskDomainAuthenticatedJSONRequest(t, router, env.auth.Cookie.Name, token, http.MethodPatch, "/api/tasks/task-1", `{"expected_task_revision":2,"expected_schedule_revision":3,"title":"v2 request"}`)
-	if v2.Code != http.StatusOK {
-		t.Fatalf("v2 mutation status = %d, want %d; body = %s", v2.Code, http.StatusOK, v2.Body.String())
+			// Revision-aware v2 mutations sharing the historical path must reach
+			// the native v2 handler instead of the read-only compatibility layer.
+			v2 := taskDomainAuthenticatedJSONRequest(t, router, env.auth.Cookie.Name, token, test.method, "/api/tasks/task-1", test.v2Body)
+			if v2.Code != http.StatusOK {
+				t.Fatalf("v2 mutation status = %d, want %d; body = %s", v2.Code, http.StatusOK, v2.Body.String())
+			}
+		})
 	}
 }
 

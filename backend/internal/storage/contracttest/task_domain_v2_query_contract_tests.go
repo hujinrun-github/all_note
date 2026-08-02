@@ -164,6 +164,10 @@ func RunTaskDomainV2QuerySuite(t *testing.T, fixture TaskDomainV2QueryFixture) {
 		if err != nil || len(items) != 2 || items[0].OccurrenceID != "future-1" || items[1].OccurrenceID != "future-2" {
 			t.Fatalf("stable task occurrences = %#v, err=%v", items, err)
 		}
+		if items[0].RecurrenceType != taskdomain.RecurrenceDaily || !items[0].Recurring ||
+			items[0].TimingType != taskdomain.TimingTimeBlock || items[0].Timezone != "UTC" {
+			t.Fatalf("recurring occurrence schedule metadata = %#v", items[0])
+		}
 		rescheduled, err := reader.GetOccurrence(ctx, "unscheduled-occ")
 		if err != nil || rescheduled.TimingType != taskdomain.TimingDate || rescheduled.PlannedDate != "2026-07-22" {
 			t.Fatalf("manual reschedule timing = %#v, err=%v", rescheduled, err)

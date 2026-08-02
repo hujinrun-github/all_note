@@ -111,7 +111,7 @@ func registerModelAwareTaskDomainRoutes(routes *gin.RouterGroup, dispatcher task
 	routes.GET("/task-occurrences", shared)
 
 	routes.GET("/tasks/projects", legacyOnly)
-	routes.DELETE("/tasks/:taskID", dispatcher.handlerWithV2(true, dispatcher.compat))
+	routes.DELETE("/tasks/:taskID", dispatcher.taskContractHandler())
 	routes.POST("/tasks/:taskID/occurrences/:date/complete", dispatcher.handlerWithV2(true, dispatcher.compat))
 	routes.POST("/tasks/:taskID/occurrences/:date/reopen", dispatcher.handlerWithV2(true, dispatcher.compat))
 	routes.POST("/tasks/:taskID/occurrences/:date/skip", dispatcher.handlerWithV2(true, dispatcher.compat))
@@ -275,6 +275,8 @@ func legacyTaskContractRequest(request *http.Request) bool {
 	case http.MethodPost:
 		return !taskRequestBodyHasField(request, "schedule")
 	case http.MethodPatch:
+		return !taskRequestBodyHasField(request, "expected_task_revision")
+	case http.MethodDelete:
 		return !taskRequestBodyHasField(request, "expected_task_revision")
 	default:
 		return true
