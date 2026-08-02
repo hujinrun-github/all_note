@@ -70,6 +70,25 @@ func (store scopedRepositoryStore) Sync() storage.SyncRepository {
 	return scopedSyncRepository{base: store.Store.Sync(), ctx: store.ctx}
 }
 
+// Keep optional native repositories available after applying the legacy
+// workspace-scoping adapter. NativeStoreFrom performs the nil check for
+// stores that do not provide these capabilities.
+func (store scopedRepositoryStore) WatchDevices() storage.WatchDeviceRepository {
+	nativeStore, err := storage.NativeStoreFrom(store.Store)
+	if err != nil {
+		return nil
+	}
+	return nativeStore.WatchDevices()
+}
+
+func (store scopedRepositoryStore) VoiceNotes() storage.VoiceNoteRepository {
+	nativeStore, err := storage.NativeStoreFrom(store.Store)
+	if err != nil {
+		return nil
+	}
+	return nativeStore.VoiceNotes()
+}
+
 type scopedFolderRepository struct {
 	storage.FolderRepository
 	ctx context.Context
