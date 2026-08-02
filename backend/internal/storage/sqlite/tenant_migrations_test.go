@@ -268,6 +268,42 @@ func TestSQLiteContentRetentionMigrationRedactsExistingDeletedPayloads(t *testin
 	}
 }
 
+func TestSQLiteContentRetentionMigrationPreparesLegacyNoteColumns(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE notes(
+		id TEXT PRIMARY KEY,
+		body TEXT NOT NULL DEFAULT '',
+		tags TEXT NOT NULL DEFAULT '[]'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSQLiteTenantMigration(ctx, tx, "0012_mobile_v2_content_retention.sql"); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"content", "content_text"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name=?`, column).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("notes.%s was not added", column)
+		}
+	}
+}
+
 func TestSQLiteOpenTenantRejectsChecksumMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tenant-checksum.db")
 	cfg := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: path}

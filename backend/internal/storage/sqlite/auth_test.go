@@ -11,6 +11,46 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage"
 )
 
+func TestGetWorkspaceMembershipAcceptsControlTimestampText(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	user := &model.User{
+		ID:           "sqlite_text_membership_user",
+		Email:        "sqlite-text-membership@example.com",
+		DisplayName:  "SQLite Text Membership",
+		PasswordHash: "hash",
+		Role:         "user",
+		Status:       "active",
+	}
+	workspace := &model.Workspace{
+		ID:          "sqlite_text_membership_workspace",
+		Name:        "SQLite Text Membership",
+		OwnerUserID: user.ID,
+	}
+	if err := store.Auth().CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := store.Auth().CreateWorkspace(ctx, workspace); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := store.Auth().AddWorkspaceMember(ctx, workspace.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("add workspace member: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE workspace_members SET created_at='2026-08-01 01:42:35'
+		WHERE workspace_id=? AND user_id=?`, workspace.ID, user.ID); err != nil {
+		t.Fatalf("write control timestamp: %v", err)
+	}
+
+	membership, err := store.Auth().GetWorkspaceMembership(ctx, workspace.ID, user.ID)
+	if err != nil {
+		t.Fatalf("get workspace membership: %v", err)
+	}
+	want := time.Date(2026, 8, 1, 1, 42, 35, 0, time.UTC).Unix()
+	if membership.CreatedAt != want {
+		t.Fatalf("membership created_at=%d want=%d", membership.CreatedAt, want)
+	}
+}
+
 func TestLockActiveAdminsBlocksConcurrentGuard(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "flowspace.auth-lock.db")
 	first := openSQLiteAuthLockStore(t, dbPath)

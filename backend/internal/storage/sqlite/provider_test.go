@@ -67,6 +67,44 @@ func TestProviderOpenUsesLegacySchemaAndReportsCapabilities(t *testing.T) {
 	}
 }
 
+func TestProviderOpenSkipsLegacyMigrationsAfterTaskDomainFenceCloses(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "flowspace.fenced.db")
+	provider := Provider{}
+	cfg := storage.Config{Env: "test", Driver: storage.DriverSQLite, SQLitePath: dbPath}
+
+	opened, err := provider.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("open initial sqlite provider: %v", err)
+	}
+	db := opened.(*store).db
+	if _, err := db.Exec(`
+		DELETE FROM task_projects WHERE workspace_id = '' AND id = 'personal';
+		CREATE TABLE workspace_task_domain_state (
+			workspace_id TEXT PRIMARY KEY,
+			accept_legacy_writes INTEGER NOT NULL
+		);
+		INSERT INTO workspace_task_domain_state(workspace_id, accept_legacy_writes)
+		VALUES ('workspace-cutover', 0);
+		CREATE TRIGGER reject_legacy_default_project
+		AFTER INSERT ON task_projects
+		WHEN NEW.workspace_id = ''
+		BEGIN
+			SELECT RAISE(ABORT, 'legacy_task_domain_fenced');
+		END;
+	`); err != nil {
+		t.Fatalf("prepare closed legacy fence: %v", err)
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatalf("close initial sqlite provider: %v", err)
+	}
+
+	reopened, err := provider.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("open sqlite provider after legacy fence closes: %v", err)
+	}
+	defer reopened.Close()
+}
+
 func TestProviderOpenEnsuresAuthSchemaAndDeferredDefaultWorkspace(t *testing.T) {
 	store := openTestStore(t)
 
