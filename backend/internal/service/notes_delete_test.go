@@ -71,6 +71,7 @@ func TestDeleteNoteCleansAssociatedVoiceNote(t *testing.T) {
 		t.Fatalf("create voice note: %v", err)
 	}
 	db := serviceSyncSQLDB(t, store)
+	prepareServiceSyncContentRetentionSchema(t, ctx, db)
 	now := time.Now().Unix()
 	if _, err := db.ExecContext(ctx, `
 		UPDATE voice_notes
@@ -170,6 +171,26 @@ func TestDeleteNoteCleansAssociatedVoiceNote(t *testing.T) {
 	}
 	if outboxOperation != "voice_note.server_deleted" {
 		t.Fatalf("voice outbox operation = %q, want voice_note.server_deleted", outboxOperation)
+	}
+}
+
+func prepareServiceSyncContentRetentionSchema(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE mobile_v2_content_tombstones (
+			workspace_id TEXT NOT NULL,
+			entity_type TEXT NOT NULL CHECK (entity_type IN ('note', 'voice_note', 'inbox')),
+			entity_id TEXT NOT NULL,
+			client_id TEXT,
+			revision INTEGER NOT NULL CHECK (revision > 0),
+			deleted_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, entity_type, entity_id)
+		);
+		CREATE UNIQUE INDEX mobile_v2_content_tombstones_client_idx
+			ON mobile_v2_content_tombstones(workspace_id, entity_type, client_id)
+			WHERE client_id IS NOT NULL;
+	`); err != nil {
+		t.Fatalf("prepare mobile v2 content retention schema: %v", err)
 	}
 }
 
