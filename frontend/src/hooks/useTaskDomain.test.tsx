@@ -564,6 +564,62 @@ describe('task-domain mutation hooks', () => {
     )
   })
 
+  it('refreshes schedule projections after a this-and-following revision conflict', async () => {
+    const conflict = new taskDomainAPI.TaskDomainRevisionConflictError(
+      'task-1',
+      {
+        expected_task_revision: 7,
+        expected_schedule_revision: 5,
+      },
+      { task_revision: 8, schedule_revision: 6 }
+    )
+    vi.mocked(taskDomainAPI.rescheduleThisAndFollowing).mockRejectedValue(
+      conflict
+    )
+    const { client, wrapper } = createQueryWrapper()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(
+      () => useRescheduleThisAndFollowingMutation(),
+      { wrapper }
+    )
+
+    let thrown: unknown
+    await act(async () => {
+      try {
+        await result.current.mutateAsync({
+          projectID: 'project-1',
+          taskID: 'task-1',
+          input: {
+            expected_task_revision: 7,
+            expected_schedule_revision: 5,
+            effective_from: '2026-07-24',
+            generate_through_exclusive: '2026-08-24',
+            schedule: {
+              recurrence_type: 'daily',
+              timing_type: 'date',
+              timezone: 'Asia/Shanghai',
+              starts_on: '2026-07-24',
+              rule: { interval: 1 },
+            },
+          },
+        })
+      } catch (error) {
+        thrown = error
+      }
+    })
+
+    expect(thrown).toBe(conflict)
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      [
+        taskDomainQueryKeys.project('project-1'),
+        taskDomainQueryKeys.task('task-1'),
+        taskDomainQueryKeys.taskLists(),
+        taskDomainQueryKeys.occurrenceLists(),
+        taskDomainQueryKeys.calendar(),
+      ]
+    )
+  })
+
   it('exposes unblock as an explicit occurrence command', async () => {
     vi.mocked(taskDomainAPI.unblockOccurrence).mockResolvedValue({
       task_revision: 8,

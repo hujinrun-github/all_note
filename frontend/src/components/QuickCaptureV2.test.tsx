@@ -119,4 +119,29 @@ describe('QuickCaptureV2', () => {
       })
     )
   })
+
+  it('creates a weekly recurring task from quick capture', async () => {
+    render(<QuickCaptureV2 />)
+    const user = userEvent.setup()
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '任务重复方式' }),
+      'weekly'
+    )
+    await user.clear(screen.getByLabelText('任务重复起始日期'))
+    await user.type(screen.getByLabelText('任务重复起始日期'), '2026-08-03')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schedule: {
+          recurrence_type: 'weekly',
+          timing_type: 'date',
+          timezone: expect.any(String),
+          starts_on: '2026-08-03',
+          rule: { interval: 1, weekdays: [1] },
+        },
+      })
+    )
+  })
 })

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TaskDomainAPIError, type CalendarEntryV2 } from '../api/taskDomain'
 import {
   useCalendarEntries,
+  useCreateTaskMutation,
+  useProjects,
   useReopenOccurrenceMutation,
   useRescheduleOccurrenceMutation,
   useRescheduleThisAndFollowingMutation,
@@ -14,6 +16,8 @@ import CalendarV2 from './CalendarV2'
 
 vi.mock('../hooks/useTaskDomain', () => ({
   useCalendarEntries: vi.fn(),
+  useCreateTaskMutation: vi.fn(),
+  useProjects: vi.fn(),
   useReopenOccurrenceMutation: vi.fn(),
   useRescheduleOccurrenceMutation: vi.fn(),
   useRescheduleThisAndFollowingMutation: vi.fn(),
@@ -96,6 +100,7 @@ const entries: CalendarEntryV2[] = [
 const onlyThisMock = vi.fn()
 const followingMock = vi.fn()
 const reopenMock = vi.fn()
+const createTaskMock = vi.fn()
 
 function mutationResult(mutateAsync: ReturnType<typeof vi.fn>) {
   return {
@@ -135,6 +140,26 @@ describe('CalendarV2', () => {
       schedule_revision: 2,
       occurrence_revisions: { 'occurrence-done': 10 },
     })
+    createTaskMock.mockResolvedValue({})
+    vi.mocked(useProjects).mockReturnValue({
+      data: [
+        {
+          id: 'project-1',
+          name: '日语日常学习',
+          kind: 'learning',
+          horizon: 'long',
+          status: 'active',
+          revision: 1,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useProjects>)
+    vi.mocked(useCreateTaskMutation).mockReturnValue(
+      mutationResult(createTaskMock) as ReturnType<
+        typeof useCreateTaskMutation
+      >
+    )
     vi.mocked(useCalendarEntries).mockReturnValue({
       data: entries,
       isLoading: false,
@@ -170,6 +195,44 @@ describe('CalendarV2', () => {
       within(timeGrid).getByRole('button', { name: /编辑日程：设计评审/ })
     ).toHaveTextContent('09:30–10:30')
     expect(screen.queryByText('不应出现在日历')).not.toBeInTheDocument()
+  })
+
+  it('creates an editable schedule from the selected week-grid time', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    await user.click(
+      screen.getByRole('button', { name: '新增日程：7月23日 14:30' })
+    )
+
+    const dialog = screen.getByRole('dialog', { name: '新增日程' })
+    expect(within(dialog).getByLabelText('日程日期')).toHaveValue('2026-07-23')
+    expect(within(dialog).getByLabelText('开始时间')).toHaveValue('14:30')
+    expect(within(dialog).getByLabelText('结束时间')).toHaveValue('15:00')
+
+    await user.type(within(dialog).getByLabelText('日程标题'), '客户方案沟通')
+    fireEvent.change(within(dialog).getByLabelText('开始时间'), {
+      target: { value: '15:15' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('结束时间'), {
+      target: { value: '16:00' },
+    })
+    await user.click(within(dialog).getByRole('button', { name: '创建日程' }))
+
+    expect(createTaskMock).toHaveBeenCalledWith({
+      project_id: 'project-1',
+      title: '客户方案沟通',
+      description: undefined,
+      priority: 0,
+      schedule: {
+        recurrence_type: 'none',
+        timing_type: 'time_block',
+        timezone: 'Asia/Shanghai',
+        starts_on: '2026-07-23',
+        local_start_time: '15:15',
+        duration_minutes: 45,
+      },
+    })
   })
 
   it('reschedules only the selected occurrence by default with independent revisions', async () => {

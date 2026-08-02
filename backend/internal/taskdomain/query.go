@@ -106,6 +106,7 @@ type QueryOccurrenceSnapshot struct {
 	PlannedEndAt              *time.Time
 	DueAt                     *time.Time
 	Status                    ExecutionStatus
+	RecurrenceType            RecurrenceType
 	Recurring                 bool
 	Revision                  int64
 	ProjectRevision           int64

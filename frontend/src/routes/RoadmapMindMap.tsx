@@ -45,6 +45,10 @@ import {
   RoadmapTaskInspector,
   type RoadmapExecutionStatusChange,
 } from '../components/roadmapMindMap/RoadmapTaskInspector'
+import {
+  buildTaskScheduleInput,
+  type TaskScheduleDraft,
+} from '../components/taskDomain/TaskScheduleFields'
 import { roadmapNodeProgress } from '../components/roadmapPlan/RoadmapStageRail'
 import { useRoadmapV2 } from '../hooks/useRoadmapV2'
 import {
@@ -74,7 +78,7 @@ interface FlowCallbacks {
   onToggleCollapse: () => void
   onAddSibling: (taskID: string) => void
   onCancelDraft: () => void
-  onCreateDraft: (title: string) => Promise<void>
+  onCreateDraft: (title: string, schedule: TaskScheduleDraft) => Promise<void>
   onRename: (taskID: string, title: string) => Promise<void>
 }
 
@@ -364,7 +368,7 @@ export default function RoadmapMindMap() {
   }, [])
 
   const createDraftTask = useCallback(
-    async (title: string) => {
+    async (title: string, schedule: TaskScheduleDraft) => {
       setInteractionError('')
       try {
         const created = await createTask.mutateAsync({
@@ -373,11 +377,7 @@ export default function RoadmapMindMap() {
           title,
           priority: 0,
           sort_order: nodeTasks.length,
-          schedule: {
-            recurrence_type: 'none',
-            timing_type: 'unscheduled',
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          },
+          schedule: buildTaskScheduleInput(schedule),
         })
         setDraftAfterTaskID(undefined)
         setSelectedNodeID(created.task.id)

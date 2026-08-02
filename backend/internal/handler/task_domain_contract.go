@@ -420,12 +420,20 @@ type TaskV2DTO struct {
 type OccurrenceV2DTO struct {
 	ID                        string                     `json:"id"`
 	TaskID                    string                     `json:"task_id"`
+	ProjectID                 string                     `json:"project_id,omitempty"`
 	OccurrenceKey             string                     `json:"occurrence_key"`
+	Title                     string                     `json:"title,omitempty"`
 	TaskNoteID                *string                    `json:"task_note_id,omitempty"`
 	OccurrenceNoteID          *string                    `json:"occurrence_note_id,omitempty"`
 	ExecutionStatus           taskdomain.ExecutionStatus `json:"execution_status"`
 	Revision                  int64                      `json:"revision"`
+	TaskRevision              int64                      `json:"task_revision,omitempty"`
+	ScheduleRevision          int64                      `json:"schedule_revision,omitempty"`
 	GeneratedScheduleRevision int64                      `json:"generated_schedule_revision"`
+	RecurrenceType            taskdomain.RecurrenceType  `json:"recurrence_type,omitempty"`
+	Recurring                 bool                       `json:"recurring"`
+	TimingType                taskdomain.TimingType      `json:"timing_type,omitempty"`
+	Timezone                  string                     `json:"timezone,omitempty"`
 	PlannedDate               string                     `json:"planned_date,omitempty"`
 	AllDayEndDate             string                     `json:"all_day_end_date,omitempty"`
 	PlannedStartAt            *time.Time                 `json:"planned_start_at,omitempty"`

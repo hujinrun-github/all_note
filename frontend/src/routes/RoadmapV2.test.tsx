@@ -131,6 +131,45 @@ describe('RoadmapV2', () => {
     ).toBeInTheDocument()
   })
 
+  it('creates a recurring task under a roadmap node', async () => {
+    const createTask = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useCreateTaskMutation).mockReturnValue({
+      mutateAsync: createTask,
+      isPending: false,
+    } as never)
+    const user = userEvent.setup()
+    renderRoute()
+
+    await user.click(screen.getByRole('button', { name: '添加任务' }))
+    await user.type(screen.getByLabelText('关联任务标题'), '每月阶段验收')
+    await user.click(screen.getByText('安排与重复'))
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '关联任务重复方式' }),
+      'monthly'
+    )
+    await user.clear(screen.getByLabelText('关联任务重复起始日期'))
+    await user.type(
+      screen.getByLabelText('关联任务重复起始日期'),
+      '2026-08-26'
+    )
+    await user.click(screen.getByRole('button', { name: '创建关联任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_id: 'p1',
+        roadmap_node_id: 'n1',
+        title: '每月阶段验收',
+        schedule: {
+          recurrence_type: 'monthly',
+          timing_type: 'date',
+          timezone: expect.any(String),
+          starts_on: '2026-08-26',
+          rule: { interval: 1, month_days: [26] },
+        },
+      })
+    )
+  })
+
   it('generates a complete roadmap from the empty state', async () => {
     const generate = vi.fn().mockResolvedValue({})
     vi.mocked(hooks.useRoadmapV2).mockReturnValue({

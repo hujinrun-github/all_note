@@ -14,6 +14,12 @@ import { RoadmapProgressLedger } from '../components/roadmapPlan/RoadmapProgress
 import { RoadmapStageRail } from '../components/roadmapPlan/RoadmapStageRail'
 import { RoadmapStageWorkspace } from '../components/roadmapPlan/RoadmapStageWorkspace'
 import {
+  buildTaskScheduleInput,
+  createTaskScheduleDraft,
+  TaskScheduleFields,
+  taskScheduleValidationError,
+} from '../components/taskDomain/TaskScheduleFields'
+import {
   useCreateRoadmapMutation,
   useCreateRoadmapNodeMutation,
   useDeleteRoadmapNodeMutation,
@@ -43,6 +49,7 @@ export default function RoadmapV2() {
   const [showNodeComposer, setShowNodeComposer] = useState(false)
   const [taskNode, setTaskNode] = useState<RoadmapNodeV2 | null>(null)
   const [taskTitle, setTaskTitle] = useState('')
+  const [taskSchedule, setTaskSchedule] = useState(createTaskScheduleDraft)
   const [editing, setEditing] = useState<RoadmapNodeV2 | null>(null)
   const [deleting, setDeleting] = useState<RoadmapNodeV2 | null>(null)
   const [editTitle, setEditTitle] = useState('')
@@ -110,18 +117,20 @@ export default function RoadmapV2() {
   async function addTask(event: FormEvent) {
     event.preventDefault()
     if (!taskNode || taskTitle.trim() === '') return
+    const scheduleError = taskScheduleValidationError(taskSchedule)
+    if (scheduleError !== '') {
+      setError(scheduleError)
+      return
+    }
     await createTask.mutateAsync({
       project_id: projectID,
       roadmap_node_id: taskNode.id,
       title: taskTitle.trim(),
       priority: 0,
-      schedule: {
-        recurrence_type: 'none',
-        timing_type: 'unscheduled',
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      },
+      schedule: buildTaskScheduleInput(taskSchedule),
     })
     setTaskTitle('')
+    setTaskSchedule(createTaskScheduleDraft())
     setTaskNode(null)
   }
 
@@ -383,6 +392,8 @@ export default function RoadmapV2() {
               onAddTask={() => {
                 setTaskNode(selectedNode)
                 setTaskTitle('')
+                setTaskSchedule(createTaskScheduleDraft())
+                setError('')
               }}
               onEdit={() => {
                 setEditing(selectedNode)
@@ -423,7 +434,7 @@ export default function RoadmapV2() {
           aria-modal="true"
           aria-label="创建关联任务"
         >
-          <form onSubmit={addTask}>
+          <form className="domain-task-create-form" onSubmit={addTask}>
             <h3>在“{taskNode.title}”下创建任务</h3>
             <input
               aria-label="关联任务标题"
@@ -431,8 +442,35 @@ export default function RoadmapV2() {
               onChange={(event) => setTaskTitle(event.target.value)}
               autoFocus
             />
+            <details className="task-schedule-disclosure">
+              <summary>
+                安排与重复
+                <span>
+                  {taskSchedule.recurrenceType === 'none'
+                    ? '不重复'
+                    : '已设置重复'}
+                </span>
+              </summary>
+              <TaskScheduleFields
+                value={taskSchedule}
+                onChange={setTaskSchedule}
+                labelPrefix="关联任务"
+              />
+            </details>
+            {error ? (
+              <div className="domain-alert" role="alert">
+                {error}
+              </div>
+            ) : null}
             <div className="domain-form-actions">
-              <button type="button" onClick={() => setTaskNode(null)}>
+              <button
+                type="button"
+                onClick={() => {
+                  setTaskNode(null)
+                  setTaskSchedule(createTaskScheduleDraft())
+                  setError('')
+                }}
+              >
                 取消
               </button>
               <button

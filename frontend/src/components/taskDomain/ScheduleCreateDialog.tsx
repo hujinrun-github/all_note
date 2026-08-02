@@ -3,22 +3,36 @@ import { type FormEvent, useState } from 'react'
 
 import type { ProjectV2 } from '../../api/taskDomain'
 import { useCreateTaskMutation } from '../../hooks/useTaskDomain'
+import {
+  addMinutes,
+  buildTaskScheduleInput,
+  createTaskScheduleDraft,
+  type TaskScheduleDraft,
+  TaskRecurrenceField,
+  taskScheduleValidationError,
+  timeRangeMinutes,
+} from './TaskScheduleFields'
 
 export function ScheduleCreateDialog({
   projects,
   onClose,
+  initialSchedule,
+  timezone,
 }: {
   projects: ProjectV2[]
   onClose: () => void
+  initialSchedule?: Partial<TaskScheduleDraft>
+  timezone?: string
 }) {
-  const initialTime = buildInitialTimeRange()
   const createTask = useCreateTaskMutation()
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [date, setDate] = useState(todayInputValue)
-  const [startTime, setStartTime] = useState(initialTime.start)
-  const [endTime, setEndTime] = useState(initialTime.end)
+  const [schedule, setSchedule] = useState(() => ({
+    ...createTaskScheduleDraft('time_block'),
+    ...initialSchedule,
+  }))
   const [priority, setPriority] = useState(0)
+  const [selectedProjectID, setSelectedProjectID] = useState('')
   const [error, setError] = useState('')
 
   const availableProjects = projects.filter(
@@ -27,35 +41,27 @@ export function ScheduleCreateDialog({
   const personalProject = availableProjects.find(
     (project) => project.system_role === 'personal'
   )
+  const selectedProject =
+    availableProjects.find((project) => project.id === selectedProjectID) ??
+    personalProject ??
+    availableProjects[0]
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const durationMinutes = timeRangeMinutes(startTime, endTime)
-    if (
-      title.trim() === '' ||
-      !personalProject ||
-      date === '' ||
-      durationMinutes <= 0
-    ) {
-      setError('请填写标题，并确保结束时间晚于开始时间。')
+    const scheduleError = taskScheduleValidationError(schedule)
+    if (title.trim() === '' || !selectedProject || scheduleError !== '') {
+      setError(scheduleError || '请填写日程标题。')
       return
     }
 
     setError('')
     try {
       await createTask.mutateAsync({
-        project_id: personalProject.id,
+        project_id: selectedProject.id,
         title: title.trim(),
         description: description.trim() || undefined,
         priority,
-        schedule: {
-          recurrence_type: 'none',
-          timing_type: 'time_block',
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          starts_on: date,
-          local_start_time: startTime,
-          duration_minutes: durationMinutes,
-        },
+        schedule: buildTaskScheduleInput(schedule, timezone),
       })
       onClose()
     } catch {
@@ -100,8 +106,21 @@ export function ScheduleCreateDialog({
 
           <div className="schedule-create-destination">
             <span>归属项目</span>
-            <strong>{personalProject?.name ?? 'Personal 项目不可用'}</strong>
-            <small>今日新增日程会自动归入系统 Personal 项目。</small>
+            <select
+              aria-label="日程归属项目"
+              value={selectedProject?.id ?? ''}
+              disabled={availableProjects.length === 0}
+              onChange={(event) => setSelectedProjectID(event.target.value)}
+            >
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+            <small>
+              默认优先选择系统 Personal 项目；也可以归入其他可用项目。
+            </small>
           </div>
 
           <div className="schedule-create-date-row">
@@ -110,10 +129,20 @@ export function ScheduleCreateDialog({
               <input
                 aria-label="日程日期"
                 type="date"
-                value={date}
-                onChange={(event) => setDate(event.target.value)}
+                value={schedule.startsOn}
+                onChange={(event) =>
+                  setSchedule((current) => ({
+                    ...current,
+                    startsOn: event.target.value,
+                  }))
+                }
               />
             </label>
+            <TaskRecurrenceField
+              value={schedule}
+              onChange={setSchedule}
+              labelPrefix="日程"
+            />
             <label>
               <span>优先级</span>
               <select
@@ -135,13 +164,17 @@ export function ScheduleCreateDialog({
               <input
                 aria-label="开始时间"
                 type="time"
-                value={startTime}
+                value={schedule.startTime}
                 onChange={(event) => {
                   const nextStart = event.target.value
-                  setStartTime(nextStart)
-                  if (timeRangeMinutes(nextStart, endTime) <= 0) {
-                    setEndTime(addMinutes(nextStart, 60))
-                  }
+                  setSchedule((current) => ({
+                    ...current,
+                    startTime: nextStart,
+                    endTime:
+                      timeRangeMinutes(nextStart, current.endTime) > 0
+                        ? current.endTime
+                        : addMinutes(nextStart, 60),
+                  }))
                 }}
               />
             </label>
@@ -151,8 +184,13 @@ export function ScheduleCreateDialog({
               <input
                 aria-label="结束时间"
                 type="time"
-                value={endTime}
-                onChange={(event) => setEndTime(event.target.value)}
+                value={schedule.endTime}
+                onChange={(event) =>
+                  setSchedule((current) => ({
+                    ...current,
+                    endTime: event.target.value,
+                  }))
+                }
               />
             </label>
           </div>
@@ -183,7 +221,7 @@ export function ScheduleCreateDialog({
             type="submit"
             className="primary-action"
             disabled={
-              createTask.isPending || title.trim() === '' || !personalProject
+              createTask.isPending || title.trim() === '' || !selectedProject
             }
           >
             {createTask.isPending ? '正在创建…' : '创建日程'}
@@ -192,35 +230,4 @@ export function ScheduleCreateDialog({
       </form>
     </div>
   )
-}
-
-function todayInputValue() {
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function buildInitialTimeRange() {
-  const now = new Date()
-  const nextHour = now.getHours() + 1
-  const start = `${String(nextHour >= 23 ? 9 : nextHour).padStart(2, '0')}:00`
-  return { start, end: addMinutes(start, 60) }
-}
-
-function timeRangeMinutes(start: string, end: string) {
-  return timeToMinutes(end) - timeToMinutes(start)
-}
-
-function timeToMinutes(value: string) {
-  const [hours, minutes] = value.split(':').map(Number)
-  return hours * 60 + minutes
-}
-
-function addMinutes(value: string, minutes: number) {
-  const total = timeToMinutes(value) + minutes
-  const hours = Math.floor(total / 60) % 24
-  const remainder = total % 60
-  return `${String(hours).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
 }

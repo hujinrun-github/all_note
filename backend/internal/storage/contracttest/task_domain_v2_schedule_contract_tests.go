@@ -40,12 +40,16 @@ func RunTaskDomainV2ScheduleSuite(t *testing.T, fixture TaskDomainV2ScheduleFixt
 	create(scheduleContractDateAggregate())
 	create(scheduleContractDSTAggregate())
 	create(scheduleContractRecurringAggregate("schedule-main"))
+	create(scheduleContractRecurringAggregate("schedule-same-effective"))
 	create(scheduleContractRecurringAggregate("schedule-rollback"))
+	create(queryUnscheduledAggregate("schedule-w1", "schedule-unscheduled", taskdomain.PersonalProjectID))
 
 	startedAt := time.Date(2026, 7, 23, 9, 5, 0, 0, time.UTC)
 	completedAt := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
 	mustExecArgs(t, fixture.DB, `UPDATE domain_task_occurrences_v2 SET execution_status='active',actual_start_at=?
 		WHERE workspace_id='schedule-w1' AND id='schedule-main-started'`, fixture.Dialect, queryContractTime(fixture.Dialect, startedAt))
+	mustExecArgs(t, fixture.DB, `UPDATE domain_task_occurrences_v2 SET execution_status='active',actual_start_at=?
+		WHERE workspace_id='schedule-w1' AND id='schedule-same-effective-started'`, fixture.Dialect, queryContractTime(fixture.Dialect, startedAt))
 	mustExecArgs(t, fixture.DB, `UPDATE domain_task_occurrences_v2 SET execution_status='done',completed_at=?
 		WHERE workspace_id='schedule-w1' AND id='schedule-main-done'`, fixture.Dialect, queryContractTime(fixture.Dialect, completedAt))
 	mustExec(t, fixture.DB, `UPDATE domain_task_occurrences_v2 SET manually_overridden=TRUE
@@ -170,6 +174,89 @@ func RunTaskDomainV2ScheduleSuite(t *testing.T, fixture TaskDomainV2ScheduleFixt
 		var staleCount int
 		if err := fixture.DB.QueryRow(`SELECT COUNT(*) FROM domain_task_occurrences_v2 WHERE workspace_id='schedule-w1' AND id='schedule-main-stale'`).Scan(&staleCount); err != nil || staleCount != 0 {
 			t.Fatalf("stale count=%d err=%v", staleCount, err)
+		}
+	})
+
+	t.Run("version_change_on_the_current_start_date_preserves_active_history", func(t *testing.T) {
+		service := taskdomain.NewScheduleService(fixture.Fencer, fixture.NewStateReader("schedule-w1"))
+		result, err := service.RescheduleThisAndFuture(ctx, taskdomain.RescheduleThisAndFutureRequest{
+			WorkspaceID: "schedule-w1", TaskID: "schedule-same-effective", ExpectedRuntimeEpoch: 1,
+			ExpectedTaskRevision: 1, ExpectedScheduleRevision: 1,
+			EffectiveFrom: "2026-07-01", GenerateThroughExclusive: "2026-07-28",
+			Schedule: taskdomain.ScheduleInput{
+				RecurrenceType: taskdomain.RecurrenceDaily, TimingType: taskdomain.TimingTimeBlock,
+				Timezone: "UTC", StartsOn: "2026-07-01", EndsOn: "2026-07-27",
+				Rule: []byte(`{"interval":1}`), LocalStartTime: "11:00", DurationMinutes: 30,
+			},
+		})
+		if err != nil || result.ScheduleRevision() != 2 || result.ScheduleVersion() != 2 {
+			t.Fatalf("same-effective version result=%#v err=%v", result, err)
+		}
+
+		var oldFrom, oldTo string
+		if err := fixture.DB.QueryRow(`SELECT effective_from,effective_to FROM domain_task_schedule_versions_v2
+			WHERE workspace_id='schedule-w1' AND task_id='schedule-same-effective' AND schedule_revision=1`).Scan(&oldFrom, &oldTo); err != nil {
+			t.Fatal(err)
+		}
+		if scheduleContractDBDate(oldFrom) != "2026-07-01" || scheduleContractDBDate(oldTo) != "2026-07-01" {
+			t.Fatalf("superseded empty range=%s..%s", oldFrom, oldTo)
+		}
+
+		var status string
+		var generatedRevision int64
+		if err := fixture.DB.QueryRow(`SELECT execution_status,generated_schedule_revision FROM domain_task_occurrences_v2
+			WHERE workspace_id='schedule-w1' AND id='schedule-same-effective-started'`).Scan(&status, &generatedRevision); err != nil {
+			t.Fatal(err)
+		}
+		if status != "active" || generatedRevision != 1 {
+			t.Fatalf("preserved active occurrence status=%s generated=%d", status, generatedRevision)
+		}
+
+		var replacementStart any
+		if err := fixture.DB.QueryRow(`SELECT planned_start_at FROM domain_task_occurrences_v2
+			WHERE workspace_id='schedule-w1' AND task_id='schedule-same-effective' AND occurrence_key='2026-07-26'`).Scan(&replacementStart); err != nil {
+			t.Fatal(err)
+		}
+		if got := scheduleContractDBTime(t, replacementStart); got.Hour() != 11 || got.Minute() != 0 {
+			t.Fatalf("replacement start=%s", got)
+		}
+	})
+
+	t.Run("unscheduled_single_converts_to_recurring_without_duplicate_occurrence", func(t *testing.T) {
+		service := taskdomain.NewScheduleService(fixture.Fencer, fixture.NewStateReader("schedule-w1"))
+		result, err := service.RescheduleThisAndFuture(ctx, taskdomain.RescheduleThisAndFutureRequest{
+			WorkspaceID: "schedule-w1", TaskID: "schedule-unscheduled", ExpectedRuntimeEpoch: 1,
+			ExpectedTaskRevision: 1, ExpectedScheduleRevision: 1,
+			EffectiveFrom: "2026-08-03", GenerateThroughExclusive: "2026-08-06",
+			Schedule: taskdomain.ScheduleInput{
+				RecurrenceType: taskdomain.RecurrenceDaily, TimingType: taskdomain.TimingDate,
+				Timezone: "UTC", StartsOn: "2026-08-03", Rule: []byte(`{"interval":1}`),
+			},
+		})
+		if err != nil || result.ScheduleRevision() != 2 || result.ScheduleVersion() != 2 {
+			t.Fatalf("convert unscheduled result=%#v err=%v", result, err)
+		}
+
+		var oldFrom, oldTo string
+		if err := fixture.DB.QueryRow(`SELECT effective_from,effective_to FROM domain_task_schedule_versions_v2
+			WHERE workspace_id='schedule-w1' AND task_id='schedule-unscheduled' AND schedule_revision=1`).Scan(&oldFrom, &oldTo); err != nil {
+			t.Fatal(err)
+		}
+		if scheduleContractDBDate(oldFrom) != "2026-08-02" || scheduleContractDBDate(oldTo) != "2026-08-03" {
+			t.Fatalf("closed unscheduled range=%s..%s", oldFrom, oldTo)
+		}
+		var oldOccurrenceCount, recurringOccurrenceCount int
+		if err := fixture.DB.QueryRow(`SELECT
+			COUNT(*) FILTER (WHERE occurrence_key='once'),
+			COUNT(*) FILTER (WHERE generated_schedule_revision=2)
+			FROM domain_task_occurrences_v2
+			WHERE workspace_id='schedule-w1' AND task_id='schedule-unscheduled'`).Scan(
+			&oldOccurrenceCount, &recurringOccurrenceCount,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if oldOccurrenceCount != 0 || recurringOccurrenceCount != 3 {
+			t.Fatalf("occurrence counts old=%d recurring=%d", oldOccurrenceCount, recurringOccurrenceCount)
 		}
 	})
 

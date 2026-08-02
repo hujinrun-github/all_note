@@ -161,6 +161,51 @@ func TestScheduleServiceThisAndFutureInstallsVersionAndReconcilesOnlyMutableFutu
 	}
 }
 
+func TestScheduleServiceThisAndFutureReplacesUntouchedUnscheduledOccurrence(t *testing.T) {
+	state := scheduleServiceState()
+	state.Versions = []ScheduleVersion{{
+		WorkspaceID: "workspace-1", TaskID: "task-1", ScheduleRevision: 3,
+		RecurrenceType: RecurrenceNone, TimingType: TimingUnscheduled, Timezone: "UTC", RecurrenceRule: `{}`,
+	}}
+	state.Occurrences = []ScheduleOccurrenceSnapshot{
+		{Record: OccurrenceRecord{
+			WorkspaceID: "workspace-1", ID: "once", TaskID: "task-1", OccurrenceKey: "once",
+			ExecutionStatus: ExecutionStatusOpen, Revision: 11, GeneratedScheduleRevision: 3,
+		}},
+		{Record: OccurrenceRecord{
+			WorkspaceID: "workspace-1", ID: "manual", TaskID: "task-1", OccurrenceKey: "manual",
+			ExecutionStatus: ExecutionStatusOpen, Revision: 12, GeneratedScheduleRevision: 3,
+		}, ManuallyOverridden: true},
+	}
+	writer, fencer, reader := scheduleServiceHarness(state)
+	service := NewScheduleService(fencer, reader)
+	request := RescheduleThisAndFutureRequest{
+		WorkspaceID: "workspace-1", TaskID: "task-1", ExpectedRuntimeEpoch: 9,
+		ExpectedTaskRevision: 5, ExpectedScheduleRevision: 7,
+		EffectiveFrom: "2026-08-03", GenerateThroughExclusive: "2026-08-06",
+		Schedule: ScheduleInput{
+			RecurrenceType: RecurrenceDaily, TimingType: TimingDate, Timezone: "UTC",
+			StartsOn: "2026-08-03", Rule: []byte(`{"interval":1}`),
+		},
+	}
+
+	if _, err := service.RescheduleThisAndFuture(context.Background(), request); err != nil {
+		t.Fatalf("RescheduleThisAndFuture() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(writer.version.PreservedOccurrenceIDs, []string{"manual"}) {
+		t.Fatalf("preserved IDs = %v", writer.version.PreservedOccurrenceIDs)
+	}
+	if !reflect.DeepEqual(writer.version.DeleteOccurrenceRevisions, map[string]int64{"once": 11}) {
+		t.Fatalf("deleted unscheduled occurrence = %#v", writer.version.DeleteOccurrenceRevisions)
+	}
+	if writer.version.ClosedVersion.EffectiveFrom != "2026-08-02" || writer.version.ClosedVersion.EffectiveTo != "2026-08-03" {
+		t.Fatalf("closed unscheduled version = %#v", writer.version.ClosedVersion)
+	}
+	if len(writer.version.UpsertOccurrences) != 3 {
+		t.Fatalf("generated recurring occurrences = %#v", writer.version.UpsertOccurrences)
+	}
+}
+
 func TestScheduleServiceDSTErrorsReturnCandidatesAndNeverWrite(t *testing.T) {
 	tests := []struct {
 		name       string

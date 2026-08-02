@@ -26,6 +26,13 @@ import {
   TaskLifecycleStatusLabel,
   formatOccurrenceSchedule,
 } from '../components/taskDomain/TaskDomainWorkspace'
+import {
+  buildTaskScheduleInput,
+  createTaskScheduleDraft,
+  recurrenceRule,
+  TaskScheduleFields,
+  taskScheduleValidationError,
+} from '../components/taskDomain/TaskScheduleFields'
 import { useGenerateRoadmapMutation, useRoadmapV2 } from '../hooks/useRoadmapV2'
 import {
   useActivateProjectMutation,
@@ -42,6 +49,7 @@ import {
   useProjects,
   usePublishTaskMutation,
   useRestoreTaskMutation,
+  useRescheduleThisAndFollowingMutation,
   useResumeTaskMutation,
   useTaskDefinitions,
   useUpdateProjectMutation,
@@ -105,8 +113,10 @@ export default function ProjectDetail() {
   const restoreTask = useRestoreTaskMutation()
   const archiveTask = useArchiveTaskMutation()
   const deleteTask = useDeleteTaskMutation()
+  const rescheduleThisAndFollowing = useRescheduleThisAndFollowingMutation()
 
   const [title, setTitle] = useState('')
+  const [createSchedule, setCreateSchedule] = useState(createTaskScheduleDraft)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [completionDecisionOpen, setCompletionDecisionOpen] = useState(false)
@@ -217,6 +227,7 @@ export default function ProjectDetail() {
     restoreTask,
     archiveTask,
     deleteTask,
+    rescheduleThisAndFollowing,
   ].some((mutation) => mutation.isPending)
 
   function updateSearchParams(update: Record<string, string | null>) {
@@ -231,19 +242,21 @@ export default function ProjectDetail() {
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (title.trim() === '' || projectID === '') return
+    const scheduleError = taskScheduleValidationError(createSchedule)
+    if (scheduleError !== '') {
+      setError(scheduleError)
+      return
+    }
     setError('')
     try {
       await createTask.mutateAsync({
         project_id: projectID,
         title: title.trim(),
         priority: 0,
-        schedule: {
-          recurrence_type: 'none',
-          timing_type: 'unscheduled',
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        },
+        schedule: buildTaskScheduleInput(createSchedule),
       })
       setTitle('')
+      setCreateSchedule(createTaskScheduleDraft())
       setCreating(false)
     } catch (caught) {
       setError(
@@ -625,7 +638,10 @@ export default function ProjectDetail() {
       </header>
 
       {creating ? (
-        <form className="td-inline-create" onSubmit={handleCreate}>
+        <form
+          className="td-inline-create td-inline-create-with-schedule"
+          onSubmit={handleCreate}
+        >
           <label>
             <span>新任务</span>
             <input
@@ -636,11 +652,27 @@ export default function ProjectDetail() {
               autoFocus
             />
           </label>
+          <details className="task-schedule-disclosure">
+            <summary>
+              安排与重复
+              <span>
+                {createSchedule.recurrenceType === 'none'
+                  ? '不重复'
+                  : '已设置重复'}
+              </span>
+            </summary>
+            <TaskScheduleFields
+              value={createSchedule}
+              onChange={setCreateSchedule}
+              labelPrefix="新任务"
+            />
+          </details>
           <button
             type="button"
             onClick={() => {
               setCreating(false)
               setTitle('')
+              setCreateSchedule(createTaskScheduleDraft())
             }}
           >
             取消
@@ -853,6 +885,25 @@ export default function ProjectDetail() {
                   ...input,
                   expected_task_revision: selectedTask.revision,
                   expected_schedule_revision: selectedTask.schedule_revision,
+                },
+              })
+            }
+            onScheduleUpdate={(input) =>
+              rescheduleThisAndFollowing.mutateAsync({
+                projectID,
+                taskID: selectedTask.id,
+                input: {
+                  expected_task_revision: selectedTask.revision,
+                  expected_schedule_revision: selectedTask.schedule_revision,
+                  effective_from: input.starts_on,
+                  generate_through_exclusive: addDays(input.starts_on, 91),
+                  schedule: {
+                    ...input,
+                    rule: recurrenceRule(
+                      input.recurrence_type,
+                      input.starts_on
+                    ),
+                  },
                 },
               })
             }
@@ -1170,6 +1221,15 @@ export default function ProjectDetail() {
       ) : null}
     </section>
   )
+}
+
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T12:00:00`)
+  date.setDate(date.getDate() + days)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function ProjectRoadmapOverview({

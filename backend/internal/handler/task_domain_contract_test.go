@@ -225,12 +225,22 @@ func TestTaskDomainEntityDTOsExposeIndependentRevisionsAndNotes(t *testing.T) {
 	}
 
 	occurrenceWire := marshalObject(t, OccurrenceV2DTO{
-		ID: "occurrence-1", TaskID: "task-1",
+		ID: "occurrence-1", TaskID: "task-1", ProjectID: "project-1", Title: "Task",
 		TaskNoteID: stringPointer("task-note-1"), OccurrenceNoteID: stringPointer("occurrence-note-1"),
-		Revision: 9, GeneratedScheduleRevision: 8,
+		Revision: 9, TaskRevision: 4, ScheduleRevision: 5, GeneratedScheduleRevision: 8,
+		RecurrenceType: taskdomain.RecurrenceWeekly, Recurring: true,
+		TimingType: taskdomain.TimingTimeBlock, Timezone: "Asia/Shanghai",
 	})
 	assertJSONNumber(t, occurrenceWire, "revision", 9)
 	assertJSONNumber(t, occurrenceWire, "generated_schedule_revision", 8)
+	assertJSONNumber(t, occurrenceWire, "task_revision", 4)
+	assertJSONNumber(t, occurrenceWire, "schedule_revision", 5)
+	assertJSONValue(t, occurrenceWire, "project_id", "project-1")
+	assertJSONValue(t, occurrenceWire, "title", "Task")
+	assertJSONValue(t, occurrenceWire, "recurrence_type", "weekly")
+	assertJSONValue(t, occurrenceWire, "recurring", true)
+	assertJSONValue(t, occurrenceWire, "timing_type", "time_block")
+	assertJSONValue(t, occurrenceWire, "timezone", "Asia/Shanghai")
 	assertJSONValue(t, occurrenceWire, "task_note_id", "task-note-1")
 	assertJSONValue(t, occurrenceWire, "occurrence_note_id", "occurrence-note-1")
 	if _, ambiguous := occurrenceWire["note_id"]; ambiguous {

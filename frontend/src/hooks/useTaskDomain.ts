@@ -332,6 +332,20 @@ export function useRescheduleOccurrenceMutation() {
 
 export function useRescheduleThisAndFollowingMutation() {
   const queryClient = useQueryClient()
+  const invalidateScheduleProjections = async (
+    variables: RescheduleThisAndFollowingVariables
+  ) => {
+    const queryKeys: ReadonlyArray<readonly unknown[]> = [
+      taskDomainQueryKeys.project(variables.projectID),
+      taskDomainQueryKeys.task(variables.taskID),
+      taskDomainQueryKeys.taskLists(),
+      taskDomainQueryKeys.occurrenceLists(),
+      taskDomainQueryKeys.calendar(),
+    ]
+    await Promise.all(
+      queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+    )
+  }
   return useMutation({
     mutationFn: (variables: RescheduleThisAndFollowingVariables) =>
       taskDomainAPI.rescheduleThisAndFollowing(
@@ -339,16 +353,12 @@ export function useRescheduleThisAndFollowingMutation() {
         variables.input
       ),
     onSuccess: async (_response, variables) => {
-      const queryKeys: ReadonlyArray<readonly unknown[]> = [
-        taskDomainQueryKeys.project(variables.projectID),
-        taskDomainQueryKeys.task(variables.taskID),
-        taskDomainQueryKeys.taskLists(),
-        taskDomainQueryKeys.occurrenceLists(),
-        taskDomainQueryKeys.calendar(),
-      ]
-      await Promise.all(
-        queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
-      )
+      await invalidateScheduleProjections(variables)
+    },
+    onError: async (error, variables) => {
+      if (error instanceof taskDomainAPI.TaskDomainRevisionConflictError) {
+        await invalidateScheduleProjections(variables)
+      }
     },
   })
 }

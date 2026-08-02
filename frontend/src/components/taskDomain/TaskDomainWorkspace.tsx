@@ -28,13 +28,17 @@ import {
 } from 'react'
 import { Link } from 'react-router-dom'
 
-import type {
-  ExecutionStatus,
-  OccurrenceV2,
-  ProjectV2,
-  TaskAttachmentLink,
-  TaskLifecycleStatus,
-  TaskV2,
+import {
+  TaskDomainAPIError,
+  TaskDomainRevisionConflictError,
+  type ExecutionStatus,
+  type OccurrenceV2,
+  type ProjectV2,
+  type RecurrenceType,
+  type TaskAttachmentLink,
+  type TaskLifecycleStatus,
+  type TaskV2,
+  type TimingType,
 } from '../../api/taskDomain'
 import {
   TaskCompletionGate,
@@ -411,6 +415,7 @@ export interface TaskDefinitionInspectorProps {
   onArchive?: () => Promise<unknown> | void
   onDelete?: () => Promise<unknown> | void
   onUpdate?: (input: TaskDefinitionEditInput) => Promise<unknown>
+  onScheduleUpdate?: (input: TaskScheduleEditInput) => Promise<unknown>
   busy?: boolean
 }
 
@@ -418,6 +423,15 @@ export interface TaskDefinitionEditInput {
   title: string
   description: string
   attachment_links: TaskAttachmentLink[]
+}
+
+export interface TaskScheduleEditInput {
+  recurrence_type: Exclude<RecurrenceType, 'none'>
+  timing_type: Exclude<TimingType, 'unscheduled'>
+  timezone: string
+  starts_on: string
+  local_start_time?: string
+  duration_minutes?: number
 }
 
 export function TaskDefinitionInspector({
@@ -433,6 +447,7 @@ export function TaskDefinitionInspector({
   onArchive,
   onDelete,
   onUpdate,
+  onScheduleUpdate,
   busy = false,
 }: TaskDefinitionInspectorProps) {
   const [editing, setEditing] = useState(false)
@@ -442,6 +457,17 @@ export function TaskDefinitionInspector({
     task.attachment_links ?? []
   )
   const [editError, setEditError] = useState('')
+  const [editingSchedule, setEditingSchedule] = useState(false)
+  const [recurrenceType, setRecurrenceType] = useState<
+    '' | Exclude<RecurrenceType, 'none'>
+  >('')
+  const [scheduleTimingType, setScheduleTimingType] =
+    useState<Exclude<TimingType, 'unscheduled'>>('date')
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [scheduleTime, setScheduleTime] = useState('09:00')
+  const [scheduleDuration, setScheduleDuration] = useState(30)
+  const [scheduleTimezone, setScheduleTimezone] = useState('UTC')
+  const [scheduleError, setScheduleError] = useState('')
 
   function beginEditing() {
     setTitle(task.title)
@@ -464,6 +490,61 @@ export function TaskDefinitionInspector({
         attachmentIndex === index ? { ...attachment, ...patch } : attachment
       )
     )
+  }
+
+  function beginScheduleEditing() {
+    const next = nextOpenOccurrence(occurrences)
+    const timezone =
+      next?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    setRecurrenceType(
+      next?.recurrence_type && next.recurrence_type !== 'none'
+        ? next.recurrence_type
+        : ''
+    )
+    setScheduleTimingType(
+      next?.timing_type === 'time_block' ? 'time_block' : 'date'
+    )
+    setScheduleDate(next?.planned_date ?? localDateInputValue())
+    setScheduleTime(scheduleTimeInputValue(next, timezone))
+    setScheduleDuration(scheduleDurationMinutes(next))
+    setScheduleTimezone(timezone)
+    setScheduleError('')
+    setEditingSchedule(true)
+  }
+
+  function cancelScheduleEditing() {
+    setScheduleError('')
+    setEditingSchedule(false)
+  }
+
+  async function saveSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (recurrenceType === '' || scheduleDate === '') {
+      setScheduleError('请选择重复频率和开始日期。')
+      return
+    }
+    if (scheduleTimingType === 'time_block' && scheduleDuration < 1) {
+      setScheduleError('时长必须大于 0 分钟。')
+      return
+    }
+    setScheduleError('')
+    try {
+      await onScheduleUpdate?.({
+        recurrence_type: recurrenceType,
+        timing_type: scheduleTimingType,
+        timezone: scheduleTimezone,
+        starts_on: scheduleDate,
+        ...(scheduleTimingType === 'time_block'
+          ? {
+              local_start_time: scheduleTime,
+              duration_minutes: scheduleDuration,
+            }
+          : {}),
+      })
+      setEditingSchedule(false)
+    } catch (caught) {
+      setScheduleError(scheduleSaveErrorMessage(caught))
+    }
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -680,11 +761,131 @@ export function TaskDefinitionInspector({
             <p>暂无附件链接</p>
           )}
         </div>
-        <div className="td-schedule-summary">
-          <span>当前安排</span>
-          <strong>{scheduleSummary(occurrences)}</strong>
-          <p>{nextOccurrenceSummary(occurrences)}</p>
-        </div>
+        {editingSchedule ? (
+          <form className="td-schedule-editor" onSubmit={saveSchedule}>
+            <div className="td-schedule-editor-heading">
+              <div>
+                <span>重复安排</span>
+                <strong>设置后续执行规则</strong>
+              </div>
+              <Repeat2 aria-hidden="true" />
+            </div>
+            <label>
+              <span>重复频率</span>
+              <select
+                aria-label="重复频率"
+                required
+                value={recurrenceType}
+                onChange={(event) =>
+                  setRecurrenceType(
+                    event.target.value as '' | Exclude<RecurrenceType, 'none'>
+                  )
+                }
+              >
+                <option value="">请选择</option>
+                <option value="daily">每天</option>
+                <option value="weekly">每周</option>
+                <option value="monthly">每月</option>
+              </select>
+            </label>
+            <label>
+              <span>开始日期</span>
+              <input
+                type="date"
+                aria-label="重复开始日期"
+                required
+                value={scheduleDate}
+                onChange={(event) => setScheduleDate(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>安排方式</span>
+              <select
+                aria-label="重复安排方式"
+                value={scheduleTimingType}
+                onChange={(event) =>
+                  setScheduleTimingType(
+                    event.target.value as Exclude<TimingType, 'unscheduled'>
+                  )
+                }
+              >
+                <option value="date">全天</option>
+                <option value="time_block">指定时间</option>
+              </select>
+            </label>
+            {scheduleTimingType === 'time_block' ? (
+              <div className="td-schedule-time-fields">
+                <label>
+                  <span>开始时间</span>
+                  <input
+                    type="time"
+                    aria-label="重复开始时间"
+                    required
+                    value={scheduleTime}
+                    onChange={(event) => setScheduleTime(event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>时长（分钟）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    aria-label="重复时长（分钟）"
+                    required
+                    value={scheduleDuration}
+                    onChange={(event) =>
+                      setScheduleDuration(Number(event.target.value))
+                    }
+                  />
+                </label>
+              </div>
+            ) : null}
+            <p className="td-schedule-editor-hint">
+              {scheduleRuleHint(recurrenceType, scheduleDate)}
+            </p>
+            {scheduleError ? (
+              <div className="td-inline-error" role="alert">
+                {scheduleError}
+              </div>
+            ) : null}
+            <div className="td-form-actions">
+              <button type="button" onClick={cancelScheduleEditing}>
+                取消
+              </button>
+              <button
+                type="submit"
+                className="is-primary"
+                disabled={
+                  !onScheduleUpdate ||
+                  busy ||
+                  recurrenceType === '' ||
+                  scheduleDate === ''
+                }
+              >
+                <Save aria-hidden="true" />
+                保存安排
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="td-schedule-summary">
+            <div className="td-schedule-summary-heading">
+              <span>当前安排</span>
+              {onScheduleUpdate ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={beginScheduleEditing}
+                >
+                  <Pencil aria-hidden="true" />
+                  设置重复
+                </button>
+              ) : null}
+            </div>
+            <strong>{scheduleSummary(occurrences)}</strong>
+            <p>{nextOccurrenceSummary(occurrences)}</p>
+          </div>
+        )}
         <div className="td-inspector-note">
           <strong>最近执行</strong>
           {occurrences.length > 0 ? (
@@ -933,7 +1134,23 @@ function priorityLabel(priority: number) {
 
 function scheduleSummary(occurrences: OccurrenceV2[]) {
   if (occurrences.length === 0) return '尚未生成执行实例'
-  if (occurrences.some((occurrence) => occurrence.recurring)) return '重复任务'
+  const recurring = occurrences.find((occurrence) => occurrence.recurring)
+  if (recurring) {
+    const recurrence =
+      recurring.recurrence_type === 'daily'
+        ? '每天'
+        : recurring.recurrence_type === 'weekly'
+          ? '每周'
+          : recurring.recurrence_type === 'monthly'
+            ? '每月'
+            : '重复任务'
+    const timing = recurring.planned_start_at
+      ? '固定时间'
+      : recurring.planned_date
+        ? '全天'
+        : ''
+    return timing ? `${recurrence} · ${timing}` : recurrence
+  }
   if (occurrences.some((occurrence) => occurrence.planned_start_at))
     return '单次 · 固定时间'
   if (occurrences.some((occurrence) => occurrence.planned_date))
@@ -941,13 +1158,76 @@ function scheduleSummary(occurrences: OccurrenceV2[]) {
   return '单次 · 无日期'
 }
 
+function scheduleSaveErrorMessage(caught: unknown) {
+  if (caught instanceof TaskDomainRevisionConflictError) {
+    return '任务已在其他页面更新，数据已自动刷新，请确认后再次保存。'
+  }
+  if (caught instanceof TaskDomainAPIError) {
+    return caught.message || '保存安排失败，请稍后重试。'
+  }
+  return '保存安排失败，请稍后重试。'
+}
+
 function nextOccurrenceSummary(occurrences: OccurrenceV2[]) {
-  const next = occurrences.find(
+  const next = nextOpenOccurrence(occurrences)
+  if (!next) return '没有待执行实例'
+  return `下一次：${formatOccurrenceSchedule(next)}`
+}
+
+function nextOpenOccurrence(occurrences: OccurrenceV2[]) {
+  return occurrences.find(
     (occurrence) =>
       occurrence.execution_status !== 'done' &&
       occurrence.execution_status !== 'skipped' &&
       occurrence.execution_status !== 'cancelled'
   )
-  if (!next) return '没有待执行实例'
-  return `下一次：${formatOccurrenceSchedule(next)}`
+}
+
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function scheduleTimeInputValue(
+  occurrence: OccurrenceV2 | undefined,
+  timezone: string
+) {
+  if (!occurrence?.planned_start_at) return '09:00'
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(occurrence.planned_start_at))
+  const hour = parts.find((part) => part.type === 'hour')?.value ?? '09'
+  const minute = parts.find((part) => part.type === 'minute')?.value ?? '00'
+  return `${hour}:${minute}`
+}
+
+function scheduleDurationMinutes(occurrence: OccurrenceV2 | undefined) {
+  if (!occurrence?.planned_start_at || !occurrence.planned_end_at) return 30
+  return Math.max(
+    1,
+    Math.round(
+      (new Date(occurrence.planned_end_at).getTime() -
+        new Date(occurrence.planned_start_at).getTime()) /
+        60_000
+    )
+  )
+}
+
+function scheduleRuleHint(
+  recurrenceType: '' | Exclude<RecurrenceType, 'none'>,
+  startsOn: string
+) {
+  if (!recurrenceType || !startsOn)
+    return '选择频率后，将生成未来 90 天的执行实例。'
+  if (recurrenceType === 'daily') return '从开始日期起每天重复。'
+  const date = new Date(`${startsOn}T12:00:00`)
+  if (recurrenceType === 'weekly') {
+    return `从开始日期起，每周${['日', '一', '二', '三', '四', '五', '六'][date.getDay()]}重复。`
+  }
+  return `从开始日期起，每月 ${date.getDate()} 日重复。`
 }

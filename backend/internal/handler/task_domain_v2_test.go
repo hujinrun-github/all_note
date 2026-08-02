@@ -176,6 +176,24 @@ func TestTaskDomainV2OccurrenceQueriesUseIsolatedApplicationPort(t *testing.T) {
 	if got := application.listRequest.Statuses; len(got) != 2 || got[0] != taskdomain.ExecutionStatusOpen || got[1] != taskdomain.ExecutionStatusBlocked {
 		t.Fatalf("statuses = %#v", got)
 	}
+	var envelope struct {
+		Data struct {
+			Occurrences []OccurrenceV2DTO `json:"occurrences"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Data.Occurrences) != 1 {
+		t.Fatalf("occurrences = %#v", envelope.Data.Occurrences)
+	}
+	occurrence := envelope.Data.Occurrences[0]
+	if occurrence.ProjectID != "project-1" || occurrence.Title != "Task" ||
+		occurrence.TaskRevision != 2 || occurrence.ScheduleRevision != 3 ||
+		occurrence.RecurrenceType != taskdomain.RecurrenceDaily || !occurrence.Recurring ||
+		occurrence.TimingType != taskdomain.TimingTimeBlock || occurrence.Timezone != "Asia/Shanghai" {
+		t.Fatalf("occurrence metadata = %#v", occurrence)
+	}
 	assertTaskDomainDataEnvelope(t, response)
 }
 
@@ -615,7 +633,7 @@ func (fake *taskDomainV2ApplicationFake) ListOccurrences(_ context.Context, requ
 		return nil, err
 	}
 	fake.listRequest = request
-	return []taskdomain.QueryOccurrenceSnapshot{{WorkspaceID: request.WorkspaceID, ProjectID: "project-1", TaskID: "task-1", OccurrenceID: "occurrence-1", OccurrenceKey: "once", Title: "Task", TimingType: taskdomain.TimingUnscheduled, Timezone: "Asia/Shanghai", Status: taskdomain.ExecutionStatusOpen, Revision: 4, TaskRevision: 2, ScheduleRevision: 3, GeneratedScheduleRevision: 1, LifecycleStatus: taskdomain.TaskLifecycleActive}}, nil
+	return []taskdomain.QueryOccurrenceSnapshot{{WorkspaceID: request.WorkspaceID, ProjectID: "project-1", TaskID: "task-1", OccurrenceID: "occurrence-1", OccurrenceKey: "2026-07-23", Title: "Task", RecurrenceType: taskdomain.RecurrenceDaily, Recurring: true, TimingType: taskdomain.TimingTimeBlock, Timezone: "Asia/Shanghai", Status: taskdomain.ExecutionStatusOpen, Revision: 4, TaskRevision: 2, ScheduleRevision: 3, GeneratedScheduleRevision: 1, LifecycleStatus: taskdomain.TaskLifecycleActive}}, nil
 }
 
 func projectFakeOutcome(id, name string, kind taskdomain.ProjectKind, horizon taskdomain.ProjectHorizon, status taskdomain.ProjectStatus, revision int64) taskapp.ProjectCommandOutcome {
