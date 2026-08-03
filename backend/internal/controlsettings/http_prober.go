@@ -1,6 +1,7 @@
 package controlsettings
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/outbound"
+	wyomingprotocol "github.com/hujinrun/flowspace/internal/wyoming"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/minio/minio-go/v7"
@@ -22,8 +24,9 @@ import (
 )
 
 type HTTPProber struct {
-	client *http.Client
-	dialer *outbound.Dialer
+	client      *http.Client
+	dialer      *outbound.Dialer
+	dialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 func NewHTTPProber(policy outbound.Policy) (*HTTPProber, error) {
@@ -31,7 +34,7 @@ func NewHTTPProber(policy outbound.Policy) (*HTTPProber, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &HTTPProber{client: dialer.HTTPClient(), dialer: dialer}, nil
+	return &HTTPProber{client: dialer.HTTPClient(), dialer: dialer, dialContext: dialer.DialContext}, nil
 }
 
 func (p *HTTPProber) Probe(ctx context.Context, kind, provider string, configJSON, secret []byte) (ProbeResult, error) {
@@ -49,6 +52,16 @@ func (p *HTTPProber) Probe(ctx context.Context, kind, provider string, configJSO
 	}
 	if kind == "data_store" {
 		return p.probePostgres(ctx, provider, endpoint, config, secret)
+	}
+	if kind == "llm_transcription" && provider == "wyoming" {
+		wyomingEndpoint, err := wyomingprotocol.ParseEndpoint(endpoint)
+		if err != nil {
+			return ProbeResult{}, err
+		}
+		if err := p.dialer.ValidateURL(ctx, wyomingEndpoint.URL, "tcp"); err != nil {
+			return ProbeResult{}, err
+		}
+		return p.probeWyoming(ctx, wyomingEndpoint)
 	}
 	if err := p.dialer.ValidateURL(ctx, endpoint, "http", "https"); err != nil {
 		return ProbeResult{}, err
@@ -81,6 +94,45 @@ func (p *HTTPProber) Probe(ctx context.Context, kind, provider string, configJSO
 		return ProbeResult{}, fmt.Errorf("service returned HTTP %d", response.StatusCode)
 	}
 	return ProbeResult{Code: "OK", Message: "连接测试通过"}, nil
+}
+
+func (p *HTTPProber) probeWyoming(ctx context.Context, endpoint wyomingprotocol.Endpoint) (ProbeResult, error) {
+	connection, err := p.dialContext(ctx, "tcp", endpoint.Address)
+	if err != nil {
+		return ProbeResult{}, fmt.Errorf("connect Wyoming service: %w", err)
+	}
+	defer connection.Close()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.SetDeadline(time.Now()) })
+	defer stopCancellation()
+	deadline := time.Now().Add(10 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := connection.SetDeadline(deadline); err != nil {
+		return ProbeResult{}, err
+	}
+	if err := wyomingprotocol.WriteEvent(connection, wyomingprotocol.Event{Type: "describe"}); err != nil {
+		return ProbeResult{}, err
+	}
+	reader := bufio.NewReader(connection)
+	for eventCount := 0; eventCount < 8; eventCount++ {
+		event, err := wyomingprotocol.ReadEvent(reader)
+		if err != nil {
+			return ProbeResult{}, fmt.Errorf("read Wyoming service description: %w", err)
+		}
+		if event.Type == "error" {
+			return ProbeResult{}, errors.New("Wyoming service returned an error")
+		}
+		if event.Type != "info" {
+			continue
+		}
+		asr, ok := event.Data["asr"].([]any)
+		if !ok || len(asr) == 0 {
+			return ProbeResult{}, errors.New("Wyoming endpoint does not advertise a speech recognition service")
+		}
+		return ProbeResult{Code: "OK", Message: "Wyoming 语音转写服务连接测试通过"}, nil
+	}
+	return ProbeResult{}, errors.New("Wyoming service did not return an info event")
 }
 
 func (p *HTTPProber) probePostgres(ctx context.Context, provider, endpoint string, profile map[string]any, secret []byte) (ProbeResult, error) {

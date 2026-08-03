@@ -283,4 +283,41 @@ describe('Settings', () => {
     expect(screen.getByPlaceholderText('例如：paraformer-zh')).toBeVisible()
     expect(screen.getByText(/multipart/)).toBeVisible()
   })
+
+  it('configures faster-whisper through Wyoming TCP without an API key', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await screen.findByRole('heading', { name: '个人资料' })
+    await user.click(screen.getByRole('button', { name: 'AI 服务' }))
+    await user.click(screen.getByLabelText('语音转写模式：平台默认'))
+
+    const provider = screen.getByRole('combobox', { name: '语音服务类型' })
+    await user.selectOptions(provider, 'wyoming')
+
+    expect(screen.getByLabelText('模型名称（可选）')).toHaveValue('auto')
+    expect(screen.queryByLabelText('API Key')).not.toBeInTheDocument()
+    expect(screen.getByText(/不是 HTTP 或网页服务/)).toBeVisible()
+
+    await user.type(
+      screen.getByRole('textbox', { name: '配置名称' }),
+      '局域网 Faster Whisper'
+    )
+    await user.type(
+      screen.getByRole('textbox', { name: 'Wyoming TCP 地址' }),
+      '192.168.1.13:20300'
+    )
+    await user.click(screen.getByRole('button', { name: '测试连接' }))
+
+    await waitFor(() =>
+      expect(testServiceProfile).toHaveBeenCalledWith(
+        {
+          kind: 'llm_transcription',
+          provider: 'wyoming',
+          config: { endpoint: '192.168.1.13:20300', model: 'auto' },
+          secret: '',
+        },
+        expect.anything()
+      )
+    )
+  })
 })

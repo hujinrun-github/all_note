@@ -12,6 +12,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/controlprofile"
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/runtimecontrol"
+	wyomingprotocol "github.com/hujinrun/flowspace/internal/wyoming"
 )
 
 var ErrForbidden = errors.New("workspace settings permission denied")
@@ -77,7 +78,7 @@ func (s *Service) TestProfile(ctx context.Context, userID, workspaceID string, r
 	if err := s.authorize(ctx, userID, workspaceID); err != nil {
 		return handler.TestServiceProfileResult{}, err
 	}
-	if err := validateProfileConfig(request.Kind, request.Config); err != nil {
+	if err := validateProfileConfig(request.Kind, request.Provider, request.Config); err != nil {
 		return handler.TestServiceProfileResult{}, err
 	}
 	if err := validateProfileSecret(request.Kind, request.Secret); err != nil {
@@ -100,7 +101,7 @@ func (s *Service) SaveProfile(ctx context.Context, userID, workspaceID string, r
 	if err := s.authorize(ctx, userID, workspaceID); err != nil {
 		return handler.SavedServiceProfileDTO{}, err
 	}
-	if err := validateProfileConfig(request.Kind, request.Config); err != nil {
+	if err := validateProfileConfig(request.Kind, request.Provider, request.Config); err != nil {
 		return handler.SavedServiceProfileDTO{}, err
 	}
 	if err := validateProfileSecret(request.Kind, request.Secret); err != nil {
@@ -125,7 +126,7 @@ func (s *Service) SaveProfile(ctx context.Context, userID, workspaceID string, r
 var postgresIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 
-func validateProfileConfig(kind string, profile map[string]any) error {
+func validateProfileConfig(kind, provider string, profile map[string]any) error {
 	stringField := func(name string) string { value, _ := profile[name].(string); return strings.TrimSpace(value) }
 	switch kind {
 	case "data_store":
@@ -143,8 +144,19 @@ func validateProfileConfig(kind string, profile map[string]any) error {
 			return fmt.Errorf("invalid object bucket name")
 		}
 	case "llm_transcription":
-		if stringField("endpoint") == "" {
+		endpoint := stringField("endpoint")
+		if endpoint == "" {
 			return errors.New("transcription service endpoint is required")
+		}
+		if provider == "wyoming" {
+			parsed, err := wyomingprotocol.ParseEndpoint(endpoint)
+			if err != nil {
+				return err
+			}
+			profile["endpoint"] = parsed.URL
+			if stringField("model") == "" {
+				profile["model"] = "auto"
+			}
 		}
 	}
 	return nil

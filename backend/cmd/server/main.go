@@ -405,7 +405,7 @@ func openWorkspaceSettings(ctx context.Context, registry *storagepkg.Registry, c
 		return fail(err)
 	}
 	aiGenerator.SetCodexCredentialRefresher(codexService)
-	runtimeTranscriber, err := transcription.NewRuntimeTranscriber(aiResolver, dialer.HTTPClient())
+	runtimeTranscriber, err := transcription.NewRuntimeTranscriber(aiResolver, dialer.HTTPClient(), dialer.DialContext)
 	if err != nil {
 		return fail(err)
 	}

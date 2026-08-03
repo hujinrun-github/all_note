@@ -31,6 +31,11 @@ import { resetOwnPassword } from '../api/auth'
 import { APIError } from '../api/client'
 
 type SettingsTab = 'profile' | 'security' | 'database' | 'objects' | 'ai'
+type TranscriptionProvider =
+  | 'openai_compatible'
+  | 'sensevoice'
+  | 'funasr'
+  | 'wyoming'
 
 const tabs = [
   { id: 'profile', label: '个人资料', icon: UserRound },
@@ -724,12 +729,13 @@ function AIServiceRow({
   const [endpoint, setEndpoint] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setAPIKey] = useState('')
-  const [transcriptionProvider, setTranscriptionProvider] = useState<
-    'openai_compatible' | 'sensevoice' | 'funasr'
-  >('sensevoice')
+  const [transcriptionProvider, setTranscriptionProvider] =
+    useState<TranscriptionProvider>('sensevoice')
   const [message, setMessage] = useState('')
   const [codexFlow, setCodexFlow] =
     useState<Awaited<ReturnType<typeof startCodexSubscription>>>()
+  const modelRequired =
+    kind !== 'llm_transcription' || transcriptionProvider !== 'wyoming'
   const profileInput = () => ({
     kind,
     provider:
@@ -737,7 +743,10 @@ function AIServiceRow({
         ? transcriptionProvider
         : 'openai_compatible',
     config: { endpoint: endpoint.trim(), model: model.trim() },
-    secret: apiKey,
+    secret:
+      kind === 'llm_transcription' && transcriptionProvider === 'wyoming'
+        ? ''
+        : apiKey,
   })
   const test = useMutation({
     mutationFn: testServiceProfile,
@@ -887,14 +896,17 @@ function AIServiceRow({
               <select
                 aria-label="语音服务类型"
                 value={transcriptionProvider}
-                onChange={(event) =>
-                  setTranscriptionProvider(
-                    event.target.value as typeof transcriptionProvider
-                  )
-                }
+                onChange={(event) => {
+                  const provider = event.target.value as TranscriptionProvider
+                  setTranscriptionProvider(provider)
+                  if (provider === 'wyoming') {
+                    setModel('auto')
+                  }
+                }}
               >
                 <option value="sensevoice">SenseVoice</option>
                 <option value="funasr">FunASR</option>
+                <option value="wyoming">Faster Whisper（Wyoming TCP）</option>
                 <option value="openai_compatible">OpenAI 兼容转写</option>
               </select>
             </label>
@@ -908,20 +920,33 @@ function AIServiceRow({
             />
           </label>
           <label>
-            <span>API 地址</span>
+            <span>
+              {kind === 'llm_transcription' &&
+              transcriptionProvider === 'wyoming'
+                ? 'Wyoming TCP 地址'
+                : 'API 地址'}
+            </span>
             <input
               value={endpoint}
               onChange={(event) => setEndpoint(event.target.value)}
               placeholder={
-                kind === 'llm_transcription' &&
-                transcriptionProvider !== 'openai_compatible'
-                  ? '例如：http://speech.example.com/transcribe'
+                kind === 'llm_transcription'
+                  ? transcriptionProvider === 'wyoming'
+                    ? '例如：tcp://192.168.1.13:20300'
+                    : transcriptionProvider !== 'openai_compatible'
+                      ? '例如：http://speech.example.com/transcribe'
+                      : 'https://api.example.com/v1'
                   : 'https://api.example.com/v1'
               }
             />
           </label>
           <label>
-            <span>模型名称</span>
+            <span>
+              {kind === 'llm_transcription' &&
+              transcriptionProvider === 'wyoming'
+                ? '模型名称（可选）'
+                : '模型名称'}
+            </span>
             <input
               value={model}
               onChange={(event) => setModel(event.target.value)}
@@ -931,24 +956,30 @@ function AIServiceRow({
                     ? '例如：iic/SenseVoiceSmall'
                     : transcriptionProvider === 'funasr'
                       ? '例如：paraformer-zh'
-                      : '例如：whisper-1'
+                      : transcriptionProvider === 'wyoming'
+                        ? 'auto'
+                        : '例如：whisper-1'
                   : '例如：deepseek-v4-pro'
               }
             />
           </label>
-          <label>
-            <span>API Key</span>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(event) => setAPIKey(event.target.value)}
-              autoComplete="new-password"
-            />
-          </label>
+          {kind !== 'llm_transcription' ||
+          transcriptionProvider !== 'wyoming' ? (
+            <label>
+              <span>API Key</span>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(event) => setAPIKey(event.target.value)}
+                autoComplete="new-password"
+              />
+            </label>
+          ) : null}
           {kind === 'llm_transcription' ? (
             <p className="settings-hint">
-              SenseVoice/FunASR 将音频以 multipart 的 file
-              字段直接发送到该地址；无需鉴权时 API Key 可以留空。
+              {transcriptionProvider === 'wyoming'
+                ? 'Wyoming 是 TCP 协议，不是 HTTP 或网页服务。服务端会将录音解码为 PCM 音频流后发送；该协议不使用 API Key。'
+                : 'SenseVoice/FunASR 将音频以 multipart 的 file 字段直接发送到该地址；无需鉴权时 API Key 可以留空。'}
             </p>
           ) : null}
           <div className="service-config-actions">
@@ -976,7 +1007,11 @@ function AIServiceRow({
               <button
                 type="button"
                 className="secondary-button"
-                disabled={!endpoint.trim() || !model.trim() || test.isPending}
+                disabled={
+                  !endpoint.trim() ||
+                  (modelRequired && !model.trim()) ||
+                  test.isPending
+                }
                 onClick={() => test.mutate(profileInput())}
               >
                 {test.isPending ? '测试中…' : '测试连接'}
@@ -987,7 +1022,7 @@ function AIServiceRow({
                 disabled={
                   !name.trim() ||
                   !endpoint.trim() ||
-                  !model.trim() ||
+                  (modelRequired && !model.trim()) ||
                   saveAndUse.isPending
                 }
                 onClick={() => saveAndUse.mutate()}
