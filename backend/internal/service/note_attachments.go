@@ -319,18 +319,20 @@ func getVoiceNoteAttachment(
 		return nil, err
 	}
 	return &model.NoteAttachment{
-		ID:           voice.ClientID,
-		NoteID:       voice.NoteID,
-		Kind:         model.NoteAttachmentKindAudio,
-		OriginalName: voiceAttachmentName(voice.Title, voice.MimeType),
-		MimeType:     voice.MimeType,
-		SizeBytes:    voice.AudioSize,
-		SHA256:       voice.AudioSHA256,
-		Source:       model.NoteAttachmentSourceVoiceNote,
-		Deletable:    false,
-		CreatedAt:    voice.CreatedAt,
-		WorkspaceID:  voice.WorkspaceID,
-		ObjectKey:    voice.ObjectKey,
+		ID:                 voice.ClientID,
+		NoteID:             voice.NoteID,
+		Kind:               model.NoteAttachmentKindAudio,
+		OriginalName:       voiceAttachmentName(voice.Title, voice.MimeType),
+		MimeType:           voice.MimeType,
+		SizeBytes:          voice.AudioSize,
+		SHA256:             voice.AudioSHA256,
+		Source:             model.NoteAttachmentSourceVoiceNote,
+		Deletable:          false,
+		CreatedAt:          voice.CreatedAt,
+		TranscriptionState: voice.TranscriptionState,
+		TranscriptionError: voice.TranscriptionError,
+		WorkspaceID:        voice.WorkspaceID,
+		ObjectKey:          voice.ObjectKey,
 	}, nil
 }
 

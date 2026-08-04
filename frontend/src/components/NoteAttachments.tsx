@@ -4,15 +4,23 @@ import type { NoteAttachment } from '../api/notes'
 import {
   useDeleteNoteAttachment,
   useNoteAttachments,
+  useTranscribeVoiceNote,
   useUploadNoteAttachment,
 } from '../hooks/useNotes'
 
 const CLIENT_MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024
 
-export function NoteAttachmentsSection({ noteID }: { noteID: string }) {
+export function NoteAttachmentsSection({
+  noteID,
+  onTranscribed,
+}: {
+  noteID: string
+  onTranscribed?: (body: string) => void
+}) {
   const attachmentsQuery = useNoteAttachments(noteID)
   const upload = useUploadNoteAttachment(noteID)
   const remove = useDeleteNoteAttachment(noteID)
+  const transcribe = useTranscribeVoiceNote(noteID)
   const inputRef = useRef<HTMLInputElement>(null)
   const [message, setMessage] = useState('')
 
@@ -42,6 +50,18 @@ export function NoteAttachmentsSection({ noteID }: { noteID: string }) {
       await remove.mutateAsync(attachment.id)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '附件删除失败。')
+    }
+  }
+
+  async function transcribeAttachment(attachment: NoteAttachment) {
+    if (attachment.source !== 'voice_note' || transcribe.isPending) return
+    setMessage('')
+    try {
+      const voiceNote = await transcribe.mutateAsync(attachment.id)
+      onTranscribed?.(voiceNote.body)
+      setMessage('转写完成，识别结果已写入正文。')
+    } catch (error) {
+      setMessage(transcriptionErrorMessage(error))
     }
   }
 
@@ -109,7 +129,11 @@ export function NoteAttachmentsSection({ noteID }: { noteID: string }) {
               key={`${attachment.source}:${attachment.id}`}
               attachment={attachment}
               deleting={remove.isPending && remove.variables === attachment.id}
+              transcribing={
+                transcribe.isPending && transcribe.variables === attachment.id
+              }
               onDelete={() => void deleteAttachment(attachment)}
+              onTranscribe={() => void transcribeAttachment(attachment)}
             />
           ))}
         </div>
@@ -149,11 +173,15 @@ function attachmentLoadError(error: unknown) {
 function AttachmentCard({
   attachment,
   deleting,
+  transcribing,
   onDelete,
+  onTranscribe,
 }: {
   attachment: NoteAttachment
   deleting: boolean
+  transcribing: boolean
   onDelete: () => void
+  onTranscribe: () => void
 }) {
   const contentURL = apiResourceURL(attachment.content_url)
   return (
@@ -195,6 +223,18 @@ function AttachmentCard({
         </small>
       </div>
       <div className="note-attachment-actions">
+        {attachment.source === 'voice_note' ? (
+          <button
+            type="button"
+            className="note-attachment-action is-transcription"
+            onClick={onTranscribe}
+            disabled={
+              transcribing || attachment.transcription_state === 'completed'
+            }
+          >
+            {transcriptionActionLabel(attachment, transcribing)}
+          </button>
+        ) : null}
         <a
           href={`${contentURL}?download=1`}
           download={attachment.original_name}
@@ -215,6 +255,28 @@ function AttachmentCard({
       </div>
     </article>
   )
+}
+
+function transcriptionActionLabel(
+  attachment: NoteAttachment,
+  transcribing: boolean
+) {
+  if (transcribing || attachment.transcription_state === 'processing') {
+    return '转写中…'
+  }
+  if (attachment.transcription_state === 'completed') return '已转写'
+  if (attachment.transcription_state === 'failed') return '重试转写'
+  return '转成文字'
+}
+
+function transcriptionErrorMessage(error: unknown) {
+  if (error instanceof APIError && error.status === 503) {
+    return '语音转写服务暂不可用，请先在设置中检查语音转写配置。'
+  }
+  if (error instanceof APIError && error.status === 409) {
+    return '录音尚未上传完成，请稍后再试。'
+  }
+  return error instanceof Error ? error.message : '语音转写失败，请稍后重试。'
 }
 
 function formatBytes(bytes: number) {

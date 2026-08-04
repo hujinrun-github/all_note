@@ -31,6 +31,17 @@ export interface NoteAttachment {
   deletable: boolean
   created_at: number
   content_url: string
+  transcription_state?: 'not_started' | 'processing' | 'completed' | 'failed'
+  transcription_error?: string
+}
+
+export interface VoiceTranscriptionResult {
+  client_id: string
+  note_id: string
+  body: string
+  transcription_state: 'not_started' | 'processing' | 'completed' | 'failed'
+  transcription_error?: string
+  updated_at: number
 }
 
 export async function getNotes(
@@ -119,4 +130,15 @@ export async function deleteNoteAttachment(
   await api.del(
     `/api/notes/${encodeURIComponent(noteID)}/attachments/${encodeURIComponent(attachmentID)}`
   )
+}
+
+export async function transcribeVoiceNote(
+  voiceNoteClientID: string,
+  language = ''
+) {
+  const response = await api.post<{ voice_note: VoiceTranscriptionResult }>(
+    `/api/voice-notes/${encodeURIComponent(voiceNoteClientID)}/transcription`,
+    language ? { language } : {}
+  )
+  return response.data.voice_note
 }

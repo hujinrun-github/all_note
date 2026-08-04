@@ -80,3 +80,30 @@ export function useDeleteNoteAttachment(noteID: string) {
       qc.invalidateQueries({ queryKey: ['notes', noteID, 'attachments'] }),
   })
 }
+
+export function useTranscribeVoiceNote(noteID: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (voiceNoteClientID: string) =>
+      notesApi.transcribeVoiceNote(voiceNoteClientID),
+    onSuccess: (voiceNote) => {
+      qc.setQueryData<notesApi.Note>(['notes', noteID], (note) =>
+        note
+          ? {
+              ...note,
+              body: voiceNote.body,
+              updated_at: voiceNote.updated_at,
+            }
+          : note
+      )
+    },
+    onSettled: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['notes'] }),
+        qc.invalidateQueries({
+          queryKey: ['notes', noteID, 'attachments'],
+        }),
+      ])
+    },
+  })
+}

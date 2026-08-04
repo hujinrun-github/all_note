@@ -137,6 +137,13 @@ describe('Editor auto sync', () => {
       content_url: '/api/notes/note-1/attachments/attachment-1/content',
     })
     vi.mocked(notesApi.deleteNoteAttachment).mockResolvedValue()
+    vi.mocked(notesApi.transcribeVoiceNote).mockResolvedValue({
+      client_id: 'voice-client-1',
+      note_id: 'note-1',
+      body: '这是服务端识别出的文字。',
+      transcription_state: 'completed',
+      updated_at: 5,
+    })
     vi.mocked(taskDomainApi.listProjects).mockResolvedValue([
       {
         id: 'project-1',
@@ -542,6 +549,41 @@ describe('Editor auto sync', () => {
         'note-1',
         video
       )
+    )
+  })
+
+  it('transcribes a voice attachment and applies the result to the editor', async () => {
+    vi.mocked(notesApi.getNoteAttachments).mockResolvedValue([
+      {
+        id: 'voice-client-1',
+        note_id: 'note-1',
+        kind: 'audio',
+        original_name: '散步录音.m4a',
+        mime_type: 'audio/mp4',
+        size_bytes: 2048,
+        sha256: 'voice-sha',
+        source: 'voice_note',
+        deletable: false,
+        created_at: 3,
+        content_url: '/api/notes/note-1/attachments/voice-client-1/content',
+        transcription_state: 'not_started',
+      },
+    ])
+    const user = userEvent.setup()
+    renderEditor()
+
+    await user.click(await screen.findByRole('button', { name: '转成文字' }))
+
+    await waitFor(() =>
+      expect(notesApi.transcribeVoiceNote).toHaveBeenCalledWith(
+        'voice-client-1'
+      )
+    )
+    expect(
+      await screen.findByText('转写完成，识别结果已写入正文。')
+    ).toBeVisible()
+    expect(tiptapMock.setContent).toHaveBeenCalledWith(
+      '这是服务端识别出的文字。'
     )
   })
 })
