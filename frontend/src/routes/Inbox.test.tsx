@@ -73,12 +73,21 @@ describe('V2 task inbox organizer', () => {
             revision: 1,
           },
           {
+            id: 'personal',
+            name: 'Personal',
+            kind: 'standard',
+            horizon: 'short',
+            status: 'active',
+            system_role: 'personal',
+            revision: 2,
+          },
+          {
             id: 'learning-1',
             name: '学习计划',
             kind: 'learning',
             horizon: 'short',
             status: 'active',
-            revision: 2,
+            revision: 3,
           },
           {
             id: 'completed-1',
@@ -86,7 +95,7 @@ describe('V2 task inbox organizer', () => {
             kind: 'standard',
             horizon: 'short',
             status: 'completed',
-            revision: 3,
+            revision: 4,
           },
         ],
         isLoading: false,
@@ -150,10 +159,16 @@ describe('V2 task inbox organizer', () => {
       screen.getByRole('option', { name: '学习计划 · 学习项目' })
     ).toBeVisible()
     expect(
+      screen.getByRole('option', { name: 'Personal · 标准项目' })
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('option', { name: /收件箱/ })
+    ).not.toBeInTheDocument()
+    expect(
       screen.queryByRole('option', { name: /已完成项目/ })
     ).not.toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('归入项目'), 'learning-1')
+    await user.selectOptions(screen.getByLabelText('归入项目'), 'personal')
     await user.click(screen.getByRole('button', { name: /归入项目/ }))
 
     expect(updateTaskMock).toHaveBeenCalledWith({
@@ -162,7 +177,7 @@ describe('V2 task inbox organizer', () => {
       input: {
         expected_task_revision: 5,
         expected_schedule_revision: 3,
-        project_id: 'learning-1',
+        project_id: 'personal',
       },
     })
   })

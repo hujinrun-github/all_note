@@ -67,7 +67,7 @@ export default function Inbox() {
   const selectedCompletionProgress = taskCompletionProgress(selectedTask)
   const organizeTargets = (projectsQuery.data ?? []).filter(
     (project) =>
-      !project.system_role &&
+      project.system_role !== 'inbox' &&
       project.status !== 'completed' &&
       project.status !== 'archived'
   )
