@@ -88,7 +88,8 @@ func TestListNoteAttachmentsIncludesExistingVoiceAudio(t *testing.T) {
 		attachments[0].ID != clientID ||
 		attachments[0].Source != model.NoteAttachmentSourceVoiceNote ||
 		attachments[0].Deletable ||
-		attachments[0].OriginalName != "散步录音.m4a" {
+		attachments[0].OriginalName != "散步录音.m4a" ||
+		attachments[0].TranscriptionState != model.TranscriptionNotStarted {
 		t.Fatalf("voice attachment = %+v", attachments)
 	}
 	if err := DeleteNoteAttachment(ctx, store, objects, voice.NoteID, clientID); !errors.Is(err, ErrAttachmentReadOnly) {

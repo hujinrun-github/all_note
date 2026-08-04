@@ -1022,7 +1022,16 @@ export default function EditorPage() {
 
           <EditorContent editor={editor} />
 
-          {id ? <NoteAttachmentsSection noteID={id} /> : null}
+          {id ? (
+            <NoteAttachmentsSection
+              noteID={id}
+              onTranscribed={(body) => {
+                if (!editor || editor.isDestroyed) return
+                editor.commands.setContent(body)
+                ;(editor as Editor & { _dirty?: boolean })._dirty = false
+              }}
+            />
+          ) : null}
 
           {editor && (
             <BubbleMenu editor={editor} className="bubble-menu">

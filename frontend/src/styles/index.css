@@ -5817,6 +5817,17 @@ body {
   background: #f8eee4;
 }
 
+.note-attachment-action.is-transcription {
+  color: #8b4d20;
+  background: #fbefe2;
+  font-weight: 700;
+}
+
+.note-attachment-action.is-transcription:hover:not(:disabled) {
+  color: #673411;
+  background: #f5dfc8;
+}
+
 .note-attachment-action.is-danger:hover:not(:disabled) {
   color: #9a382c;
   background: rgba(195, 73, 57, 0.09);
