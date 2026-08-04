@@ -186,7 +186,7 @@ func (writer trackedTaskDomainWriter) DeleteTaskAggregate(ctx context.Context, d
 	}
 	writer.changes.markDeleted("task", deletion.TaskID, deletion.ExpectedRevisions.Task+1)
 	for occurrenceID, revision := range deletion.ExpectedRevisions.Occurrences {
-		writer.changes.markDeleted("occurrence", occurrenceID, revision+1)
+		writer.changes.markDeleted("task_occurrence", occurrenceID, revision+1)
 	}
 	return nil
 }
