@@ -21,10 +21,17 @@ const RoadmapV2Route = lazy(() => import('./routes/RoadmapV2Route'))
 const RoadmapMindMapRoute = lazy(
   () => import('./routes/RoadmapMindMapRoute')
 )
+const PodcastImportPrototype = lazy(
+  () => import('./routes/PodcastImportPrototype')
+)
 
 export const router = createBrowserRouter(
   [
     { path: '/login', element: <Login /> },
+    {
+      path: '/prototypes/podcast-import',
+      element: <PodcastImportPrototype />,
+    },
     {
       path: '/',
       element: <App />,

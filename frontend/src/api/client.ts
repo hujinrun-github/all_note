@@ -47,12 +47,12 @@ class APIClient {
   async post<T>(
     path: string,
     body?: unknown,
-    init?: Pick<RequestInit, 'signal'>
+    init?: Pick<RequestInit, 'signal' | 'headers'>
   ): Promise<APIResponse<T>> {
     const res = await fetch(`${this.basePath}${path}`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...init?.headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: init?.signal,
     })

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/hujinrun/flowspace/internal/storage/contentimportdb"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -327,6 +328,10 @@ func (s *store) TranscriptionJobs() storage.TranscriptionJobRepository {
 	return transcriptionJobRepository{db: s.db}
 }
 
+func (s *store) ContentImports() storage.ContentImportRepository {
+	return contentimportdb.New(s.db, contentimportdb.Postgres)
+}
+
 func (s *store) TranscriptionJobWorker() storage.TranscriptionJobWorkerRepository {
 	return transcriptionJobWorkerRepository{db: s.db}
 }
@@ -402,6 +407,10 @@ func (s *storeTx) MobileSync() storage.MobileSyncRepository {
 
 func (s *storeTx) TranscriptionJobs() storage.TranscriptionJobRepository {
 	return transcriptionJobRepository{db: s.tx}
+}
+
+func (s *storeTx) ContentImports() storage.ContentImportRepository {
+	return contentimportdb.New(s.tx, contentimportdb.Postgres)
 }
 
 func (s *storeTx) VoiceAudioCleanup() storage.VoiceAudioCleanupRepository {

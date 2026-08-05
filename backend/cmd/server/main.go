@@ -24,6 +24,8 @@ import (
 	"github.com/hujinrun/flowspace/internal/codexoauth"
 	"github.com/hujinrun/flowspace/internal/codexsubscription"
 	"github.com/hujinrun/flowspace/internal/config"
+	"github.com/hujinrun/flowspace/internal/contentimport"
+	"github.com/hujinrun/flowspace/internal/contentsource"
 	"github.com/hujinrun/flowspace/internal/controlprofile"
 	"github.com/hujinrun/flowspace/internal/controlsettings"
 	"github.com/hujinrun/flowspace/internal/credentials"
@@ -114,6 +116,24 @@ func main() {
 	}
 	defer closeTaskDomainAndControl(taskDomainRuntime, controlStore)
 	serverCfg := config.LoadServerConfig(runtimeConfig.Environment)
+	contentImportPolicy, err := config.LoadOutboundPolicy()
+	if err != nil {
+		log.Fatalf("content import outbound policy: %v", err)
+	}
+	contentImportDialer, err := outbound.NewDialer(nil, contentImportPolicy)
+	if err != nil {
+		log.Fatalf("content import outbound client: %v", err)
+	}
+	contentSourceRegistry, err := contentsource.NewRegistry(contentImportDialer.HTTPClient())
+	if err != nil {
+		log.Fatalf("content source registry: %v", err)
+	}
+	contentImportService, err := contentimport.NewService(store, contentSourceRegistry)
+	if err != nil {
+		log.Fatalf("content import service: %v", err)
+	}
+	contentImportHTTPClient := contentImportDialer.HTTPClient()
+	contentImportHTTPClient.Timeout = 20 * time.Minute
 	oauthStateStore := authpkg.NewMemoryOAuthStateStore()
 	oauthStateCtx, stopOAuthStateCleanup := context.WithCancel(context.Background())
 	defer stopOAuthStateCleanup()
@@ -136,6 +156,7 @@ func main() {
 		WorkspaceSettings:        workspaceSettings,
 		CodexSubscription:        codexSubscription,
 		AIChat:                   aiChat,
+		ContentImports:           contentImportService,
 	}
 	if taskDomainRuntime != nil {
 		routerConfig.TaskDomainV2Runtime = taskDomainRuntime.application
@@ -178,6 +199,14 @@ func main() {
 		log.Fatalf("mobile-v2 wiring: %v", err)
 	}
 	r := router.Setup(routerConfig)
+	contentImportCtx, stopContentImport := context.WithCancel(context.Background())
+	defer stopContentImport()
+	contentImportWorker := contentimport.NewWorker(store, contentSourceRegistry, contentImportHTTPClient, aiChat, "server-content-import-worker")
+	contentImportWorker.Transcriber = runtimeTranscriber
+	go contentImportWorker.Run(contentImportCtx, time.Second, func(err error) {
+		log.Printf("content import worker: %v", err)
+	})
+	log.Printf("durable content import worker initialized")
 	if nativeCfg.MobileSyncV1Enabled || nativeCfg.MobileSyncV2Enabled {
 		workerCtx, stopWorker := context.WithCancel(context.Background())
 		defer stopWorker()

@@ -14,6 +14,7 @@ import Placeholder from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
 import { NoteSyncCard } from '../components/sync/NoteSyncCard'
 import { NoteAttachmentsSection } from '../components/NoteAttachments'
+import { PodcastSourceCard } from '../components/imports/PodcastSourceCard'
 import { useNote, useUpdateNote } from '../hooks/useNotes'
 import {
   useProjects,
@@ -724,6 +725,8 @@ export default function EditorPage() {
           placeholder="无标题"
           className="editor-title-input"
         />
+
+        <PodcastSourceCard noteID={note.id} />
 
         <div className="editor-paper">
           {editor && (

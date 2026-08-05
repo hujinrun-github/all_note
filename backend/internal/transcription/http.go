@@ -47,6 +47,10 @@ func NewProviderHTTPTranscriber(cfg ProviderHTTPConfig, client *http.Client) *HT
 	}
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
+	} else {
+		configuredClient := *client
+		configuredClient.Timeout = timeout
+		client = &configuredClient
 	}
 	return &HTTPTranscriber{
 		provider: strings.TrimSpace(cfg.Provider),

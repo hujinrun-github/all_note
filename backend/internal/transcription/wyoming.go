@@ -150,6 +150,9 @@ func wyomingLanguage(language string) string {
 	if separator := strings.IndexAny(language, "-_"); separator > 0 {
 		language = language[:separator]
 	}
+	if language == "auto" {
+		return ""
+	}
 	return language
 }
 

@@ -8,6 +8,7 @@ import * as notesApi from '../api/notes'
 import * as syncApi from '../api/sync'
 import * as taskDomainApi from '../api/taskDomain'
 import * as japaneseApi from '../api/japanese'
+import * as contentImportApi from '../api/contentImports'
 import { APIError } from '../api/client'
 
 const tiptapMock = vi.hoisted(() => ({
@@ -74,6 +75,7 @@ vi.mock('../api/notes')
 vi.mock('../api/sync')
 vi.mock('../api/taskDomain')
 vi.mock('../api/japanese')
+vi.mock('../api/contentImports')
 
 function createQueryClient() {
   return new QueryClient({
@@ -112,6 +114,7 @@ describe('Editor auto sync', () => {
       created_at: 1,
       updated_at: 2,
     })
+    vi.mocked(contentImportApi.getContentImportForNote).mockResolvedValue(null)
     vi.mocked(notesApi.updateNote).mockResolvedValue({
       id: 'note-1',
       title: 'Auto Sync Note',

@@ -68,6 +68,21 @@ func TestWyomingTranscriberStreamsPCMAndReadsTranscript(t *testing.T) {
 	}
 }
 
+func TestWyomingLanguageOmitsAutomaticDetectionValue(t *testing.T) {
+	tests := map[string]string{
+		"auto":  "",
+		"AUTO":  "",
+		"zh-CN": "zh",
+		"en_US": "en",
+		"":      "",
+	}
+	for input, want := range tests {
+		if got := wyomingLanguage(input); got != want {
+			t.Errorf("wyomingLanguage(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestPrepareWyomingPCMAcceptsExtensibleWave(t *testing.T) {
 	pcm, err := prepareWyomingPCM(context.Background(), Input{Audio: bytes.NewReader(pcmExtensibleWave(22050, 1, []byte{1, 2, 3, 4})), Filename: "recording.wav", ContentType: "audio/wav"})
 	if err != nil {

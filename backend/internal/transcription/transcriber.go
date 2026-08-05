@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 var ErrUnavailable = errors.New("transcription service is not configured")
@@ -13,6 +14,7 @@ type Input struct {
 	Filename    string
 	ContentType string
 	Language    string
+	Timeout     time.Duration
 }
 
 type Transcriber interface {

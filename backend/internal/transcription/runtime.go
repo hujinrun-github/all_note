@@ -54,10 +54,14 @@ func (t *RuntimeTranscriber) Transcribe(ctx context.Context, input Input) (strin
 		return "", ErrUnavailable
 	}
 	if resolved.Provider == "wyoming" {
+		timeout := input.Timeout
+		if timeout <= 0 {
+			timeout = 2 * time.Minute
+		}
 		provider, err := NewWyomingTranscriber(WyomingConfig{
 			Endpoint: config.Endpoint,
 			Model:    config.Model,
-			Timeout:  2 * time.Minute,
+			Timeout:  timeout,
 		}, t.dial)
 		if err != nil {
 			return "", fmt.Errorf("configure Wyoming transcription service: %w", err)
@@ -68,12 +72,16 @@ func (t *RuntimeTranscriber) Transcribe(ctx context.Context, input Input) (strin
 	if resolved.Provider == "openai_compatible" && !strings.HasSuffix(endpoint, "/audio/transcriptions") {
 		endpoint += "/audio/transcriptions"
 	}
+	timeout := input.Timeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
 	provider := NewProviderHTTPTranscriber(ProviderHTTPConfig{
 		Provider: resolved.Provider,
 		URL:      endpoint,
 		APIKey:   string(resolved.Secret),
 		Model:    config.Model,
-		Timeout:  2 * time.Minute,
+		Timeout:  timeout,
 	}, t.client)
 	return provider.Transcribe(ctx, input)
 }

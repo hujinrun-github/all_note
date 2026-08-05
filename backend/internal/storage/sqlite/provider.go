@@ -12,6 +12,7 @@ import (
 
 	"github.com/hujinrun/flowspace/internal/repository"
 	"github.com/hujinrun/flowspace/internal/storage"
+	"github.com/hujinrun/flowspace/internal/storage/contentimportdb"
 	_ "modernc.org/sqlite"
 )
 
@@ -166,6 +167,10 @@ func (p Provider) Open(ctx context.Context, cfg storage.Config) (storage.Store, 
 		return nil, err
 	}
 	if err := ensureSQLiteTranscriptionJobSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureSQLiteContentImportSchema(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -361,6 +366,10 @@ func (s *store) TranscriptionJobs() storage.TranscriptionJobRepository {
 	return transcriptionJobRepository{db: s.db}
 }
 
+func (s *store) ContentImports() storage.ContentImportRepository {
+	return contentimportdb.New(s.db, contentimportdb.SQLite)
+}
+
 func (s *store) TranscriptionJobWorker() storage.TranscriptionJobWorkerRepository {
 	return transcriptionJobWorkerRepository{db: s.db}
 }
@@ -436,6 +445,10 @@ func (s *storeTx) MobileSync() storage.MobileSyncRepository {
 
 func (s *storeTx) TranscriptionJobs() storage.TranscriptionJobRepository {
 	return transcriptionJobRepository{db: s.tx}
+}
+
+func (s *storeTx) ContentImports() storage.ContentImportRepository {
+	return contentimportdb.New(s.tx, contentimportdb.SQLite)
 }
 
 func (s *storeTx) VoiceAudioCleanup() storage.VoiceAudioCleanupRepository {
