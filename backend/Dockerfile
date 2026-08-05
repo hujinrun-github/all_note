@@ -16,7 +16,8 @@ RUN GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux go build -p 1 -o /out/flowspace-admin 
 
 FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.cloud.tencent.com/alpine#g' /etc/apk/repositories \
+    && apk add --no-cache ca-certificates tzdata ffmpeg
 
 WORKDIR /app/backend
 
