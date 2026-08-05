@@ -192,6 +192,29 @@ func TestTaskDomainV2HTTPSQLiteSmoke(t *testing.T) {
 		t.Fatalf("unscheduled inbox task appeared on calendar: %#v", entryTypes)
 	}
 
+	planning := taskDomainV2SmokeCreateProjectWithStatus(t, client, server.URL, primaryCookie, "待启动项目", "standard", "short", "planning")
+	planningTask := taskDomainV2SmokeCreateTask(t, client, server.URL, primaryCookie, map[string]any{
+		"project_id": planning.ID, "title": "首次更新前", "priority": 1,
+		"schedule": map[string]any{"recurrence_type": "none", "timing_type": "unscheduled", "timezone": "UTC"},
+	})
+	projectBeforeTaskUpdate := taskDomainV2SmokeRequest[struct {
+		Project handler.ProjectV2DTO `json:"project"`
+	}](t, client, server.URL, primaryCookie, http.MethodGet, "/api/projects/"+planning.ID, nil, http.StatusOK)
+	if projectBeforeTaskUpdate.Project.Status != "planning" {
+		t.Fatalf("task creation unexpectedly started project: %#v", projectBeforeTaskUpdate.Project)
+	}
+	taskDomainV2SmokeRequest[handler.TaskAggregateCommandResponse](t, client, server.URL, primaryCookie, http.MethodPatch,
+		"/api/tasks/"+planningTask.Task.ID, map[string]any{
+			"expected_task_revision": planningTask.Task.Revision, "expected_schedule_revision": planningTask.Task.ScheduleRevision,
+			"title": "首次更新后",
+		}, http.StatusOK)
+	projectAfterTaskUpdate := taskDomainV2SmokeRequest[struct {
+		Project handler.ProjectV2DTO `json:"project"`
+	}](t, client, server.URL, primaryCookie, http.MethodGet, "/api/projects/"+planning.ID, nil, http.StatusOK)
+	if projectAfterTaskUpdate.Project.Status != "active" || projectAfterTaskUpdate.Project.Revision != planning.Revision+1 {
+		t.Fatalf("task update did not start planning project: %#v", projectAfterTaskUpdate.Project)
+	}
+
 	statuses := taskDomainV2SmokeConcurrentProjectPatches(t, client, server.URL, primaryCookie, standard)
 	if len(statuses) != 2 || statuses[0] != http.StatusOK || statuses[1] != http.StatusConflict {
 		t.Fatalf("concurrent old-revision statuses = %#v, want [200 409]", statuses)
@@ -320,11 +343,15 @@ type taskDomainV2SmokeCreateTaskResponse struct {
 }
 
 func taskDomainV2SmokeCreateProject(t *testing.T, client *http.Client, baseURL string, cookie *http.Cookie, name, kind, horizon string) handler.ProjectV2DTO {
+	return taskDomainV2SmokeCreateProjectWithStatus(t, client, baseURL, cookie, name, kind, horizon, "active")
+}
+
+func taskDomainV2SmokeCreateProjectWithStatus(t *testing.T, client *http.Client, baseURL string, cookie *http.Cookie, name, kind, horizon, status string) handler.ProjectV2DTO {
 	t.Helper()
 	result := taskDomainV2SmokeRequest[struct {
 		Project handler.ProjectV2DTO `json:"project"`
 	}](t, client, baseURL, cookie, http.MethodPost, "/api/projects", map[string]any{
-		"name": name, "kind": kind, "horizon": horizon, "status": "active",
+		"name": name, "kind": kind, "horizon": horizon, "status": status,
 	}, http.StatusCreated)
 	return result.Project
 }

@@ -12,6 +12,17 @@ import (
 	"github.com/hujinrun/flowspace/internal/config"
 )
 
+func TestProviderHTTPTranscriberUsesConfiguredTimeoutWithoutMutatingSharedClient(t *testing.T) {
+	shared := &http.Client{Timeout: time.Second}
+	transcriber := NewProviderHTTPTranscriber(ProviderHTTPConfig{URL: "https://speech.example", Timeout: 7 * time.Minute}, shared)
+	if transcriber.client.Timeout != 7*time.Minute {
+		t.Fatalf("transcriber timeout = %v", transcriber.client.Timeout)
+	}
+	if shared.Timeout != time.Second {
+		t.Fatalf("shared client timeout mutated to %v", shared.Timeout)
+	}
+}
+
 func TestHTTPTranscriberSendsAudioAndParsesText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {

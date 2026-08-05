@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/hujinrun/flowspace/internal/auth"
 	"github.com/hujinrun/flowspace/internal/config"
+	"github.com/hujinrun/flowspace/internal/contentimport"
 	"github.com/hujinrun/flowspace/internal/handler"
 	"github.com/hujinrun/flowspace/internal/middleware"
 	"github.com/hujinrun/flowspace/internal/model"
@@ -34,6 +35,7 @@ type Config struct {
 	WorkspaceSettings        handler.WorkspaceSettingsService
 	CodexSubscription        handler.CodexSubscriptionService
 	AIChat                   handler.WorkspaceChatService
+	ContentImports           *contentimport.Service
 	// Task-domain model-aware routing is intentionally opt-in. With both values
 	// nil the existing legacy Web routes remain unchanged. Once configured, the
 	// selector must prove legacy or v2 from durable workspace state on every
@@ -153,6 +155,18 @@ func Setup(cfg Config) *gin.Engine {
 		protected.PUT("/notes/:id/sync-binding", handler.PutNoteSyncBinding(cfg.Store))
 		protected.DELETE("/notes/:id/sync-binding", handler.DeleteNoteSyncBinding(cfg.Store))
 		protected.GET("/notes/:id/sync-state", handler.GetNoteSyncState(cfg.Store))
+
+		if cfg.ContentImports != nil {
+			protected.GET("/notes/:id/content-import", handler.GetContentImportForNote(cfg.ContentImports))
+			protected.POST("/content-imports/resolve", handler.ResolveContentImport(cfg.ContentImports))
+			protected.POST("/content-imports", handler.CreateContentImport(cfg.ContentImports))
+			protected.GET("/content-imports", handler.ListContentImports(cfg.ContentImports))
+			protected.GET("/content-imports/:id", handler.GetContentImport(cfg.ContentImports))
+			protected.GET("/content-imports/:id/transcript", handler.GetContentImportTranscript(cfg.ContentImports))
+			protected.POST("/content-imports/:id/cancel", handler.CancelContentImport(cfg.ContentImports))
+			protected.POST("/content-imports/:id/retry", handler.RetryContentImport(cfg.ContentImports))
+			protected.DELETE("/content-imports/:id", handler.DeleteContentImport(cfg.ContentImports))
+		}
 
 		protected.GET("/sync/targets", handler.ListSyncTargets(cfg.Store))
 		protected.POST("/sync/targets", handler.SaveSyncTarget(cfg.Store))

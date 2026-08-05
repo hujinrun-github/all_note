@@ -297,12 +297,16 @@ func (service *TaskService) PatchTask(ctx context.Context, request PatchTaskRequ
 		after.Revision++
 		nextAggregate := cloneTaskAggregate(state.Aggregate)
 		nextAggregate.Revision = after.Revision
+		writer := tx.TaskDomainWriter()
 		write := TaskAggregateWrite{
 			Task: &after, Aggregate: nextAggregate,
 			ExpectedRevisions:        AggregateExpectedRevisions{Task: request.ExpectedTaskRevision, Occurrences: map[string]int64{}},
 			ExpectedScheduleRevision: request.ExpectedScheduleRevision,
 		}
-		if err := tx.TaskDomainWriter().SaveTaskAggregate(ctx, write); err != nil {
+		if err := writer.SaveTaskAggregate(ctx, write); err != nil {
+			return err
+		}
+		if err := activatePlanningProjectAfterTaskUpdate(ctx, tx, writer, request.WorkspaceID, after.ProjectID); err != nil {
 			return err
 		}
 		result = newTaskCommandResult(
@@ -316,6 +320,34 @@ func (service *TaskService) PatchTask(ctx context.Context, request PatchTaskRequ
 		return TaskCommandResult{}, err
 	}
 	return result, nil
+}
+
+func activatePlanningProjectAfterTaskUpdate(
+	ctx context.Context,
+	tx TaskDomainFencedTx,
+	writer ProjectWriter,
+	workspaceID string,
+	projectID string,
+) error {
+	reader, ok := tx.(ProjectReader)
+	if !ok || reader == nil || writer == nil {
+		return ErrInvalidTaskCommand
+	}
+	snapshot, err := reader.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if snapshot.Project.WorkspaceID != workspaceID || snapshot.Project.ID != projectID || snapshot.Revision < 1 {
+		return ErrInvalidTaskCommand
+	}
+	if snapshot.Project.Status != ProjectStatusPlanning {
+		return nil
+	}
+	project, err := ActivateProject(snapshot.Project)
+	if err != nil {
+		return err
+	}
+	return writer.SaveProject(ctx, ProjectWrite{Project: project, ExpectedRevision: snapshot.Revision})
 }
 
 func validatePatchTaskRequest(service *TaskService, request PatchTaskRequest) error {

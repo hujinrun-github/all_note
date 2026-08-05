@@ -360,6 +360,82 @@ func TestTaskServicePatchTaskPreservesOmittedFieldsAndCanClearOptionalLinks(t *t
 	}
 }
 
+func TestTaskServicePatchTaskActivatesPlanningDestinationProjectAtomically(t *testing.T) {
+	state := TaskAggregateState{
+		Aggregate: serviceTaskAggregate(TaskLifecycleActive), ScheduleRevision: 7,
+		Task: TaskRecord{
+			WorkspaceID: "workspace-1", ID: "task-1", ProjectID: "project-old",
+			Title: "Before", LifecycleStatus: TaskLifecycleActive, Priority: 1, Revision: 5,
+		},
+	}
+	project := ordinaryProject(ProjectStatusPlanning)
+	project.ID = "project-new"
+	writer := &serviceWriter{}
+	fencer := &serviceFencer{
+		writer:          writer,
+		projectSnapshot: &ProjectSnapshot{Project: project, Revision: 4},
+	}
+	service := NewTaskService(fencer, &serviceStateReader{fencer: fencer, state: state})
+	title := "After"
+
+	result, err := service.PatchTask(context.Background(), PatchTaskRequest{
+		WorkspaceID: "workspace-1", TaskID: "task-1", ExpectedRuntimeEpoch: 9,
+		ExpectedTaskRevision: 5, ExpectedScheduleRevision: 7,
+		Patch: TaskAttributePatch{
+			Title:   &title,
+			Project: &ProjectIdentity{WorkspaceID: "workspace-1", ProjectID: "project-new"},
+		},
+		CommandID: "patch-1", ActorID: "user-1", At: serviceCommandTime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Task().ProjectID != "project-new" || writer.saveCalls != 1 {
+		t.Fatalf("task result/save = %#v / %d", result.Task(), writer.saveCalls)
+	}
+	if fencer.projectReadCalls != 1 || !fencer.projectReadInsideFence {
+		t.Fatalf("project read calls/inside fence = %d/%t", fencer.projectReadCalls, fencer.projectReadInsideFence)
+	}
+	if writer.projectSaveCalls != 1 || writer.projectSaved.ExpectedRevision != 4 ||
+		writer.projectSaved.Project.ID != "project-new" || writer.projectSaved.Project.Status != ProjectStatusActive {
+		t.Fatalf("project activation write = %#v (calls %d)", writer.projectSaved, writer.projectSaveCalls)
+	}
+}
+
+func TestTaskServicePatchTaskDoesNotRestartNonPlanningProject(t *testing.T) {
+	state := TaskAggregateState{
+		Aggregate: serviceTaskAggregate(TaskLifecycleActive), ScheduleRevision: 7,
+		Task: TaskRecord{
+			WorkspaceID: "workspace-1", ID: "task-1", ProjectID: "project-1",
+			Title: "Before", LifecycleStatus: TaskLifecycleActive, Priority: 1, Revision: 5,
+		},
+	}
+	title := "After"
+	for _, status := range []ProjectStatus{ProjectStatusActive, ProjectStatusPaused, ProjectStatusCompleted, ProjectStatusArchived} {
+		t.Run(string(status), func(t *testing.T) {
+			project := ordinaryProject(status)
+			if status == ProjectStatusArchived {
+				previous := ProjectStatusCompleted
+				project.ArchivedFromStatus = &previous
+			}
+			writer := &serviceWriter{}
+			fencer := &serviceFencer{writer: writer, projectSnapshot: &ProjectSnapshot{Project: project, Revision: 4}}
+			service := NewTaskService(fencer, &serviceStateReader{fencer: fencer, state: state})
+
+			if _, err := service.PatchTask(context.Background(), PatchTaskRequest{
+				WorkspaceID: "workspace-1", TaskID: "task-1", ExpectedRuntimeEpoch: 9,
+				ExpectedTaskRevision: 5, ExpectedScheduleRevision: 7,
+				Patch: TaskAttributePatch{Title: &title}, CommandID: "patch-1", ActorID: "user-1", At: serviceCommandTime(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if writer.projectSaveCalls != 0 {
+				t.Fatalf("status %q unexpectedly wrote project %#v", status, writer.projectSaved)
+			}
+		})
+	}
+}
+
 func TestTaskServicePatchTaskRejectsStaleRevisionsAndInvalidReferences(t *testing.T) {
 	base := TaskAggregateState{
 		Aggregate: serviceTaskAggregate(TaskLifecycleActive), ScheduleRevision: 7,
@@ -508,12 +584,16 @@ func assertServiceOccurrenceStatus(t *testing.T, aggregate TaskAggregate, id str
 }
 
 type serviceFencer struct {
-	writer        *serviceWriter
-	beginError    error
-	beginCalls    int
-	workspaceID   string
-	expectedEpoch int64
-	inCallback    bool
+	writer                 *serviceWriter
+	beginError             error
+	beginCalls             int
+	workspaceID            string
+	expectedEpoch          int64
+	inCallback             bool
+	projectSnapshot        *ProjectSnapshot
+	projectError           error
+	projectReadCalls       int
+	projectReadInsideFence bool
 }
 
 func (f *serviceFencer) BeginFencedWrite(_ context.Context, workspaceID string, expectedEpoch int64, callback func(TaskDomainFencedTx) error) error {
@@ -524,14 +604,31 @@ func (f *serviceFencer) BeginFencedWrite(_ context.Context, workspaceID string, 
 		return f.beginError
 	}
 	f.inCallback = true
-	err := callback(serviceTx{writer: f.writer})
+	err := callback(serviceTx{writer: f.writer, fencer: f})
 	f.inCallback = false
 	return err
 }
 
-type serviceTx struct{ writer TaskDomainWriter }
+type serviceTx struct {
+	writer TaskDomainWriter
+	fencer *serviceFencer
+}
 
 func (tx serviceTx) TaskDomainWriter() TaskDomainWriter { return tx.writer }
+
+func (tx serviceTx) GetProject(_ context.Context, projectID string) (ProjectSnapshot, error) {
+	tx.fencer.projectReadCalls++
+	tx.fencer.projectReadInsideFence = tx.fencer.inCallback
+	if tx.fencer.projectError != nil {
+		return ProjectSnapshot{}, tx.fencer.projectError
+	}
+	if tx.fencer.projectSnapshot != nil {
+		return *tx.fencer.projectSnapshot, nil
+	}
+	project := ordinaryProject(ProjectStatusActive)
+	project.ID = projectID
+	return ProjectSnapshot{Project: project, Revision: 1}, nil
+}
 
 type serviceStateReader struct {
 	fencer          *serviceFencer
@@ -548,19 +645,26 @@ func (r *serviceStateReader) GetTaskAggregateState(_ context.Context, _ string) 
 }
 
 type serviceWriter struct {
-	created     TaskAggregateSnapshot
-	saved       TaskAggregateWrite
-	createCalls int
-	saveCalls   int
-	createError error
-	saveError   error
-	deleted     TaskAggregateDelete
-	deleteCalls int
-	deleteError error
+	created          TaskAggregateSnapshot
+	saved            TaskAggregateWrite
+	createCalls      int
+	saveCalls        int
+	createError      error
+	saveError        error
+	deleted          TaskAggregateDelete
+	deleteCalls      int
+	deleteError      error
+	projectSaved     ProjectWrite
+	projectSaveCalls int
+	projectSaveError error
 }
 
-func (w *serviceWriter) EnsureSystemProjects(context.Context) error         { return nil }
-func (w *serviceWriter) SaveProject(context.Context, ProjectWrite) error    { return nil }
+func (w *serviceWriter) EnsureSystemProjects(context.Context) error { return nil }
+func (w *serviceWriter) SaveProject(_ context.Context, write ProjectWrite) error {
+	w.projectSaveCalls++
+	w.projectSaved = write
+	return w.projectSaveError
+}
 func (w *serviceWriter) DeleteProject(context.Context, string, int64) error { return nil }
 func (w *serviceWriter) InstallScheduleVersion(context.Context, ScheduleVersionInstall) error {
 	return nil

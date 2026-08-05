@@ -1,6 +1,8 @@
 # 播客内容导入与转笔记设计
 
-> **决策状态：** 2026-08-05 初版方案。第一阶段面向公开、免费的单个播客单集，优先支持小宇宙、Apple Podcasts，并保留扩展到普通网页文章和其他媒体来源的边界。
+> **决策状态：** 2026-08-05 交互定稿并开始实施。第一阶段面向公开、免费的单个播客单集，优先支持小宇宙、Apple Podcasts，并保留扩展到普通网页文章和其他媒体来源的边界。
+
+> **可运行设计稿：** `/prototypes/podcast-import`。对应项目文件为 `frontend/src/routes/PodcastImportPrototype.tsx` 与 `frontend/src/styles/podcast-import-prototype.css`。
 
 ## 结论
 
@@ -10,7 +12,7 @@ FlowSpace 应新增独立的“内容导入”领域，并在产品上首先提�
 2. 后端先将平台链接解析为稳定的节目、单集和 RSS 身份。
 3. 优先使用发布者在 RSS 中提供的文字稿；没有公开文字稿时才下载并转写音频。
 4. 长音频在后台切片转写，不能占用普通 HTTP 请求，也不能沿用当前 Web 语音笔记的同步转写路径。
-5. 转写稿经过分段提炼、证据校验和最终汇总后生成结构化 Markdown 笔记。
+5. “生成逐字稿”是必选基础步骤；用户开启“AI 整理”时，转写稿再经过分段提炼、证据校验和最终汇总，生成结构化 Markdown 笔记。
 6. 最终笔记必须通过现有 Notes repository 创建，使其继续进入 mobile-v2 内容变更和同步流程。
 7. 导入任务与笔记分离。在内容完成前不创建占位笔记，避免后台任务覆盖用户已经编辑的正文。
 8. 同一个 RSS feed GUID 在同一 workspace 只对应一个稳定来源身份；从小宇宙和 Apple Podcasts 导入同一单集时能够去重。
@@ -129,19 +131,30 @@ backend/internal/handler/content_imports.go
 
 1. 用户在 Notes 页点击“导入播客”。
 2. 粘贴一个单集链接。
-3. 选择输出模式、文件夹、项目、标签、语言和是否保留完整文字稿。
-4. 提交后立即收到 `202 Accepted` 和 import ID。
-5. 弹窗关闭，任务进入“导入任务”抽屉，用户可以离开当前页面。
+3. 后端解析链接并展示节目名、单集标题、封面、时长和可用内容。
+4. 用户决定是否开启“AI 整理”，并选择文件夹、项目、标签和语言；开启 AI 整理后可以进一步选择是否把完整逐字稿附在正文末尾。
+5. 提交后立即收到 `202 Accepted` 和 import ID。
+6. 弹窗关闭，任务进入“导入任务”抽屉，用户可以离开当前页面。
 
-建议第一阶段提供三种输出模式：
+交互不再暴露三个互斥“输出模式”，而是使用两个正交选项：
 
-| 模式 | 正文内容 | 文字稿 |
+| 选项 | 默认值 | 作用 |
 | --- | --- | --- |
-| `structured_note` | 结构化摘要、主题、时间线、行动项 | 作为独立 artifact 保留 |
-| `note_with_transcript` | 结构化笔记，末尾附完整文字稿 | 同时保留 artifact |
-| `transcript_only` | 来源信息和完整文字稿 | 保留 artifact |
+| `summarize_with_ai` | `true` | 开启后生成摘要、章节、核心观点和行动项；关闭后不调用文本 AI，正文直接使用完整逐字稿 |
+| `include_transcript` | `false` | 仅在 AI 整理开启时显示；开启后在结构化笔记末尾附完整逐字稿 |
 
-默认使用 `structured_note`。
+“生成逐字稿”不是开关，它是所有导入的必经阶段。若来源已有发布者公开文字稿，则直接规范化；否则进入音频转录。首个实施切片只完成“公开文字稿 → 笔记”的完整链路；没有公开文字稿的任务明确显示为“等待音频转录能力”，直到阶段 3 上线。
+
+### 弹窗交互状态
+
+1. **待解析：** 仅展示链接输入框，主按钮为“解析链接”。
+2. **解析中：** 禁用提交并展示解析进度；失败时在输入框下给出可修复原因。
+3. **解析成功：** 展示单集卡片和两步处理说明：第一步“生成逐字稿”，第二步“AI 整理（可选）”。
+4. **AI 开启：** 主按钮为“开始转写并整理”，并展示将调用转写与文本 AI 的成本提示。
+5. **AI 关闭：** 主按钮为“开始转写”，隐藏结构化摘要选项，说明不会调用文本 AI。
+6. **已提交：** 弹窗立即关闭，任务抽屉展示当前阶段、进度、取消/重试和完成后的“打开笔记”。
+
+桌面版采用居中弹窗加右侧任务抽屉；窄屏下弹窗占满可用宽度，任务抽屉改为底部面板。原型页面保留为视觉回归和产品评审入口，生产组件使用真实 API 状态，不复制原型中的定时器数据。
 
 ### 状态展示
 
@@ -416,7 +429,7 @@ feature = podcast_note_generation
 fallback_mode = transcript_only | error
 ```
 
-默认建议 `transcript_only`。文本 AI 关闭或暂不可用时仍保存来源信息和文字稿，不应丢失已经完成的昂贵转写结果。
+默认使用 `error`。用户显式开启 AI 整理时，文本 AI 关闭、未配置或调用失败必须把任务标记为可重试失败，不能将逐字稿降级结果伪装成“AI 整理完成”。已经完成的昂贵转写结果仍作为 artifact 保留；用户配置 AI 后可直接重试，也可以关闭 AI 整理并新建仅逐字稿任务。
 
 ### 分块策略
 
@@ -698,7 +711,7 @@ Content-Type: application/json
 ```json
 {
   "source_url": "https://www.xiaoyuzhoufm.com/episode/...",
-  "output_mode": "structured_note",
+  "summarize_with_ai": true,
   "include_transcript": false,
   "keep_audio": false,
   "language": "auto",
@@ -748,6 +761,22 @@ POST /api/content-imports/:id/cancel
 
 重试需要新的 Idempotency-Key。只有 `failed` 和允许人工修复的 `needs_review` 可以重试。已经完成的 Import 使用“创建新版本”，不能调用 retry。
 
+任务查询结果显式返回 `error_code`、面向用户的 `error_message` 和 `retryable`。AI provider 调用失败使用 `TEXT_AI_CALL_FAILED`；客户端在 `retryable=true` 时展示“重试 AI 整理”。重试会复用已保存的 transcript artifact，只重新进入 AI 整理和发布阶段。
+
+### 删除导入历史
+
+```text
+DELETE /api/content-imports/:id
+```
+
+只有 `completed`、`failed`、`needs_review` 和 `canceled` 终态记录可以删除；`active` 返回 `409 IMPORT_NOT_DELETABLE`，用户必须先取消任务。删除会移除 Import 记录并级联清理数据库内的 transcript 等 artifact，但不删除已经生成的笔记。
+
+笔记和导入历史的生命周期彼此独立：
+
+- 先删除导入历史时，结果笔记继续保留；
+- 先删除结果笔记时，导入历史继续保留，并返回 `result_note_available=false`；
+- 前端遇到 `result_note_available=false` 时显示“笔记已删除”，不再提供“打开笔记”，但仍允许删除该历史记录。
+
 ### 错误响应
 
 | code | HTTP | 是否重试 | 含义 |
@@ -760,9 +789,11 @@ POST /api/content-imports/:id/cancel
 | `EPISODE_AMBIGUOUS` | 422 | 否 | 无法唯一匹配 RSS item |
 | `SOURCE_TOO_LARGE` | 413 | 否 | 页面、文字稿或音频超限 |
 | `TRANSCRIPTION_UNAVAILABLE` | 503 | 是 | workspace 转写服务不可用 |
-| `TEXT_AI_UNAVAILABLE` | 503 | 取决于 fallback | 文本 AI 不可用 |
+| `TEXT_AI_UNAVAILABLE` | 503 | 是 | 文本 AI 不可用；保留 transcript artifact，配置后可重试 |
+| `TEXT_AI_CALL_FAILED` | 502 | 是 | 文本 AI 请求失败；保留 transcript artifact，可直接重试 AI 整理 |
 | `IMPORT_BUSY` | 429 | 是 | workspace 并发额度已满 |
 | `IMPORT_OUTPUT_INVALID` | 422 | 人工决定 | AI 输出无法验证 |
+| `IMPORT_NOT_DELETABLE` | 409 | 否 | 进行中的任务不能删除，必须先取消 |
 
 API 不回传 provider 内部错误正文、对象存储 key、私有 feed 参数或完整堆栈。
 
@@ -776,6 +807,7 @@ frontend/src/hooks/useContentImports.ts
 frontend/src/components/imports/PodcastImportDialog.tsx
 frontend/src/components/imports/ContentImportTray.tsx
 frontend/src/components/imports/ContentImportStatus.tsx
+frontend/src/components/imports/PodcastSourceCard.tsx
 ```
 
 ### Notes 页
@@ -783,7 +815,10 @@ frontend/src/components/imports/ContentImportStatus.tsx
 - 在“新建笔记”旁增加“导入播客”。
 - 弹窗实时做本地 URL 格式提示，但最终来源判断由后端完成。
 - 提交后不阻塞在 modal；任务进入页面右下或侧边抽屉。
-- 导入任务列表显示标题解析结果、阶段、失败原因、重试、取消和打开笔记。
+- 导入任务列表显示标题解析结果、阶段、失败原因、重试、取消、删除历史和打开笔记。
+- 删除历史必须二次确认，并明确说明“只删除导入记录和逐字稿，已生成的笔记会保留”。
+- 解析链接调用 `POST /api/content-imports/resolve`，只做来源预览，不创建任务、不调用转写或文本 AI。
+- 开关“AI 整理”只控制逐字稿之后的文本生成阶段，不影响逐字稿获取本身。
 
 ### Editor 页
 
@@ -965,7 +1000,7 @@ FLOWSPACE_IMPORT_ARTIFACT_RETENTION_DAYS
 - quote 无法在原文匹配时被删除。
 - 没有时间戳时不生成 timeline。
 - prompt injection 文本不会改变输出 schema 或执行外部指令。
-- AI 不可用时按 `transcript_only` fallback。
+- AI 不可用时保留 transcript artifact，任务返回 `TEXT_AI_UNAVAILABLE`，配置 AI 后重试不重复转写。
 
 ### 集成与 E2E
 
@@ -1007,6 +1042,8 @@ FLOWSPACE_IMPORT_ARTIFACT_RETENTION_DAYS
 
 验收：没有公开 transcript 的常见 30 分钟至 2 小时公开播客可以在服务重启后继续并完成。
 
+实施状态（2026-08-05）：已落地公开音频安全下载、512 MB 上限、ffmpeg 15 分钟切片、workspace 转写服务复用、单片 10 分钟超时、租约心跳、片段 artifact 断点续转、近似片段时间标记和临时文件清理。小宇宙公开页面的 `og:audio` 与 Apple/RSS enclosure 均可作为公开音频来源。后续仍需补 provider 原生时间段、workspace 并发/分钟数配额和更细的运维指标；这些不阻塞串行长音频导入。
+
 ### 阶段 4：体验与生命周期
 
 - Editor 来源卡片和独立文字稿视图。
@@ -1015,6 +1052,8 @@ FLOWSPACE_IMPORT_ARTIFACT_RETENTION_DAYS
 - 根据实际失败率加固平台 resolver。
 
 验收：来源、重试、取消、清理、重复导入和失败诊断形成完整产品闭环。
+
+实施状态（2026-08-05）：已实现 Editor 播客来源卡片、按结果 Note 查询 Import provenance，以及点击后按需加载的只读逐字稿面板。普通笔记的 provenance 404 会在前端收敛为“无来源卡片”，不会形成错误提示；逐字稿不随 Editor 首次加载下载。后续继续实现新版本生成、artifact 生命周期、配额与运维指标。
 
 ### 后续扩展
 
@@ -1047,7 +1086,7 @@ FLOWSPACE_IMPORT_ARTIFACT_RETENTION_DAYS
 - Web 首发，单集链接输入。
 - 默认输出 `structured_note`。
 - 默认保留规范化文字稿 artifact，不保留音频。
-- 默认文本 AI fallback 为 `transcript_only`。
+- 默认文本 AI fallback 为 `error`；不静默降级，已生成的 transcript artifact 保留供重试。
 - 默认同一 workspace 一个长任务并发。
 - 重复来源默认打开已有笔记；新版本必须用户显式选择。
 - Import 状态不进入 mobile-v2，最终笔记进入 mobile-v2。
