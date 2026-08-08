@@ -115,6 +115,109 @@ func TestGitHubOAuthStartSavesStateAndRedirectsToGitHub(t *testing.T) {
 	}
 }
 
+func TestGitHubNativeOAuthStartRequiresSupportedCallbackAndSavesPKCEState(t *testing.T) {
+	env := setupGitHubOAuthHandlerEnv(t)
+	verifier := strings.Repeat("a", 43)
+	challenge := pkceChallenge(verifier)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/github/native/start?callback="+url.QueryEscape(githubNativeCallbackURL)+"&code_challenge="+url.QueryEscape(challenge)+"&code_challenge_method=S256", nil)
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %s", w.Code, w.Body.String())
+	}
+	state := mustQueryParam(t, w.Header().Get("Location"), "state")
+	next, err := env.stateStore.Consume(t.Context(), state)
+	if err != nil {
+		t.Fatalf("consume state: %v", err)
+	}
+	if next != githubNativeStateNextPrefix+challenge {
+		t.Fatalf("next = %q, want native PKCE marker", next)
+	}
+
+	badReq := httptest.NewRequest(http.MethodGet, "/api/auth/github/native/start?callback=https://evil.example/callback&code_challenge="+challenge+"&code_challenge_method=S256", nil)
+	badW := httptest.NewRecorder()
+	env.router.ServeHTTP(badW, badReq)
+	if badW.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported callback status = %d, want 400", badW.Code)
+	}
+}
+
+func TestGitHubNativeOAuthCallbackExchangesOneTimeCodeForSessionCookie(t *testing.T) {
+	env := setupGitHubOAuthHandlerEnv(t)
+	verifier := strings.Repeat("v", 43)
+	state := "state-native-success"
+	if err := env.stateStore.Save(t.Context(), state, githubNativeStateNextPrefix+pkceChallenge(verifier), time.Minute); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	env.github.profile = GitHubProfile{ID: 124, Login: "native-octocat", Name: "Native Octo"}
+	env.github.emails = []GitHubEmail{{Email: "native@example.com", Primary: true, Verified: true}}
+
+	callbackReq := httptest.NewRequest(http.MethodGet, "/api/auth/github/callback?code=code-ok&state="+state, nil)
+	callbackW := httptest.NewRecorder()
+	env.router.ServeHTTP(callbackW, callbackReq)
+
+	if callbackW.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302; body = %s", callbackW.Code, callbackW.Body.String())
+	}
+	location := callbackW.Header().Get("Location")
+	if !strings.HasPrefix(location, githubNativeCallbackURL+"?") {
+		t.Fatalf("callback Location = %q", location)
+	}
+	if cookies := callbackW.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("native callback exposed browser cookie: %#v", cookies)
+	}
+	exchangeCode := mustQueryParam(t, location, "code")
+	body := strings.NewReader(`{"code":"` + exchangeCode + `","code_verifier":"` + verifier + `"}`)
+	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/auth/github/native/exchange", body)
+	exchangeReq.Header.Set("Content-Type", "application/json")
+	exchangeW := httptest.NewRecorder()
+	env.router.ServeHTTP(exchangeW, exchangeReq)
+
+	if exchangeW.Code != http.StatusNoContent {
+		t.Fatalf("exchange status = %d, want 204; body = %s", exchangeW.Code, exchangeW.Body.String())
+	}
+	if cookie := requireCookie(t, exchangeW.Result(), env.auth.Cookie.Name); cookie.Value == "" || !cookie.HttpOnly {
+		t.Fatalf("invalid exchanged session cookie: %+v", cookie)
+	}
+
+	replayReq := httptest.NewRequest(http.MethodPost, "/api/auth/github/native/exchange", strings.NewReader(`{"code":"`+exchangeCode+`","code_verifier":"`+verifier+`"}`))
+	replayReq.Header.Set("Content-Type", "application/json")
+	replayW := httptest.NewRecorder()
+	env.router.ServeHTTP(replayW, replayReq)
+	if replayW.Code != http.StatusBadRequest {
+		t.Fatalf("replay status = %d, want 400", replayW.Code)
+	}
+}
+
+func TestGitHubNativeOAuthExchangeRejectsWrongPKCEVerifier(t *testing.T) {
+	env := setupGitHubOAuthHandlerEnv(t)
+	code := "native-exchange-code"
+	correctVerifier := strings.Repeat("c", 43)
+	err := env.exchangeStore.Save(t.Context(), code, authpkg.NativeOAuthGrant{
+		SessionToken:     "native-session-token",
+		SessionExpiresAt: time.Now().UTC().Add(time.Hour),
+		CodeChallenge:    pkceChallenge(correctVerifier),
+	}, time.Minute)
+	if err != nil {
+		t.Fatalf("save grant: %v", err)
+	}
+	body := strings.NewReader(`{"code":"` + code + `","code_verifier":"` + strings.Repeat("w", 43) + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/github/native/exchange", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	env.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("unexpected cookie for wrong verifier: %#v", cookies)
+	}
+}
+
 func TestGitHubOAuthStartIgnoresAlreadyLoggedInUsers(t *testing.T) {
 	env := setupGitHubOAuthHandlerEnv(t)
 	token := seedGitHubOAuthSession(t, env)
@@ -500,12 +603,13 @@ func TestGitHubHTTPClientReturnsProfileErrorFor5xx(t *testing.T) {
 }
 
 type githubOAuthHandlerEnv struct {
-	router     *gin.Engine
-	store      storage.Store
-	auth       config.AuthConfig
-	stateStore *authpkg.MemoryOAuthStateStore
-	github     *fakeGitHubClient
-	dbPath     string
+	router        *gin.Engine
+	store         storage.Store
+	auth          config.AuthConfig
+	stateStore    *authpkg.MemoryOAuthStateStore
+	exchangeStore *authpkg.MemoryNativeOAuthExchangeStore
+	github        *fakeGitHubClient
+	dbPath        string
 }
 
 type fakeGitHubClient struct {
@@ -585,13 +689,15 @@ func setupGitHubOAuthHandlerEnv(t *testing.T) *githubOAuthHandlerEnv {
 		},
 	}
 	stateStore := authpkg.NewMemoryOAuthStateStore()
+	exchangeStore := authpkg.NewMemoryNativeOAuthExchangeStore()
 	github := &fakeGitHubClient{}
 	env := &githubOAuthHandlerEnv{
-		store:      store,
-		auth:       authCfg,
-		stateStore: stateStore,
-		github:     github,
-		dbPath:     dbPath,
+		store:         store,
+		auth:          authCfg,
+		stateStore:    stateStore,
+		exchangeStore: exchangeStore,
+		github:        github,
+		dbPath:        dbPath,
 	}
 	env.router = routerForGitHubOAuthEnv(env)
 	return env
@@ -602,7 +708,9 @@ func routerForGitHubOAuthEnv(env *githubOAuthHandlerEnv) *gin.Engine {
 	authRoutes := router.Group("/api/auth")
 	authRoutes.GET("/providers", AuthProviders(env.auth))
 	authRoutes.GET("/github/start", GitHubOAuthStart(env.store, env.auth, env.stateStore))
-	authRoutes.GET("/github/callback", GitHubOAuthCallback(env.store, env.auth, env.stateStore, env.github))
+	authRoutes.GET("/github/native/start", GitHubNativeOAuthStart(env.auth, env.stateStore))
+	authRoutes.POST("/github/native/exchange", ExchangeGitHubNativeOAuth(env.auth, env.exchangeStore))
+	authRoutes.GET("/github/callback", GitHubOAuthCallbackAcrossStoresWithNative(env.store, env.store, nil, env.auth, env.stateStore, env.exchangeStore, env.github))
 	return router
 }
 

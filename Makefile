@@ -41,7 +41,7 @@ TEST_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
 TEST_TAILSCALE_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
 endif
 
-.PHONY: dev dev-prod dev-test kill kill-prod kill-test start-backend start-frontend start-prod-backend start-prod-frontend start-test-backend start-test-frontend start-tailscale-frontend kill-tailscale-frontend serve-tailscale start-test-tailscale-frontend kill-test-tailscale-frontend serve-test-tailscale serve-all-tailscale
+.PHONY: dev dev-prod dev-test kill kill-prod kill-test start-backend start-frontend start-prod-backend start-prod-frontend start-test-backend start-test-frontend start-tailscale-frontend kill-tailscale-frontend serve-tailscale start-test-tailscale-frontend kill-test-tailscale-frontend serve-test-tailscale serve-all-tailscale macos-editor macos-generate macos-build macos-test
 
 dev: dev-test
 
@@ -94,3 +94,15 @@ serve-test-tailscale:
 	tailscale funnel --bg --yes --set-path $(TEST_TAILSCALE_SERVE_PATH) http://127.0.0.1:$(TEST_TAILSCALE_FRONTEND_PORT)$(TEST_TAILSCALE_SERVE_PATH)
 
 serve-all-tailscale: serve-tailscale serve-test-tailscale
+
+macos-editor:
+	frontend/node_modules/.bin/vite build --config macos/EditorWeb/vite.config.mjs
+
+macos-generate: macos-editor
+	cd macos && xcodegen generate
+
+macos-build: macos-generate
+	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+
+macos-test: macos-generate
+	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test

@@ -147,6 +147,31 @@ describe('PodcastImportDialog', () => {
     })
   })
 
+  it('submits an edited AI summary prompt', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.type(
+      screen.getByLabelText('单集链接'),
+      'https://www.xiaoyuzhoufm.com/episode/e1'
+    )
+    await user.click(screen.getByRole('button', { name: '解析链接' }))
+    const prompt = await screen.findByRole('textbox', { name: 'AI 总结提示词' })
+    await user.clear(prompt)
+    await user.type(prompt, '重点总结可执行的产品策略，并保留结构化 JSON 字段。')
+    await user.click(screen.getByRole('button', { name: '开始转写并整理' }))
+
+    await waitFor(() => {
+      expect(
+        vi.mocked(contentImportsApi.createContentImport).mock.calls[0]?.[0]
+      ).toEqual(
+        expect.objectContaining({
+          summary_prompt: '重点总结可执行的产品策略，并保留结构化 JSON 字段。',
+        })
+      )
+    })
+  })
+
   it('does not promise AI organization when the workspace text AI is disabled', async () => {
     vi.mocked(getRuntimeSettings).mockResolvedValue({
       workspace_id: 'workspace-1',

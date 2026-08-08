@@ -1,0 +1,1 @@
+ALTER TABLE content_imports ADD COLUMN IF NOT EXISTS summary_prompt TEXT NOT NULL DEFAULT '';

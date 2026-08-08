@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        --text: light-dark(#2d2924, #f2ede6);
+        --muted: light-dark(#8b8175, #a99f93);
+        --surface: light-dark(#fffdf9, #25221f);
+        --surface-raised: light-dark(rgba(255, 255, 255, 0.96), rgba(53, 48, 43, 0.96));
+        --border: light-dark(rgba(85, 66, 48, 0.16), rgba(255, 238, 218, 0.14));
+        --accent: light-dark(#bd6226, #e89052);
+        --selection: light-dark(rgba(224, 139, 76, 0.22), rgba(224, 139, 76, 0.3));
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: transparent; color: var(--text); }
+      body { padding: 0 28px 48px; }
+      #editor { max-width: 780px; margin: 0 auto; }
+      .ProseMirror {
+        min-height: 440px;
+        padding: 28px 4px 100px;
+        outline: none;
+        font-family: ui-serif, "New York", "Songti SC", serif;
+        font-size: 17px;
+        line-height: 1.82;
+        caret-color: var(--accent);
+      }
+      .ProseMirror ::selection { background: var(--selection); }
+      .ProseMirror p { margin: 0 0 0.9em; }
+      .ProseMirror h1, .ProseMirror h2, .ProseMirror h3 {
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+        line-height: 1.28;
+        margin: 1.5em 0 0.65em;
+      }
+      .ProseMirror h1 { font-size: 1.75em; }
+      .ProseMirror h2 { font-size: 1.4em; }
+      .ProseMirror h3 { font-size: 1.18em; }
+      .ProseMirror ul, .ProseMirror ol { padding-left: 1.5em; }
+      .ProseMirror blockquote {
+        margin-left: 0;
+        padding-left: 1em;
+        border-left: 3px solid var(--accent);
+        color: var(--muted);
+      }
+      .ProseMirror code {
+        padding: 0.12em 0.35em;
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--text) 8%, transparent);
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 0.88em;
+      }
+      .ProseMirror pre {
+        overflow: auto;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--text) 6%, transparent);
+      }
+      .ProseMirror pre code { padding: 0; background: transparent; }
+      .ProseMirror hr { border: 0; border-top: 1px solid var(--border); margin: 2em 0; }
+      .ProseMirror ruby { border-radius: 4px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+      .ProseMirror rt { color: var(--accent); font-size: 0.62em; }
+      .ProseMirror p.is-editor-empty:first-child::before {
+        content: attr(data-placeholder);
+        float: left;
+        height: 0;
+        color: var(--muted);
+        pointer-events: none;
+      }
+
+      #bubble {
+        position: fixed;
+        z-index: 20;
+        display: none;
+        gap: 3px;
+        padding: 5px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface-raised);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(20px);
+      }
+      #bubble.visible { display: flex; }
+      #bubble button {
+        min-width: 30px;
+        height: 28px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text);
+        font: 600 12px -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      #bubble button:hover, #bubble button.active {
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+        color: var(--accent);
+      }
+    </style>
+    <title>FlowSpace Rich Editor</title>
+    <script type="module" crossorigin src="./assets/index-C5I2ke23.js"></script>
+  </head>
+  <body>
+    <div id="editor" aria-label="富文本正文"></div>
+    <div id="bubble" role="toolbar" aria-label="选中文本格式">
+      <button data-command="bold" aria-label="粗体">B</button>
+      <button data-command="italic" aria-label="斜体"><i>I</i></button>
+      <button data-command="strike" aria-label="删除线"><s>S</s></button>
+      <button data-command="heading2" aria-label="二级标题">H2</button>
+      <button data-command="blockquote" aria-label="引用">“</button>
+    </div>
+  </body>
+</html>

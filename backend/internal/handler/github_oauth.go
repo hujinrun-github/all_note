@@ -3,7 +3,10 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +26,12 @@ import (
 )
 
 var errGitHubAutoCreateDisabled = errors.New("github oauth auto-create disabled")
+
+const (
+	githubNativeCallbackURL     = "flowspace-mac://oauth/callback"
+	githubNativeStateNextPrefix = "flowspace-native-pkce:"
+	githubNativeExchangeTTL     = 2 * time.Minute
+)
 
 type GitHubClient interface {
 	ExchangeCode(ctx context.Context, code string) (string, error)
@@ -171,11 +180,49 @@ func GitHubOAuthStart(store storage.Store, authCfg config.AuthConfig, stateStore
 	}
 }
 
+func GitHubNativeOAuthStart(authCfg config.AuthConfig, stateStore auth.OAuthStateStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		callbackURL := strings.TrimSpace(c.Query("callback"))
+		if callbackURL != githubNativeCallbackURL {
+			badRequest(c, "unsupported native oauth callback")
+			return
+		}
+		if !authCfg.GitHub.Available() {
+			redirectGitHubOAuthError(c, githubNativeStateNextPrefix, "github_disabled")
+			return
+		}
+		if stateStore == nil {
+			redirectGitHubOAuthError(c, githubNativeStateNextPrefix, "github_state_invalid")
+			return
+		}
+		codeChallenge := strings.TrimSpace(c.Query("code_challenge"))
+		if c.Query("code_challenge_method") != "S256" || !validPKCEChallenge(codeChallenge) {
+			redirectGitHubOAuthError(c, githubNativeStateNextPrefix, "github_pkce_invalid")
+			return
+		}
+		state, err := auth.GenerateSessionToken()
+		if err != nil {
+			redirectGitHubOAuthError(c, githubNativeStateNextPrefix, "github_state_invalid")
+			return
+		}
+		next := githubNativeStateNextPrefix + codeChallenge
+		if err := stateStore.Save(c.Request.Context(), state, next, githubStateTTL(authCfg.GitHub)); err != nil {
+			redirectGitHubOAuthError(c, next, "github_state_invalid")
+			return
+		}
+		c.Redirect(http.StatusFound, githubAuthorizeURL(authCfg.GitHub, state))
+	}
+}
+
 func GitHubOAuthCallback(store storage.Store, authCfg config.AuthConfig, stateStore auth.OAuthStateStore, client GitHubClient) gin.HandlerFunc {
-	return GitHubOAuthCallbackAcrossStores(store, store, nil, authCfg, stateStore, client)
+	return GitHubOAuthCallbackAcrossStoresWithNative(store, store, nil, authCfg, stateStore, nil, client)
 }
 
 func GitHubOAuthCallbackAcrossStores(controlStore, tenantStore storage.Store, provision ControlIdentityProvisioner, authCfg config.AuthConfig, stateStore auth.OAuthStateStore, client GitHubClient) gin.HandlerFunc {
+	return GitHubOAuthCallbackAcrossStoresWithNative(controlStore, tenantStore, provision, authCfg, stateStore, nil, client)
+}
+
+func GitHubOAuthCallbackAcrossStoresWithNative(controlStore, tenantStore storage.Store, provision ControlIdentityProvisioner, authCfg config.AuthConfig, stateStore auth.OAuthStateStore, exchangeStore auth.NativeOAuthExchangeStore, client GitHubClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !authCfg.GitHub.Available() {
 			c.Redirect(http.StatusFound, "/login?oauth_error=github_disabled")
@@ -192,50 +239,107 @@ func GitHubOAuthCallbackAcrossStores(controlStore, tenantStore storage.Store, pr
 		}
 		token, err := client.ExchangeCode(c.Request.Context(), c.Query("code"))
 		if err != nil {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_exchange_failed")
+			redirectGitHubOAuthError(c, next, "github_exchange_failed")
 			return
 		}
 		profile, err := client.FetchProfile(c.Request.Context(), token)
 		if err != nil {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_profile_failed")
+			redirectGitHubOAuthError(c, next, "github_profile_failed")
 			return
 		}
 		emails, err := client.FetchEmails(c.Request.Context(), token)
 		if err != nil {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_profile_failed")
+			redirectGitHubOAuthError(c, next, "github_profile_failed")
 			return
 		}
 		email, ok := chooseVerifiedGitHubEmail(emails)
 		if !ok {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_no_verified_email")
+			redirectGitHubOAuthError(c, next, "github_no_verified_email")
 			return
 		}
 		user, workspaceID, err := resolveGitHubUser(c.Request.Context(), controlStore, authCfg, profile, email)
 		if err != nil {
-			c.Redirect(http.StatusFound, oauthCreateError(err))
+			redirectGitHubOAuthError(c, next, oauthCreateErrorCode(err))
 			return
 		}
 		if provision != nil {
 			if err := provision(c.Request.Context(), *user); err != nil {
-				c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
+				redirectGitHubOAuthError(c, next, "github_create_user_failed")
 				return
 			}
 		}
 		if err := ensureTenantWorkspace(c.Request.Context(), tenantStore, user); err != nil {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
+			redirectGitHubOAuthError(c, next, "github_create_user_failed")
 			return
 		}
-		if err := revokeExistingSessionFromCookie(c.Request.Context(), controlStore, authCfg, c.Request); err != nil {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
-			return
+		codeChallenge, native := nativePKCEChallenge(next)
+		if !native {
+			if err := revokeExistingSessionFromCookie(c.Request.Context(), controlStore, authCfg, c.Request); err != nil {
+				redirectGitHubOAuthError(c, next, "github_create_user_failed")
+				return
+			}
 		}
 		tokenValue, session, err := createOAuthSession(c, controlStore, authCfg, user.ID, workspaceID)
 		if err != nil {
-			c.Redirect(http.StatusFound, "/login?oauth_error=github_create_user_failed")
+			redirectGitHubOAuthError(c, next, "github_create_user_failed")
+			return
+		}
+		if native {
+			if exchangeStore == nil {
+				_ = controlStore.Auth().RevokeSession(c.Request.Context(), session.ID)
+				redirectGitHubOAuthError(c, next, "github_native_unavailable")
+				return
+			}
+			exchangeCode, err := auth.GenerateSessionToken()
+			if err != nil {
+				_ = controlStore.Auth().RevokeSession(c.Request.Context(), session.ID)
+				redirectGitHubOAuthError(c, next, "github_create_user_failed")
+				return
+			}
+			grant := auth.NativeOAuthGrant{
+				SessionToken:     tokenValue,
+				SessionExpiresAt: session.ExpiresAt,
+				CodeChallenge:    codeChallenge,
+			}
+			if err := exchangeStore.Save(c.Request.Context(), exchangeCode, grant, githubNativeExchangeTTL); err != nil {
+				_ = controlStore.Auth().RevokeSession(c.Request.Context(), session.ID)
+				redirectGitHubOAuthError(c, next, "github_create_user_failed")
+				return
+			}
+			redirectGitHubNativeCallback(c, "code", exchangeCode)
 			return
 		}
 		http.SetCookie(c.Writer, activeSessionCookie(authCfg.Cookie, tokenValue, sessionTTL(authCfg, true), session.ExpiresAt))
 		c.Redirect(http.StatusFound, auth.SanitizeOAuthNext(next))
+	}
+}
+
+func ExchangeGitHubNativeOAuth(authCfg config.AuthConfig, exchangeStore auth.NativeOAuthExchangeStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Code         string `json:"code"`
+			CodeVerifier string `json:"code_verifier"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Code) == "" || !validPKCEVerifier(req.CodeVerifier) {
+			badRequest(c, "code and a valid code_verifier are required")
+			return
+		}
+		if exchangeStore == nil {
+			errorResponse(c, http.StatusServiceUnavailable, "NATIVE_OAUTH_UNAVAILABLE", "native oauth is unavailable")
+			return
+		}
+		grant, err := exchangeStore.Consume(c.Request.Context(), req.Code)
+		if err != nil || subtle.ConstantTimeCompare([]byte(pkceChallenge(req.CodeVerifier)), []byte(grant.CodeChallenge)) != 1 {
+			errorResponse(c, http.StatusBadRequest, "NATIVE_OAUTH_CODE_INVALID", "native oauth code is invalid or expired")
+			return
+		}
+		ttl := time.Until(grant.SessionExpiresAt)
+		if ttl <= 0 {
+			errorResponse(c, http.StatusBadRequest, "NATIVE_OAUTH_CODE_INVALID", "native oauth code is invalid or expired")
+			return
+		}
+		http.SetCookie(c.Writer, activeSessionCookie(authCfg.Cookie, grant.SessionToken, ttl, grant.SessionExpiresAt))
+		noContent(c)
 	}
 }
 
@@ -253,6 +357,54 @@ func githubStateTTL(cfg config.GitHubOAuthConfig) time.Duration {
 		return cfg.StateTTL
 	}
 	return 10 * time.Minute
+}
+
+func validPKCEChallenge(value string) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == value
+}
+
+func validPKCEVerifier(value string) bool {
+	if len(value) < 43 || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune("-._~", char) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func pkceChallenge(verifier string) string {
+	digest := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func nativePKCEChallenge(next string) (string, bool) {
+	if !strings.HasPrefix(next, githubNativeStateNextPrefix) {
+		return "", false
+	}
+	challenge := strings.TrimPrefix(next, githubNativeStateNextPrefix)
+	return challenge, validPKCEChallenge(challenge)
+}
+
+func redirectGitHubOAuthError(c *gin.Context, next, code string) {
+	if strings.HasPrefix(next, githubNativeStateNextPrefix) {
+		redirectGitHubNativeCallback(c, "error", code)
+		return
+	}
+	c.Redirect(http.StatusFound, "/login?oauth_error="+url.QueryEscape(code))
+}
+
+func redirectGitHubNativeCallback(c *gin.Context, key, value string) {
+	callback, _ := url.Parse(githubNativeCallbackURL)
+	query := callback.Query()
+	query.Set(key, value)
+	callback.RawQuery = query.Encode()
+	c.Redirect(http.StatusFound, callback.String())
 }
 
 func hasValidSession(ctx context.Context, store storage.Store, authCfg config.AuthConfig, req *http.Request) bool {
@@ -556,9 +708,9 @@ func createOAuthSession(c *gin.Context, store storage.Store, authCfg config.Auth
 	return token, session, nil
 }
 
-func oauthCreateError(err error) string {
+func oauthCreateErrorCode(err error) string {
 	if errors.Is(err, errGitHubAutoCreateDisabled) {
-		return "/login?oauth_error=github_auto_create_disabled"
+		return "github_auto_create_disabled"
 	}
-	return "/login?oauth_error=github_create_user_failed"
+	return "github_create_user_failed"
 }

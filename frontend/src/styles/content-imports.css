@@ -357,6 +357,44 @@
   border-radius: 14px;
   background: #f8f4ef;
 }
+
+.content-import-prompt-field {
+  display: grid;
+  gap: 8px;
+}
+
+.content-import-prompt-field > span {
+  font-weight: 700;
+}
+
+.content-import-prompt-field textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border-color, #ddd3c4);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font: inherit;
+  line-height: 1.6;
+  background: var(--surface-color, #fffdf9);
+}
+
+.content-import-prompt-field textarea:focus {
+  outline: 2px solid rgba(202, 116, 42, 0.2);
+  border-color: #ca742a;
+}
+
+.content-import-prompt-field small {
+  color: var(--muted-color, #7e7266);
+}
+
+.content-import-prompt-field button {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  color: #b86525;
+  background: transparent;
+  cursor: pointer;
+}
 .content-import-checkbox {
   display: flex;
   gap: 9px;

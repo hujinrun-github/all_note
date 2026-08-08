@@ -55,12 +55,15 @@ func TestGitHubOAuthRoutesAreRegisteredAsPublicAuthRoutes(t *testing.T) {
 	}
 	env.config.Auth = env.auth
 	env.config.OAuthStateStore = authpkg.NewMemoryOAuthStateStore()
+	env.config.NativeOAuthExchangeStore = authpkg.NewMemoryNativeOAuthExchangeStore()
 
 	registered := registeredRoutes(Setup(env.config))
 
 	for _, route := range []string{
 		"GET /api/auth/providers",
 		"GET /api/auth/github/start",
+		"GET /api/auth/github/native/start",
+		"POST /api/auth/github/native/exchange",
 		"GET /api/auth/github/callback",
 	} {
 		if !registered[route] {

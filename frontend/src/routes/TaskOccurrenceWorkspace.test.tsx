@@ -196,6 +196,42 @@ describe('Task occurrence workspace', () => {
     expect(screen.getByRole('button', { name: '还差 1 项' })).toBeDisabled()
   })
 
+  it('completes an occurrence from the execution inspector', async () => {
+    const complete = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
+      mutateAsync: complete,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useCompleteOccurrenceMutation>)
+    const user = userEvent.setup()
+    renderWorkspace()
+
+    await user.click(screen.getByText('准备评审'))
+    await user.click(screen.getByRole('button', { name: '完成' }))
+
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskID: 'open-task',
+        occurrenceID: 'open-occurrence',
+      })
+    )
+  })
+
+  it('shows an error when completing an occurrence fails', async () => {
+    vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(new Error('request failed')),
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useCompleteOccurrenceMutation>)
+    const user = userEvent.setup()
+    renderWorkspace()
+
+    await user.click(screen.getByText('准备评审'))
+    await user.click(screen.getByRole('button', { name: '完成' }))
+
+    expect(
+      await screen.findByRole('alert', { name: '' })
+    ).toHaveTextContent('任务操作失败，请稍后重试。')
+  })
+
   it('offers task archive and delete from a completed execution', async () => {
     const completedTask = task('completed-task', '部署语音转文字服务')
     const completedOccurrence = occurrence(

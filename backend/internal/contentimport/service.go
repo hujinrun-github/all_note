@@ -19,9 +19,12 @@ import (
 
 var ErrInvalidRequest = errors.New("invalid content import request")
 
+const MaxSummaryPromptLength = 4000
+
 type CreateRequest struct {
 	SourceURL         string   `json:"source_url"`
 	SummarizeWithAI   bool     `json:"summarize_with_ai"`
+	SummaryPrompt     string   `json:"summary_prompt"`
 	IncludeTranscript bool     `json:"include_transcript"`
 	Language          string   `json:"language"`
 	FolderID          string   `json:"folder_id"`
@@ -65,6 +68,12 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string, request Cre
 	}
 	if !request.SummarizeWithAI {
 		request.IncludeTranscript = true
+		request.SummaryPrompt = ""
+	} else {
+		request.SummaryPrompt = strings.TrimSpace(request.SummaryPrompt)
+		if len([]rune(request.SummaryPrompt)) > MaxSummaryPromptLength {
+			return nil, ErrInvalidRequest
+		}
 	}
 	if s.Now == nil || s.NewID == nil {
 		return nil, errors.New("content import service is not configured")
@@ -80,7 +89,7 @@ func (s *Service) Create(ctx context.Context, idempotencyKey string, request Cre
 	now := s.Now().UTC().Unix()
 	return repository.CreateOrGet(ctx, model.CreateContentImport{
 		ID: s.NewID(), IdempotencyKey: idempotencyKey, RequestSHA256: hash, SourceURL: request.SourceURL,
-		SummarizeWithAI: request.SummarizeWithAI, IncludeTranscript: request.IncludeTranscript,
+		SummarizeWithAI: request.SummarizeWithAI, SummaryPrompt: request.SummaryPrompt, IncludeTranscript: request.IncludeTranscript,
 		Language: request.Language, FolderID: strings.TrimSpace(request.FolderID),
 		ProjectIDs: compactStrings(request.ProjectIDs), Tags: compactStrings(request.Tags), Now: now,
 	})

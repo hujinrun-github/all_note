@@ -459,7 +459,10 @@ func (w Worker) generateStructuredNote(ctx context.Context, workspaceID string, 
 	if len(input) > 120000 {
 		input = input[:120000]
 	}
-	systemPrompt := `你是严谨的播客笔记编辑。只根据逐字稿提炼，不补充外部事实。返回 JSON 对象：title、summary、key_points、chapters、action_items。key_points、chapters、action_items 必须是字符串数组。`
+	systemPrompt := strings.TrimSpace(item.SummaryPrompt)
+	if systemPrompt == "" {
+		systemPrompt = `你是严谨的播客笔记编辑。只根据逐字稿提炼，不补充外部事实。返回 JSON 对象：title、summary、key_points、chapters、action_items。key_points、chapters、action_items 必须是字符串数组。`
+	}
 	userPrompt := fmt.Sprintf("节目：%s\n单集：%s\n\n逐字稿：\n%s", item.PodcastTitle, item.Title, input)
 	generated, err := w.Generator.Generate(ctx, workspaceID, systemPrompt, userPrompt)
 	if err != nil {

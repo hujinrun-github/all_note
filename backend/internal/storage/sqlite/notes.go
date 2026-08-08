@@ -147,6 +147,9 @@ func (r noteRepository) Create(ctx context.Context, req *model.CreateNoteRequest
 	// Insert project links if provided.
 	if len(req.ProjectIDs) > 0 {
 		for _, pid := range req.ProjectIDs {
+			if err := ensureSQLiteNoteProjectCompatibility(ctx, r.db, workspaceID, pid); err != nil {
+				return nil, fmt.Errorf("resolve note project: %w", err)
+			}
 			if _, err := r.db.ExecContext(ctx,
 				`INSERT OR IGNORE INTO note_project_links (workspace_id, note_id, project_id, created_at)
 				 VALUES (?, ?, ?, ?)`, workspaceID, note.ID, pid, nowUnix()); err != nil {
@@ -769,6 +772,9 @@ func setNoteProjectLinks(ctx context.Context, runner sqliteRunner, workspaceID s
 	}
 	// Insert new links (INSERT OR IGNORE keeps original created_at for existing)
 	for _, pid := range projectIDs {
+		if err := ensureSQLiteNoteProjectCompatibility(ctx, runner, workspaceID, pid); err != nil {
+			return err
+		}
 		_, err := runner.ExecContext(ctx,
 			`INSERT OR IGNORE INTO note_project_links (workspace_id, note_id, project_id, created_at)
 			 VALUES (?, ?, ?, ?)`, workspaceID, noteID, pid, nowUnix())
@@ -777,6 +783,22 @@ func setNoteProjectLinks(ctx context.Context, runner sqliteRunner, workspaceID s
 		}
 	}
 	return nil
+}
+
+func ensureSQLiteNoteProjectCompatibility(ctx context.Context, runner sqliteRunner, workspaceID, projectID string) error {
+	var existing int
+	if err := runner.QueryRowContext(ctx,
+		`SELECT 1 FROM task_projects WHERE workspace_id=? AND id=?`, workspaceID, projectID,
+	).Scan(&existing); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err := runner.ExecContext(ctx, `INSERT OR IGNORE INTO task_projects
+		(id,workspace_id,name,type,description,created_at,updated_at)
+		SELECT id,workspace_id,name,CASE WHEN kind='learning' THEN 'learning' ELSE 'regular' END,'',?,?
+		FROM domain_projects_v2 WHERE workspace_id=? AND id=?`, nowUnix(), nowUnix(), workspaceID, projectID)
+	return err
 }
 
 // getNotesProjects fetches project info for a batch of note IDs.

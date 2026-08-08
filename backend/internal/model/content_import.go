@@ -34,6 +34,7 @@ type ContentImport struct {
 	Stage               string   `json:"stage"`
 	Progress            int      `json:"progress"`
 	SummarizeWithAI     bool     `json:"summarize_with_ai"`
+	SummaryPrompt       string   `json:"summary_prompt,omitempty"`
 	IncludeTranscript   bool     `json:"include_transcript"`
 	Language            string   `json:"language"`
 	FolderID            string   `json:"folder_id,omitempty"`
@@ -57,6 +58,7 @@ type CreateContentImport struct {
 	RequestSHA256     string
 	SourceURL         string
 	SummarizeWithAI   bool
+	SummaryPrompt     string
 	IncludeTranscript bool
 	Language          string
 	FolderID          string

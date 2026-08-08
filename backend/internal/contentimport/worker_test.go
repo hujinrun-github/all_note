@@ -32,10 +32,14 @@ func (r fixedResolver) Resolve(context.Context, string) (*contentsource.Episode,
 	return &copy, nil
 }
 
-type scriptedGenerator struct{ calls int }
+type scriptedGenerator struct {
+	calls        int
+	systemPrompt string
+}
 
-func (g *scriptedGenerator) Generate(context.Context, string, string, string) (string, error) {
+func (g *scriptedGenerator) Generate(_ context.Context, _ string, systemPrompt, _ string) (string, error) {
 	g.calls++
+	g.systemPrompt = systemPrompt
 	return `{"title":"AI 产品经理","summary":"产品经理会从需求执行转向问题定义。","key_points":["先定义问题"],"chapters":["角色变化"],"action_items":["重写问题陈述"]}`, nil
 }
 
@@ -57,7 +61,7 @@ func TestWorkerPublishesStructuredNoteFromPublicTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, err := service.Create(ctx, uuid.NewString(), CreateRequest{SourceURL: "https://www.xiaoyuzhoufm.com/episode/e1", SummarizeWithAI: true, Tags: []string{"播客"}})
+	item, err := service.Create(ctx, uuid.NewString(), CreateRequest{SourceURL: "https://www.xiaoyuzhoufm.com/episode/e1", SummarizeWithAI: true, SummaryPrompt: "重点提炼产品策略，并返回约定 JSON。", Tags: []string{"播客"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +91,9 @@ func TestWorkerPublishesStructuredNoteFromPublicTranscript(t *testing.T) {
 	}
 	if generator.calls != 1 {
 		t.Fatalf("generator calls = %d", generator.calls)
+	}
+	if generator.systemPrompt != "重点提炼产品策略，并返回约定 JSON。" {
+		t.Fatalf("generator system prompt = %q", generator.systemPrompt)
 	}
 }
 

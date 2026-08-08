@@ -1,0 +1,49 @@
+name: FlowSpaceMac
+options:
+  bundleIdPrefix: com.flowspace
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: 26.0
+    GENERATE_INFOPLIST_FILE: true
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+targets:
+  FlowSpaceMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: FlowSpaceMac
+        excludes:
+          - Resources/FlowSpaceMac.entitlements
+          - Resources/Info.plist
+          - Resources/RichEditor
+      - path: FlowSpaceMac/Resources/RichEditor
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.flowspace.mac
+        PRODUCT_NAME: FlowSpaceMac
+        CODE_SIGN_ENTITLEMENTS: FlowSpaceMac/Resources/FlowSpaceMac.entitlements
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: FlowSpaceMac/Resources/Info.plist
+        ENABLE_APP_SANDBOX: true
+        CODE_SIGN_STYLE: Automatic
+    scheme:
+      testTargets:
+        - FlowSpaceMacTests
+  FlowSpaceMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: FlowSpaceMacTests
+    dependencies:
+      - target: FlowSpaceMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.flowspace.mac.tests
+        GENERATE_INFOPLIST_FILE: true

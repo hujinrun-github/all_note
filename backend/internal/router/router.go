@@ -23,6 +23,7 @@ type Config struct {
 	ProvisionControlIdentity func(context.Context, model.User) error
 	Auth                     config.AuthConfig
 	OAuthStateStore          auth.OAuthStateStore
+	NativeOAuthExchangeStore auth.NativeOAuthExchangeStore
 	GitHubClient             handler.GitHubClient
 	VoiceObjects             objectstore.Store
 	Transcriber              transcription.Transcriber
@@ -68,7 +69,9 @@ func Setup(cfg Config) *gin.Engine {
 		authRoutes.POST("/reset-password", authMiddleware.Required(), handler.ResetOwnPassword(identityStore))
 		authRoutes.GET("/providers", handler.AuthProviders(cfg.Auth))
 		authRoutes.GET("/github/start", handler.GitHubOAuthStart(identityStore, cfg.Auth, cfg.OAuthStateStore))
-		authRoutes.GET("/github/callback", handler.GitHubOAuthCallbackAcrossStores(identityStore, cfg.Store, cfg.ProvisionControlIdentity, cfg.Auth, cfg.OAuthStateStore, cfg.GitHubClient))
+		authRoutes.GET("/github/native/start", handler.GitHubNativeOAuthStart(cfg.Auth, cfg.OAuthStateStore))
+		authRoutes.POST("/github/native/exchange", handler.ExchangeGitHubNativeOAuth(cfg.Auth, cfg.NativeOAuthExchangeStore))
+		authRoutes.GET("/github/callback", handler.GitHubOAuthCallbackAcrossStoresWithNative(identityStore, cfg.Store, cfg.ProvisionControlIdentity, cfg.Auth, cfg.OAuthStateStore, cfg.NativeOAuthExchangeStore, cfg.GitHubClient))
 
 		protected := api.Group("")
 		protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
