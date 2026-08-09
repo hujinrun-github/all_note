@@ -47,11 +47,14 @@ struct InboxView: View {
                             task: store.tasksByID[occurrence.taskID],
                             project: store.inboxProject,
                             selected: occurrence.id == selectedOccurrenceID,
-                            isMutating: store.isMutating,
-                            select: {
+                            selectionMode: false,
+                            batchSelected: false,
+                            isMutating: store.mutationsDisabled,
+                            select: { _ in
                                 selectedOccurrenceID = occurrence.id
                                 configureOrganizer()
                             },
+                            toggleBatchSelection: {},
                             toggle: { await toggle(occurrence) }
                         )
                     }
@@ -113,7 +116,7 @@ struct InboxView: View {
                 .disabled(
                     title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || targetProjectID.isEmpty
-                        || store.isMutating
+                        || store.mutationsDisabled
                 )
             }
 

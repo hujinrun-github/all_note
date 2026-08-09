@@ -1,16 +1,25 @@
+import AppKit
 import SwiftUI
 
 struct TasksView: View {
     @Environment(AppSession.self) private var session
+    @Environment(\.openWindow) private var openWindow
     let store: WorkspaceStore
     @Binding var selectedOccurrenceID: String
     @Binding var selectedTaskID: String
     @Binding var workspaceView: TaskWorkspaceView
+    let initialTaskID: String?
+    let initialOccurrenceID: String?
     @State private var projectFilter = ""
     @State private var priorityFilter: Int?
     @State private var statusFilter: ExecutionStatus?
     @State private var dateFilter: TaskDateFilter = .current
     @State private var loadedView: TaskWorkspaceView?
+    @State private var batchSelectionMode = false
+    @State private var batchSelectedOccurrenceIDs: Set<String> = []
+    @State private var batchSelectionAnchorID: String?
+    @State private var taskSheet: TaskListSheetDestination?
+    @State private var didApplyInitialSelection = false
 
     private var filter: TaskWorkspaceFilter {
         TaskWorkspaceFilter(
@@ -52,15 +61,28 @@ struct TasksView: View {
                 clear: clearFilters
             )
             Divider()
+            if workspaceView != .draft {
+                TaskBatchSelectionHeader(
+                    enabled: batchSelectionMode,
+                    selectedCount: batchSelectedOccurrenceIDs.count,
+                    resultCount: filteredOccurrences.count,
+                    begin: { batchSelectionMode = true },
+                    selectAll: selectAllFilteredOccurrences,
+                    finish: finishBatchSelection
+                )
+                Divider()
+            }
             content
         }
         .task(id: workspaceView) {
             let requestedView = workspaceView
             selectedOccurrenceID = ""
             selectedTaskID = ""
+            finishBatchSelection()
             await store.loadTaskWorkspace(requestedView)
             guard !Task.isCancelled, requestedView == workspaceView else { return }
             loadedView = requestedView
+            applyInitialTaskSelection()
             applyPendingTaskSelection()
         }
         .onChange(of: filter) {
@@ -68,6 +90,49 @@ struct TasksView: View {
         }
         .onChange(of: session.pendingWorkspaceEntitySelection) {
             applyPendingTaskSelection()
+        }
+        .sheet(item: $taskSheet) { destination in
+            Group {
+                switch destination {
+                case .batch(let request):
+                    TaskBatchOperationSheet(
+                        request: request,
+                        projects: store.projects,
+                        tasksByID: store.tasksByID
+                    ) { action, occurrences in
+                        let report = await store.performTaskBatch(action, occurrences: occurrences)
+                        await store.loadTaskWorkspace(workspaceView)
+                        if report.isCompleteSuccess {
+                            finishBatchSelection()
+                        } else {
+                            normalizeBatchSelection()
+                        }
+                        return report
+                    }
+                case .edit(let task):
+                    TaskDefinitionEditorSheet(task: task, store: store) {
+                        await store.loadTaskWorkspace(workspaceView)
+                    }
+                case .reschedule(let entry):
+                    let timezone = TimeZone(identifier: entry.timezone) ?? .current
+                    CalendarEntryEditorSheet(entry: entry, timezone: timezone, store: store) {
+                        await store.loadTaskWorkspace(workspaceView)
+                    }
+                    .environment(\.timeZone, timezone)
+                case .block(let occurrence):
+                    OccurrenceBlockSheet(occurrence: occurrence, store: store) {
+                        await store.loadTaskWorkspace(workspaceView)
+                    }
+                case .move(let task):
+                    TaskMoveSheet(task: task, store: store) {
+                        await store.loadTaskWorkspace(workspaceView)
+                    }
+                case .lifecycle(let request):
+                    TaskLifecycleConfirmationSheet(request: request, store: store) {
+                        await store.loadTaskWorkspace(workspaceView)
+                    }
+                }
+            }
         }
     }
 
@@ -96,11 +161,14 @@ struct TasksView: View {
                 TaskDefinitionRow(
                     task: task,
                     project: store.projectsByID[task.projectID],
-                    selected: selectedTaskID == task.id
-                ) {
-                    selectedTaskID = task.id
-                    selectedOccurrenceID = ""
-                }
+                    selected: selectedTaskID == task.id,
+                    select: {
+                        selectedTaskID = task.id
+                        selectedOccurrenceID = ""
+                    },
+                    open: { openTask(task) },
+                    openInNewWorkspace: { openInNewWorkspace(task, view: .draft) }
+                )
                 .tag(task.id)
             }
             .listStyle(.inset)
@@ -117,15 +185,24 @@ struct TasksView: View {
             )
         } else {
             List {
-                ForEach(collections) { collection in
+                ForEach(collections, id: \.id) { collection in
                     if collection.occurrences.count > 1 {
                         OccurrenceCollectionRow(
                             collection: collection,
                             projects: store.projectsByID,
                             selectedOccurrenceID: selectedOccurrenceID,
-                            isMutating: store.isMutating,
-                            select: select,
-                            toggle: toggle
+                            selectionMode: batchSelectionMode,
+                            batchSelectedOccurrenceIDs: batchSelectedOccurrenceIDs,
+                            isMutating: store.mutationsDisabled,
+                            select: selectForCurrentMode,
+                            toggleBatchSelection: toggleBatchSelection,
+                            toggle: toggle,
+                            open: { occurrence in
+                                openOccurrence(occurrence)
+                            },
+                            contextAction: { occurrence, action in
+                                handleContextAction(occurrence, action: action)
+                            }
                         )
                     } else if let occurrence = collection.occurrences.first {
                         OccurrenceRow(
@@ -133,24 +210,15 @@ struct TasksView: View {
                             task: collection.task,
                             project: store.projectsByID[occurrence.projectID ?? collection.task?.projectID ?? ""],
                             selected: occurrence.id == selectedOccurrenceID,
-                            isMutating: store.isMutating,
-                            select: { select(occurrence) },
-                            toggle: { await toggle(occurrence) }
+                            selectionMode: batchSelectionMode,
+                            batchSelected: batchSelectedOccurrenceIDs.contains(occurrence.id),
+                            isMutating: store.mutationsDisabled,
+                            select: { selectForCurrentMode(occurrence, extending: $0) },
+                            toggleBatchSelection: { toggleBatchSelection(occurrence) },
+                            toggle: { await toggle(occurrence) },
+                            open: { openOccurrence(occurrence) },
+                            contextAction: { handleContextAction(occurrence, action: $0) }
                         )
-                        .contextMenu {
-                            if occurrence.executionStatus == .open {
-                                Button("开始", systemImage: "play.fill") {
-                                    Task { await start(occurrence) }
-                                }
-                            }
-                            Button(
-                                occurrence.executionStatus == .done ? "重新打开" : "完成",
-                                systemImage: occurrence.executionStatus == .done ? "arrow.uturn.backward" : "checkmark"
-                            ) {
-                                Task { await toggle(occurrence) }
-                            }
-                            .disabled(occurrence.executionStatus.isTerminal && occurrence.executionStatus != .done)
-                        }
                     }
                 }
             }
@@ -159,8 +227,25 @@ struct TasksView: View {
             .onMoveCommand(perform: moveSelection)
             .onKeyPress(.space) {
                 guard let selectedOccurrence else { return .ignored }
-                Task { await toggle(selectedOccurrence) }
+                if batchSelectionMode {
+                    toggleBatchSelection(selectedOccurrence)
+                } else {
+                    Task { await toggle(selectedOccurrence) }
+                }
                 return .handled
+            }
+            .onKeyPress("a", phases: .down) { press in
+                guard batchSelectionMode, press.modifiers.contains(.command) else { return .ignored }
+                selectAllFilteredOccurrences()
+                return .handled
+            }
+            if batchSelectionMode && batchSelectedOccurrenceIDs.count >= 2 {
+                Divider()
+                TaskBatchActionBar(
+                    selectedCount: batchSelectedOccurrenceIDs.count,
+                    isDisabled: store.mutationsDisabled,
+                    choose: presentBatchOperation
+                )
             }
         }
     }
@@ -204,24 +289,62 @@ struct TasksView: View {
            workspaceView == .draft {
             selectedTaskID = ""
         }
+        normalizeBatchSelection()
     }
 
     private func applyPendingTaskSelection() {
-        guard case .task(let taskID) = session.pendingWorkspaceEntitySelection else { return }
+        guard let pendingSelection = session.pendingWorkspaceEntitySelection else { return }
         guard !store.isLoading else { return }
+        let didApply = switch pendingSelection {
+        case .task(let taskID):
+            applyTaskSelection(taskID: taskID)
+        case .occurrence(let occurrenceID):
+            applyOccurrenceSelection(occurrenceID: occurrenceID)
+        case .project, .note:
+            false
+        }
+        guard didApply else { return }
+        session.consumeWorkspaceEntitySelection()
+    }
+
+    private func applyInitialTaskSelection() {
+        guard !didApplyInitialSelection, !store.isLoading else { return }
+        if let initialOccurrenceID,
+           applyOccurrenceSelection(occurrenceID: initialOccurrenceID) {
+            didApplyInitialSelection = true
+        } else if let initialTaskID,
+                  applyTaskSelection(taskID: initialTaskID) {
+            didApplyInitialSelection = true
+        }
+    }
+
+    @discardableResult
+    private func applyOccurrenceSelection(occurrenceID: String) -> Bool {
+        clearFilters()
+        guard let occurrence = store.occurrences.first(where: { $0.id == occurrenceID }) else {
+            return false
+        }
+        select(occurrence)
+        return true
+    }
+
+    @discardableResult
+    private func applyTaskSelection(taskID: String) -> Bool {
         clearFilters()
         if let occurrence = store.occurrences.first(where: { $0.taskID == taskID && !$0.executionStatus.isTerminal })
             ?? store.occurrences.first(where: { $0.taskID == taskID }) {
             select(occurrence)
+            return true
         } else if let task = store.tasks.first(where: { $0.id == taskID }) {
             if task.lifecycleStatus == .draft, workspaceView != .draft {
                 workspaceView = .draft
-                return
+                return false
             }
             selectedTaskID = task.id
             selectedOccurrenceID = ""
+            return true
         }
-        session.consumeWorkspaceEntitySelection()
+        return false
     }
 
     private func moveSelection(_ direction: MoveCommandDirection) {
@@ -235,7 +358,169 @@ struct TasksView: View {
         } else {
             nextIndex = filteredOccurrences.startIndex
         }
-        select(filteredOccurrences[nextIndex])
+        let occurrence = filteredOccurrences[nextIndex]
+        if batchSelectionMode, NSEvent.modifierFlags.contains(.shift) {
+            extendBatchSelection(to: occurrence)
+            selectedOccurrenceID = occurrence.id
+            selectedTaskID = ""
+        } else {
+            select(occurrence)
+        }
+    }
+
+    private func selectForCurrentMode(_ occurrence: OccurrenceV2, extending: Bool) {
+        if batchSelectionMode {
+            if extending {
+                extendBatchSelection(to: occurrence)
+            } else {
+                toggleBatchSelection(occurrence)
+            }
+        }
+        select(occurrence)
+    }
+
+    private func toggleBatchSelection(_ occurrence: OccurrenceV2) {
+        if batchSelectedOccurrenceIDs.contains(occurrence.id) {
+            batchSelectedOccurrenceIDs.remove(occurrence.id)
+        } else {
+            batchSelectedOccurrenceIDs.insert(occurrence.id)
+        }
+        batchSelectionAnchorID = occurrence.id
+        selectedOccurrenceID = occurrence.id
+        selectedTaskID = ""
+    }
+
+    private func extendBatchSelection(to occurrence: OccurrenceV2) {
+        let orderedIDs = filteredOccurrences.map(\.id)
+        let anchorID = batchSelectionAnchorID ?? selectedOccurrenceID
+        guard !anchorID.isEmpty else {
+            toggleBatchSelection(occurrence)
+            return
+        }
+        batchSelectedOccurrenceIDs.formUnion(
+            TaskBatchPlanner.selectionRange(from: anchorID, through: occurrence.id, in: orderedIDs)
+        )
+    }
+
+    private func selectAllFilteredOccurrences() {
+        batchSelectionMode = true
+        batchSelectedOccurrenceIDs = Set(filteredOccurrences.map(\.id))
+        batchSelectionAnchorID = filteredOccurrences.first?.id
+    }
+
+    private func finishBatchSelection() {
+        batchSelectionMode = false
+        batchSelectedOccurrenceIDs.removeAll()
+        batchSelectionAnchorID = nil
+    }
+
+    private func normalizeBatchSelection() {
+        let visibleIDs = Set(filteredOccurrences.map(\.id))
+        batchSelectedOccurrenceIDs.formIntersection(visibleIDs)
+        if let anchor = batchSelectionAnchorID, !visibleIDs.contains(anchor) {
+            batchSelectionAnchorID = nil
+        }
+    }
+
+    private func presentBatchOperation(_ kind: TaskBatchOperationKind) {
+        let selected = filteredOccurrences.filter { batchSelectedOccurrenceIDs.contains($0.id) }
+        guard selected.count >= 2 else { return }
+        taskSheet = .batch(TaskBatchRequest(kind: kind, occurrences: selected))
+    }
+
+    private func openOccurrence(_ occurrence: OccurrenceV2) {
+        guard let task = store.tasksByID[occurrence.taskID] else {
+            store.errorMessage = "找不到这次执行对应的任务定义。"
+            return
+        }
+        if NSEvent.modifierFlags.contains(.option) {
+            openInNewWorkspace(task, view: workspaceView)
+        } else {
+            openTask(task)
+        }
+    }
+
+    private func openTask(_ task: TaskV2) {
+        taskSheet = .edit(task)
+    }
+
+    private func openInNewWorkspace(_ task: TaskV2, view: TaskWorkspaceView) {
+        openWindow(value: WorkspaceWindowRoute.task(task.id, view: view))
+    }
+
+    private func handleContextAction(_ occurrence: OccurrenceV2, action: OccurrenceRowContextAction) {
+        switch action {
+        case .start:
+            Task { await start(occurrence) }
+        case .block:
+            taskSheet = .block(occurrence)
+        case .unblock:
+            Task { await unblock(occurrence) }
+        case .toggleCompletion:
+            Task { await toggle(occurrence) }
+        case .editTask:
+            openOccurrenceForEditing(occurrence)
+        case .reschedule:
+            presentReschedule(occurrence)
+        case .copyLink:
+            copyTaskLink(occurrence)
+        case .moveProject:
+            withTask(for: occurrence) { taskSheet = .move($0) }
+        case .cancelTask:
+            withTask(for: occurrence) {
+                taskSheet = .lifecycle(TaskLifecycleRequest(task: $0, command: .cancel))
+            }
+        case .archiveTask:
+            withTask(for: occurrence) {
+                taskSheet = .lifecycle(TaskLifecycleRequest(task: $0, command: .archive))
+            }
+        case .openInNewWorkspace:
+            withTask(for: occurrence) { openInNewWorkspace($0, view: workspaceView) }
+        }
+    }
+
+    private func withTask(for occurrence: OccurrenceV2, perform: (TaskV2) -> Void) {
+        guard let task = store.tasksByID[occurrence.taskID] else {
+            store.errorMessage = "找不到这次执行对应的任务定义。"
+            return
+        }
+        perform(task)
+    }
+
+    private func copyTaskLink(_ occurrence: OccurrenceV2) {
+        guard let baseURL = session.baseURL,
+              let url = WorkspaceWebLink.task(
+                baseURL: baseURL,
+                taskID: occurrence.taskID,
+                view: workspaceView
+              ) else {
+            store.errorMessage = "无法生成任务链接。"
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.absoluteString, forType: .string)
+    }
+
+    private func openOccurrenceForEditing(_ occurrence: OccurrenceV2) {
+        guard let task = store.tasksByID[occurrence.taskID] else {
+            store.errorMessage = "找不到这次执行对应的任务定义。"
+            return
+        }
+        openTask(task)
+    }
+
+    private func presentReschedule(_ occurrence: OccurrenceV2) {
+        guard let task = store.tasksByID[occurrence.taskID],
+              let entry = CalendarEntryV2(
+                occurrence: occurrence,
+                task: task,
+                project: store.projectsByID[occurrence.projectID ?? task.projectID]
+              ) else {
+            store.errorMessage = "无法读取这次执行的安排信息。"
+            return
+        }
+        taskSheet = .reschedule(entry)
     }
 
     private func toggle(_ occurrence: OccurrenceV2) async {
@@ -260,6 +545,233 @@ struct TasksView: View {
                 await store.loadTaskWorkspace(workspaceView)
             }
         }
+    }
+
+    private func unblock(_ occurrence: OccurrenceV2) async {
+        do {
+            try await store.unblock(occurrence)
+            await store.loadTaskWorkspace(workspaceView)
+        } catch {
+            store.errorMessage = error.localizedDescription
+            if let apiError = error as? APIError, apiError.isRevisionConflict {
+                await store.loadTaskWorkspace(workspaceView)
+            }
+        }
+    }
+}
+
+private enum TaskListSheetDestination: Identifiable {
+    case batch(TaskBatchRequest)
+    case edit(TaskV2)
+    case reschedule(CalendarEntryV2)
+    case block(OccurrenceV2)
+    case move(TaskV2)
+    case lifecycle(TaskLifecycleRequest)
+
+    var id: String {
+        switch self {
+        case .batch(let request): "batch-\(request.id)"
+        case .edit(let task): "edit-\(task.id)"
+        case .reschedule(let entry): "reschedule-\(entry.occurrenceID)"
+        case .block(let occurrence): "block-\(occurrence.id)"
+        case .move(let task): "move-\(task.id)"
+        case .lifecycle(let request): request.id
+        }
+    }
+}
+
+private struct TaskLifecycleRequest: Identifiable {
+    let task: TaskV2
+    let command: TaskLifecycleCommand
+
+    var id: String { "\(command.rawValue)-\(task.id)" }
+
+    var title: String {
+        command == .cancel ? "取消这个任务？" : "归档这个任务？"
+    }
+
+    var message: String {
+        if command == .cancel {
+            return "任务定义及其未结束执行会按照服务端规则取消；已有历史记录会保留。"
+        }
+        return "归档后任务会从普通视图隐藏，执行历史仍由服务端保留。"
+    }
+
+    var confirmationTitle: String { command == .cancel ? "取消任务" : "归档" }
+}
+
+private struct TaskMoveSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let task: TaskV2
+    let store: WorkspaceStore
+    let onSaved: () async -> Void
+    @State private var projectID: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    init(task: TaskV2, store: WorkspaceStore, onSaved: @escaping () async -> Void) {
+        self.task = task
+        self.store = store
+        self.onSaved = onSaved
+        _projectID = State(initialValue: task.projectID)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("目标项目", selection: $projectID) {
+                    ForEach(store.projects) { project in
+                        Text(project.name).tag(project.id)
+                    }
+                }
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("移动任务")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }.disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("移动") { Task { await save() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            isSaving || store.mutationsDisabled
+                                || projectID.isEmpty || projectID == task.projectID
+                        )
+                }
+            }
+        }
+        .frame(width: 480, height: 260)
+        .interactiveDismissDisabled(isSaving)
+    }
+
+    private func save() async {
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+        do {
+            try await store.moveTask(task, to: projectID)
+            await onSaved()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct TaskLifecycleConfirmationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let request: TaskLifecycleRequest
+    let store: WorkspaceStore
+    let onSaved: () async -> Void
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Label(request.title, systemImage: "exclamationmark.triangle")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.red)
+                Text(request.message).foregroundStyle(.secondary)
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "xmark.octagon")
+                        .foregroundStyle(.red)
+                }
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle(request.task.title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("再想想") { dismiss() }.disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(request.confirmationTitle, role: .destructive) {
+                        Task { await save() }
+                    }
+                    .disabled(isSaving || store.mutationsDisabled)
+                }
+            }
+        }
+        .frame(width: 500, height: 280)
+        .interactiveDismissDisabled(isSaving)
+    }
+
+    private func save() async {
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+        do {
+            try await store.executeTaskLifecycle(request.task, command: request.command)
+            await onSaved()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct TaskBatchSelectionHeader: View {
+    let enabled: Bool
+    let selectedCount: Int
+    let resultCount: Int
+    let begin: () -> Void
+    let selectAll: () -> Void
+    let finish: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if enabled {
+                Label("已选择 \(selectedCount) 项", systemImage: "checkmark.square")
+                    .fontWeight(.medium)
+                Text("Shift 点按或 Shift ↑/↓ 连续选择")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(selectedCount == resultCount ? "已全选" : "选择当前筛选结果", action: selectAll)
+                    .disabled(resultCount == 0 || selectedCount == resultCount)
+                    .keyboardShortcut("a", modifiers: .command)
+                Button("完成选择", action: finish)
+            } else {
+                Spacer()
+                Button("批量选择", systemImage: "checkmark.square", action: begin)
+                    .disabled(resultCount == 0)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(enabled ? Color.accentColor.opacity(0.055) : .clear)
+    }
+}
+
+private struct TaskBatchActionBar: View {
+    let selectedCount: Int
+    let isDisabled: Bool
+    let choose: (TaskBatchOperationKind) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(selectedCount) 项")
+                .font(.callout.monospacedDigit().weight(.semibold))
+            Divider().frame(height: 18)
+            Button("完成", systemImage: "checkmark.circle") { choose(.complete) }
+            Button("移动", systemImage: "folder") { choose(.move) }
+            Button("优先级", systemImage: "flag") { choose(.priority) }
+            Button("改期", systemImage: "calendar.badge.clock") { choose(.reschedule) }
+            Spacer()
+            Button("取消任务", systemImage: "xmark.circle") { choose(.cancel) }
+                .tint(.red)
+        }
+        .buttonStyle(.bordered)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .disabled(isDisabled)
     }
 }
 
@@ -362,6 +874,8 @@ private struct TaskDefinitionRow: View {
     let project: ProjectV2?
     let selected: Bool
     let select: () -> Void
+    let open: () -> Void
+    let openInNewWorkspace: () -> Void
 
     var body: some View {
         Button(action: select) {
@@ -387,5 +901,11 @@ private struct TaskDefinitionRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("task-definition-row-\(task.id)")
+        .simultaneousGesture(TapGesture(count: 2).onEnded { open() })
+        .contextMenu {
+            Button("编辑任务", systemImage: "pencil", action: open)
+            Divider()
+            Button("在新工作区打开", systemImage: "macwindow.badge.plus", action: openInNewWorkspace)
+        }
     }
 }

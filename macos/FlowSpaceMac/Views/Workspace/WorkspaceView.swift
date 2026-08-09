@@ -7,11 +7,17 @@ struct WorkspaceView: View {
     @SceneStorage("workspace.selectedOccurrence") private var selectedOccurrenceID = ""
     @SceneStorage("workspace.selectedTaskDefinition") private var selectedTaskDefinitionID = ""
     @SceneStorage("workspace.taskView") private var taskViewRaw = TaskWorkspaceView.upcoming.rawValue
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @SceneStorage("workspace.columnVisibility") private var columnVisibilityRaw = "all"
     @State private var taskDraft: TaskDraft?
-    @State private var searchRequest: SearchRequest?
+    @State private var didApplyInitialRoute = false
 
     let store: WorkspaceStore
+    let initialRoute: WorkspaceWindowRoute?
+
+    init(store: WorkspaceStore, initialRoute: WorkspaceWindowRoute? = nil) {
+        self.store = store
+        self.initialRoute = initialRoute
+    }
 
     private var destination: Binding<WorkspaceDestination?> {
         Binding(
@@ -35,6 +41,27 @@ struct WorkspaceView: View {
         )
     }
 
+    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: {
+                switch columnVisibilityRaw {
+                case "detailOnly": .detailOnly
+                case "doubleColumn": .doubleColumn
+                default: .all
+                }
+            },
+            set: { value in
+                if value == .detailOnly {
+                    columnVisibilityRaw = "detailOnly"
+                } else if value == .doubleColumn {
+                    columnVisibilityRaw = "doubleColumn"
+                } else {
+                    columnVisibilityRaw = "all"
+                }
+            }
+        )
+    }
+
     private var selectedOccurrence: OccurrenceV2? {
         store.occurrences.first { $0.id == selectedOccurrenceID }
     }
@@ -44,7 +71,7 @@ struct WorkspaceView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: columnVisibility) {
             WorkspaceSidebar(selection: destination)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } content: {
@@ -83,7 +110,7 @@ struct WorkspaceView: View {
                 .disabled(store.isLoading)
 
                 Button {
-                    searchRequest = SearchRequest()
+                    openWindow(id: "global-search")
                 } label: {
                     Label("全局搜索", systemImage: "magnifyingglass")
                 }
@@ -97,23 +124,17 @@ struct WorkspaceView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if session.connectivity.isOffline {
+                OfflineReadOnlyBanner(
+                    lastSuccessfulResponseAt: session.connectivity.lastSuccessfulResponseAt,
+                    retry: { Task { await session.retryConnection() } }
+                )
+            }
+        }
         .sheet(item: $taskDraft) { draft in
             TaskEditorSheet(draft: draft, store: store) {
                 await refreshCurrentDestination()
-            }
-        }
-        .sheet(item: $searchRequest) { _ in
-            GlobalSearchView(store: store) { result in
-                switch result.type {
-                case "note":
-                    openWindow(value: result.id)
-                case "project":
-                    destinationRaw = WorkspaceDestination.projects.rawValue
-                case "event":
-                    destinationRaw = WorkspaceDestination.calendar.rawValue
-                default:
-                    destinationRaw = WorkspaceDestination.tasks.rawValue
-                }
             }
         }
         .overlay(alignment: .bottom) {
@@ -123,6 +144,7 @@ struct WorkspaceView: View {
             }
         }
         .task {
+            applyInitialWorkspaceRoute()
             applyPendingWorkspaceDestination()
         }
         .onChange(of: session.pendingWorkspaceDestination) {
@@ -140,18 +162,28 @@ struct WorkspaceView: View {
                 store: store,
                 selectedOccurrenceID: $selectedOccurrenceID,
                 selectedTaskID: $selectedTaskDefinitionID,
-                workspaceView: taskWorkspaceView
+                workspaceView: taskWorkspaceView,
+                initialTaskID: initialTaskID,
+                initialOccurrenceID: initialOccurrenceID
             )
         case .inbox:
             InboxView(store: store, selectedOccurrenceID: $selectedOccurrenceID)
         case .projects:
-            ProjectsView(store: store, selectedOccurrenceID: $selectedOccurrenceID)
+            ProjectsView(
+                store: store,
+                selectedOccurrenceID: $selectedOccurrenceID,
+                initialProjectID: initialProjectID
+            )
         case .calendar:
             CalendarWorkspaceView(store: store)
         case .notes:
             NotesLibraryView(store: store)
         case .review:
-            DailySummaryView(store: store)
+            DailySummaryView(
+                store: store,
+                navigateToOccurrence: navigateToSummaryOccurrence,
+                navigateToNote: navigateToSummaryNote
+            )
         }
     }
 
@@ -185,10 +217,50 @@ struct WorkspaceView: View {
         selectedTaskDefinitionID = ""
         session.consumeWorkspaceDestination()
     }
-}
 
-private struct SearchRequest: Identifiable {
-    let id = UUID()
+    private var initialTaskID: String? {
+        guard let selection = initialRoute?.selection,
+              case .task(let taskID) = selection else { return nil }
+        return taskID
+    }
+
+    private var initialProjectID: String? {
+        guard let selection = initialRoute?.selection,
+              case .project(let projectID) = selection else { return nil }
+        return projectID
+    }
+
+    private var initialOccurrenceID: String? {
+        guard let selection = initialRoute?.selection,
+              case .occurrence(let occurrenceID) = selection else { return nil }
+        return occurrenceID
+    }
+
+    private func navigateToSummaryOccurrence(_ occurrenceID: String, view: TaskWorkspaceView) {
+        taskViewRaw = view.rawValue
+        selectedOccurrenceID = ""
+        selectedTaskDefinitionID = ""
+        session.requestWorkspaceEntitySelection(.occurrence(occurrenceID))
+        destinationRaw = WorkspaceDestination.tasks.rawValue
+    }
+
+    private func navigateToSummaryNote(_ noteID: String) {
+        selectedOccurrenceID = ""
+        selectedTaskDefinitionID = ""
+        session.requestWorkspaceEntitySelection(.note(noteID))
+        destinationRaw = WorkspaceDestination.notes.rawValue
+    }
+
+    private func applyInitialWorkspaceRoute() {
+        guard !didApplyInitialRoute, let initialRoute else { return }
+        didApplyInitialRoute = true
+        destinationRaw = initialRoute.destination.rawValue
+        if let taskView = initialRoute.taskView {
+            taskViewRaw = taskView.rawValue
+        }
+        selectedOccurrenceID = ""
+        selectedTaskDefinitionID = ""
+    }
 }
 
 private struct WorkspaceSidebar: View {
@@ -230,9 +302,7 @@ private struct WorkspaceSidebar: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(session.currentUser?.user.displayName ?? "FlowSpace")
                             .lineLimit(1)
-                        Label("在线", systemImage: "circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
+                        connectionLabel
                     }
                     Spacer()
                     Image(systemName: "chevron.up.chevron.down")
@@ -247,6 +317,49 @@ private struct WorkspaceSidebar: View {
             .padding(8)
             .background(.bar)
         }
+    }
+
+    @ViewBuilder
+    private var connectionLabel: some View {
+        if session.connectivity.isOffline {
+            Label("离线 · 只读", systemImage: "wifi.slash")
+                .foregroundStyle(.orange)
+        } else if case .checking = session.connectivity.state {
+            Label("正在检查连接", systemImage: "circle.dotted")
+                .foregroundStyle(.secondary)
+        } else {
+            Label("在线", systemImage: "circle.fill")
+                .foregroundStyle(.green)
+        }
+    }
+}
+
+struct OfflineReadOnlyBanner: View {
+    let lastSuccessfulResponseAt: Date?
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wifi.slash")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("离线 · 只读")
+                    .fontWeight(.semibold)
+                if let lastSuccessfulResponseAt {
+                    Text("正在显示最近加载的内容 · 上次连接于 \(lastSuccessfulResponseAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                } else {
+                    Text("恢复连接后才能保存更改")
+                        .font(.caption)
+                }
+            }
+            Spacer()
+            Button("重试连接", systemImage: "arrow.clockwise", action: retry)
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(.orange.opacity(0.1))
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

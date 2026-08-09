@@ -67,8 +67,11 @@ struct TodayView: View {
                                 collection: collection,
                                 projects: store.projectsByID,
                                 selectedOccurrenceID: selectedOccurrenceID,
-                                isMutating: store.isMutating,
-                                select: { selectedOccurrenceID = $0.id },
+                                selectionMode: false,
+                                batchSelectedOccurrenceIDs: [],
+                                isMutating: store.mutationsDisabled,
+                                select: { occurrence, _ in selectedOccurrenceID = occurrence.id },
+                                toggleBatchSelection: { _ in },
                                 toggle: toggle
                             )
                         } else if let occurrence = collection.occurrences.first {
@@ -77,8 +80,11 @@ struct TodayView: View {
                                 task: collection.task,
                                 project: store.projectsByID[occurrence.projectID ?? collection.task?.projectID ?? ""],
                                 selected: occurrence.id == selectedOccurrenceID,
-                                isMutating: store.isMutating,
-                                select: { selectedOccurrenceID = occurrence.id },
+                                selectionMode: false,
+                                batchSelected: false,
+                                isMutating: store.mutationsDisabled,
+                                select: { _ in selectedOccurrenceID = occurrence.id },
+                                toggleBatchSelection: {},
                                 toggle: { await toggle(occurrence) }
                             )
                         }
@@ -101,4 +107,3 @@ struct TodayView: View {
         }
     }
 }
-

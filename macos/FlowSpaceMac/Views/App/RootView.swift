@@ -3,6 +3,11 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.openWindow) private var openWindow
+    let initialRoute: WorkspaceWindowRoute?
+
+    init(initialRoute: WorkspaceWindowRoute? = nil) {
+        self.initialRoute = initialRoute
+    }
 
     var body: some View {
         Group {
@@ -23,14 +28,16 @@ struct RootView: View {
                 CapabilityDiagnosticView(reason: reason)
             case .ready:
                 if let store = session.workspaceStore {
-                    WorkspaceView(store: store)
+                    WorkspaceView(store: store, initialRoute: initialRoute)
                 } else {
                     ContentUnavailableView("工作区不可用", systemImage: "exclamationmark.triangle")
                 }
             }
         }
         .task {
-            await session.restore()
+            if session.phase == .starting {
+                await session.restore()
+            }
         }
         .task(id: session.phase) {
             await monitorContentImports()

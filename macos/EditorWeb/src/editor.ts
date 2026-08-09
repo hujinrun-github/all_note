@@ -9,6 +9,7 @@ declare global {
     flowspaceNative?: {
       configure(noteID: string, generation: string): void
       setMarkdown(markdown: string, generation: string): void
+      setEditable(value: boolean): void
       command(command: string, value?: string): void
       replaceSelection(text: string, expectedText: string): boolean
       find(query: string, backwards: boolean): boolean
@@ -202,6 +203,10 @@ window.flowspaceNative = {
     editor.commands.setContent(value || '', { emitUpdate: false })
     suppressChanges = false
     post('documentState', { wordCount: wordCount(markdown()) })
+  },
+  setEditable(value) {
+    editor.setEditable(Boolean(value))
+    if (!value) bubble.classList.remove('visible')
   },
   command: run,
   replaceSelection(text, expectedText) {

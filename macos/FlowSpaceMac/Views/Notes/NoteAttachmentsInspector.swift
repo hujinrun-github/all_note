@@ -30,7 +30,7 @@ struct NoteAttachmentsInspector: View {
                 Spacer()
                 Button("添加附件", systemImage: "plus") { isPickingFiles = true }
                     .labelStyle(.iconOnly)
-                    .disabled(store.isMutating || attachments.count >= 20)
+                    .disabled(store.mutationsDisabled || attachments.count >= 20)
             }
             .padding(16)
 
@@ -48,7 +48,7 @@ struct NoteAttachmentsInspector: View {
                     AttachmentRow(
                         attachment: attachment,
                         isTranscribing: transcribingAttachmentID == attachment.id,
-                        isMutating: store.isMutating,
+                        isMutating: store.mutationsDisabled,
                         transcribe: { requestTranscription(attachment) },
                         delete: { deletingAttachment = attachment }
                     )
@@ -242,7 +242,11 @@ private struct AttachmentRow: View {
                             Button(actionTitle, systemImage: "text.bubble") { transcribe() }
                                 .labelStyle(.iconOnly)
                                 .buttonStyle(.borderless)
-                                .disabled(attachment.transcriptionState == .processing || attachment.transcriptionState == .completed)
+                                .disabled(
+                                    isMutating
+                                        || attachment.transcriptionState == .processing
+                                        || attachment.transcriptionState == .completed
+                                )
                                 .help(actionTitle)
                                 .accessibilityLabel(actionTitle)
                 }

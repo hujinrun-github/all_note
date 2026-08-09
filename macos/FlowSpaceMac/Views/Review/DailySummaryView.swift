@@ -1,8 +1,11 @@
+import AppKit
 import SwiftUI
 
 struct DailySummaryView: View {
     @Environment(\.openWindow) private var openWindow
     let store: WorkspaceStore
+    let navigateToOccurrence: (String, TaskWorkspaceView) -> Void
+    let navigateToNote: (String) -> Void
     @State private var period: SummaryPeriod = .week
 
     private var completedCount: Int {
@@ -76,23 +79,32 @@ struct DailySummaryView: View {
                                 Text("\(group.count) 项").foregroundStyle(.secondary)
                             }
                             ForEach(group.tasks) { task in
-                                HStack(spacing: 10) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(task.title).fontWeight(.medium)
-                                        Text(task.project?.name ?? "未归属项目")
+                                Button {
+                                    openOccurrence(task.id, view: .completed)
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(task.title).fontWeight(.medium)
+                                            Text(task.project?.name ?? "未归属项目")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        if !(task.linkedNotes ?? []).isEmpty {
+                                            Label("\(task.linkedNotes?.count ?? 0)", systemImage: "note.text")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Image(systemName: "chevron.right")
                                             .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(.tertiary)
                                     }
-                                    Spacer()
-                                    if !(task.linkedNotes ?? []).isEmpty {
-                                        Label("\(task.linkedNotes?.count ?? 0)", systemImage: "note.text")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    .contentShape(.rect)
+                                    .padding(.vertical, 3)
                                 }
-                                .padding(.vertical, 3)
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -121,21 +133,30 @@ struct DailySummaryView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(store.summaryAttention.prefix(5)) { occurrence in
-                        HStack(spacing: 9) {
-                            Circle()
-                                .fill(isOverdue(occurrence) ? .red : .orange)
-                                .frame(width: 7, height: 7)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(occurrence.title ?? store.tasksByID[occurrence.taskID]?.title ?? "未命名任务")
-                                    .fontWeight(.medium)
-                                    .lineLimit(1)
-                                Text(isOverdue(occurrence) ? "已逾期" : "今日待办")
+                        Button {
+                            openOccurrence(occurrence.id, view: isOverdue(occurrence) ? .overdue : .today)
+                        } label: {
+                            HStack(spacing: 9) {
+                                Circle()
+                                    .fill(isOverdue(occurrence) ? .red : .orange)
+                                    .frame(width: 7, height: 7)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(occurrence.title ?? store.tasksByID[occurrence.taskID]?.title ?? "未命名任务")
+                                        .fontWeight(.medium)
+                                        .lineLimit(1)
+                                    Text(isOverdue(occurrence) ? "已逾期" : "今日待办")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.tertiary)
                             }
-                            Spacer()
+                            .contentShape(.rect)
+                            .padding(.vertical, 7)
                         }
-                        .padding(.vertical, 7)
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -155,7 +176,7 @@ struct DailySummaryView: View {
                 VStack(spacing: 0) {
                     ForEach(store.notes.prefix(3)) { note in
                         Button {
-                            openWindow(value: note.id)
+                            openNote(note.id)
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -208,6 +229,22 @@ struct DailySummaryView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: planned).map { $0 < Calendar.current.startOfDay(for: Date()) } ?? false
     }
+
+    private func openOccurrence(_ occurrenceID: String, view: TaskWorkspaceView) {
+        if NSEvent.modifierFlags.contains(.option) {
+            openWindow(value: WorkspaceWindowRoute.occurrence(occurrenceID, view: view))
+        } else {
+            navigateToOccurrence(occurrenceID, view)
+        }
+    }
+
+    private func openNote(_ noteID: String) {
+        if NSEvent.modifierFlags.contains(.option) {
+            openWindow(value: noteID)
+        } else {
+            navigateToNote(noteID)
+        }
+    }
 }
 
 private struct SummaryMetric: View {
@@ -229,4 +266,3 @@ private struct SummaryMetric: View {
         .background(.regularMaterial, in: .rect(cornerRadius: 12))
     }
 }
-

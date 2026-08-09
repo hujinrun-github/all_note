@@ -7,13 +7,15 @@ final class RichEditorController {
     private var noteID = ""
     private var generation = ""
     private var isReady = false
+    private var isReadOnly = false
     private(set) var lastEditorMarkdown = ""
 
-    func attach(_ webView: WKWebView, noteID: String, generation: String, markdown: String) {
+    func attach(_ webView: WKWebView, noteID: String, generation: String, markdown: String, isReadOnly: Bool) {
         self.webView = webView
         self.noteID = noteID
         self.generation = generation
         lastEditorMarkdown = markdown
+        self.isReadOnly = isReadOnly
         isReady = false
     }
 
@@ -32,8 +34,14 @@ final class RichEditorController {
             script: """
             window.flowspaceNative.configure(noteID, generation)
             window.flowspaceNative.setMarkdown(markdown, generation)
+            window.flowspaceNative.setEditable(isEditable)
             """,
-            arguments: ["noteID": noteID, "generation": generation, "markdown": markdown]
+            arguments: [
+                "noteID": noteID,
+                "generation": generation,
+                "markdown": markdown,
+                "isEditable": !isReadOnly,
+            ]
         )
     }
 
@@ -48,6 +56,17 @@ final class RichEditorController {
             in: webView,
             script: "window.flowspaceNative.setMarkdown(markdown, generation)",
             arguments: ["markdown": markdown, "generation": generation]
+        )
+    }
+
+    func setReadOnly(_ value: Bool) {
+        guard value != isReadOnly else { return }
+        isReadOnly = value
+        guard isReady, let webView else { return }
+        call(
+            in: webView,
+            script: "window.flowspaceNative.setEditable(isEditable)",
+            arguments: ["isEditable": !value]
         )
     }
 
@@ -104,6 +123,7 @@ final class RichEditorController {
 struct RichNoteEditor: NSViewRepresentable {
     let noteID: String
     let generation: String
+    let isReadOnly: Bool
     @Binding var markdown: String
     @Binding var selectedText: String
     @Binding var wordCount: Int
@@ -129,7 +149,13 @@ struct RichNoteEditor: NSViewRepresentable {
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsMagnification = true
         webView.magnification = 1
-        controller.attach(webView, noteID: noteID, generation: generation, markdown: markdown)
+        controller.attach(
+            webView,
+            noteID: noteID,
+            generation: generation,
+            markdown: markdown,
+            isReadOnly: isReadOnly
+        )
 
         if let directory = Bundle.main.resourceURL?.appending(path: "RichEditor", directoryHint: .isDirectory),
            FileManager.default.fileExists(atPath: directory.appending(path: "index.html").path) {
@@ -143,6 +169,7 @@ struct RichNoteEditor: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.parent = self
         controller.synchronize(markdown: markdown)
+        controller.setReadOnly(isReadOnly)
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {

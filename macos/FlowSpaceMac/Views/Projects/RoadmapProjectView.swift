@@ -9,7 +9,7 @@ struct RoadmapProjectView: View {
     @Environment(\.openWindow) private var openWindow
     let project: ProjectV2
     let store: WorkspaceStore
-    @State private var selectedStageID = ""
+    @SceneStorage("roadmap.selectedStage") private var selectedStageID = ""
     @State private var nodeDraft: RoadmapNodeDraft?
     @State private var generationRequest: GenerationRequest?
     @State private var deletingNode: RoadmapNodeV2?
@@ -69,6 +69,7 @@ struct RoadmapProjectView: View {
                 draft: draft,
                 stages: stages,
                 isSaving: store.isMutating,
+                isReadOnly: store.isReadOnly,
                 save: { updated in await save(updated) }
             )
         }
@@ -77,6 +78,7 @@ struct RoadmapProjectView: View {
                 request: request,
                 projectName: project.name,
                 isGenerating: store.isMutating,
+                isReadOnly: store.isReadOnly,
                 generate: { prompt in await generate(prompt) }
             )
         }
@@ -134,12 +136,12 @@ struct RoadmapProjectView: View {
                         catch { store.errorMessage = error.localizedDescription }
                     }
                 }
-                .disabled(store.isMutating)
+                .disabled(store.mutationsDisabled)
                 Button("AI 生成", systemImage: "sparkles") {
                     generationRequest = GenerationRequest()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isMutating)
+                .disabled(store.mutationsDisabled)
             }
         }
     }
@@ -566,17 +568,20 @@ struct RoadmapNodeEditor: View {
     @State private var draft: RoadmapNodeDraft
     let stages: [RoadmapNodeV2]
     let isSaving: Bool
+    let isReadOnly: Bool
     let save: (RoadmapNodeDraft) async -> Bool
 
     init(
         draft: RoadmapNodeDraft,
         stages: [RoadmapNodeV2],
         isSaving: Bool,
+        isReadOnly: Bool,
         save: @escaping (RoadmapNodeDraft) async -> Bool
     ) {
         _draft = State(initialValue: draft)
         self.stages = stages
         self.isSaving = isSaving
+        self.isReadOnly = isReadOnly
         self.save = save
     }
 
@@ -596,6 +601,7 @@ struct RoadmapNodeEditor: View {
                 TextField("说明", text: $draft.description, axis: .vertical)
                     .lineLimit(3...6)
             }
+            .disabled(isReadOnly)
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }
@@ -603,7 +609,7 @@ struct RoadmapNodeEditor: View {
                     Task { if await save(draft) { dismiss() } }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isSaving || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isSaving || isReadOnly || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(22)
@@ -616,17 +622,20 @@ private struct RoadmapGenerationSheet: View {
     @State private var prompt: String
     let projectName: String
     let isGenerating: Bool
+    let isReadOnly: Bool
     let generate: (String) async -> Bool
 
     init(
         request: RoadmapProjectView.GenerationRequest,
         projectName: String,
         isGenerating: Bool,
+        isReadOnly: Bool,
         generate: @escaping (String) async -> Bool
     ) {
         _prompt = State(initialValue: request.prompt)
         self.projectName = projectName
         self.isGenerating = isGenerating
+        self.isReadOnly = isReadOnly
         self.generate = generate
     }
 
@@ -641,15 +650,17 @@ private struct RoadmapGenerationSheet: View {
                 .frame(height: 150)
                 .padding(8)
                 .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 8))
+                .disabled(isReadOnly)
             HStack {
                 if isGenerating { ProgressView("正在生成，可能需要一些时间…") }
+                else if isReadOnly { Label("离线时不可生成", systemImage: "wifi.slash") }
                 Spacer()
                 Button("取消") { dismiss() }.disabled(isGenerating)
                 Button("生成") {
                     Task { if await generate(prompt) { dismiss() } }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isGenerating)
+                .disabled(isGenerating || isReadOnly)
             }
         }
         .padding(22)

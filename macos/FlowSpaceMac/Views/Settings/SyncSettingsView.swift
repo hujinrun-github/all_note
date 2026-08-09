@@ -60,7 +60,7 @@ struct SyncSettingsView: View {
                                             if index > 0 { Divider() }
                                             SyncTargetRow(
                                                 target: target,
-                                                isMutating: store.isMutating,
+                                                isMutating: store.mutationsDisabled,
                                                 edit: { draft = SyncTargetDraft(target: target) },
                                                 push: { await push(target) },
                                                 pull: { await pull(target) },
@@ -185,6 +185,7 @@ private struct SyncTargetRow: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .disabled(isMutating)
         }
     }
 
@@ -259,14 +260,14 @@ private struct SyncTargetEditorSheet: View {
                         }
                     }
                 }
-                .disabled(store.isMutating)
+                .disabled(store.mutationsDisabled)
                 Spacer()
                 Button("取消") { dismiss() }.disabled(store.isMutating)
                 Button("保存") {
                     Task { if await save(draft) { dismiss() } }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isMutating)
+                .disabled(store.mutationsDisabled)
             }
         }
         .padding(22)

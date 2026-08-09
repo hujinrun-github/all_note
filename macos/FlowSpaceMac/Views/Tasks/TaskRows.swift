@@ -1,28 +1,82 @@
+import AppKit
 import SwiftUI
+
+enum OccurrenceRowContextAction {
+    case start
+    case block
+    case unblock
+    case toggleCompletion
+    case editTask
+    case reschedule
+    case copyLink
+    case moveProject
+    case cancelTask
+    case archiveTask
+    case openInNewWorkspace
+}
 
 struct OccurrenceRow: View {
     let occurrence: OccurrenceV2
     let task: TaskV2?
     let project: ProjectV2?
     let selected: Bool
+    let selectionMode: Bool
+    let batchSelected: Bool
     let isMutating: Bool
-    let select: () -> Void
+    let select: (_ extending: Bool) -> Void
+    let toggleBatchSelection: () -> Void
     let toggle: () async -> Void
+    let open: (() -> Void)?
+    let contextAction: ((OccurrenceRowContextAction) -> Void)?
+
+    init(
+        occurrence: OccurrenceV2,
+        task: TaskV2?,
+        project: ProjectV2?,
+        selected: Bool,
+        selectionMode: Bool,
+        batchSelected: Bool,
+        isMutating: Bool,
+        select: @escaping (_ extending: Bool) -> Void,
+        toggleBatchSelection: @escaping () -> Void,
+        toggle: @escaping () async -> Void,
+        open: (() -> Void)? = nil,
+        contextAction: ((OccurrenceRowContextAction) -> Void)? = nil
+    ) {
+        self.occurrence = occurrence
+        self.task = task
+        self.project = project
+        self.selected = selected
+        self.selectionMode = selectionMode
+        self.batchSelected = batchSelected
+        self.isMutating = isMutating
+        self.select = select
+        self.toggleBatchSelection = toggleBatchSelection
+        self.toggle = toggle
+        self.open = open
+        self.contextAction = contextAction
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             Button {
-                Task { await toggle() }
+                if selectionMode {
+                    toggleBatchSelection()
+                } else {
+                    Task { await toggle() }
+                }
             } label: {
-                Image(systemName: occurrence.executionStatus == .done ? "checkmark.circle.fill" : "circle")
+                Image(systemName: leadingIcon)
                     .font(.title3)
-                    .foregroundStyle(occurrence.executionStatus == .done ? .green : .secondary)
+                    .foregroundStyle(leadingColor)
             }
             .buttonStyle(.plain)
-            .disabled(isMutating || (occurrence.executionStatus.isTerminal && occurrence.executionStatus != .done))
-            .accessibilityLabel(occurrence.executionStatus == .done ? "重新打开" : "完成")
+            .disabled(!selectionMode && (isMutating || (occurrence.executionStatus.isTerminal && occurrence.executionStatus != .done)))
+            .accessibilityLabel(selectionMode ? (batchSelected ? "取消选择" : "选择") : (occurrence.executionStatus == .done ? "重新打开" : "完成"))
 
-            Button(action: select) {
+            Button {
+                select(NSEvent.modifierFlags.contains(.shift))
+            } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(task?.title ?? occurrence.title ?? "未命名任务")
                         .fontWeight(.medium)
@@ -45,8 +99,69 @@ struct OccurrenceRow: View {
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 10)
-        .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: .rect(cornerRadius: 9))
+        .background(
+            batchSelected ? Color.accentColor.opacity(0.18) : (selected ? Color.accentColor.opacity(0.12) : .clear),
+            in: .rect(cornerRadius: 9)
+        )
         .accessibilityIdentifier("occurrence-row-\(occurrence.id)")
+        .simultaneousGesture(TapGesture(count: 2).onEnded { open?() })
+        .contextMenu {
+            if let contextAction {
+                Button("编辑任务", systemImage: "pencil") { contextAction(.editTask) }
+                if !occurrence.executionStatus.isTerminal {
+                    Button("改期", systemImage: "calendar.badge.clock") { contextAction(.reschedule) }
+                        .disabled(isMutating)
+                }
+                if occurrence.executionStatus == .open {
+                    Button("开始", systemImage: "play.fill") { contextAction(.start) }
+                        .disabled(isMutating)
+                }
+                if occurrence.executionStatus == .blocked {
+                    Button("解除阻塞", systemImage: "lock.open") { contextAction(.unblock) }
+                        .disabled(isMutating)
+                } else if occurrence.executionStatus == .open || occurrence.executionStatus == .active {
+                    Button("设为阻塞", systemImage: "exclamationmark.octagon") { contextAction(.block) }
+                        .disabled(isMutating)
+                }
+                Button(
+                    occurrence.executionStatus == .done ? "重新打开" : "完成",
+                    systemImage: occurrence.executionStatus == .done ? "arrow.uturn.backward" : "checkmark"
+                ) {
+                    contextAction(.toggleCompletion)
+                }
+                .disabled(isMutating || (occurrence.executionStatus.isTerminal && occurrence.executionStatus != .done))
+                Divider()
+                Button("复制链接", systemImage: "link") { contextAction(.copyLink) }
+                Button("移动到项目", systemImage: "folder") { contextAction(.moveProject) }
+                    .disabled(isMutating || task == nil || task?.lifecycleStatus == .archived)
+                if task?.lifecycleStatus == .draft
+                    || task?.lifecycleStatus == .active
+                    || task?.lifecycleStatus == .paused {
+                    Button("取消任务", systemImage: "xmark.circle", role: .destructive) {
+                        contextAction(.cancelTask)
+                    }
+                    .disabled(isMutating)
+                }
+                if task?.lifecycleStatus != .archived {
+                    Button("归档任务", systemImage: "archivebox") { contextAction(.archiveTask) }
+                        .disabled(isMutating || task == nil)
+                }
+                Divider()
+                Button("在新工作区打开", systemImage: "macwindow.badge.plus") {
+                    contextAction(.openInNewWorkspace)
+                }
+            }
+        }
+    }
+
+    private var leadingIcon: String {
+        if selectionMode { return batchSelected ? "checkmark.square.fill" : "square" }
+        return occurrence.executionStatus == .done ? "checkmark.circle.fill" : "circle"
+    }
+
+    private var leadingColor: Color {
+        if selectionMode { return batchSelected ? .accentColor : .secondary }
+        return occurrence.executionStatus == .done ? .green : .secondary
     }
 
     private var scheduleLabel: String {
@@ -62,48 +177,96 @@ struct OccurrenceCollectionRow: View {
     let collection: OccurrenceCollection
     let projects: [String: ProjectV2]
     let selectedOccurrenceID: String
+    let selectionMode: Bool
+    let batchSelectedOccurrenceIDs: Set<String>
     let isMutating: Bool
-    let select: (OccurrenceV2) -> Void
+    let select: (OccurrenceV2, Bool) -> Void
+    let toggleBatchSelection: (OccurrenceV2) -> Void
     let toggle: (OccurrenceV2) async -> Void
+    let open: ((OccurrenceV2) -> Void)?
+    let contextAction: ((OccurrenceV2, OccurrenceRowContextAction) -> Void)?
     @State private var expanded = false
+
+    init(
+        collection: OccurrenceCollection,
+        projects: [String: ProjectV2],
+        selectedOccurrenceID: String,
+        selectionMode: Bool,
+        batchSelectedOccurrenceIDs: Set<String>,
+        isMutating: Bool,
+        select: @escaping (OccurrenceV2, Bool) -> Void,
+        toggleBatchSelection: @escaping (OccurrenceV2) -> Void,
+        toggle: @escaping (OccurrenceV2) async -> Void,
+        open: ((OccurrenceV2) -> Void)? = nil,
+        contextAction: ((OccurrenceV2, OccurrenceRowContextAction) -> Void)? = nil
+    ) {
+        self.collection = collection
+        self.projects = projects
+        self.selectedOccurrenceID = selectedOccurrenceID
+        self.selectionMode = selectionMode
+        self.batchSelectedOccurrenceIDs = batchSelectedOccurrenceIDs
+        self.isMutating = isMutating
+        self.select = select
+        self.toggleBatchSelection = toggleBatchSelection
+        self.toggle = toggle
+        self.open = open
+        self.contextAction = contextAction
+    }
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             VStack(spacing: 2) {
                 ForEach(collection.occurrences) { occurrence in
-                    OccurrenceRow(
-                        occurrence: occurrence,
-                        task: collection.task,
-                        project: projects[occurrence.projectID ?? collection.task?.projectID ?? ""],
-                        selected: occurrence.id == selectedOccurrenceID,
-                        isMutating: isMutating,
-                        select: { select(occurrence) },
-                        toggle: { await toggle(occurrence) }
-                    )
+                    occurrenceRow(occurrence)
                 }
             }
             .padding(.leading, 6)
         } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(collection.title).fontWeight(.semibold)
-                    Text(collectionSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("\(collection.occurrences.count) 次执行")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.quaternary, in: .capsule)
-            }
-            .padding(.vertical, 8)
+            collectionLabel
         }
         .onAppear {
-            expanded = collection.occurrences.contains { $0.id == selectedOccurrenceID }
+            expanded = selectionMode || collection.occurrences.contains { $0.id == selectedOccurrenceID }
         }
+        .onChange(of: selectionMode) {
+            if selectionMode { expanded = true }
+        }
+    }
+
+    private func occurrenceRow(_ occurrence: OccurrenceV2) -> OccurrenceRow {
+        let projectID = occurrence.projectID ?? collection.task?.projectID ?? ""
+        return OccurrenceRow(
+            occurrence: occurrence,
+            task: collection.task,
+            project: projects[projectID],
+            selected: occurrence.id == selectedOccurrenceID,
+            selectionMode: selectionMode,
+            batchSelected: batchSelectedOccurrenceIDs.contains(occurrence.id),
+            isMutating: isMutating,
+            select: { extending in select(occurrence, extending) },
+            toggleBatchSelection: { toggleBatchSelection(occurrence) },
+            toggle: { await toggle(occurrence) },
+            open: { open?(occurrence) },
+            contextAction: { action in contextAction?(occurrence, action) }
+        )
+    }
+
+    private var collectionLabel: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(collection.title).fontWeight(.semibold)
+                Text(collectionSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("\(collection.occurrences.count) 次执行")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.quaternary, in: .capsule)
+        }
+        .padding(.vertical, 8)
     }
 
     private var collectionSummary: String {
@@ -158,4 +321,3 @@ struct StatusBadge: View {
         }
     }
 }
-

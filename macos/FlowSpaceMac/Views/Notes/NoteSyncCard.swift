@@ -51,7 +51,7 @@ struct NoteSyncCard: View {
                     Text("\(target.name)（\(target.type.title)）").tag(target.id)
                 }
             }
-            .disabled(store.isMutating)
+            .disabled(store.mutationsDisabled)
 
             if let currentTarget {
                 Text("当前目标：\(currentTarget.name)（\(currentTarget.type.title)）")
@@ -92,7 +92,7 @@ struct NoteSyncCard: View {
             Button(store.isMutating ? "同步中…" : "同步此笔记", systemImage: "arrow.triangle.2.circlepath") {
                 Task { await syncNow() }
             }
-            .disabled(binding == nil || store.isMutating)
+            .disabled(binding == nil || store.mutationsDisabled)
         }
         .padding(16)
         .task(id: noteID) { await store.loadNoteSync(noteID: noteID) }

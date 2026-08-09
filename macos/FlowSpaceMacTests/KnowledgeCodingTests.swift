@@ -40,6 +40,13 @@ final class KnowledgeCodingTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode([String].self, from: data), tags)
     }
 
+    func testAddingProjectPreservesOrderAndDoesNotDuplicateAssociation() throws {
+        let note = try JSONDecoder.flowSpace().decode(FlowNote.self, from: Data(noteJSON.utf8))
+
+        XCTAssertEqual(note.projectIDs(adding: "project-2"), ["project-1", "project-2"])
+        XCTAssertEqual(note.projectIDs(adding: "project-1"), ["project-1"])
+    }
+
     private let noteJSON = #"""
     {
       "id": "note-1",

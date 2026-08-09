@@ -184,14 +184,14 @@ struct RuntimeProfileEditorSheet: View {
 
             HStack {
                 Button("测试连接") { Task { await test() } }
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
                 Spacer()
                 Button("取消") { dismiss() }.disabled(store.isMutating)
                 Button(draft.kind == .dataStore ? "保存并验证" : "保存并启用") {
                     Task { if await save(draft) { dismiss() } }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isMutating)
+                .disabled(store.mutationsDisabled)
             }
         }
         .padding(22)

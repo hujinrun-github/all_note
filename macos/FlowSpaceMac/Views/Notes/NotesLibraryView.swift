@@ -1,15 +1,17 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct NotesLibraryView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.openWindow) private var openWindow
     let store: WorkspaceStore
-    @State private var selectedNoteID = ""
-    @State private var selectedProjectID = ""
-    @State private var selectedTag = ""
-    @State private var query = ""
-    @State private var sort = "recent"
+    @SceneStorage("notes.selectedNote") private var selectedNoteID = ""
+    @SceneStorage("notes.selectedProject") private var selectedProjectID = ""
+    @SceneStorage("notes.selectedTag") private var selectedTag = ""
+    @SceneStorage("notes.query") private var query = ""
+    @SceneStorage("notes.sort") private var sort = "recent"
     @State private var pendingDelete: FlowNote?
+    @State private var libraryNotice: String?
 
     private var filteredNotes: [FlowNote] {
         store.notes.filter { note in
@@ -45,6 +47,10 @@ struct NotesLibraryView: View {
         .task(id: sort) {
             await store.loadNotes(sort: sort)
             preserveSelection()
+            applyPendingNoteSelection()
+        }
+        .onChange(of: session.pendingWorkspaceEntitySelection) {
+            applyPendingNoteSelection()
         }
         .alert("永久删除这篇笔记？", isPresented: deletePresented, presenting: pendingDelete) { note in
             Button("取消", role: .cancel) { pendingDelete = nil }
@@ -53,6 +59,18 @@ struct NotesLibraryView: View {
             }
         } message: { note in
             Text("“\(note.title)”将被永久删除，此操作无法撤销。")
+        }
+        .overlay(alignment: .bottom) {
+            if let libraryNotice {
+                Label(libraryNotice, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(.regularMaterial, in: .capsule)
+                    .shadow(radius: 6, y: 2)
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
     }
 
@@ -80,6 +98,9 @@ struct NotesLibraryView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .dropDestination(for: String.self) { noteIDs, _ in
+                        return associateNotes(noteIDs, with: project.id)
+                    }
                 }
             }
 
@@ -122,7 +143,8 @@ struct NotesLibraryView: View {
                     Task { await createNote() }
                 }
                 .labelStyle(.iconOnly)
-                .disabled(store.isMutating)
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(store.mutationsDisabled)
             }
             .padding(10)
 
@@ -158,15 +180,26 @@ struct NotesLibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .tag(note.id)
+                .draggable(note.id) {
+                    Label(note.title.isEmpty ? "未命名笔记" : note.title, systemImage: "note.text")
+                        .padding(8)
+                        .background(.regularMaterial, in: .rect(cornerRadius: 8))
+                }
                 .simultaneousGesture(TapGesture(count: 2).onEnded { openWindow(value: note.id) })
                 .contextMenu {
                     Button("在新窗口打开") { openWindow(value: note.id) }
                     Divider()
                     Button("永久删除", role: .destructive) { pendingDelete = note }
+                        .disabled(store.mutationsDisabled)
                 }
             }
             .listStyle(.inset)
             .searchable(text: $query, prompt: "搜索标题或正文")
+            .onKeyPress(.return) {
+                guard let selectedNote else { return .ignored }
+                openWindow(value: selectedNote.id)
+                return .handled
+            }
             .overlay {
                 if store.isLoading && store.notes.isEmpty {
                     ProgressView("正在加载笔记…")
@@ -193,6 +226,7 @@ struct NotesLibraryView: View {
                         Button("打开编辑", systemImage: "arrow.up.right.square") {
                             openWindow(value: note.id)
                         }
+                        .keyboardShortcut("o", modifiers: .command)
                     }
 
                     Divider()
@@ -218,6 +252,9 @@ struct NotesLibraryView: View {
                 .padding(22)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .dropDestination(for: URL.self) { urls, _ in
+                return uploadDroppedFiles(urls, to: note.id)
+            }
         } else {
             ContentUnavailableView("选择一篇笔记", systemImage: "note.text")
         }
@@ -232,9 +269,25 @@ struct NotesLibraryView: View {
         selectedNoteID = store.notes.first?.id ?? ""
     }
 
+    private func applyPendingNoteSelection() {
+        guard case .note(let noteID) = session.pendingWorkspaceEntitySelection,
+              !store.isLoading else { return }
+        if store.notes.contains(where: { $0.id == noteID }) {
+            query = ""
+            selectedProjectID = ""
+            selectedTag = ""
+            selectedNoteID = noteID
+        }
+        session.consumeWorkspaceEntitySelection()
+    }
+
     private func createNote() async {
         do {
-            let note = try await store.createNote(projectID: selectedProjectID.nilIfEmpty)
+            let inheritedTags = selectedTag.isEmpty ? [] : [selectedTag]
+            let note = try await store.createNote(
+                projectID: selectedProjectID.nilIfEmpty,
+                tags: inheritedTags
+            )
             selectedNoteID = note.id
             openWindow(value: note.id)
         } catch {
@@ -249,6 +302,79 @@ struct NotesLibraryView: View {
             preserveSelection()
         } catch {
             store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func associateNotes(_ noteIDs: [String], with projectID: String) -> Bool {
+        let validIDs = noteIDs.filter { noteID in
+            store.notes.contains { $0.id == noteID && !$0.projects.contains { $0.id == projectID } }
+        }
+        guard !validIDs.isEmpty, !store.mutationsDisabled else { return false }
+        Task {
+            do {
+                for noteID in validIDs {
+                    _ = try await store.addProjectToNote(noteID: noteID, projectID: projectID)
+                }
+                showNotice(validIDs.count == 1 ? "已关联到项目" : "已关联 \(validIDs.count) 篇笔记")
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+        return true
+    }
+
+    private func uploadDroppedFiles(_ urls: [URL], to noteID: String) -> Bool {
+        let fileURLs = urls.filter(\.isFileURL)
+        guard !fileURLs.isEmpty, !store.mutationsDisabled else { return false }
+        Task { await upload(fileURLs, to: noteID) }
+        return true
+    }
+
+    private func upload(_ urls: [URL], to noteID: String) async {
+        await store.loadAttachments(noteID: noteID)
+        let existingCount = store.attachmentsByNoteID[noteID]?.count ?? 0
+        let acceptedURLs = Array(urls.prefix(max(0, 20 - existingCount)))
+        guard !acceptedURLs.isEmpty else {
+            store.errorMessage = "每篇笔记最多添加 20 个附件。"
+            return
+        }
+
+        do {
+            for url in acceptedURLs {
+                let payload = try attachmentPayload(for: url)
+                try await store.uploadAttachment(
+                    noteID: noteID,
+                    fileName: url.lastPathComponent,
+                    mimeType: payload.mimeType,
+                    data: payload.data
+                )
+            }
+            showNotice(acceptedURLs.count == 1 ? "附件已上传" : "已上传 \(acceptedURLs.count) 个附件")
+        } catch {
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func attachmentPayload(for url: URL) throws -> (mimeType: String, data: Data) {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+        if let size = values.fileSize, size > 200 * 1_024 * 1_024 {
+            throw ValidationError("“\(url.lastPathComponent)”超过 200 MB")
+        }
+        let contentType = values.contentType ?? UTType(filenameExtension: url.pathExtension)
+        return (
+            contentType?.preferredMIMEType ?? "application/octet-stream",
+            try Data(contentsOf: url, options: .mappedIfSafe)
+        )
+    }
+
+    private func showNotice(_ message: String) {
+        withAnimation { libraryNotice = message }
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard libraryNotice == message else { return }
+            withAnimation { libraryNotice = nil }
         }
     }
 }

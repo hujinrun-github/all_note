@@ -44,6 +44,14 @@ struct FlowNote: Codable, Identifiable, Hashable, Sendable {
         return value
     }
 
+    func projectIDs(adding projectID: String) -> [String] {
+        var result = projects.map(\.id)
+        if !result.contains(projectID) {
+            result.append(projectID)
+        }
+        return result
+    }
+
     var plainTextPreview: String {
         body
             .replacingOccurrences(of: #"[`*_>#\[\]()-]"#, with: " ", options: .regularExpression)

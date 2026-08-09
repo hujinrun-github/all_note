@@ -66,7 +66,7 @@ struct ContentImportActivityView: View {
                     ContentImportRow(
                         item: item,
                         projectName: projectName(for: item),
-                        isMutating: store.isMutating,
+                        isMutating: store.mutationsDisabled,
                         openNote: { noteID in openWindow(value: noteID) },
                         cancel: { await cancel(item) },
                         retry: { await retry(item) },

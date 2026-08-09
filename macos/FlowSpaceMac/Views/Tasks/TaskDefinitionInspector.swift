@@ -32,13 +32,13 @@ struct TaskDefinitionInspector: View {
                 }
 
                 lifecycleActions
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
 
                 if task.lifecycleStatus != .completed && task.lifecycleStatus != .archived {
                     Button("编辑任务定义", systemImage: "pencil") {
                         editingTask = true
                     }
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
                 }
 
                 if let localError {
@@ -76,7 +76,7 @@ struct TaskDefinitionInspector: View {
                             destructiveAction = .delete
                         }
                     }
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
                     Text("服务端会根据执行历史和 revision 判断当前操作是否允许。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -315,7 +315,7 @@ struct TaskDefinitionEditorSheet: View {
                         .disabled(
                             title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 || projectID.isEmpty
-                                || store.isMutating
+                                || store.mutationsDisabled
                         )
                 }
             }

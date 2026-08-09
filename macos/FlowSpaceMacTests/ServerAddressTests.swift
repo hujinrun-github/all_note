@@ -17,5 +17,13 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertTrue(ServerAddress.isInsecureRemote(try ServerAddress.normalize("http://192.168.1.13:4100")))
         XCTAssertFalse(ServerAddress.isInsecureRemote(try ServerAddress.normalize("https://flowspace.example.com")))
     }
-}
 
+    func testServiceProbeConfigurationNeverCarriesCookiesOrCachedResponses() {
+        let configuration = ServiceProbeSession.configuration()
+
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+    }
+}

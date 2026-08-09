@@ -88,7 +88,7 @@ struct TaskEditorSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("创建") { Task { await create() } }
                         .buttonStyle(.borderedProminent)
-                        .disabled(store.isMutating || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.projectID.isEmpty)
+                        .disabled(store.mutationsDisabled || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.projectID.isEmpty)
                 }
             }
         }

@@ -4,12 +4,12 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceStore {
-    private(set) var projects: [ProjectV2] = []
-    private(set) var tasks: [TaskV2] = []
-    private(set) var occurrences: [OccurrenceV2] = []
-    private(set) var calendarEntries: [CalendarEntryV2] = []
-    private(set) var notes: [FlowNote] = []
-    private(set) var roadmapsByProjectID: [String: RoadmapV2] = [:]
+    private(set) var projects: [ProjectV2] = [] { didSet { scheduleRecentContentPersistence() } }
+    private(set) var tasks: [TaskV2] = [] { didSet { scheduleRecentContentPersistence() } }
+    private(set) var occurrences: [OccurrenceV2] = [] { didSet { scheduleRecentContentPersistence() } }
+    private(set) var calendarEntries: [CalendarEntryV2] = [] { didSet { scheduleRecentContentPersistence() } }
+    private(set) var notes: [FlowNote] = [] { didSet { scheduleRecentContentPersistence() } }
+    private(set) var roadmapsByProjectID: [String: RoadmapV2] = [:] { didSet { scheduleRecentContentPersistence() } }
     private(set) var loadedRoadmapProjectIDs: Set<String> = []
     private(set) var loadingRoadmapProjectIDs: Set<String> = []
     private(set) var attachmentsByNoteID: [String: [NoteAttachment]] = [:]
@@ -27,28 +27,39 @@ final class WorkspaceStore {
     private(set) var adminUsers: [AccountUser] = []
     private(set) var adminPagination = AccountPagination(page: 1, pageSize: 20, total: 0)
     private(set) var isLoadingAdminUsers = false
-    private(set) var summary: SummaryData?
-    private(set) var summaryAttention: [OccurrenceV2] = []
+    private(set) var summary: SummaryData? { didSet { scheduleRecentContentPersistence() } }
+    private(set) var summaryAttention: [OccurrenceV2] = [] { didSet { scheduleRecentContentPersistence() } }
     private(set) var isLoading = false
     private(set) var isMutating = false
     var errorMessage: String?
 
     private let client: APIClient
+    private let connectivity: ServiceConnectivity
     private let notifications: AppNotificationService
     private let spotlight: AppSpotlightService
+    private let recentCache: RecentWorkspaceCache?
+    private let serviceURL: URL?
     private var spotlightWorkspaceID: String?
     private var spotlightGeneration = 0
     private var taskWorkspaceLoadGeneration = 0
     private var observedContentImportStatuses: [String: ContentImportStatus] = [:]
+    private var recentCacheSaveTask: Task<Void, Never>?
+    private var isRestoringRecentContent = false
 
     init(
         client: APIClient,
+        connectivity: ServiceConnectivity = ServiceConnectivity(),
         notifications: AppNotificationService = .shared,
-        spotlight: AppSpotlightService = .shared
+        spotlight: AppSpotlightService = .shared,
+        recentCache: RecentWorkspaceCache? = nil,
+        serviceURL: URL? = nil
     ) {
         self.client = client
+        self.connectivity = connectivity
         self.notifications = notifications
         self.spotlight = spotlight
+        self.recentCache = recentCache
+        self.serviceURL = serviceURL
     }
 
     var tasksByID: [String: TaskV2] {
@@ -67,10 +78,33 @@ final class WorkspaceStore {
         inboxProject?.id ?? projects.first(where: { $0.status == .active })?.id ?? projects.first?.id ?? ""
     }
 
+    var isReadOnly: Bool { connectivity.isOffline }
+
+    var mutationsDisabled: Bool { isMutating || isReadOnly }
+
     func configureSpotlight(workspaceID: String) {
         spotlightGeneration += 1
         spotlightWorkspaceID = workspaceID
         spotlight.activateWorkspace(workspaceID)
+    }
+
+    @discardableResult
+    func restoreRecentContent() -> Bool {
+        guard let recentCache, let serviceURL,
+              let snapshot = recentCache.load(for: serviceURL) else { return false }
+        recentCacheSaveTask?.cancel()
+        isRestoringRecentContent = true
+        projects = snapshot.content.projects
+        tasks = snapshot.content.tasks
+        occurrences = snapshot.content.occurrences.sorted(by: OccurrenceV2.scheduleAscending)
+        calendarEntries = snapshot.content.calendarEntries
+        notes = snapshot.content.notes
+        roadmapsByProjectID = snapshot.content.roadmapsByProjectID
+        loadedRoadmapProjectIDs = Set(snapshot.content.roadmapsByProjectID.keys)
+        summary = snapshot.content.summary
+        summaryAttention = snapshot.content.summaryAttention
+        isRestoringRecentContent = false
+        return true
     }
 
     func refreshSpotlightIndex() async {
@@ -96,6 +130,9 @@ final class WorkspaceStore {
     }
 
     func clear() {
+        recentCacheSaveTask?.cancel()
+        isRestoringRecentContent = true
+        defer { isRestoringRecentContent = false }
         spotlightGeneration += 1
         taskWorkspaceLoadGeneration += 1
         spotlightWorkspaceID = nil
@@ -126,6 +163,38 @@ final class WorkspaceStore {
         summary = nil
         summaryAttention = []
         errorMessage = nil
+    }
+
+    private func scheduleRecentContentPersistence() {
+        guard !isRestoringRecentContent, recentCache != nil, serviceURL != nil else { return }
+        recentCacheSaveTask?.cancel()
+        recentCacheSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self else { return }
+            self.persistRecentContent()
+        }
+    }
+
+    private func persistRecentContent() {
+        guard let recentCache, let serviceURL, !isRestoringRecentContent else { return }
+        recentCache.saveContent(
+            RecentWorkspaceContent(
+                projects: projects,
+                tasks: tasks,
+                occurrences: occurrences,
+                calendarEntries: calendarEntries,
+                notes: notes,
+                roadmapsByProjectID: roadmapsByProjectID,
+                summary: summary,
+                summaryAttention: summaryAttention
+            ),
+            for: serviceURL
+        )
+    }
+
+    func flushRecentContentCache() {
+        recentCacheSaveTask?.cancel()
+        persistRecentContent()
     }
 
     func loadProfile() async throws {
@@ -266,7 +335,7 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -287,7 +356,7 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -325,7 +394,7 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -346,7 +415,7 @@ final class WorkspaceStore {
             scheduleProjectAndTaskIndexing()
             scheduleNoteIndexing()
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -365,22 +434,34 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
     func getNote(id: String) async throws -> FlowNote {
-        try await client.getNote(id: id)
+        do {
+            return try await client.getNote(id: id)
+        } catch let error as APIError {
+            if error.code == "network_error", let cached = notes.first(where: { $0.id == id }) {
+                return cached
+            }
+            throw error
+        }
     }
 
-    func createNote(projectID: String? = nil) async throws -> FlowNote {
+    func createNote(
+        title: String = "未命名笔记",
+        body: String = "",
+        projectID: String? = nil,
+        tags: [String] = []
+    ) async throws -> FlowNote {
         isMutating = true
         defer { isMutating = false }
         let note = try await client.createNote(CreateNoteInput(
-            title: "未命名笔记",
-            body: "",
+            title: title,
+            body: body,
             folderID: "__uncategorized",
-            tags: "[]",
+            tags: FlowNote.tagsJSON(tags),
             projectIDs: projectID.map { [$0] }
         ))
         notes.insert(note, at: 0)
@@ -414,6 +495,32 @@ final class WorkspaceStore {
         return note
     }
 
+    func addProjectToNote(noteID: String, projectID: String) async throws -> FlowNote {
+        guard let note = notes.first(where: { $0.id == noteID }) else {
+            throw ValidationError("找不到要关联的笔记")
+        }
+        let projectIDs = note.projectIDs(adding: projectID)
+        guard projectIDs.count != note.projects.count else { return note }
+
+        isMutating = true
+        defer { isMutating = false }
+        let updated = try await client.updateNote(
+            id: noteID,
+            input: UpdateNoteInput(
+                title: nil,
+                body: nil,
+                folderID: nil,
+                tags: nil,
+                projectIDs: projectIDs
+            )
+        )
+        if let index = notes.firstIndex(where: { $0.id == updated.id }) {
+            notes[index] = updated
+        }
+        scheduleNoteIndexing()
+        return updated
+    }
+
     func deleteNote(id: String) async throws {
         isMutating = true
         defer { isMutating = false }
@@ -429,7 +536,7 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -855,7 +962,7 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -957,27 +1064,32 @@ final class WorkspaceStore {
     }
 
     func search(_ query: String) async throws -> [SearchResultItem] {
-        async let remoteResults = client.search(query)
-        async let loadedProjects = client.listProjects()
-        let result = try await (remoteResults, loadedProjects)
-        projects = result.1
-        scheduleProjectIndexing()
-        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let projectResults = result.1
-            .filter { $0.name.localizedCaseInsensitiveContains(keyword) }
-            .map {
-                SearchResultItem(
-                    type: "project",
-                    id: $0.id,
-                    title: $0.name,
-                    highlight: $0.kind == .learning ? "学习项目" : "标准项目",
-                    folderID: nil,
-                    done: nil,
-                    kind: $0.kind.rawValue,
-                    updatedAt: 0
-                )
-            }
-        return result.0 + projectResults
+        if isReadOnly { return localSearch(query) }
+        do {
+            async let remoteResults = client.search(query)
+            async let loadedProjects = client.listProjects()
+            let result = try await (remoteResults, loadedProjects)
+            projects = result.1
+            scheduleProjectIndexing()
+            let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let projectResults = result.1
+                .filter { $0.name.localizedCaseInsensitiveContains(keyword) }
+                .map {
+                    SearchResultItem(
+                        type: "project",
+                        id: $0.id,
+                        title: $0.name,
+                        highlight: $0.kind == .learning ? "学习项目" : "标准项目",
+                        folderID: nil,
+                        done: nil,
+                        kind: $0.kind.rawValue,
+                        updatedAt: 0
+                    )
+                }
+            return result.0 + projectResults
+        } catch let error as APIError where error.code == "network_error" {
+            return localSearch(query)
+        }
     }
 
     func loadSummary(period: SummaryPeriod, now: Date = Date()) async {
@@ -1015,7 +1127,7 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
     }
 
@@ -1047,8 +1159,82 @@ final class WorkspaceStore {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = Self.readable(error)
+            handleLoadError(error)
         }
+    }
+
+    private func handleLoadError(_ error: Error) {
+        if isReadOnly, (error as? APIError)?.code == "network_error" { return }
+        errorMessage = Self.readable(error)
+    }
+
+    private func localSearch(_ query: String) -> [SearchResultItem] {
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return [] }
+        var results: [SearchResultItem] = []
+        results += projects
+            .filter { $0.name.localizedCaseInsensitiveContains(keyword) }
+            .map {
+                SearchResultItem(
+                    type: "project",
+                    id: $0.id,
+                    title: $0.name,
+                    highlight: $0.kind == .learning ? "学习项目" : "标准项目",
+                    folderID: nil,
+                    done: nil,
+                    kind: $0.kind.rawValue,
+                    updatedAt: 0
+                )
+            }
+        results += tasks
+            .filter {
+                $0.title.localizedCaseInsensitiveContains(keyword)
+                    || ($0.description?.localizedCaseInsensitiveContains(keyword) ?? false)
+            }
+            .map {
+                SearchResultItem(
+                    type: "task",
+                    id: $0.id,
+                    title: $0.title,
+                    highlight: $0.description ?? "任务",
+                    folderID: nil,
+                    done: nil,
+                    kind: nil,
+                    updatedAt: 0
+                )
+            }
+        results += occurrences
+            .filter { ($0.title ?? "").localizedCaseInsensitiveContains(keyword) }
+            .map {
+                SearchResultItem(
+                    type: "event",
+                    id: $0.id,
+                    title: $0.title ?? "未命名日程",
+                    highlight: $0.plannedStartAt ?? $0.plannedDate ?? "未安排",
+                    folderID: nil,
+                    done: $0.executionStatus == .done ? 1 : 0,
+                    kind: nil,
+                    updatedAt: 0
+                )
+            }
+        results += notes
+            .filter {
+                $0.title.localizedCaseInsensitiveContains(keyword)
+                    || $0.plainTextPreview.localizedCaseInsensitiveContains(keyword)
+            }
+            .map {
+                SearchResultItem(
+                    type: "note",
+                    id: $0.id,
+                    title: $0.title,
+                    highlight: $0.plainTextPreview,
+                    folderID: $0.folderID,
+                    done: nil,
+                    kind: nil,
+                    updatedAt: $0.updatedAt
+                )
+            }
+        return Array(results.prefix(100))
     }
 
     func createTask(from draft: TaskDraft) async throws {
@@ -1359,6 +1545,221 @@ final class WorkspaceStore {
             guard spotlightGeneration == generation, spotlightWorkspaceID == workspaceID else { return }
             await spotlight.replaceNotes(snapshot, workspaceID: workspaceID)
         }
+    }
+
+    func performTaskBatch(
+        _ action: TaskBatchAction,
+        occurrences selectedOccurrences: [OccurrenceV2]
+    ) async -> TaskBatchReport {
+        let occurrences = selectedOccurrences
+        let selectedTasks = TaskBatchPlanner.uniqueTasks(for: occurrences, tasksByID: tasksByID)
+        var results: [TaskBatchItemResult] = []
+        var revisions: [String: (task: Int, schedule: Int)] = [:]
+
+        for occurrence in occurrences {
+            guard let task = tasksByID[occurrence.taskID] else { continue }
+            revisions[task.id] = (
+                occurrence.taskRevision ?? task.revision,
+                occurrence.scheduleRevision ?? task.scheduleRevision
+            )
+        }
+
+        isMutating = true
+        defer { isMutating = false }
+
+        switch action {
+        case .complete:
+            for occurrence in occurrences {
+                let title = occurrence.title ?? tasksByID[occurrence.taskID]?.title ?? "未命名任务"
+                guard !occurrence.executionStatus.isTerminal else {
+                    results.append(.init(
+                        id: occurrence.id,
+                        title: title,
+                        succeeded: false,
+                        detail: "当前执行已结束，不能再次完成"
+                    ))
+                    continue
+                }
+                guard let cursor = revisions[occurrence.taskID] else {
+                    results.append(.init(id: occurrence.id, title: title, succeeded: false, detail: "找不到任务定义"))
+                    continue
+                }
+                do {
+                    let response = try await client.occurrenceCommand(
+                        occurrenceID: occurrence.id,
+                        command: "complete",
+                        revisions: ExpectedRevisions(
+                            expectedTaskRevision: cursor.task,
+                            expectedScheduleRevision: cursor.schedule,
+                            expectedOccurrenceRevisions: [occurrence.id: occurrence.revision]
+                        )
+                    )
+                    revisions[occurrence.taskID] = (
+                        response.taskRevision,
+                        response.scheduleRevision ?? cursor.schedule
+                    )
+                    results.append(.init(id: occurrence.id, title: title, succeeded: true, detail: "已完成本次执行"))
+                    await notifications.notifyTaskCompleted(title: title)
+                } catch {
+                    results.append(.init(id: occurrence.id, title: title, succeeded: false, detail: error.localizedDescription))
+                }
+            }
+
+        case .reschedule(let date):
+            for occurrence in occurrences {
+                let title = occurrence.title ?? tasksByID[occurrence.taskID]?.title ?? "未命名任务"
+                guard !occurrence.executionStatus.isTerminal else {
+                    results.append(.init(id: occurrence.id, title: title, succeeded: false, detail: "已结束的执行不能改期"))
+                    continue
+                }
+                guard let cursor = revisions[occurrence.taskID] else {
+                    results.append(.init(id: occurrence.id, title: title, succeeded: false, detail: "找不到任务定义"))
+                    continue
+                }
+                do {
+                    let timing = try batchTiming(for: occurrence, on: date)
+                    let response = try await client.rescheduleOccurrence(
+                        occurrenceID: occurrence.id,
+                        input: RescheduleOccurrenceInput(
+                            expectedTaskRevision: cursor.task,
+                            expectedScheduleRevision: cursor.schedule,
+                            expectedOccurrenceRevision: occurrence.revision,
+                            timing: timing,
+                            selectedOffsets: nil
+                        )
+                    )
+                    revisions[occurrence.taskID] = (response.taskRevision, response.scheduleRevision)
+                    results.append(.init(
+                        id: occurrence.id,
+                        title: title,
+                        succeeded: true,
+                        detail: "已改到 \(timing.plannedDate)"
+                    ))
+                } catch {
+                    results.append(.init(id: occurrence.id, title: title, succeeded: false, detail: error.localizedDescription))
+                }
+            }
+
+        case .move(let projectID, let projectName):
+            for task in selectedTasks {
+                do {
+                    if task.projectID == projectID {
+                        results.append(.init(id: task.id, title: task.title, succeeded: true, detail: "已在“\(projectName)”中"))
+                        continue
+                    }
+                    let updated = try await client.moveTask(
+                        taskID: task.id,
+                        input: MoveTaskInput(
+                            projectID: projectID,
+                            expectedTaskRevision: task.revision,
+                            expectedScheduleRevision: task.scheduleRevision
+                        )
+                    )
+                    replaceTask(updated)
+                    results.append(.init(id: task.id, title: task.title, succeeded: true, detail: "已移动到“\(projectName)”"))
+                } catch {
+                    results.append(.init(id: task.id, title: task.title, succeeded: false, detail: error.localizedDescription))
+                }
+            }
+
+        case .priority(let priority):
+            for task in selectedTasks {
+                do {
+                    if task.priority == priority.rawValue {
+                        results.append(.init(id: task.id, title: task.title, succeeded: true, detail: "优先级已是“\(priority.title)”"))
+                        continue
+                    }
+                    let updated = try await client.updateTaskDefinition(
+                        taskID: task.id,
+                        input: UpdateTaskDefinitionInput(
+                            title: nil,
+                            description: nil,
+                            priority: priority.rawValue,
+                            projectID: nil,
+                            taskNoteID: nil,
+                            expectedTaskRevision: task.revision,
+                            expectedScheduleRevision: task.scheduleRevision
+                        )
+                    )
+                    replaceTask(updated)
+                    results.append(.init(id: task.id, title: task.title, succeeded: true, detail: "优先级已设为“\(priority.title)”"))
+                } catch {
+                    results.append(.init(id: task.id, title: task.title, succeeded: false, detail: error.localizedDescription))
+                }
+            }
+
+        case .cancel:
+            for task in selectedTasks {
+                do {
+                    let occurrenceRevisionMap = try await occurrenceRevisions(taskID: task.id, required: true)
+                    _ = try await client.taskLifecycleCommand(
+                        taskID: task.id,
+                        command: .cancel,
+                        revisions: ExpectedRevisions(
+                            expectedTaskRevision: task.revision,
+                            expectedScheduleRevision: task.scheduleRevision,
+                            expectedOccurrenceRevisions: occurrenceRevisionMap
+                        )
+                    )
+                    results.append(.init(id: task.id, title: task.title, succeeded: true, detail: "任务定义及后续执行已取消"))
+                } catch {
+                    results.append(.init(id: task.id, title: task.title, succeeded: false, detail: error.localizedDescription))
+                }
+            }
+        }
+
+        scheduleTaskIndexing()
+        return TaskBatchReport(
+            action: action,
+            selectedOccurrenceCount: occurrences.count,
+            affectedTaskCount: selectedTasks.count,
+            results: results
+        )
+    }
+
+    private func replaceTask(_ task: TaskV2) {
+        if let index = tasks.firstIndex(where: { $0.id == task.id }) {
+            tasks[index] = task
+        } else {
+            tasks.append(task)
+        }
+    }
+
+    private func batchTiming(for occurrence: OccurrenceV2, on targetDate: Date) throws -> OccurrenceTimingInput {
+        let timezone = TimeZone(identifier: occurrence.timezone ?? "") ?? .current
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
+        let plannedDate = targetDate.formatted(
+            Date.FormatStyle(date: .numeric, time: .omitted, locale: Locale(identifier: "en_CA"), timeZone: timezone)
+        )
+        let timingType = occurrence.timingType ?? (occurrence.plannedStartAt == nil ? .date : .timeBlock)
+
+        if timingType == .timeBlock {
+            guard let start = occurrence.plannedStartAt.flatMap(Date.flowSpaceISO8601) else {
+                throw ValidationError("原安排缺少开始时间，无法保留时间段")
+            }
+            let components = calendar.dateComponents([.hour, .minute], from: start)
+            let localStartTime = String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
+            let end = occurrence.plannedEndAt.flatMap(Date.flowSpaceISO8601)
+            let duration = end.map { max(1, Int($0.timeIntervalSince(start) / 60)) } ?? 30
+            return OccurrenceTimingInput(
+                timingType: .timeBlock,
+                timezone: timezone.identifier,
+                plannedDate: plannedDate,
+                allDayEndDate: nil,
+                localStartTime: localStartTime,
+                durationMinutes: duration
+            )
+        }
+
+        return OccurrenceTimingInput(
+            timingType: .date,
+            timezone: timezone.identifier,
+            plannedDate: plannedDate,
+            allDayEndDate: nil,
+            localStartTime: nil,
+            durationMinutes: nil
+        )
     }
 
     func toggle(_ occurrence: OccurrenceV2) async throws {

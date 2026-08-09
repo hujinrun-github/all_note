@@ -60,6 +60,7 @@ struct FlowSpaceMenuBarView: View {
 
     private var connectionTitle: String {
         if session.workspaceStore?.isSyncing == true { return "正在同步" }
+        if session.connectivity.isOffline { return "离线 · 只读" }
         if session.menuBarRefreshError != nil { return "连接异常" }
         switch session.phase {
         case .ready: return "已连接"
@@ -72,6 +73,7 @@ struct FlowSpaceMenuBarView: View {
 
     private var connectionImage: String {
         if session.workspaceStore?.isSyncing == true { return "arrow.triangle.2.circlepath" }
+        if session.connectivity.isOffline { return "wifi.slash" }
         if session.menuBarRefreshError != nil { return "wifi.exclamationmark" }
         return session.phase == .ready ? "circle.fill" : "circle.dashed"
     }

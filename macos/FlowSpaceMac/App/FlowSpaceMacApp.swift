@@ -5,6 +5,7 @@ import UserNotifications
 @main
 struct FlowSpaceMacApp: App {
     @NSApplicationDelegateAdaptor(FlowSpaceAppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @State private var session = AppSession()
 
     var body: some Scene {
@@ -12,6 +13,11 @@ struct FlowSpaceMacApp: App {
             RootView()
                 .environment(session)
                 .frame(minWidth: 900, minHeight: 620)
+                .onChange(of: scenePhase) {
+                    if scenePhase != .active {
+                        session.workspaceStore?.flushRecentContentCache()
+                    }
+                }
         }
         .defaultSize(width: 1240, height: 780)
         .commands {
@@ -20,6 +26,18 @@ struct FlowSpaceMacApp: App {
             ImportWindowCommands(session: session)
             AccountWindowCommands(session: session)
         }
+
+        WindowGroup("FlowSpace", for: WorkspaceWindowRoute.self) { $route in
+            RootView(initialRoute: route)
+                .environment(session)
+                .frame(minWidth: 900, minHeight: 620)
+                .onChange(of: scenePhase) {
+                    if scenePhase != .active {
+                        session.workspaceStore?.flushRecentContentCache()
+                    }
+                }
+        }
+        .defaultSize(width: 1240, height: 780)
 
         Window("快速捕获", id: "quick-capture") {
             QuickCaptureWindowView()
@@ -72,6 +90,19 @@ struct FlowSpaceMacApp: App {
             }
         }
         .defaultSize(width: 720, height: 560)
+
+        Window("命令面板", id: "command-palette") {
+            if let store = session.workspaceStore {
+                CommandPaletteView(store: store)
+                    .environment(session)
+            } else {
+                ContentUnavailableView("命令面板不可用", systemImage: "command")
+                    .frame(minWidth: 560, minHeight: 360)
+            }
+        }
+        .defaultSize(width: 660, height: 480)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
 
         Window("账号管理", id: "account-admin") {
             if session.isAdmin, let store = session.workspaceStore {
@@ -176,10 +207,15 @@ private struct FlowSpaceCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
-            Button("全局搜索") {
-                openWindow(id: "global-search")
+            Button("命令面板") {
+                openWindow(id: "command-palette")
             }
             .keyboardShortcut("k", modifiers: .command)
+
+            Button("完整搜索") {
+                openWindow(id: "global-search")
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
         }
 
         CommandGroup(after: .importExport) {

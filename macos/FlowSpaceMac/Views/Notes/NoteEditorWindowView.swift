@@ -43,6 +43,18 @@ struct NoteEditorWindowView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if store.isReadOnly {
+                HStack(spacing: 8) {
+                    Image(systemName: "wifi.slash")
+                    Text("离线 · 只读；当前窗口会保留未保存内容，但不会在后台排队。")
+                    Spacer()
+                }
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.orange.opacity(0.1))
+            }
             if state == .loading {
                 ProgressView("正在打开笔记…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -53,6 +65,7 @@ struct NoteEditorWindowView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 22)
                     .onChange(of: title) { markDirty() }
+                    .disabled(store.isReadOnly)
 
                 HStack {
                     Label(projectSummary, systemImage: "folder")
@@ -96,6 +109,7 @@ struct NoteEditorWindowView: View {
                     RichNoteEditor(
                         noteID: noteID,
                         generation: editorGeneration,
+                        isReadOnly: store.isReadOnly,
                         markdown: $markdownBody,
                         selectedText: $selectedEditorText,
                         wordCount: $wordCount,
@@ -103,7 +117,7 @@ struct NoteEditorWindowView: View {
                         onChange: markDirty,
                         onSaveRequest: { Task { _ = await save() } },
                         onFindRequest: { showFindBar = true },
-                        onGlobalSearchRequest: { openWindow(id: "global-search") },
+                        onGlobalSearchRequest: { openWindow(id: "command-palette") },
                         onLoadFailure: { editorError = $0 }
                     )
                     .accessibilityLabel("富文本正文")
@@ -133,6 +147,7 @@ struct NoteEditorWindowView: View {
                 }
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(state == .loading || state == .saving || state == .saved)
+                .disabled(store.isReadOnly)
 
                 Menu("编辑格式", systemImage: "textformat") {
                     Button("一级标题") { editorController.execute("heading1") }
@@ -148,11 +163,12 @@ struct NoteEditorWindowView: View {
                     Button("删除线") { editorController.execute("strike") }
                         .keyboardShortcut("x", modifiers: [.command, .shift])
                 }
+                .disabled(store.isReadOnly)
 
                 Button("添加假名", systemImage: "character.book.closed") {
                     Task { await addFuriganaToSelection() }
                 }
-                .disabled(isAnnotating || state == .loading)
+                .disabled(isAnnotating || state == .loading || store.isReadOnly)
                 .help("为编辑器中选中的日文添加假名")
 
                 Button("检查器", systemImage: "sidebar.right") {
@@ -307,7 +323,7 @@ struct NoteEditorWindowView: View {
     }
 
     private func markDirty() {
-        guard didLoad else { return }
+        guard didLoad, !store.isReadOnly else { return }
         state = .dirty
         editGeneration += 1
     }

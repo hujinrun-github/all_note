@@ -1,22 +1,41 @@
+import CoreTransferable
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CalendarWorkspaceView: View {
+    @Environment(AppSession.self) private var session
     let store: WorkspaceStore
-    @State private var anchorDate = Date()
-    @State private var taskDraft: TaskDraft?
-    @State private var selectedEntry: CalendarEntryV2?
-    @AppStorage("defaultCalendarView") private var modeRaw = CalendarDisplayMode.week.rawValue
-    @AppStorage("calendarTimeZoneID") private var timezoneID = TimeZone.current.identifier
+    @SceneStorage("calendar.anchorTimestamp") private var anchorTimestamp = Date().timeIntervalSince1970
+    @State private var calendarSheet: CalendarSheetDestination?
+    @AppStorage("defaultCalendarView") private var defaultModeRaw = CalendarDisplayMode.week.rawValue
+    @AppStorage("calendarTimeZoneID") private var defaultTimezoneID = TimeZone.current.identifier
+    @AppStorage(CalendarResizePreferences.enabledKey) private var resizeHandleEnabled = true
+    @SceneStorage("calendar.currentMode") private var currentModeRaw = ""
+    @SceneStorage("calendar.currentTimeZone") private var currentTimezoneID = ""
 
     private let hours = Array(7...20)
     private let calendar = Calendar.current
 
+    private var anchorDate: Date {
+        get { Date(timeIntervalSince1970: anchorTimestamp) }
+        nonmutating set { anchorTimestamp = newValue.timeIntervalSince1970 }
+    }
+
     private var mode: CalendarDisplayMode {
-        get { CalendarDisplayMode(rawValue: modeRaw) ?? .week }
-        nonmutating set { modeRaw = newValue.rawValue }
+        get { CalendarDisplayMode(rawValue: currentModeRaw.isEmpty ? defaultModeRaw : currentModeRaw) ?? .week }
+        nonmutating set { currentModeRaw = newValue.rawValue }
+    }
+
+    private var timezoneID: String {
+        get { currentTimezoneID.isEmpty ? defaultTimezoneID : currentTimezoneID }
+        nonmutating set { currentTimezoneID = newValue }
     }
 
     private var timezone: TimeZone { TimeZone(identifier: timezoneID) ?? .current }
+
+    private var timezoneSelection: Binding<String> {
+        Binding(get: { timezoneID }, set: { timezoneID = $0 })
+    }
 
     private var loadKey: String {
         "\(mode.rawValue)-\(timezoneID)-\(anchorDate.timeIntervalSince1970)"
@@ -46,8 +65,12 @@ struct CalendarWorkspaceView: View {
                                 hour: hour,
                                 days: days,
                                 entries: store.calendarEntries,
+                                timezone: timezone,
                                 selectEmpty: openDraft,
-                                selectEntry: { selectedEntry = $0 }
+                                selectEntry: { calendarSheet = .edit($0) },
+                                proposeMove: stageMove,
+                                resizeEnabled: resizeHandleEnabled && !store.mutationsDisabled,
+                                proposeResize: stageResize
                             )
                         }
                     }
@@ -58,7 +81,7 @@ struct CalendarWorkspaceView: View {
                     anchorDate: anchorDate,
                     entries: store.calendarEntries,
                     selectDate: openDateDraft,
-                    selectEntry: { selectedEntry = $0 }
+                    selectEntry: { calendarSheet = .edit($0) }
                 )
             case .year:
                 YearCalendarGrid(anchorDate: anchorDate) { month in
@@ -69,15 +92,42 @@ struct CalendarWorkspaceView: View {
         }
         .task(id: loadKey) {
             await store.loadCalendar(containing: anchorDate, mode: mode, timezone: timezone)
+            applyPendingOccurrenceSelection()
         }
-        .sheet(item: $taskDraft) { draft in
-            TaskEditorSheet(draft: draft, store: store) {
-                await store.loadCalendar(containing: anchorDate, mode: mode, timezone: timezone)
-            }
+        .onChange(of: session.pendingWorkspaceEntitySelection) {
+            applyPendingOccurrenceSelection()
         }
-        .sheet(item: $selectedEntry) { entry in
-            CalendarEntryEditorSheet(entry: entry, timezone: timezone, store: store) {
-                await store.loadCalendar(containing: anchorDate, mode: mode, timezone: timezone)
+        .sheet(item: $calendarSheet) { destination in
+            Group {
+                switch destination {
+                case .create(let draft):
+                    TaskEditorSheet(draft: draft, store: store, onCreated: reloadCalendar)
+                case .edit(let entry):
+                    CalendarEntryEditorSheet(
+                        entry: entry,
+                        timezone: timezone,
+                        store: store,
+                        onSaved: reloadCalendar
+                    )
+                case .move(let preview):
+                    CalendarEntryEditorSheet(
+                        entry: preview.entry,
+                        timezone: timezone,
+                        proposedStart: preview.proposedStart,
+                        conflicts: preview.conflicts,
+                        store: store,
+                        onSaved: reloadCalendar
+                    )
+                case .resize(let preview):
+                    CalendarEntryEditorSheet(
+                        entry: preview.entry,
+                        timezone: timezone,
+                        proposedDurationMinutes: preview.proposedDurationMinutes,
+                        conflicts: preview.conflicts,
+                        store: store,
+                        onSaved: reloadCalendar
+                    )
+                }
             }
             .environment(\.timeZone, timezone)
         }
@@ -103,7 +153,7 @@ struct CalendarWorkspaceView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 150)
-            Picker("时区", selection: $timezoneID) {
+            Picker("时区", selection: timezoneSelection) {
                 ForEach(timezoneOptions, id: \.self) { value in Text(value).tag(value) }
             }
             .frame(maxWidth: 190)
@@ -143,7 +193,7 @@ struct CalendarWorkspaceView: View {
                     Button {
                         var draft = TaskDraft.scheduled(at: day, projectID: store.defaultProjectID)
                         draft.timingType = .date
-                        taskDraft = draft
+                        calendarSheet = .create(draft)
                     } label: {
                         Color.clear
                             .frame(maxWidth: .infinity, minHeight: 52)
@@ -155,7 +205,7 @@ struct CalendarWorkspaceView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(entries.prefix(3)) { entry in
                             Button {
-                                selectedEntry = entry
+                                calendarSheet = .edit(entry)
                             } label: {
                                 Text(entry.taskTitle)
                                     .font(.caption)
@@ -213,23 +263,155 @@ struct CalendarWorkspaceView: View {
 
     private func openDraft(day: Date, hour: Int) {
         guard let date = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day) else { return }
-        taskDraft = .scheduled(at: date, projectID: store.defaultProjectID)
+        calendarSheet = .create(.scheduled(at: date, projectID: store.defaultProjectID))
     }
 
     private func openDateDraft(_ date: Date) {
         var draft = TaskDraft.scheduled(at: date, projectID: store.defaultProjectID)
         draft.timingType = .date
-        taskDraft = draft
+        calendarSheet = .create(draft)
     }
+
+    private func stageMove(
+        occurrenceID: String,
+        day: Date,
+        hour: Int,
+        minute: Int
+    ) -> Bool {
+        guard !store.mutationsDisabled,
+              let entry = store.calendarEntries.first(where: { $0.occurrenceID == occurrenceID }),
+              entry.timingType == .timeBlock,
+              !entry.executionStatus.isTerminal,
+              let proposedStart = CalendarDropPlanner.proposedStart(
+                day: day,
+                hour: hour,
+                minute: minute,
+                timezone: timezone
+              ) else { return false }
+        calendarSheet = .move(CalendarMovePreview(
+            entry: entry,
+            proposedStart: proposedStart,
+            conflicts: CalendarDropPlanner.conflicts(
+                moving: entry,
+                proposedStart: proposedStart,
+                entries: store.calendarEntries
+            )
+        ))
+        return true
+    }
+
+    private func stageResize(occurrenceID: String, durationMinutes: Int) -> Bool {
+        guard resizeHandleEnabled,
+              !store.mutationsDisabled,
+              let entry = store.calendarEntries.first(where: { $0.occurrenceID == occurrenceID }),
+              entry.timingType == .timeBlock,
+              !entry.executionStatus.isTerminal,
+              durationMinutes != CalendarDropPlanner.durationMinutes(for: entry) else { return false }
+        calendarSheet = .resize(CalendarResizePreview(
+            entry: entry,
+            proposedDurationMinutes: durationMinutes,
+            conflicts: CalendarDropPlanner.conflicts(
+                resizing: entry,
+                proposedDurationMinutes: durationMinutes,
+                entries: store.calendarEntries
+            )
+        ))
+        return true
+    }
+
+    private func reloadCalendar() async {
+        await store.loadCalendar(containing: anchorDate, mode: mode, timezone: timezone)
+    }
+
+    private func applyPendingOccurrenceSelection() {
+        guard case .occurrence(let occurrenceID) = session.pendingWorkspaceEntitySelection else { return }
+        if let entry = store.calendarEntries.first(where: { $0.occurrenceID == occurrenceID }) {
+            calendarSheet = .edit(entry)
+            session.consumeWorkspaceEntitySelection()
+            return
+        }
+        if let occurrence = store.occurrences.first(where: { $0.id == occurrenceID }),
+           let targetDate = occurrence.plannedStartAt.flatMap(Date.flowSpaceISO8601)
+                ?? occurrence.plannedDate.flatMap(calendarDate) {
+            if !calendar.isDate(targetDate, equalTo: anchorDate, toGranularity: .weekOfYear) || mode != .week {
+                mode = .week
+                anchorDate = targetDate
+                return
+            }
+            if let task = store.tasksByID[occurrence.taskID],
+               let entry = CalendarEntryV2(
+                    occurrence: occurrence,
+                    task: task,
+                    project: store.projectsByID[occurrence.projectID ?? task.projectID]
+               ) {
+                calendarSheet = .edit(entry)
+            }
+        }
+        session.consumeWorkspaceEntitySelection()
+    }
+
+    private func calendarDate(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = timezone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: value)
+    }
+}
+
+private enum CalendarSheetDestination: Identifiable {
+    case create(TaskDraft)
+    case edit(CalendarEntryV2)
+    case move(CalendarMovePreview)
+    case resize(CalendarResizePreview)
+
+    var id: String {
+        switch self {
+        case .create(let draft): "create-\(draft.id)"
+        case .edit(let entry): "edit-\(entry.occurrenceID)"
+        case .move(let preview): "move-\(preview.id)"
+        case .resize(let preview): "resize-\(preview.id)"
+        }
+    }
+}
+
+private struct CalendarMovePreview: Identifiable {
+    let id = UUID()
+    let entry: CalendarEntryV2
+    let proposedStart: Date
+    let conflicts: [CalendarEntryV2]
+}
+
+private struct CalendarResizePreview: Identifiable {
+    let id = UUID()
+    let entry: CalendarEntryV2
+    let proposedDurationMinutes: Int
+    let conflicts: [CalendarEntryV2]
+}
+
+private struct CalendarEntryDragPayload: Codable, Transferable {
+    let occurrenceID: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .flowSpaceCalendarEntry)
+    }
+}
+
+private extension UTType {
+    static let flowSpaceCalendarEntry = UTType(exportedAs: "com.flowspace.calendar-entry")
 }
 
 private struct HourRow: View {
     let hour: Int
     let days: [Date]
     let entries: [CalendarEntryV2]
+    let timezone: TimeZone
     let selectEmpty: (Date, Int) -> Void
     let selectEntry: (CalendarEntryV2) -> Void
-    private let calendar = Calendar.current
+    let proposeMove: (String, Date, Int, Int) -> Bool
+    let resizeEnabled: Bool
+    let proposeResize: (String, Int) -> Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -239,43 +421,16 @@ private struct HourRow: View {
                 .frame(width: 64, alignment: .center)
 
             ForEach(days, id: \.self) { day in
-                ZStack(alignment: .topLeading) {
-                    Button {
-                        selectEmpty(day, hour)
-                    } label: {
-                        Color.clear
-                            .frame(maxWidth: .infinity, minHeight: 62)
-                            .contentShape(.rect)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("在 \(day.formatted(date: .abbreviated, time: .omitted)) \(hour) 点新建日程")
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(entriesForCell(day: day)) { entry in
-                            Button {
-                                selectEntry(entry)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(entry.taskTitle)
-                                        .font(.caption.weight(.semibold))
-                                        .lineLimit(1)
-                                    if let start = entry.plannedStartAt.flatMap(Date.flowSpaceISO8601) {
-                                        Text(start.formatted(date: .omitted, time: .shortened))
-                                            .font(.caption2.monospacedDigit())
-                                    }
-                                }
-                                .foregroundStyle(.primary)
-                                .padding(5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color.accentColor.opacity(0.14), in: .rect(cornerRadius: 6))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("编辑日程：\(entry.taskTitle)")
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
-                    .padding(3)
-                }
+                CalendarHourCell(
+                    day: day,
+                    hour: hour,
+                    entries: entriesForCell(day: day),
+                    selectEmpty: selectEmpty,
+                    selectEntry: selectEntry,
+                    proposeMove: proposeMove,
+                    resizeEnabled: resizeEnabled,
+                    proposeResize: proposeResize
+                )
                 .overlay(alignment: .trailing) { Divider() }
             }
         }
@@ -283,11 +438,153 @@ private struct HourRow: View {
     }
 
     private func entriesForCell(day: Date) -> [CalendarEntryV2] {
-        entries.filter { entry in
+        var calendar = Calendar.current
+        calendar.timeZone = timezone
+        return entries.filter { entry in
             guard entry.timingType == .timeBlock,
                   let start = entry.plannedStartAt.flatMap(Date.flowSpaceISO8601) else { return false }
             return calendar.isDate(start, inSameDayAs: day) && calendar.component(.hour, from: start) == hour
         }
+    }
+}
+
+private struct CalendarHourCell: View {
+    let day: Date
+    let hour: Int
+    let entries: [CalendarEntryV2]
+    let selectEmpty: (Date, Int) -> Void
+    let selectEntry: (CalendarEntryV2) -> Void
+    let proposeMove: (String, Date, Int, Int) -> Bool
+    let resizeEnabled: Bool
+    let proposeResize: (String, Int) -> Bool
+    @State private var isDropTargeted = false
+
+    private let cellHeight: CGFloat = 62
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Button {
+                selectEmpty(day, hour)
+            } label: {
+                Color.clear
+                    .frame(maxWidth: .infinity, minHeight: cellHeight)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("在 \(day.formatted(date: .abbreviated, time: .omitted)) \(hour) 点新建日程")
+
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(entries) { entry in
+                    CalendarTimeBlock(
+                        entry: entry,
+                        resizeEnabled: resizeEnabled,
+                        selectEntry: selectEntry,
+                        proposeResize: proposeResize
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: cellHeight, alignment: .topLeading)
+            .padding(3)
+        }
+        .background(isDropTargeted ? Color.accentColor.opacity(0.12) : .clear)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [4]))
+                    .padding(2)
+            }
+        }
+        .dropDestination(for: CalendarEntryDragPayload.self) { payloads, location in
+            guard let payload = payloads.first else { return false }
+            let minute = CalendarDropPlanner.snappedMinute(y: location.y, cellHeight: cellHeight)
+            return proposeMove(payload.occurrenceID, day, hour, minute)
+        } isTargeted: {
+            isDropTargeted = $0
+        }
+    }
+
+}
+
+private struct CalendarTimeBlock: View {
+    let entry: CalendarEntryV2
+    let resizeEnabled: Bool
+    let selectEntry: (CalendarEntryV2) -> Void
+    let proposeResize: (String, Int) -> Bool
+    @GestureState private var resizeTranslation: CGFloat = 0
+
+    private let pointsPerHour: CGFloat = 62
+
+    private var originalDuration: Int {
+        CalendarDropPlanner.durationMinutes(for: entry)
+    }
+
+    private var previewDuration: Int {
+        CalendarDropPlanner.resizedDuration(
+            originalMinutes: originalDuration,
+            verticalTranslation: resizeTranslation,
+            pointsPerHour: pointsPerHour
+        )
+    }
+
+    var body: some View {
+        Button {
+            selectEntry(entry)
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.taskTitle)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                if let start = entry.plannedStartAt.flatMap(Date.flowSpaceISO8601) {
+                    Text("\(start.formatted(date: .omitted, time: .shortened)) · \(previewDuration) 分钟")
+                        .font(.caption2.monospacedDigit())
+                }
+            }
+            .foregroundStyle(.primary)
+            .padding(5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.14), in: .rect(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("编辑日程：\(entry.taskTitle)")
+        .help(helpText)
+        .draggable(CalendarEntryDragPayload(occurrenceID: entry.occurrenceID)) {
+            Label(entry.taskTitle, systemImage: "calendar")
+                .padding(8)
+                .background(.regularMaterial, in: .rect(cornerRadius: 8))
+        }
+        .overlay(alignment: .bottom) {
+            if resizeEnabled && !entry.executionStatus.isTerminal {
+                Capsule()
+                    .fill(resizeTranslation == 0 ? Color.secondary.opacity(0.65) : Color.accentColor)
+                    .frame(width: 28, height: 4)
+                    .padding(.vertical, 3)
+                    .contentShape(.rect.inset(by: -7))
+                    .highPriorityGesture(resizeGesture)
+                    .accessibilityLabel("调整 \(entry.taskTitle) 的时长")
+                    .help("上下拖动调整时长，松开后预览")
+            }
+        }
+    }
+
+    private var helpText: String {
+        if entry.executionStatus.isTerminal { return "当前状态不能拖动改期或调整时长" }
+        return resizeEnabled ? "拖动卡片改期；拖动底部手柄调整时长" : "拖动到时间槽进行改期预览"
+    }
+
+    private var resizeGesture: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .updating($resizeTranslation) { value, state, _ in
+                state = value.translation.height
+            }
+            .onEnded { value in
+                let duration = CalendarDropPlanner.resizedDuration(
+                    originalMinutes: originalDuration,
+                    verticalTranslation: value.translation.height,
+                    pointsPerHour: pointsPerHour
+                )
+                guard duration != originalDuration else { return }
+                _ = proposeResize(entry.occurrenceID, duration)
+            }
     }
 }
 
@@ -487,20 +784,28 @@ private struct CalendarEntryEditDraft {
     var generateThroughExclusive: Date
     var selectedOffsetSeconds: Int?
 
-    init(entry: CalendarEntryV2, timezone: TimeZone) {
-        let calendar = Calendar(identifier: .gregorian)
+    init(
+        entry: CalendarEntryV2,
+        timezone: TimeZone,
+        proposedStart: Date? = nil,
+        proposedDurationMinutes: Int? = nil
+    ) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
         let planned = Self.localDate(entry.plannedDate, timezone: timezone) ?? Date()
-        let start = entry.plannedStartAt.flatMap(Date.flowSpaceISO8601) ?? planned
+        let originalStart = entry.plannedStartAt.flatMap(Date.flowSpaceISO8601) ?? planned
+        let start = proposedStart ?? originalStart
         let end = entry.plannedEndAt.flatMap(Date.flowSpaceISO8601)
         let defaultEnd = calendar.date(byAdding: .day, value: 1, to: planned) ?? planned
 
         timingType = entry.timingType == .timeBlock ? .timeBlock : .date
-        plannedDate = planned
+        plannedDate = proposedStart ?? planned
         allDayEndDate = Self.localDate(entry.allDayEndDate, timezone: timezone) ?? defaultEnd
         localStartDate = start
-        durationMinutes = max(15, end.map { Int($0.timeIntervalSince(start) / 60) } ?? 30)
-        effectiveFrom = planned
-        generateThroughExclusive = calendar.date(byAdding: .day, value: 31, to: planned) ?? planned
+        durationMinutes = proposedDurationMinutes
+            ?? max(15, end.map { Int($0.timeIntervalSince(originalStart) / 60) } ?? 30)
+        effectiveFrom = proposedStart ?? planned
+        generateThroughExclusive = calendar.date(byAdding: .day, value: 31, to: proposedStart ?? planned) ?? planned
     }
 
     private static func localDate(_ raw: String?, timezone: TimeZone) -> Date? {
@@ -518,6 +823,9 @@ struct CalendarEntryEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     let entry: CalendarEntryV2
     let timezone: TimeZone
+    let proposedStart: Date?
+    let proposedDurationMinutes: Int?
+    let conflicts: [CalendarEntryV2]
     let store: WorkspaceStore
     let onSaved: () async -> Void
     @State private var draft: CalendarEntryEditDraft
@@ -527,14 +835,25 @@ struct CalendarEntryEditorSheet: View {
     init(
         entry: CalendarEntryV2,
         timezone: TimeZone,
+        proposedStart: Date? = nil,
+        proposedDurationMinutes: Int? = nil,
+        conflicts: [CalendarEntryV2] = [],
         store: WorkspaceStore,
         onSaved: @escaping () async -> Void
     ) {
         self.entry = entry
         self.timezone = timezone
+        self.proposedStart = proposedStart
+        self.proposedDurationMinutes = proposedDurationMinutes
+        self.conflicts = conflicts
         self.store = store
         self.onSaved = onSaved
-        _draft = State(initialValue: CalendarEntryEditDraft(entry: entry, timezone: timezone))
+        _draft = State(initialValue: CalendarEntryEditDraft(
+            entry: entry,
+            timezone: timezone,
+            proposedStart: proposedStart,
+            proposedDurationMinutes: proposedDurationMinutes
+        ))
     }
 
     var body: some View {
@@ -546,6 +865,41 @@ struct CalendarEntryEditorSheet: View {
                     LabeledContent("显示时区", value: timezone.identifier)
                 }
 
+                if let proposedStart {
+                    Section("拖动改期预览") {
+                        if let originalStart = entry.plannedStartAt.flatMap(Date.flowSpaceISO8601) {
+                            LabeledContent("原安排", value: originalStart.formatted(date: .abbreviated, time: .shortened))
+                        }
+                        LabeledContent("新安排", value: proposedStart.formatted(date: .abbreviated, time: .shortened))
+                        LabeledContent("吸附粒度", value: "15 分钟")
+                        if !conflicts.isEmpty {
+                            Label(
+                                "与 \(conflicts.map(\.taskTitle).joined(separator: "、")) 时间重叠，仍可确认改期。",
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
+                if let proposedDurationMinutes {
+                    Section("调整时长预览") {
+                        LabeledContent(
+                            "原时长",
+                            value: "\(CalendarDropPlanner.durationMinutes(for: entry)) 分钟"
+                        )
+                        LabeledContent("新时长", value: "\(proposedDurationMinutes) 分钟")
+                        LabeledContent("吸附粒度", value: "15 分钟")
+                        if !conflicts.isEmpty {
+                            Label(
+                                "延长后与 \(conflicts.map(\.taskTitle).joined(separator: "、")) 时间重叠，仍可确认。",
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
                 if entry.executionStatus == .done {
                     Section {
                         Text("已完成的执行不能直接移动，请先重新打开。")
@@ -553,7 +907,7 @@ struct CalendarEntryEditorSheet: View {
                         Button("重新打开任务", systemImage: "arrow.uturn.backward") {
                             Task { await reopen() }
                         }
-                        .disabled(store.isMutating)
+                        .disabled(store.mutationsDisabled)
                     }
                 } else if entry.executionStatus.isTerminal {
                     Section {
@@ -590,21 +944,22 @@ struct CalendarEntryEditorSheet: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("编辑日程")
+            .navigationTitle(editorTitle)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }
                 if !entry.executionStatus.isTerminal {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("保存日程") { Task { await save() } }
+                        Button(confirmButtonTitle) { Task { await save() } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(store.isMutating || requiresOffsetSelection)
+                            .disabled(store.mutationsDisabled || requiresOffsetSelection)
                     }
                 }
             }
         }
         .frame(width: 560, height: 650)
+        .interactiveDismissDisabled(store.isMutating)
     }
 
     @ViewBuilder
@@ -657,6 +1012,16 @@ struct CalendarEntryEditorSheet: View {
 
     private var requiresOffsetSelection: Bool {
         !offsetCandidates.isEmpty && draft.selectedOffsetSeconds == nil
+    }
+
+    private var editorTitle: String {
+        if proposedDurationMinutes != nil { return "确认调整时长" }
+        return proposedStart == nil ? "编辑日程" : "确认改期"
+    }
+
+    private var confirmButtonTitle: String {
+        if proposedDurationMinutes != nil { return "确认调整" }
+        return proposedStart == nil ? "保存日程" : "确认改期"
     }
 
     private var executionStatusTitle: String {

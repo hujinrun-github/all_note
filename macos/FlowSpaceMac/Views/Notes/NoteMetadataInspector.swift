@@ -74,6 +74,7 @@ struct NoteMetadataInspector: View {
                         )
                     }
                 }
+                .disabled(store.mutationsDisabled)
 
                 if selectedProjectIDs.isEmpty {
                     Text("未归属")
@@ -116,7 +117,7 @@ struct NoteMetadataInspector: View {
                             }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.borderless)
-                            .disabled(store.isMutating)
+                            .disabled(store.mutationsDisabled)
                         }
                     }
                 }
@@ -135,7 +136,7 @@ struct NoteMetadataInspector: View {
                     Text(task.title).tag(task.id)
                 }
             }
-            .disabled(taskProjectID.isEmpty || availableTasks.isEmpty || store.isMutating)
+            .disabled(taskProjectID.isEmpty || availableTasks.isEmpty || store.mutationsDisabled)
             .onChange(of: taskToLinkID) {
                 guard !taskToLinkID.isEmpty else { return }
                 let taskID = taskToLinkID
@@ -163,6 +164,7 @@ struct NoteMetadataInspector: View {
             TextField("用逗号分隔标签", text: $tagsText)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: tagsText) { markDirty() }
+                .disabled(store.isReadOnly)
             let tags = FlowNote.normalizedTags(from: tagsText)
             if !tags.isEmpty {
                 Text(tags.map { "#\($0)" }.joined(separator: "  "))

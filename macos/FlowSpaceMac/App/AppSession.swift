@@ -1,9 +1,11 @@
 import Foundation
 import Observation
 
-enum WorkspaceEntitySelection: Equatable, Sendable {
+enum WorkspaceEntitySelection: Codable, Equatable, Hashable, Sendable {
     case task(String)
     case project(String)
+    case occurrence(String)
+    case note(String)
 }
 
 @MainActor
@@ -31,6 +33,7 @@ final class AppSession {
     private(set) var pendingWorkspaceEntitySelection: WorkspaceEntitySelection?
     let notifications: AppNotificationService
     let spotlight: AppSpotlightService
+    let connectivity: ServiceConnectivity
     var errorMessage: String?
     var isWorking = false
     var contentImportPresentation: ContentImportPresentation?
@@ -42,6 +45,7 @@ final class AppSession {
     var isGitHubLoginAvailable: Bool { authProviders.contains("github") }
 
     private let defaults: UserDefaults
+    private let recentCache: RecentWorkspaceCache
     private let githubAuthentication = GitHubAuthenticationSession()
     private var loadedAuthProviders = false
     private var isRefreshingMenuBar = false
@@ -50,11 +54,15 @@ final class AppSession {
     init(
         defaults: UserDefaults = .standard,
         notifications: AppNotificationService = .shared,
-        spotlight: AppSpotlightService = .shared
+        spotlight: AppSpotlightService = .shared,
+        connectivity: ServiceConnectivity = ServiceConnectivity(),
+        recentCache: RecentWorkspaceCache = RecentWorkspaceCache()
     ) {
         self.defaults = defaults
         self.notifications = notifications
         self.spotlight = spotlight
+        self.connectivity = connectivity
+        self.recentCache = recentCache
         menuBarExtraEnabled = defaults.bool(forKey: MenuBarPreferences.enabledKey)
     }
 
@@ -72,6 +80,7 @@ final class AppSession {
             _ = try await client.health()
             let user = try await client.currentUser()
             currentUser = user
+            cacheCurrentUser(user)
             if user.mustChangePassword || user.user.mustChangePassword {
                 phase = .passwordChange
             } else {
@@ -79,6 +88,8 @@ final class AppSession {
             }
         } catch let error as APIError where error.isUnauthorized {
             phase = .login
+        } catch let error as APIError where error.code == "network_error" && restoreCachedWorkspace() {
+            return
         } catch {
             errorMessage = readable(error)
             phase = .connection
@@ -92,17 +103,19 @@ final class AppSession {
 
         do {
             let url = try ServerAddress.normalize(rawAddress)
-            let candidate = APIClient(baseURL: url)
+            connectivity.reset()
+            let candidate = makeClient(baseURL: url)
             let health = try await candidate.health()
             guard health.status == "ok" else {
                 throw ValidationError("服务尚未就绪")
             }
             defaults.set(url.absoluteString, forKey: Self.serviceAddressKey)
-            configure(url)
+            configure(url, client: candidate)
 
             do {
                 let user = try await candidate.currentUser()
                 currentUser = user
+                cacheCurrentUser(user)
                 if user.mustChangePassword || user.user.mustChangePassword {
                     phase = .passwordChange
                 } else {
@@ -132,6 +145,7 @@ final class AppSession {
                 phase = .passwordChange
             } else {
                 currentUser = try await client.currentUser()
+                cacheCurrentUser()
                 await verifyCapabilities()
             }
         } catch {
@@ -161,6 +175,7 @@ final class AppSession {
             let code = try GitHubNativeOAuthCallback.exchangeCode(from: callbackURL)
             try await client.exchangeGitHubNativeCode(code, codeVerifier: pkce.verifier)
             currentUser = try await client.currentUser()
+            cacheCurrentUser()
             if currentUser?.mustChangePassword == true || currentUser?.user.mustChangePassword == true {
                 phase = .passwordChange
             } else {
@@ -181,6 +196,7 @@ final class AppSession {
         do {
             try await client.resetPassword(password)
             currentUser = try await client.currentUser()
+            cacheCurrentUser()
             await verifyCapabilities()
         } catch {
             errorMessage = readable(error)
@@ -193,6 +209,7 @@ final class AppSession {
 
     func logout() async {
         let workspaceID = currentUser?.workspace.id
+        if let baseURL { recentCache.remove(for: baseURL) }
         workspaceStore?.clear()
         if let client { try? await client.logout() }
         if let workspaceID {
@@ -206,7 +223,33 @@ final class AppSession {
     }
 
     func changeService() async {
+        await clearCurrentService()
+        defaults.removeObject(forKey: Self.serviceAddressKey)
+        phase = .connection
+    }
+
+    func testService(_ rawAddress: String) async throws -> URL {
+        let url = try ServerAddress.normalize(rawAddress)
+        let candidate = APIClient(baseURL: url, session: ServiceProbeSession.make())
+        let health = try await candidate.health()
+        guard health.status == "ok" else {
+            throw ValidationError("服务尚未就绪")
+        }
+        return url
+    }
+
+    func switchService(to url: URL) async {
+        await clearCurrentService()
+        let candidate = makeClient(baseURL: url)
+        await candidate.clearCookiesForCurrentService()
+        defaults.set(url.absoluteString, forKey: Self.serviceAddressKey)
+        configure(url, client: candidate)
+        phase = .login
+    }
+
+    private func clearCurrentService() async {
         let workspaceID = currentUser?.workspace.id
+        if let baseURL { recentCache.remove(for: baseURL) }
         workspaceStore?.clear()
         if let client { await client.clearCookiesForCurrentService() }
         if let workspaceID {
@@ -216,14 +259,14 @@ final class AppSession {
         client = nil
         workspaceStore = nil
         baseURL = nil
+        connectivity.reset()
         clearMenuBarState()
-        defaults.removeObject(forKey: Self.serviceAddressKey)
         errorMessage = nil
-        phase = .connection
     }
 
     func handleUnauthorized() {
         let workspaceID = currentUser?.workspace.id
+        if let baseURL { recentCache.remove(for: baseURL) }
         workspaceStore?.clear()
         currentUser = nil
         authProviders = []
@@ -243,6 +286,7 @@ final class AppSession {
     func refreshCurrentUser() async throws {
         guard let client else { return }
         currentUser = try await client.currentUser()
+        cacheCurrentUser()
     }
 
     func refreshMenuBarSummary() async {
@@ -267,6 +311,21 @@ final class AppSession {
         }
     }
 
+    func retryConnection() async {
+        guard let client else { return }
+        connectivity.beginChecking()
+        do {
+            _ = try await client.health()
+            if phase == .ready {
+                await workspaceStore?.load(scope: .today)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = readable(error)
+        }
+    }
+
     func requestWorkspaceDestination(_ destination: WorkspaceDestination) {
         pendingWorkspaceDestination = destination
     }
@@ -283,18 +342,35 @@ final class AppSession {
         pendingWorkspaceEntitySelection = nil
     }
 
-    private func configure(_ url: URL) {
-        let configuredClient = APIClient(baseURL: url)
+    private func configure(_ url: URL, client: APIClient? = nil) {
+        connectivity.beginChecking()
+        let configuredClient = client ?? makeClient(baseURL: url)
         baseURL = url
-        client = configuredClient
+        self.client = configuredClient
         workspaceStore = WorkspaceStore(
             client: configuredClient,
+            connectivity: connectivity,
             notifications: notifications,
-            spotlight: spotlight
+            spotlight: spotlight,
+            recentCache: recentCache,
+            serviceURL: url
         )
         authProviders = []
         loadedAuthProviders = false
         clearMenuBarState()
+    }
+
+    private func makeClient(baseURL: URL) -> APIClient {
+        let connectivity = connectivity
+        return APIClient(
+            baseURL: baseURL,
+            connectionObserver: { event in
+                await connectivity.receive(event)
+            },
+            mutationAllowed: {
+                await connectivity.allowsMutations
+            }
+        )
     }
 
     private func clearMenuBarState() {
@@ -312,20 +388,46 @@ final class AppSession {
         do {
             let capabilities = try await client.capabilities()
             guard capabilities.modelVersion == "v2", capabilities.available else {
+                if let baseURL { recentCache.invalidateV2Capabilities(for: baseURL) }
                 let reason = capabilities.error?.message ?? "当前工作空间尚未启用 task-domain v2"
                 phase = .unsupported(reason)
                 return
             }
-            if let workspaceID = currentUser?.workspace.id, let workspaceStore {
+            if let workspaceID = currentUser?.workspace.id, let workspaceStore, let baseURL {
+                recentCache.markV2CapabilitiesVerified(for: baseURL)
                 workspaceStore.configureSpotlight(workspaceID: workspaceID)
                 Task { await workspaceStore.refreshSpotlightIndex() }
             }
             phase = .ready
         } catch let error as APIError where error.isUnauthorized {
             handleUnauthorized()
+        } catch let error as APIError where error.code == "network_error" && restoreCachedWorkspace() {
+            return
         } catch {
             phase = .unsupported(readable(error))
         }
+    }
+
+    private func cacheCurrentUser(_ user: CurrentUserPayload? = nil) {
+        guard let user = user ?? currentUser, let baseURL else { return }
+        recentCache.saveIdentity(user, for: baseURL)
+    }
+
+    private func restoreCachedWorkspace() -> Bool {
+        guard let baseURL,
+              let snapshot = recentCache.load(for: baseURL),
+              snapshot.v2CapabilitiesVerified,
+              let cachedUser = snapshot.currentUser,
+              !cachedUser.mustChangePassword,
+              !cachedUser.user.mustChangePassword,
+              let workspaceStore,
+              workspaceStore.restoreRecentContent() else { return false }
+        currentUser = cachedUser
+        connectivity.restoreLastSuccessfulResponse(at: snapshot.cachedAt)
+        workspaceStore.configureSpotlight(workspaceID: cachedUser.workspace.id)
+        errorMessage = nil
+        phase = .ready
+        return true
     }
 
     private func readable(_ error: Error) -> String {

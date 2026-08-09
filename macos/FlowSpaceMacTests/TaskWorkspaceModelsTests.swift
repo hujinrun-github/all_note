@@ -84,6 +84,73 @@ final class TaskWorkspaceModelsTests: XCTestCase {
         XCTAssertEqual(filter.drafts([draft, active]).map(\.id), ["draft"])
     }
 
+    func testTaskWorkspaceWindowRouteRoundTripsThroughCodable() throws {
+        let route = WorkspaceWindowRoute.task("task-42", view: .completed)
+
+        let encoded = try JSONEncoder().encode(route)
+        let decoded = try JSONDecoder().decode(WorkspaceWindowRoute.self, from: encoded)
+
+        XCTAssertEqual(decoded, route)
+        XCTAssertEqual(decoded.destination, .tasks)
+        XCTAssertEqual(decoded.selection, .task("task-42"))
+        XCTAssertEqual(decoded.taskView, .completed)
+    }
+
+    func testOccurrenceWorkspaceRouteAndNoteSelectionRoundTripThroughCodable() throws {
+        let route = WorkspaceWindowRoute.occurrence("occurrence-42", view: .overdue)
+        let decodedRoute = try JSONDecoder().decode(
+            WorkspaceWindowRoute.self,
+            from: JSONEncoder().encode(route)
+        )
+        XCTAssertEqual(decodedRoute, route)
+        XCTAssertEqual(decodedRoute.destination, .tasks)
+        XCTAssertEqual(decodedRoute.selection, .occurrence("occurrence-42"))
+        XCTAssertEqual(decodedRoute.taskView, .overdue)
+
+        let noteSelection = WorkspaceEntitySelection.note("note-7")
+        let decodedSelection = try JSONDecoder().decode(
+            WorkspaceEntitySelection.self,
+            from: JSONEncoder().encode(noteSelection)
+        )
+        XCTAssertEqual(decodedSelection, noteSelection)
+    }
+
+    func testTaskWebLinkPreservesServicePathAndEncodesSelection() throws {
+        let baseURL = try XCTUnwrap(URL(string: "https://flow.example.com/workspace"))
+
+        let url = try XCTUnwrap(
+            WorkspaceWebLink.task(baseURL: baseURL, taskID: "task/中文 42", view: .recurring)
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let queryItems = try XCTUnwrap(components.queryItems)
+        let query = Dictionary(uniqueKeysWithValues: queryItems.map { ($0.name, $0.value ?? "") })
+
+        XCTAssertEqual(components.path, "/workspace/tasks")
+        XCTAssertEqual(query["view"], "recurring")
+        XCTAssertEqual(query["task_id"], "task/中文 42")
+    }
+
+    func testProjectWorkspaceRouteAndWebLinkPreserveSelection() throws {
+        let route = WorkspaceWindowRoute.project("project/中文 7")
+        let decoded = try JSONDecoder().decode(
+            WorkspaceWindowRoute.self,
+            from: JSONEncoder().encode(route)
+        )
+        XCTAssertEqual(decoded, route)
+        XCTAssertEqual(decoded.destination, .projects)
+        XCTAssertEqual(decoded.selection, .project("project/中文 7"))
+
+        let baseURL = try XCTUnwrap(URL(string: "https://flow.example.com/workspace"))
+        let url = try XCTUnwrap(
+            WorkspaceWebLink.project(baseURL: baseURL, projectID: "project/中文 7")
+        )
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(
+            components.percentEncodedPath,
+            "/workspace/projects/project%2F%E4%B8%AD%E6%96%87%207"
+        )
+    }
+
     private func makeTask(
         id: String,
         projectID: String,

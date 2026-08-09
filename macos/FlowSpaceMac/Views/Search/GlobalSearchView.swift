@@ -22,6 +22,7 @@ struct GlobalSearchView: View {
 
     @Environment(\.dismiss) private var dismiss
     @AppStorage("recentSearches") private var recentSearchesJSON = "[]"
+    @AppStorage("recentOpenedSearchResults") private var recentResultsJSON = "[]"
     let store: WorkspaceStore
     let onSelect: (SearchResultItem) -> Void
     @State private var query = ""
@@ -149,6 +150,7 @@ struct GlobalSearchView: View {
 
     private func select(_ result: SearchResultItem) {
         remember(query)
+        recentResultsJSON = SearchResultHistory.remembering(result, in: recentResultsJSON)
         onSelect(result)
         dismiss()
     }
@@ -177,4 +179,3 @@ struct GlobalSearchView: View {
         Scope(rawValue: type)?.title ?? type
     }
 }
-

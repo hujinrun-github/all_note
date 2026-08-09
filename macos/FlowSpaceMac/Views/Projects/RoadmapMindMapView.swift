@@ -3,7 +3,7 @@ import SwiftUI
 struct RoadmapMindMapView: View {
     let route: RoadmapMindMapRoute
     let store: WorkspaceStore
-    @State private var selectedNodeID: String
+    @SceneStorage("roadmapMindMap.selectedNode") private var selectedNodeID = ""
     @State private var nodeDraft: RoadmapNodeDraft?
     @State private var taskDraft: TaskDraft?
     @State private var selectedTask: TaskV2?
@@ -13,7 +13,6 @@ struct RoadmapMindMapView: View {
     init(route: RoadmapMindMapRoute, store: WorkspaceStore) {
         self.route = route
         self.store = store
-        _selectedNodeID = State(initialValue: route.nodeID)
     }
 
     private var project: ProjectV2? { store.projectsByID[route.projectID] }
@@ -51,13 +50,18 @@ struct RoadmapMindMapView: View {
         .task {
             if store.projects.isEmpty { await store.loadProjects() }
             await store.loadRoadmap(projectID: route.projectID)
-            if selectedNode == nil { selectedNodeID = roadmap?.stages.first?.id ?? "" }
+            if selectedNode == nil {
+                selectedNodeID = roadmap?.nodes.first(where: { $0.id == route.nodeID })?.id
+                    ?? roadmap?.stages.first?.id
+                    ?? ""
+            }
         }
         .sheet(item: $nodeDraft) { draft in
             RoadmapNodeEditor(
                 draft: draft,
                 stages: roadmap?.stages ?? [],
                 isSaving: store.isMutating,
+                isReadOnly: store.isReadOnly,
                 save: { updated in await save(updated) }
             )
         }
@@ -169,7 +173,7 @@ struct RoadmapMindMapView: View {
                         taskDraft = makeTaskDraft()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
                     .frame(width: 270)
                 }
             }

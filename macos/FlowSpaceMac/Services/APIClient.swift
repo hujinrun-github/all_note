@@ -83,10 +83,19 @@ actor APIClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private let connectionObserver: (@Sendable (ServiceConnectionEvent) async -> Void)?
+    private let mutationAllowed: (@Sendable () async -> Bool)?
 
-    init(baseURL: URL, session: URLSession = .shared) {
+    init(
+        baseURL: URL,
+        session: URLSession = .shared,
+        connectionObserver: (@Sendable (ServiceConnectionEvent) async -> Void)? = nil,
+        mutationAllowed: (@Sendable () async -> Bool)? = nil
+    ) {
         self.baseURL = baseURL
         self.session = session
+        self.connectionObserver = connectionObserver
+        self.mutationAllowed = mutationAllowed
         decoder = .flowSpace()
         encoder = .flowSpace()
     }
@@ -850,6 +859,14 @@ actor APIClient {
         headers: [String: String] = [:],
         timeout: TimeInterval = 20
     ) async throws -> (Data, HTTPURLResponse) {
+        if method != "GET", method != "HEAD", let mutationAllowed, !(await mutationAllowed()) {
+            throw APIError(
+                status: 0,
+                code: "offline_read_only",
+                message: "服务当前离线，只能查看最近加载的内容；恢复连接后才能保存更改。",
+                retryable: true
+            )
+        }
         let url = try endpoint(path: path, query: query)
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -862,6 +879,7 @@ actor APIClient {
 
         do {
             let (data, response) = try await session.data(for: request)
+            await connectionObserver?(.reachable(Date()))
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw APIError(status: 0, code: "invalid_response", message: "服务返回了无效响应", retryable: true)
             }
@@ -871,6 +889,7 @@ actor APIClient {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            await connectionObserver?(.unreachable(message: error.localizedDescription, at: Date()))
             throw APIError(status: 0, code: "network_error", message: error.localizedDescription, retryable: true)
         }
     }
@@ -911,6 +930,21 @@ actor APIClient {
 
     nonisolated static func iso8601String(_ date: Date) -> String {
         date.ISO8601Format()
+    }
+}
+
+enum ServiceProbeSession {
+    static func configuration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return configuration
+    }
+
+    static func make() -> URLSession {
+        URLSession(configuration: configuration())
     }
 }
 

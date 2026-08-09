@@ -59,7 +59,7 @@ struct RuntimeAISettingsView: View {
                     if codexAuthorization == nil {
                         Button("连接 Codex 订阅") { Task { await startCodex() } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(store.isMutating)
+                            .disabled(store.mutationsDisabled)
                     }
                 }
                 if let authorization = codexAuthorization {
@@ -75,7 +75,7 @@ struct RuntimeAISettingsView: View {
                         }
                         Button("我已完成授权") { Task { await pollCodex(authorization) } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(store.isMutating)
+                            .disabled(store.mutationsDisabled)
                     }
                 }
             }
@@ -114,7 +114,7 @@ struct RuntimeAISettingsView: View {
                             Button("复用文本服务") { Task { await changeMode(kind, .reuseChat) } }
                         }
                     }
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
                     Spacer()
                     Button("配置自定义服务", systemImage: "slider.horizontal.3") {
                         draft = RuntimeProfileDraft(kind: kind)

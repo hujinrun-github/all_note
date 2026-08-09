@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskWorkspaceView: String, CaseIterable, Identifiable, Sendable {
+enum TaskWorkspaceView: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case inbox
     case today
     case upcoming
@@ -170,7 +170,7 @@ struct TaskWorkspaceFilter: Equatable, Sendable {
     }
 }
 
-enum TaskLifecycleCommand: String, Sendable {
+enum TaskLifecycleCommand: String, Equatable, Sendable {
     case publish
     case pause
     case resume

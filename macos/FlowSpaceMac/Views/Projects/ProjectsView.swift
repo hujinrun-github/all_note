@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ProjectsView: View {
@@ -26,16 +27,32 @@ struct ProjectsView: View {
     @Environment(\.openWindow) private var openWindow
     let store: WorkspaceStore
     @Binding var selectedOccurrenceID: String
-    @State private var selectedProjectID = ""
-    @State private var section: Section = .overview
-    @State private var query = ""
-    @State private var statusFilter: ProjectStatus?
-    @State private var editorContext: ProjectEditorContext?
-    @State private var completionProject: ProjectV2?
-    @State private var deleteProject: ProjectV2?
+    let initialProjectID: String?
+    @SceneStorage("projects.selectedProject") private var selectedProjectID = ""
+    @SceneStorage("projects.section") private var sectionRaw = Section.overview.rawValue
+    @SceneStorage("projects.query") private var query = ""
+    @SceneStorage("projects.statusFilter") private var statusFilterRaw = ""
+    @State private var projectSheet: ProjectSheetDestination?
+    @State private var didApplyInitialProjectSelection = false
 
     private var selectedProject: ProjectV2? {
         store.projects.first { $0.id == selectedProjectID }
+    }
+
+    private var section: Section {
+        get { Section(rawValue: sectionRaw) ?? .overview }
+        nonmutating set { sectionRaw = newValue.rawValue }
+    }
+
+    private var statusFilter: ProjectStatus? {
+        ProjectStatus(rawValue: statusFilterRaw)
+    }
+
+    private var statusFilterSelection: Binding<ProjectStatus?> {
+        Binding(
+            get: { statusFilter },
+            set: { statusFilterRaw = $0?.rawValue ?? "" }
+        )
     }
 
     private var projectTasks: [TaskV2] {
@@ -72,13 +89,13 @@ struct ProjectsView: View {
                     TextField("搜索项目", text: $query)
                         .textFieldStyle(.roundedBorder)
                     Button("新建项目", systemImage: "plus") {
-                        editorContext = ProjectEditorContext(project: nil)
+                        projectSheet = .create
                     }
                     .labelStyle(.iconOnly)
                     .help("新建项目")
                 }
 
-                Picker("项目状态", selection: $statusFilter) {
+                Picker("项目状态", selection: statusFilterSelection) {
                     Text("进行中的项目").tag(Optional<ProjectStatus>.none)
                     ForEach(ProjectStatus.allCases, id: \.self) { status in
                         Text(statusLabel(status)).tag(Optional(status))
@@ -99,14 +116,8 @@ struct ProjectsView: View {
                     }
                     .tag(project.id)
                     .padding(.vertical, 4)
-                    .contextMenu {
-                        if canEdit(project) {
-                            Button("编辑项目") { editorContext = ProjectEditorContext(project: project) }
-                        }
-                        if canDelete(project) {
-                            Button("删除项目", role: .destructive) { deleteProject = project }
-                        }
-                    }
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { openProject(project) })
+                    .contextMenu { projectContextMenu(project) }
                 }
             }
             .padding(10)
@@ -126,6 +137,7 @@ struct ProjectsView: View {
         }
         .task {
             await store.loadProjects()
+            applyInitialProjectSelection()
             applyPendingProjectSelection()
             if selectedProjectID.isEmpty { selectedProjectID = store.projects.first?.id ?? "" }
         }
@@ -136,22 +148,30 @@ struct ProjectsView: View {
             section = .overview
             selectedOccurrenceID = ""
         }
-        .sheet(item: $editorContext) { context in
-            ProjectEditorSheet(project: context.project, store: store) { projectID in
-                selectedProjectID = projectID
-                await store.loadProjects()
-            }
-        }
-        .sheet(item: $completionProject) { project in
-            ProjectCompletionSheet(project: project, store: store) {
-                await store.loadProjects()
-            }
-        }
-        .sheet(item: $deleteProject) { project in
-            ProjectDeletionSheet(project: project, store: store) {
-                selectedProjectID = ""
-                await store.loadProjects()
-                selectedProjectID = visibleProjects.first?.id ?? ""
+        .sheet(item: $projectSheet) { destination in
+            Group {
+                switch destination {
+                case .create:
+                    ProjectEditorSheet(project: nil, store: store) { projectID in
+                        selectedProjectID = projectID
+                        await store.loadProjects()
+                    }
+                case .edit(let project):
+                    ProjectEditorSheet(project: project, store: store) { projectID in
+                        selectedProjectID = projectID
+                        await store.loadProjects()
+                    }
+                case .complete(let project):
+                    ProjectCompletionSheet(project: project, store: store) {
+                        await store.loadProjects()
+                    }
+                case .delete(let project):
+                    ProjectDeletionSheet(project: project, store: store) {
+                        selectedProjectID = ""
+                        await store.loadProjects()
+                        selectedProjectID = visibleProjects.first?.id ?? ""
+                    }
+                }
             }
         }
     }
@@ -203,7 +223,7 @@ struct ProjectsView: View {
         if project.systemRole == nil || project.systemRole?.isEmpty == true {
             HStack(spacing: 7) {
                 if canEdit(project) {
-                    Button("编辑") { editorContext = ProjectEditorContext(project: project) }
+                    Button("编辑") { projectSheet = .edit(project) }
                 }
                 switch project.status {
                 case .planning:
@@ -216,27 +236,27 @@ struct ProjectsView: View {
                         Button("暂停项目") { run(project, command: .pause) }
                         Button("归档项目") { run(project, command: .archive) }
                         Divider()
-                        Button("删除项目", role: .destructive) { deleteProject = project }
+                        Button("删除项目", role: .destructive) { projectSheet = .delete(project) }
                     }
                 case .paused:
                     Button("继续项目") { run(project, command: .resume) }
                         .buttonStyle(.borderedProminent)
                     Menu("更多") {
                         Button("归档项目") { run(project, command: .archive) }
-                        Button("删除项目", role: .destructive) { deleteProject = project }
+                        Button("删除项目", role: .destructive) { projectSheet = .delete(project) }
                     }
                 case .completed:
                     Button("恢复为进行中") { run(project, command: .restore, restoreTo: .active) }
                     Menu("更多") {
                         Button("归档项目") { run(project, command: .archive) }
-                        Button("删除项目", role: .destructive) { deleteProject = project }
+                        Button("删除项目", role: .destructive) { projectSheet = .delete(project) }
                     }
                 case .archived:
                     Button("恢复项目") { run(project, command: .restore, restoreTo: .active) }
-                    Button("删除项目", role: .destructive) { deleteProject = project }
+                    Button("删除项目", role: .destructive) { projectSheet = .delete(project) }
                 }
             }
-            .disabled(store.isMutating)
+            .disabled(store.mutationsDisabled)
         }
     }
 
@@ -332,8 +352,11 @@ struct ProjectsView: View {
                     task: store.tasksByID[occurrence.taskID],
                     project: selectedProject,
                     selected: selectedOccurrenceID == occurrence.id,
-                    isMutating: store.isMutating,
-                    select: { selectedOccurrenceID = occurrence.id },
+                    selectionMode: false,
+                    batchSelected: false,
+                    isMutating: store.mutationsDisabled,
+                    select: { _ in selectedOccurrenceID = occurrence.id },
+                    toggleBatchSelection: {},
                     toggle: { await toggle(occurrence) }
                 )
             }
@@ -356,8 +379,80 @@ struct ProjectsView: View {
         if unfinished.isEmpty {
             run(project, command: .complete)
         } else {
-            completionProject = project
+            projectSheet = .complete(project)
         }
+    }
+
+    private func openProject(_ project: ProjectV2) {
+        if NSEvent.modifierFlags.contains(.option) {
+            openWindow(value: WorkspaceWindowRoute.project(project.id))
+        } else {
+            selectedProjectID = project.id
+            section = .overview
+            selectedOccurrenceID = ""
+        }
+    }
+
+    @ViewBuilder
+    private func projectContextMenu(_ project: ProjectV2) -> some View {
+        Button("打开项目", systemImage: "arrow.right.circle") { openProjectInCurrentWindow(project) }
+        Button("在新工作区打开", systemImage: "macwindow.badge.plus") {
+            openWindow(value: WorkspaceWindowRoute.project(project.id))
+        }
+        Button("复制链接", systemImage: "link") { copyProjectLink(project) }
+
+        if canEdit(project) {
+            Divider()
+            Button("编辑项目", systemImage: "pencil") { projectSheet = .edit(project) }
+        }
+
+        if isMutableProject(project) {
+            Divider()
+            Group {
+                switch project.status {
+                case .planning:
+                    Button("开始项目", systemImage: "play.fill") { run(project, command: .activate) }
+                case .active:
+                    Button("完成项目", systemImage: "checkmark.circle") { beginCompletion(project) }
+                    Button("暂停项目", systemImage: "pause.fill") { run(project, command: .pause) }
+                case .paused:
+                    Button("继续项目", systemImage: "play.fill") { run(project, command: .resume) }
+                case .completed, .archived:
+                    Button("恢复为进行中", systemImage: "arrow.uturn.backward") {
+                        run(project, command: .restore, restoreTo: .active)
+                    }
+                }
+                if project.status != .archived {
+                    Button("归档项目", systemImage: "archivebox") { run(project, command: .archive) }
+                }
+            }
+            .disabled(store.mutationsDisabled)
+        }
+
+        if canDelete(project) {
+            Divider()
+            Button("删除项目", systemImage: "trash", role: .destructive) {
+                projectSheet = .delete(project)
+            }
+            .disabled(store.mutationsDisabled)
+        }
+    }
+
+    private func openProjectInCurrentWindow(_ project: ProjectV2) {
+        selectedProjectID = project.id
+        section = .overview
+        selectedOccurrenceID = ""
+    }
+
+    private func copyProjectLink(_ project: ProjectV2) {
+        guard let baseURL = session.baseURL,
+              let url = WorkspaceWebLink.project(baseURL: baseURL, projectID: project.id) else {
+            store.errorMessage = "无法生成项目链接。"
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.absoluteString, forType: .string)
     }
 
     private func run(
@@ -376,9 +471,13 @@ struct ProjectsView: View {
     }
 
     private func canEdit(_ project: ProjectV2) -> Bool {
-        (project.systemRole == nil || project.systemRole?.isEmpty == true)
+        isMutableProject(project)
             && project.status != .completed
             && project.status != .archived
+    }
+
+    private func isMutableProject(_ project: ProjectV2) -> Bool {
+        project.systemRole == nil || project.systemRole?.isEmpty == true
     }
 
     private func canDelete(_ project: ProjectV2) -> Bool {
@@ -392,6 +491,17 @@ struct ProjectsView: View {
             selectedProjectID = projectID
         }
         session.consumeWorkspaceEntitySelection()
+    }
+
+    private func applyInitialProjectSelection() {
+        guard !didApplyInitialProjectSelection,
+              let initialProjectID,
+              !store.isLoading,
+              let project = store.projects.first(where: { $0.id == initialProjectID }) else { return }
+        didApplyInitialProjectSelection = true
+        query = ""
+        statusFilterRaw = project.status == .archived ? ProjectStatus.archived.rawValue : ""
+        selectedProjectID = initialProjectID
     }
 
     private func statusLabel(_ status: ProjectStatus) -> String {
@@ -416,9 +526,20 @@ struct ProjectsView: View {
     }
 }
 
-private struct ProjectEditorContext: Identifiable {
-    let project: ProjectV2?
-    var id: String { project?.id ?? "new-project" }
+private enum ProjectSheetDestination: Identifiable {
+    case create
+    case edit(ProjectV2)
+    case complete(ProjectV2)
+    case delete(ProjectV2)
+
+    var id: String {
+        switch self {
+        case .create: "create-project"
+        case .edit(let project): "edit-\(project.id)"
+        case .complete(let project): "complete-\(project.id)"
+        case .delete(let project): "delete-\(project.id)"
+        }
+    }
 }
 
 private struct ProjectEditorSheet: View {
@@ -486,7 +607,7 @@ private struct ProjectEditorSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { Task { await save() } }
                         .buttonStyle(.borderedProminent)
-                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isMutating)
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.mutationsDisabled)
                 }
             }
         }
@@ -567,7 +688,7 @@ private struct ProjectCompletionSheet: View {
                         Button("取消未完成任务并完成项目", systemImage: "xmark.circle") {
                             Task { await cancelAndComplete() }
                         }
-                        .disabled(store.isMutating)
+                        .disabled(store.mutationsDisabled)
                     }
                 } else {
                     Section("迁移任务") {
@@ -605,7 +726,7 @@ private struct ProjectCompletionSheet: View {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("迁移并完成") { Task { await moveAndComplete() } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(targetProjectID.isEmpty || store.isMutating)
+                            .disabled(targetProjectID.isEmpty || store.mutationsDisabled)
                     }
                 }
             }
@@ -704,7 +825,7 @@ private struct ProjectDeletionSheet: View {
                 }
                 ToolbarItem(placement: .destructiveAction) {
                     Button("永久删除", role: .destructive) { Task { await remove() } }
-                        .disabled(!openOccurrences.isEmpty || store.isMutating)
+                        .disabled(!openOccurrences.isEmpty || store.mutationsDisabled)
                 }
             }
         }

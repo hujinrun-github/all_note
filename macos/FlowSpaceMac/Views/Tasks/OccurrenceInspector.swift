@@ -41,7 +41,7 @@ struct OccurrenceInspector: View {
                         }
                     }
                 }
-                .disabled(store.isMutating)
+                .disabled(store.mutationsDisabled)
 
                 if !occurrence.executionStatus.isTerminal {
                     HStack {
@@ -67,7 +67,7 @@ struct OccurrenceInspector: View {
                             }
                         }
                     }
-                    .disabled(store.isMutating)
+                    .disabled(store.mutationsDisabled)
                 }
 
                 if let localError {
@@ -177,7 +177,7 @@ struct OccurrenceInspector: View {
     }
 }
 
-private struct OccurrenceBlockSheet: View {
+struct OccurrenceBlockSheet: View {
     @Environment(\.dismiss) private var dismiss
     let occurrence: OccurrenceV2
     let store: WorkspaceStore
@@ -218,7 +218,7 @@ private struct OccurrenceBlockSheet: View {
                         .disabled(
                             reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 || nextAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                || store.isMutating
+                                || store.mutationsDisabled
                         )
                 }
             }
