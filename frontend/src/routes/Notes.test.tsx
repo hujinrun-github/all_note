@@ -144,4 +144,38 @@ describe('Notes library', () => {
       'ちか'
     )
   })
+
+  it('creates a note in the selected project', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 'new-note' })
+    vi.mocked(useCreateNote).mockReturnValue({
+      mutateAsync: create,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateNote>)
+    const user = userEvent.setup()
+    renderNotes()
+
+    await screen.findByRole('heading', { name: '第一篇' })
+    await user.click(screen.getByRole('button', { name: /AI 学习/ }))
+    await user.click(screen.getByRole('button', { name: '新建笔记' }))
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ project_ids: ['project-ai'] })
+    )
+  })
+
+  it('shows an error when note creation fails', async () => {
+    vi.mocked(useCreateNote).mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(new Error('request failed')),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateNote>)
+    const user = userEvent.setup()
+    renderNotes()
+
+    await screen.findByRole('heading', { name: '第一篇' })
+    await user.click(screen.getByRole('button', { name: '新建笔记' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '新建笔记失败，请稍后重试。'
+    )
+  })
 })

@@ -15,7 +15,7 @@ func ensureSQLiteContentImportSchema(ctx context.Context, db *sql.DB) error {
 			podcast_title TEXT NOT NULL DEFAULT '', cover_url TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
 			duration_seconds INTEGER NOT NULL DEFAULT 0, transcript_url TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL, stage TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
-			summarize_with_ai INTEGER NOT NULL DEFAULT 1, include_transcript INTEGER NOT NULL DEFAULT 0,
+			summarize_with_ai INTEGER NOT NULL DEFAULT 1, summary_prompt TEXT NOT NULL DEFAULT '', include_transcript INTEGER NOT NULL DEFAULT 0,
 			language TEXT NOT NULL DEFAULT 'auto', folder_id TEXT NOT NULL DEFAULT '', project_ids TEXT NOT NULL DEFAULT '[]',
 			tags TEXT NOT NULL DEFAULT '[]', result_note_id TEXT NOT NULL DEFAULT '', error_code TEXT NOT NULL DEFAULT '',
 			error_message TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 4,
@@ -36,5 +36,33 @@ func ensureSQLiteContentImportSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("ensure content import schema: %w", err)
 		}
 	}
+	if err := ensureSQLiteColumn(ctx, db, "content_imports", "summary_prompt", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("ensure content import summary prompt: %w", err)
+	}
 	return nil
+}
+
+func ensureSQLiteColumn(ctx context.Context, db *sql.DB, table, column, definition string) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition)
+	return err
 }

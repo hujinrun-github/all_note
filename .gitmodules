@@ -1,0 +1,4 @@
+[submodule "all_note_mobile"]
+	path = all_note_mobile
+	url = git@github.com:hujinrun-github/all_note_mobile.git
+	branch = main

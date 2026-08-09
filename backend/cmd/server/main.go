@@ -135,9 +135,11 @@ func main() {
 	contentImportHTTPClient := contentImportDialer.HTTPClient()
 	contentImportHTTPClient.Timeout = 20 * time.Minute
 	oauthStateStore := authpkg.NewMemoryOAuthStateStore()
+	nativeOAuthExchangeStore := authpkg.NewMemoryNativeOAuthExchangeStore()
 	oauthStateCtx, stopOAuthStateCleanup := context.WithCancel(context.Background())
 	defer stopOAuthStateCleanup()
 	go oauthStateStore.RunCleanup(oauthStateCtx, 2*time.Minute, 1000)
+	go nativeOAuthExchangeStore.RunCleanup(oauthStateCtx, time.Minute, 1000)
 
 	routerConfig := router.Config{
 		Store:                    store,
@@ -145,6 +147,7 @@ func main() {
 		ProvisionControlIdentity: identityProvisioner.Provision,
 		Auth:                     authCfg,
 		OAuthStateStore:          oauthStateStore,
+		NativeOAuthExchangeStore: nativeOAuthExchangeStore,
 		GitHubClient:             handler.NewGitHubHTTPClient(authCfg.GitHub),
 		VoiceObjects:             runtimeObjects,
 		Transcriber:              runtimeTranscriber,

@@ -18,6 +18,9 @@ import {
 } from '../../hooks/useContentImports'
 import '../../styles/content-imports.css'
 
+const DEFAULT_SUMMARY_PROMPT =
+  '你是严谨的播客笔记编辑。只根据逐字稿提炼，不补充外部事实。返回 JSON 对象：title、summary、key_points、chapters、action_items。key_points、chapters、action_items 必须是字符串数组。'
+
 interface Props {
   open: boolean
   projects: ReadonlyArray<{ id: string; name: string }>
@@ -39,6 +42,7 @@ export function PodcastImportDialog({
 }: Props) {
   const [sourceURL, setSourceURL] = useState('')
   const [summarizeWithAI, setSummarizeWithAI] = useState(false)
+  const [summaryPrompt, setSummaryPrompt] = useState(DEFAULT_SUMMARY_PROMPT)
   const [includeTranscript, setIncludeTranscript] = useState(false)
   const [projectID, setProjectID] = useState(selectedProjectID)
   const [tags, setTags] = useState('播客')
@@ -90,6 +94,7 @@ export function PodcastImportDialog({
     await createImport.mutateAsync({
       source_url: sourceURL.trim(),
       summarize_with_ai: summarizeWithAI,
+      summary_prompt: summarizeWithAI ? summaryPrompt.trim() : undefined,
       include_transcript: summarizeWithAI ? includeTranscript : true,
       language: 'auto',
       project_ids: projectID ? [projectID] : [],
@@ -247,6 +252,23 @@ export function PodcastImportDialog({
 
               <div className="content-import-options">
                 {summarizeWithAI ? (
+                  <>
+                  <label className="content-import-prompt-field">
+                    <span>AI 总结提示词</span>
+                    <textarea
+                      aria-label="AI 总结提示词"
+                      value={summaryPrompt}
+                      maxLength={4000}
+                      rows={5}
+                      onChange={(event) => setSummaryPrompt(event.target.value)}
+                    />
+                    <small>
+                      可按本次内容调整总结角度与详细程度。输出仍需包含结构化 JSON 字段。
+                    </small>
+                    <button type="button" onClick={() => setSummaryPrompt(DEFAULT_SUMMARY_PROMPT)}>
+                      恢复默认提示词
+                    </button>
+                  </label>
                   <label className="content-import-checkbox">
                     <input
                       type="checkbox"
@@ -260,6 +282,7 @@ export function PodcastImportDialog({
                     </span>
                     在结构化笔记末尾附上完整逐字稿
                   </label>
+                  </>
                 ) : (
                   <p className="content-import-mode-note">
                     <FileText />

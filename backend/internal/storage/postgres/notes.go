@@ -857,6 +857,9 @@ func setNoteProjectLinks(ctx context.Context, runner postgresRunner, workspaceID
 	}
 	// Insert new links (ON CONFLICT DO NOTHING keeps original created_at)
 	for _, pid := range projectIDs {
+		if err := ensurePostgresNoteProjectCompatibility(ctx, runner, workspaceID, pid); err != nil {
+			return err
+		}
 		_, err := runner.ExecContext(ctx,
 			`INSERT INTO note_project_links (workspace_id, note_id, project_id)
 			 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, workspaceID, noteID, pid)
@@ -865,6 +868,23 @@ func setNoteProjectLinks(ctx context.Context, runner postgresRunner, workspaceID
 		}
 	}
 	return nil
+}
+
+func ensurePostgresNoteProjectCompatibility(ctx context.Context, runner postgresRunner, workspaceID, projectID string) error {
+	var existing int
+	if err := runner.QueryRowContext(ctx,
+		`SELECT 1 FROM task_projects WHERE workspace_id=$1 AND id=$2`, workspaceID, projectID,
+	).Scan(&existing); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err := runner.ExecContext(ctx, `INSERT INTO task_projects
+		(id,workspace_id,name,type,description,created_at,updated_at)
+		SELECT id,workspace_id,name,CASE WHEN kind='learning' THEN 'learning' ELSE 'regular' END,'',now(),now()
+		FROM domain_projects_v2 WHERE workspace_id=$1 AND id=$2
+		ON CONFLICT (workspace_id,id) DO NOTHING`, workspaceID, projectID)
+	return err
 }
 
 // getNotesProjects fetches project info for a batch of note IDs.

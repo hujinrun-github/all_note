@@ -62,14 +62,14 @@ func (r *Repository) CreateOrGet(ctx context.Context, request model.CreateConten
 	query := r.bind(`
 		INSERT INTO content_imports (
 			id,workspace_id,idempotency_key,request_sha256,source_url,status,stage,progress,
-			summarize_with_ai,include_transcript,language,folder_id,project_ids,tags,
+			summarize_with_ai,summary_prompt,include_transcript,language,folder_id,project_ids,tags,
 			revision,attempt,max_attempts,created_at,updated_at
-		) VALUES (?,?,?,?,?,'active','queued',0,?,?,?,?,?,?,1,0,4,?,?)
+		) VALUES (?,?,?,?,?,'active','queued',0,?,?,?,?,?,?,?,1,0,4,?,?)
 		ON CONFLICT (workspace_id,idempotency_key) DO NOTHING
 	`)
 	if _, err := r.db.ExecContext(ctx, query,
 		request.ID, workspaceID, request.IdempotencyKey, request.RequestSHA256, request.SourceURL,
-		request.SummarizeWithAI, request.IncludeTranscript, request.Language, request.FolderID,
+		request.SummarizeWithAI, request.SummaryPrompt, request.IncludeTranscript, request.Language, request.FolderID,
 		string(projectIDs), string(tags), request.Now, request.Now,
 	); err != nil {
 		return nil, err
@@ -344,7 +344,7 @@ func (r *Repository) getUnscoped(ctx context.Context, id string) (*model.Content
 }
 
 const contentImportColumns = `id,source_url,source_type,canonical_url,external_id,feed_url,title,podcast_title,cover_url,description,
-	duration_seconds,transcript_url,audio_url,status,stage,progress,summarize_with_ai,include_transcript,language,folder_id,
+	duration_seconds,transcript_url,audio_url,status,stage,progress,summarize_with_ai,summary_prompt,include_transcript,language,folder_id,
 	project_ids,tags,result_note_id,error_code,error_message,revision,created_at,updated_at,attempt,max_attempts`
 
 const contentImportSelect = `SELECT ` + contentImportColumns + ` FROM content_imports`
@@ -364,7 +364,7 @@ func scanContentImportWithPrefix(row scanner, prefix ...interface{}) (*model.Con
 		&item.ID, &item.SourceURL, &item.SourceType, &item.CanonicalURL, &item.ExternalID, &item.FeedURL,
 		&item.Title, &item.PodcastTitle, &item.CoverURL, &item.Description, &item.DurationSeconds,
 		&item.TranscriptURL, &item.AudioURL, &item.Status, &item.Stage, &item.Progress,
-		&item.SummarizeWithAI, &item.IncludeTranscript, &item.Language, &item.FolderID,
+		&item.SummarizeWithAI, &item.SummaryPrompt, &item.IncludeTranscript, &item.Language, &item.FolderID,
 		&projectIDs, &tags, &item.ResultNoteID, &item.ErrorCode, &item.ErrorMessage,
 		&item.Revision, &item.CreatedAt, &item.UpdatedAt, &item.Attempt, &item.MaxAttempts,
 	)

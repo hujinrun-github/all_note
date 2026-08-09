@@ -584,8 +584,10 @@ export default function TaskOccurrenceWorkspace() {
                       onComplete={
                         task
                           ? () =>
-                              void completeOccurrence.mutateAsync(
-                                occurrenceCommandVariables(task, occurrence)
+                              void handleTaskCommand(() =>
+                                completeOccurrence.mutateAsync(
+                                  occurrenceCommandVariables(task, occurrence)
+                                )
                               )
                           : undefined
                       }
@@ -646,30 +648,43 @@ export default function TaskOccurrenceWorkspace() {
               setEditingOccurrenceID('')
             }}
             onStart={() =>
-              startOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
+              handleTaskCommand(() =>
+                startOccurrence.mutateAsync(
+                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                )
               )
             }
             onComplete={() =>
-              completeOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
+              handleTaskCommand(() =>
+                completeOccurrence.mutateAsync(
+                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                )
               )
             }
             onReopen={() =>
-              reopenOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
+              handleTaskCommand(() =>
+                reopenOccurrence.mutateAsync(
+                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                )
               )
             }
             onBlock={(reason, nextAction) =>
-              blockOccurrence.mutateAsync({
-                ...occurrenceCommandVariables(selectedTask, selectedOccurrence),
-                blockedReason: reason,
-                nextAction,
-              })
+              handleTaskCommand(() =>
+                blockOccurrence.mutateAsync({
+                  ...occurrenceCommandVariables(
+                    selectedTask,
+                    selectedOccurrence
+                  ),
+                  blockedReason: reason,
+                  nextAction,
+                })
+              )
             }
             onUnblock={() =>
-              unblockOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
+              handleTaskCommand(() =>
+                unblockOccurrence.mutateAsync(
+                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                )
               )
             }
             onReschedule={() => beginReschedule(selectedOccurrence)}

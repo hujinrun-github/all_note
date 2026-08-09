@@ -22,6 +22,7 @@ export default function Notes() {
   const [selectedNoteID, setSelectedNoteID] = useState('')
   const [podcastImportOpen, setPodcastImportOpen] = useState(false)
   const [contentImportTrayOpen, setContentImportTrayOpen] = useState(false)
+  const [createError, setCreateError] = useState('')
 
   const projectsQuery = useProjects()
   const allProjects = useMemo(
@@ -80,14 +81,19 @@ export default function Notes() {
         '全部笔记')
 
   async function handleCreateNote() {
-    const note = await createNote.mutateAsync({
-      title: '未命名笔记',
-      body: '',
-      folder_id: '__uncategorized',
-      tags: activeTag ? JSON.stringify([activeTag]) : '[]',
-      project_ids: projectID ? [projectID] : undefined,
-    })
-    navigate(`/editor/${note.id}`)
+    setCreateError('')
+    try {
+      const note = await createNote.mutateAsync({
+        title: '未命名笔记',
+        body: '',
+        folder_id: '__uncategorized',
+        tags: activeTag ? JSON.stringify([activeTag]) : '[]',
+        project_ids: projectID ? [projectID] : undefined,
+      })
+      navigate(`/editor/${note.id}`)
+    } catch {
+      setCreateError('新建笔记失败，请稍后重试。')
+    }
   }
 
   async function handleDeleteNote(note: Note) {
@@ -121,6 +127,7 @@ export default function Notes() {
   return (
     <div className="notes-page">
       <div className="page-local-actions notes-page-actions">
+        {createError ? <p role="alert">{createError}</p> : null}
         <button
           type="button"
           onClick={handleOpenSyncSettings}

@@ -35,6 +35,7 @@ export interface ContentImport {
   stage: string
   progress: number
   summarize_with_ai: boolean
+  summary_prompt?: string
   include_transcript: boolean
   language: string
   folder_id?: string
@@ -53,6 +54,7 @@ export interface ContentImport {
 export interface CreateContentImportRequest {
   source_url: string
   summarize_with_ai: boolean
+  summary_prompt?: string
   include_transcript: boolean
   language: string
   folder_id?: string
