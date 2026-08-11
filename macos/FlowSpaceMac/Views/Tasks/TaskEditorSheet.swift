@@ -19,6 +19,8 @@ struct TaskEditorSheet: View {
                 Section("任务") {
                     TextField("任务标题", text: $draft.title)
                         .accessibilityIdentifier("task-title")
+                    TextField("描述", text: $draft.description, axis: .vertical)
+                        .lineLimit(2...6)
                     if draft.roadmapNodeID == nil {
                         Picker("所属项目", selection: $draft.projectID) {
                             if store.projects.isEmpty {
@@ -39,6 +41,10 @@ struct TaskEditorSheet: View {
                             Text(level.title).tag(level.rawValue)
                         }
                     }
+                }
+
+                Section("完成门槛") {
+                    TaskCompletionRequirementsEditor(requirements: $draft.completionRequirements)
                 }
 
                 Section("安排") {
@@ -92,7 +98,7 @@ struct TaskEditorSheet: View {
                 }
             }
         }
-        .frame(width: 520, height: 520)
+        .frame(width: 560, height: 680)
         .task {
             if store.projects.isEmpty { await store.loadProjects() }
             if draft.projectID.isEmpty { draft.projectID = store.defaultProjectID }

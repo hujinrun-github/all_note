@@ -4,6 +4,10 @@ options:
   deploymentTarget:
     macOS: "26.0"
   createIntermediateGroups: true
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.5
 settings:
   base:
     SWIFT_VERSION: 6.0
@@ -11,6 +15,8 @@ settings:
     GENERATE_INFOPLIST_FILE: true
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 0.1.0
+    FLOWSPACE_UPDATE_FEED_URL: ""
+    FLOWSPACE_UPDATE_PUBLIC_ED_KEY: ""
 targets:
   FlowSpaceMac:
     type: application
@@ -29,13 +35,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.flowspace.mac
         PRODUCT_NAME: FlowSpaceMac
         CODE_SIGN_ENTITLEMENTS: FlowSpaceMac/Resources/FlowSpaceMac.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: false
         INFOPLIST_FILE: FlowSpaceMac/Resources/Info.plist
         ENABLE_APP_SANDBOX: true
         CODE_SIGN_STYLE: Automatic
-    scheme:
-      testTargets:
-        - FlowSpaceMacTests
+    dependencies:
+      - package: Sparkle
   FlowSpaceMacTests:
     type: bundle.unit-test
     platform: macOS
@@ -47,3 +53,48 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.flowspace.mac.tests
         GENERATE_INFOPLIST_FILE: true
+  FlowSpaceMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: FlowSpaceMacUITests
+    dependencies:
+      - target: FlowSpaceMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.flowspace.mac.ui-tests
+        GENERATE_INFOPLIST_FILE: true
+schemes:
+  FlowSpaceMac:
+    build:
+      targets:
+        FlowSpaceMac: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - FlowSpaceMacTests
+        - FlowSpaceMacUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  FlowSpaceMacUnitTests:
+    build:
+      targets:
+        FlowSpaceMac: all
+    test:
+      config: Debug
+      targets:
+        - FlowSpaceMacTests
+  FlowSpaceMacUITests:
+    build:
+      targets:
+        FlowSpaceMac: all
+    test:
+      config: Debug
+      targets:
+        - FlowSpaceMacUITests

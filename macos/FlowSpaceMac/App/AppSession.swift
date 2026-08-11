@@ -58,12 +58,19 @@ final class AppSession {
         connectivity: ServiceConnectivity = ServiceConnectivity(),
         recentCache: RecentWorkspaceCache = RecentWorkspaceCache()
     ) {
-        self.defaults = defaults
+        if ProcessInfo.processInfo.environment["FLOWSPACE_UI_TESTING"] == "1" {
+            let suiteName = "com.flowspace.mac.ui-testing"
+            let testingDefaults = UserDefaults(suiteName: suiteName) ?? defaults
+            testingDefaults.removePersistentDomain(forName: suiteName)
+            self.defaults = testingDefaults
+        } else {
+            self.defaults = defaults
+        }
         self.notifications = notifications
         self.spotlight = spotlight
         self.connectivity = connectivity
         self.recentCache = recentCache
-        menuBarExtraEnabled = defaults.bool(forKey: MenuBarPreferences.enabledKey)
+        menuBarExtraEnabled = self.defaults.bool(forKey: MenuBarPreferences.enabledKey)
     }
 
     func restore() async {

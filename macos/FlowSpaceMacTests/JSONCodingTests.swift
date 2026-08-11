@@ -27,6 +27,15 @@ final class JSONCodingTests: XCTestCase {
             roadmapNodeID: "roadmap-node-1",
             title: "单词学习",
             description: nil,
+            completionRequirements: [
+                TaskCompletionRequirement(
+                    id: "requirement-1",
+                    kind: .article,
+                    title: "阅读第一课",
+                    url: "https://example.com/lesson-1",
+                    completed: false
+                )
+            ],
             priority: 0,
             sortOrder: 0,
             schedule: ScheduleInput(
@@ -47,6 +56,9 @@ final class JSONCodingTests: XCTestCase {
 
         XCTAssertEqual(object["project_id"] as? String, "project-1")
         XCTAssertEqual(object["roadmap_node_id"] as? String, "roadmap-node-1")
+        let requirements = try XCTUnwrap(object["completion_requirements"] as? [[String: Any]])
+        XCTAssertEqual(requirements.first?["kind"] as? String, "article")
+        XCTAssertEqual(requirements.first?["completed"] as? Bool, false)
         XCTAssertEqual(schedule["timing_type"] as? String, "time_block")
         XCTAssertEqual(schedule["local_start_time"] as? String, "11:00")
     }
@@ -116,6 +128,16 @@ final class JSONCodingTests: XCTestCase {
         let update = UpdateTaskDefinitionInput(
             title: "复习单词",
             description: "第二课",
+            attachmentLinks: [TaskAttachmentLink(name: "课程资料", url: "https://example.com/course")],
+            completionRequirements: [
+                TaskCompletionRequirement(
+                    id: "requirement-2",
+                    kind: .video,
+                    title: "看完课程视频",
+                    url: nil,
+                    completed: true
+                )
+            ],
             priority: 2,
             projectID: "project-japanese",
             taskNoteID: "note-lesson-2",
@@ -128,6 +150,8 @@ final class JSONCodingTests: XCTestCase {
         XCTAssertEqual(updateObject["priority"] as? Int, 2)
         XCTAssertEqual(updateObject["project_id"] as? String, "project-japanese")
         XCTAssertEqual(updateObject["task_note_id"] as? String, "note-lesson-2")
+        XCTAssertEqual((updateObject["attachment_links"] as? [[String: Any]])?.first?["name"] as? String, "课程资料")
+        XCTAssertEqual((updateObject["completion_requirements"] as? [[String: Any]])?.first?["completed"] as? Bool, true)
         XCTAssertEqual(updateObject["expected_task_revision"] as? Int, 4)
         XCTAssertEqual(updateObject["expected_schedule_revision"] as? Int, 6)
 
@@ -144,5 +168,24 @@ final class JSONCodingTests: XCTestCase {
         XCTAssertEqual(revisions["occurrence-1"] as? Int, 8)
         XCTAssertEqual(blockObject["blocked_reason"] as? String, "等待教材")
         XCTAssertEqual(blockObject["next_action"] as? String, "教材到达后完成第二课")
+    }
+
+    func testDecodesTaskMetadataAndDefaultsMissingCollections() throws {
+        let base = #"{"id":"task-1","project_id":"project-1","title":"学习","priority":0,"sort_order":0,"lifecycle_status":"active","revision":1,"schedule_revision":1}"#
+        let legacy = try JSONDecoder.flowSpace().decode(TaskV2.self, from: Data(base.utf8))
+        XCTAssertEqual(legacy.attachmentLinks, [])
+        XCTAssertEqual(legacy.completionRequirements, [])
+
+        let enriched = #"{"id":"task-2","project_id":"project-1","title":"学习","attachment_links":[{"name":"资料","url":"https://example.com"}],"completion_requirements":[{"id":"check-1","kind":"check","title":"通过验收","completed":false}],"priority":0,"sort_order":0,"lifecycle_status":"active","revision":2,"schedule_revision":1}"#
+        let task = try JSONDecoder.flowSpace().decode(TaskV2.self, from: Data(enriched.utf8))
+        XCTAssertEqual(task.attachmentLinks.first?.name, "资料")
+        XCTAssertEqual(task.completionRequirements.first?.kind, .check)
+    }
+
+    func testDecodesExternalDeletionCandidate() throws {
+        let data = Data(#"{"note_id":"note-1","title":"同步笔记","external_path":"FlowSpace Notes/note.md","last_synced_at":1700000000}"#.utf8)
+        let item = try JSONDecoder.flowSpace().decode(ExternalDeletedNote.self, from: data)
+        XCTAssertEqual(item.id, "note-1")
+        XCTAssertEqual(item.externalPath, "FlowSpace Notes/note.md")
     }
 }

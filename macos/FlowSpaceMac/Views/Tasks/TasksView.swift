@@ -73,6 +73,7 @@ struct TasksView: View {
                 Divider()
             }
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: workspaceView) {
             let requestedView = workspaceView
@@ -786,11 +787,19 @@ private struct TaskFixedViewSelector: View {
                         selection = item
                     } label: {
                         Label(item.title, systemImage: item.systemImage)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(selection == item ? Color.accentColor.opacity(0.14) : .clear, in: .capsule)
+                            .background(
+                                selection == item ? Color.accentColor.opacity(0.14) : .clear,
+                                in: .capsule
+                            )
+                            .contentShape(.capsule)
                     }
                     .buttonStyle(.plain)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("task-workspace-view-\(item.rawValue)")
                     .accessibilityAddTraits(selection == item ? .isSelected : [])
                 }
             }
@@ -798,6 +807,7 @@ private struct TaskFixedViewSelector: View {
             .padding(.vertical, 10)
         }
         .scrollIndicators(.hidden)
+        .frame(height: 52)
     }
 }
 

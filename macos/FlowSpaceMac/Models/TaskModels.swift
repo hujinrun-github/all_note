@@ -72,6 +72,8 @@ struct MoveTaskInput: Codable, Sendable {
 struct UpdateTaskDefinitionInput: Codable, Sendable {
     let title: String?
     let description: String?
+    var attachmentLinks: [TaskAttachmentLink]? = nil
+    var completionRequirements: [TaskCompletionRequirement]? = nil
     let priority: Int?
     let projectID: String?
     let taskNoteID: String?
@@ -143,6 +145,44 @@ enum TaskPriorityLevel: Int, CaseIterable, Identifiable, Sendable {
     }
 }
 
+struct TaskAttachmentLink: Codable, Identifiable, Hashable, Sendable {
+    var id: String { url }
+    var name: String
+    var url: String
+}
+
+enum TaskCompletionRequirementKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case article
+    case video
+    case check
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .article: "文章"
+        case .video: "视频"
+        case .check: "检查项"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .article: "book"
+        case .video: "play.rectangle"
+        case .check: "checkmark.square"
+        }
+    }
+}
+
+struct TaskCompletionRequirement: Codable, Identifiable, Hashable, Sendable {
+    var id: String
+    var kind: TaskCompletionRequirementKind
+    var title: String
+    var url: String?
+    var completed: Bool
+}
+
 enum CalendarDisplayMode: String, CaseIterable, Identifiable, Sendable {
     case week
     case month
@@ -165,11 +205,66 @@ struct TaskV2: Codable, Identifiable, Hashable, Sendable {
     let taskNoteID: String?
     let title: String
     let description: String?
+    var attachmentLinks: [TaskAttachmentLink] = []
+    var completionRequirements: [TaskCompletionRequirement] = []
     let priority: Int
     let sortOrder: Int
     let lifecycleStatus: TaskLifecycleStatus
     let revision: Int
     let scheduleRevision: Int
+
+    init(
+        id: String,
+        projectID: String,
+        roadmapNodeID: String?,
+        taskNoteID: String?,
+        title: String,
+        description: String?,
+        attachmentLinks: [TaskAttachmentLink] = [],
+        completionRequirements: [TaskCompletionRequirement] = [],
+        priority: Int,
+        sortOrder: Int,
+        lifecycleStatus: TaskLifecycleStatus,
+        revision: Int,
+        scheduleRevision: Int
+    ) {
+        self.id = id
+        self.projectID = projectID
+        self.roadmapNodeID = roadmapNodeID
+        self.taskNoteID = taskNoteID
+        self.title = title
+        self.description = description
+        self.attachmentLinks = attachmentLinks
+        self.completionRequirements = completionRequirements
+        self.priority = priority
+        self.sortOrder = sortOrder
+        self.lifecycleStatus = lifecycleStatus
+        self.revision = revision
+        self.scheduleRevision = scheduleRevision
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        projectID = try container.decode(String.self, forKey: .projectID)
+        roadmapNodeID = try container.decodeIfPresent(String.self, forKey: .roadmapNodeID)
+        taskNoteID = try container.decodeIfPresent(String.self, forKey: .taskNoteID)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        attachmentLinks = try container.decodeIfPresent([TaskAttachmentLink].self, forKey: .attachmentLinks) ?? []
+        completionRequirements = try container.decodeIfPresent([TaskCompletionRequirement].self, forKey: .completionRequirements) ?? []
+        priority = try container.decode(Int.self, forKey: .priority)
+        sortOrder = try container.decode(Int.self, forKey: .sortOrder)
+        lifecycleStatus = try container.decode(TaskLifecycleStatus.self, forKey: .lifecycleStatus)
+        revision = try container.decode(Int.self, forKey: .revision)
+        scheduleRevision = try container.decode(Int.self, forKey: .scheduleRevision)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, projectID, roadmapNodeID, taskNoteID, title, description
+        case attachmentLinks, completionRequirements, priority, sortOrder
+        case lifecycleStatus, revision, scheduleRevision
+    }
 }
 
 struct OccurrenceV2: Codable, Identifiable, Hashable, Sendable {
@@ -305,6 +400,7 @@ struct CreateTaskInput: Codable, Sendable {
     let roadmapNodeID: String?
     let title: String
     let description: String?
+    var completionRequirements: [TaskCompletionRequirement] = []
     let priority: Int
     let sortOrder: Int
     let schedule: ScheduleInput
@@ -318,8 +414,10 @@ struct CreateTaskResponse: Codable, Sendable {
 struct TaskDraft: Identifiable, Equatable {
     let id = UUID()
     var title = ""
+    var description = ""
     var projectID = ""
     var roadmapNodeID: String?
+    var completionRequirements: [TaskCompletionRequirement] = []
     var priority = 0
     var timingType: TimingType = .unscheduled
     var date = Date()

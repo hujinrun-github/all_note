@@ -55,6 +55,15 @@ struct TaskDefinitionInspector: View {
                     InspectorField(label: "描述", value: description)
                 }
 
+                TaskCompletionGateView(
+                    task: task,
+                    store: store,
+                    allowsToggle: task.lifecycleStatus != .completed && task.lifecycleStatus != .archived
+                ) {
+                    await refresh()
+                }
+                TaskAttachmentLinksView(links: task.attachmentLinks)
+
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
                     Text("并发版本")
@@ -248,6 +257,8 @@ struct TaskDefinitionEditorSheet: View {
     @State private var description: String
     @State private var priority: Int
     @State private var projectID: String
+    @State private var attachmentLinks: [TaskAttachmentLink]
+    @State private var completionRequirements: [TaskCompletionRequirement]
     @State private var errorMessage: String?
 
     init(
@@ -264,6 +275,8 @@ struct TaskDefinitionEditorSheet: View {
         _description = State(initialValue: task.description ?? "")
         _priority = State(initialValue: task.priority)
         _projectID = State(initialValue: task.projectID)
+        _attachmentLinks = State(initialValue: task.attachmentLinks)
+        _completionRequirements = State(initialValue: task.completionRequirements)
     }
 
     var body: some View {
@@ -287,6 +300,15 @@ struct TaskDefinitionEditorSheet: View {
                     } else {
                         LabeledContent("所属项目", value: store.projectsByID[projectID]?.name ?? "当前学习项目")
                     }
+                }
+
+
+                Section("完成门槛") {
+                    TaskCompletionRequirementsEditor(requirements: $completionRequirements)
+                }
+
+                Section("附件链接") {
+                    TaskAttachmentLinksEditor(links: $attachmentLinks)
                 }
 
                 Section {
@@ -320,7 +342,7 @@ struct TaskDefinitionEditorSheet: View {
                 }
             }
         }
-        .frame(width: 520, height: 500)
+        .frame(width: 580, height: 680)
     }
 
     private var editableProjects: [ProjectV2] {
@@ -334,6 +356,8 @@ struct TaskDefinitionEditorSheet: View {
                 task,
                 title: title,
                 description: description,
+                attachmentLinks: attachmentLinks,
+                completionRequirements: completionRequirements,
                 priority: priority,
                 projectID: projectID
             )

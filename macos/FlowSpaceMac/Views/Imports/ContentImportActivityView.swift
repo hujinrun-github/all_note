@@ -7,6 +7,7 @@ struct ContentImportActivityView: View {
     let store: WorkspaceStore
     @State private var filter: ContentImportFilter = .all
     @State private var deletingItem: ContentImport?
+    @State private var transcriptItem: ContentImport?
 
     private var visibleItems: [ContentImport] {
         store.contentImports.filter { item in
@@ -70,6 +71,7 @@ struct ContentImportActivityView: View {
                         openNote: { noteID in openWindow(value: noteID) },
                         cancel: { await cancel(item) },
                         retry: { await retry(item) },
+                        showTranscript: { transcriptItem = item },
                         delete: { deletingItem = item }
                     )
                     .padding(.vertical, 7)
@@ -86,6 +88,9 @@ struct ContentImportActivityView: View {
         }
         .sheet(item: presentation) { request in
             PodcastImportSheet(request: request, store: store)
+        }
+        .sheet(item: $transcriptItem) { item in
+            ContentImportTranscriptSheet(item: item, store: store)
         }
         .confirmationDialog(
             "删除这条导入记录？",
@@ -161,6 +166,7 @@ private struct ContentImportRow: View {
     let openNote: (String) -> Void
     let cancel: () async -> Void
     let retry: () async -> Void
+    let showTranscript: () -> Void
     let delete: () -> Void
 
     var body: some View {
@@ -218,6 +224,10 @@ private struct ContentImportRow: View {
                 Label(item.summarizeWithAI ? "逐字稿 + AI 整理" : "仅完整逐字稿", systemImage: item.summarizeWithAI ? "sparkles" : "text.document")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let url = URL(string: item.canonicalURL ?? item.sourceURL) {
+                    Link("原始单集", destination: url)
+                        .font(.caption)
+                }
                 Spacer()
                 if item.status == .active {
                     Button("取消") { Task { await cancel() } }.disabled(isMutating)
@@ -235,6 +245,9 @@ private struct ContentImportRow: View {
                     } else {
                         Text("笔记已删除").font(.caption).foregroundStyle(.secondary)
                     }
+                }
+                if item.status != .active && item.status != .canceled {
+                    Button("查看逐字稿", systemImage: "text.quote", action: showTranscript)
                 }
                 if item.canDelete {
                     Button("删除", systemImage: "trash", role: .destructive, action: delete)
@@ -270,6 +283,59 @@ private struct ContentImportRow: View {
         case "publishing": "正在保存笔记"
         case "completed": "处理完成"
         default: "处理中"
+        }
+    }
+}
+
+struct ContentImportTranscriptSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: ContentImport
+    let store: WorkspaceStore
+    @State private var transcript: String?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let transcript {
+                    ScrollView {
+                        Text(transcript.isEmpty ? "逐字稿为空。" : transcript)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(22)
+                    }
+                } else if let errorMessage {
+                    ContentUnavailableView(
+                        "逐字稿暂不可用",
+                        systemImage: "text.badge.xmark",
+                        description: Text(errorMessage)
+                    )
+                } else {
+                    ProgressView("正在读取逐字稿…")
+                }
+            }
+            .navigationTitle(item.title.nilIfBlank ?? "播客逐字稿")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+                if let url = URL(string: item.canonicalURL ?? item.sourceURL) {
+                    ToolbarItem {
+                        Link(destination: url) { Label("打开原始单集", systemImage: "arrow.up.right.square") }
+                    }
+                }
+            }
+        }
+        .frame(width: 760, height: 640)
+        .task(id: item.id) {
+            do {
+                transcript = try await store.contentImportTranscript(for: item)
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

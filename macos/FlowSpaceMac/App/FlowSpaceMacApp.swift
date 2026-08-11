@@ -7,6 +7,7 @@ struct FlowSpaceMacApp: App {
     @NSApplicationDelegateAdaptor(FlowSpaceAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var session = AppSession()
+    @State private var updateService = AppUpdateService()
 
     var body: some Scene {
         WindowGroup("FlowSpace", id: "workspace") {
@@ -25,6 +26,7 @@ struct FlowSpaceMacApp: App {
             FlowSpaceCommands(session: session)
             ImportWindowCommands(session: session)
             AccountWindowCommands(session: session)
+            UpdateCommands(updateService: updateService)
         }
 
         WindowGroup("FlowSpace", for: WorkspaceWindowRoute.self) { $route in
@@ -123,6 +125,7 @@ struct FlowSpaceMacApp: App {
         Settings {
             SettingsRootView()
                 .environment(session)
+                .environment(updateService)
         }
 
         MenuBarExtra(
@@ -137,6 +140,19 @@ struct FlowSpaceMacApp: App {
                 .environment(session)
         }
         .menuBarExtraStyle(.menu)
+    }
+}
+
+private struct UpdateCommands: Commands {
+    let updateService: AppUpdateService
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("检查更新…") {
+                updateService.checkForUpdates()
+            }
+            .disabled(!updateService.canCheckForUpdates)
+        }
     }
 }
 
