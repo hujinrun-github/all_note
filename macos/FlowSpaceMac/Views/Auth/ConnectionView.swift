@@ -25,6 +25,7 @@ struct ConnectionView: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { Task { await connect() } }
                     .accessibilityLabel("服务地址")
+                    .accessibilityIdentifier("connection-address")
 
                 if let normalizedURL, ServerAddress.isInsecureRemote(normalizedURL) {
                     Label("该地址使用未加密 HTTP，登录信息可能被同一网络中的其他设备读取。", systemImage: "exclamationmark.triangle.fill")
@@ -51,6 +52,7 @@ struct ConnectionView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(session.isWorking || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("connection-submit")
             }
             .frame(width: 420)
             Spacer()
@@ -65,4 +67,3 @@ struct ConnectionView: View {
         await session.connect(address)
     }
 }
-

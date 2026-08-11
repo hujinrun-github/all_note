@@ -166,6 +166,8 @@ struct InboxView: View {
                 task,
                 title: title,
                 description: task.description ?? "",
+                attachmentLinks: task.attachmentLinks,
+                completionRequirements: task.completionRequirements,
                 priority: priority,
                 projectID: targetProjectID
             )

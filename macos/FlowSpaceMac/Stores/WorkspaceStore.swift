@@ -666,6 +666,14 @@ final class WorkspaceStore {
         contentImports.removeAll { $0.id == item.id }
     }
 
+    func contentImportTranscript(for item: ContentImport) async throws -> String {
+        try await client.contentImportTranscript(id: item.id)
+    }
+
+    func contentImport(forNoteID noteID: String) async throws -> ContentImport? {
+        try await client.contentImportForNote(noteID: noteID)
+    }
+
     private func replaceContentImport(_ item: ContentImport) {
         if let index = contentImports.firstIndex(where: { $0.id == item.id }) {
             contentImports[index] = item
@@ -745,6 +753,26 @@ final class WorkspaceStore {
             targetName: target.name,
             summary: "推送 \(result.pushed) 篇，拉取 \(result.pulled) 篇，导入 \(result.imported) 篇，失败 \(result.failed) 篇。"
         )
+        return result
+    }
+
+    func externalDeletedNotes(for target: SyncTarget) async throws -> [ExternalDeletedNote] {
+        try await client.listSyncTargetDeletions(id: target.id)
+    }
+
+    func confirmExternalDeletion(_ item: ExternalDeletedNote, target: SyncTarget) async throws {
+        isMutating = true
+        defer { isMutating = false }
+        try await client.confirmSyncTargetDeletion(targetID: target.id, noteID: item.noteID)
+        await loadNotes()
+    }
+
+    @discardableResult
+    func restoreExternalDeletion(_ item: ExternalDeletedNote, target: SyncTarget) async throws -> SyncResultItem {
+        isMutating = true
+        defer { isMutating = false }
+        let result = try await client.restoreSyncTargetDeletion(targetID: target.id, noteID: item.noteID)
+        await loadNotes()
         return result
     }
 
@@ -839,6 +867,63 @@ final class WorkspaceStore {
                 throw ValidationError("请输入 Notion 标题属性")
             }
         }
+    }
+
+    private static func normalizedAttachmentLinks(
+        _ links: [TaskAttachmentLink]
+    ) throws -> [TaskAttachmentLink] {
+        guard links.count <= 20 else { throw ValidationError("附件链接最多添加 20 条") }
+        var seenURLs = Set<String>()
+        return try links.map { link in
+            let name = link.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawURL = link.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.count <= 120 else {
+                throw ValidationError("附件链接名称不能为空且不能超过 120 个字符")
+            }
+            guard rawURL.count <= 2_048, validHTTPURL(rawURL) else {
+                throw ValidationError("附件链接必须是有效的 http(s) 地址")
+            }
+            guard seenURLs.insert(rawURL).inserted else {
+                throw ValidationError("附件链接不能重复")
+            }
+            return TaskAttachmentLink(name: name, url: rawURL)
+        }
+    }
+
+    private static func normalizedCompletionRequirements(
+        _ requirements: [TaskCompletionRequirement]
+    ) throws -> [TaskCompletionRequirement] {
+        guard requirements.count <= 20 else { throw ValidationError("完成条件最多添加 20 项") }
+        var seenIDs = Set<String>()
+        return try requirements.map { requirement in
+            let id = requirement.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = requirement.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawURL = requirement.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !id.isEmpty, id.count <= 120, seenIDs.insert(id).inserted else {
+                throw ValidationError("完成条件标识无效或重复")
+            }
+            guard !title.isEmpty, title.count <= 200 else {
+                throw ValidationError("完成条件名称不能为空且不能超过 200 个字符")
+            }
+            guard rawURL.isEmpty || (rawURL.count <= 2_048 && validHTTPURL(rawURL)) else {
+                throw ValidationError("完成条件链接必须是有效的 http(s) 地址")
+            }
+            return TaskCompletionRequirement(
+                id: id,
+                kind: requirement.kind,
+                title: title,
+                url: rawURL.isEmpty ? nil : rawURL,
+                completed: requirement.completed
+            )
+        }
+    }
+
+    private static func validHTTPURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              components.host?.isEmpty == false else { return false }
+        return true
     }
 
     func loadRuntimeSettings() async {
@@ -1042,6 +1127,7 @@ final class WorkspaceStore {
             roadmapNodeID: roadmapNodeID,
             title: trimmed,
             description: nil,
+            completionRequirements: [],
             priority: 0,
             sortOrder: 0,
             schedule: schedule
@@ -1251,11 +1337,13 @@ final class WorkspaceStore {
         isMutating = true
         defer { isMutating = false }
         let schedule = Self.schedule(from: draft)
+        let requirements = try Self.normalizedCompletionRequirements(draft.completionRequirements)
         let response = try await client.createTask(CreateTaskInput(
             projectID: draft.projectID,
             roadmapNodeID: draft.roadmapNodeID,
             title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines),
-            description: nil,
+            description: draft.description.trimmingCharacters(in: .whitespacesAndNewlines),
+            completionRequirements: requirements,
             priority: draft.priority,
             sortOrder: 0,
             schedule: schedule
@@ -1377,6 +1465,8 @@ final class WorkspaceStore {
         _ task: TaskV2,
         title: String,
         description: String,
+        attachmentLinks: [TaskAttachmentLink],
+        completionRequirements: [TaskCompletionRequirement],
         priority: Int,
         projectID: String
     ) async throws -> TaskV2 {
@@ -1388,6 +1478,8 @@ final class WorkspaceStore {
         guard projects.contains(where: { $0.id == projectID }) else {
             throw ValidationError("请选择有效的所属项目")
         }
+        let links = try Self.normalizedAttachmentLinks(attachmentLinks)
+        let requirements = try Self.normalizedCompletionRequirements(completionRequirements)
         isMutating = true
         defer { isMutating = false }
         let updated = try await client.updateTaskDefinition(
@@ -1395,6 +1487,8 @@ final class WorkspaceStore {
             input: UpdateTaskDefinitionInput(
                 title: trimmedTitle,
                 description: description.trimmingCharacters(in: .whitespacesAndNewlines),
+                attachmentLinks: links,
+                completionRequirements: requirements,
                 priority: priority,
                 projectID: projectID,
                 taskNoteID: nil,
@@ -1406,6 +1500,30 @@ final class WorkspaceStore {
             tasks[index] = updated
         }
         scheduleTaskIndexing()
+        return updated
+    }
+
+    func updateTaskCompletionRequirements(
+        _ task: TaskV2,
+        requirements: [TaskCompletionRequirement]
+    ) async throws -> TaskV2 {
+        let normalized = try Self.normalizedCompletionRequirements(requirements)
+        isMutating = true
+        defer { isMutating = false }
+        let updated = try await client.updateTaskDefinition(
+            taskID: task.id,
+            input: UpdateTaskDefinitionInput(
+                title: nil,
+                description: nil,
+                completionRequirements: normalized,
+                priority: nil,
+                projectID: nil,
+                taskNoteID: nil,
+                expectedTaskRevision: task.revision,
+                expectedScheduleRevision: task.scheduleRevision
+            )
+        )
+        replaceTask(updated)
         return updated
     }
 
@@ -1774,7 +1892,7 @@ final class WorkspaceStore {
 
         isMutating = true
         defer { isMutating = false }
-        let command = occurrence.executionStatus == .done ? "reopen" : "complete"
+        let command = occurrence.executionStatus.isTerminal ? "reopen" : "complete"
         _ = try await client.occurrenceCommand(
             occurrenceID: occurrence.id,
             command: command,
@@ -1801,6 +1919,25 @@ final class WorkspaceStore {
             command: "start",
             revisions: revisions
         )
+    }
+
+    func skip(_ occurrence: OccurrenceV2) async throws {
+        guard occurrence.executionStatus == .open else {
+            throw ValidationError("只有未开始的执行可以跳过")
+        }
+        guard occurrence.recurring == true || occurrence.recurrenceType.map({ $0 != .none }) == true else {
+            throw ValidationError("单次任务不能跳过，可以改为取消")
+        }
+        try await executeOccurrenceCommand(occurrence, command: "skip")
+    }
+
+    func cancel(_ occurrence: OccurrenceV2) async throws {
+        guard occurrence.executionStatus == .open
+                || occurrence.executionStatus == .active
+                || occurrence.executionStatus == .blocked else {
+            throw ValidationError("当前执行状态不能取消")
+        }
+        try await executeOccurrenceCommand(occurrence, command: "cancel")
     }
 
     func block(_ occurrence: OccurrenceV2, reason: String, nextAction: String) async throws {
@@ -1841,6 +1978,23 @@ final class WorkspaceStore {
         _ = try await client.occurrenceCommand(
             occurrenceID: occurrence.id,
             command: "unblock",
+            revisions: ExpectedRevisions(
+                expectedTaskRevision: occurrence.taskRevision ?? task.revision,
+                expectedScheduleRevision: occurrence.scheduleRevision ?? task.scheduleRevision,
+                expectedOccurrenceRevisions: [occurrence.id: occurrence.revision]
+            )
+        )
+    }
+
+    private func executeOccurrenceCommand(_ occurrence: OccurrenceV2, command: String) async throws {
+        guard let task = tasksByID[occurrence.taskID] else {
+            throw ValidationError("找不到对应的任务定义，请刷新后重试")
+        }
+        isMutating = true
+        defer { isMutating = false }
+        _ = try await client.occurrenceCommand(
+            occurrenceID: occurrence.id,
+            command: command,
             revisions: ExpectedRevisions(
                 expectedTaskRevision: occurrence.taskRevision ?? task.revision,
                 expectedScheduleRevision: occurrence.scheduleRevision ?? task.scheduleRevision,

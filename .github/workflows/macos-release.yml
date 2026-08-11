@@ -1,0 +1,127 @@
+name: macOS notarized release
+
+on:
+  workflow_dispatch:
+    inputs:
+      marketing_version:
+        description: Version written to CFBundleShortVersionString
+        required: true
+        default: '0.1.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  notarized-release:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      FLOWSPACE_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+      FLOWSPACE_NOTARY_PROFILE: flowspace-ci
+      FLOWSPACE_MARKETING_VERSION: ${{ inputs.marketing_version }}
+      FLOWSPACE_BUILD_NUMBER: ${{ github.run_number }}
+      FLOWSPACE_UPDATE_FEED_URL: ${{ secrets.MACOS_UPDATE_FEED_URL }}
+      FLOWSPACE_UPDATE_PUBLIC_ED_KEY: ${{ secrets.MACOS_UPDATE_PUBLIC_ED_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install build dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.16.0 --activate
+          pnpm --dir frontend install --frozen-lockfile
+          brew install xcodegen
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          : "${CERTIFICATE_P12:?Missing MACOS_DEVELOPER_ID_CERTIFICATE_P12}"
+          : "${CERTIFICATE_PASSWORD:?Missing MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD}"
+          : "${NOTARY_KEY_P8:?Missing MACOS_NOTARY_KEY_P8}"
+          : "${NOTARY_KEY_ID:?Missing MACOS_NOTARY_KEY_ID}"
+          : "${NOTARY_ISSUER_ID:?Missing MACOS_NOTARY_ISSUER_ID}"
+          : "${FLOWSPACE_DEVELOPER_ID_APPLICATION:?Missing MACOS_DEVELOPER_ID_APPLICATION}"
+          : "${FLOWSPACE_UPDATE_FEED_URL:?Missing MACOS_UPDATE_FEED_URL}"
+          : "${FLOWSPACE_UPDATE_PUBLIC_ED_KEY:?Missing MACOS_UPDATE_PUBLIC_ED_KEY}"
+          [[ "$FLOWSPACE_UPDATE_FEED_URL" == https://* ]] || {
+            echo "MACOS_UPDATE_FEED_URL must use HTTPS" >&2
+            exit 2
+          }
+
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          notary_key_path="$RUNNER_TEMP/AuthKey_${NOTARY_KEY_ID}.p8"
+          keychain_path="$RUNNER_TEMP/flowspace-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$certificate_path"
+          printf '%s' "$NOTARY_KEY_P8" > "$notary_key_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+
+          xcrun notarytool store-credentials "$FLOWSPACE_NOTARY_PROFILE" \
+            --key "$notary_key_path" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --keychain "$keychain_path"
+
+          echo "FLOWSPACE_NOTARY_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+          echo "FLOWSPACE_CI_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Build, sign and notarize
+        run: |
+          make macos-generate
+          build_settings=(
+            "MARKETING_VERSION=$FLOWSPACE_MARKETING_VERSION"
+            "CURRENT_PROJECT_VERSION=$FLOWSPACE_BUILD_NUMBER"
+            "FLOWSPACE_UPDATE_FEED_URL=$FLOWSPACE_UPDATE_FEED_URL"
+            "FLOWSPACE_UPDATE_PUBLIC_ED_KEY=$FLOWSPACE_UPDATE_PUBLIC_ED_KEY"
+          )
+          xcodebuild build \
+            -project macos/FlowSpaceMac.xcodeproj \
+            -scheme FlowSpaceMac \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/FlowSpaceMacDerivedData" \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            "${build_settings[@]}"
+          FLOWSPACE_RELEASE_OUTPUT_DIR="$GITHUB_WORKSPACE/dist/macos" \
+            scripts/package-macos-release.sh \
+            "$RUNNER_TEMP/FlowSpaceMacDerivedData/Build/Products/Release/FlowSpaceMac.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlowSpaceMac-${{ inputs.marketing_version }}-${{ github.run_number }}
+          path: dist/macos/*
+          if-no-files-found: error
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${FLOWSPACE_CI_KEYCHAIN:-}" && -f "$FLOWSPACE_CI_KEYCHAIN" ]]; then
+            security delete-keychain "$FLOWSPACE_CI_KEYCHAIN" || true
+          fi

@@ -8,6 +8,7 @@ struct OccurrenceInspector: View {
     @State private var editingTask = false
     @State private var blockingOccurrence = false
     @State private var scheduleEntry: CalendarEntryV2?
+    @State private var confirmingCancel = false
 
     private var task: TaskV2? { store.tasksByID[occurrence.taskID] }
     private var project: ProjectV2? {
@@ -23,8 +24,18 @@ struct OccurrenceInspector: View {
                     StatusBadge(status: occurrence.executionStatus)
                 }
 
+                if let task {
+                    TaskCompletionGateView(
+                        task: task,
+                        store: store,
+                        allowsToggle: !occurrence.executionStatus.isTerminal
+                    ) {
+                        await refresh()
+                    }
+                }
+
                 HStack {
-                    if occurrence.executionStatus == .done {
+                    if occurrence.executionStatus.isTerminal {
                         Button("重新打开", systemImage: "arrow.uturn.backward") {
                             Task { await toggle() }
                         }
@@ -33,10 +44,23 @@ struct OccurrenceInspector: View {
                             Task { await toggle() }
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(task?.completionRequirements.contains(where: { !$0.completed }) == true)
 
                         if occurrence.executionStatus == .open {
                             Button("开始", systemImage: "play.fill") {
                                 Task { await start() }
+                            }
+                            if occurrence.recurring == true || occurrence.recurrenceType.map({ $0 != .none }) == true {
+                                Button("跳过本次", systemImage: "forward.end") {
+                                    Task { await skip() }
+                                }
+                            }
+                        }
+                        if occurrence.executionStatus == .open
+                            || occurrence.executionStatus == .active
+                            || occurrence.executionStatus == .blocked {
+                            Button("取消本次", systemImage: "xmark.circle", role: .destructive) {
+                                confirmingCancel = true
                             }
                         }
                     }
@@ -124,6 +148,14 @@ struct OccurrenceInspector: View {
             }
             .environment(\.timeZone, timezone)
         }
+        .confirmationDialog("取消本次执行？", isPresented: $confirmingCancel, titleVisibility: .visible) {
+            Button("取消本次执行", role: .destructive) {
+                Task { await cancel() }
+            }
+            Button("返回", role: .cancel) {}
+        } message: {
+            Text("只取消当前执行；重复任务的其他日期不会受影响。单次任务会按照服务端规则同步取消任务定义。")
+        }
     }
 
     private var scheduleLabel: String {
@@ -163,10 +195,31 @@ struct OccurrenceInspector: View {
         }
     }
 
+    private func skip() async {
+        await runCommand { try await store.skip(occurrence) }
+    }
+
+    private func cancel() async {
+        await runCommand { try await store.cancel(occurrence) }
+    }
+
     private func unblock() async {
         localError = nil
         do {
             try await store.unblock(occurrence)
+            await refresh()
+        } catch {
+            localError = error.localizedDescription
+            if let apiError = error as? APIError, apiError.isRevisionConflict {
+                await refresh()
+            }
+        }
+    }
+
+    private func runCommand(_ command: () async throws -> Void) async {
+        localError = nil
+        do {
+            try await command()
             await refresh()
         } catch {
             localError = error.localizedDescription

@@ -86,6 +86,8 @@ struct SettingsRootView: View {
             .tabItem { Label("AI", systemImage: "sparkles") }
             NotificationSettingsView(service: session.notifications)
                 .tabItem { Label("通知", systemImage: "bell") }
+            UpdateSettingsView()
+                .tabItem { Label("更新", systemImage: "arrow.triangle.2.circlepath.circle") }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if session.connectivity.isOffline {

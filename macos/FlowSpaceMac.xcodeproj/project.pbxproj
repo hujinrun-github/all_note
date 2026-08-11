@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		029B6CDC4D5A34498B29F25B /* ServiceConnectivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86AE0D36F6BEB49D04A78DCD /* ServiceConnectivity.swift */; };
+		02AB12D4D8EC79AD31F68CD1 /* AppUpdateConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A4CAF3814027319BBD68500 /* AppUpdateConfigurationTests.swift */; };
 		05480764573FBFE5FE25B17D /* RuntimeStorageSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4F09F8468827C49B076FEF /* RuntimeStorageSettingsView.swift */; };
 		064A56AB0B3D6DA07671827E /* RuntimeSettingsCodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F37A8CF8118A94A5FB89622 /* RuntimeSettingsCodingTests.swift */; };
 		094EFE0C8EA9B0813A2DF18C /* TaskModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 306310E24B7A062200D6ADE8 /* TaskModels.swift */; };
@@ -26,6 +27,7 @@
 		2C02189D5984B95FC06A712C /* FlowSpaceMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD394A7332C1579DB3E8F2F /* FlowSpaceMacApp.swift */; };
 		2CEE8CA87D6B62C51801B735 /* GitHubAuthenticationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96DF02B2784E1055BBD25684 /* GitHubAuthenticationTests.swift */; };
 		2D3010AE43AD53316DF3EFA4 /* SpotlightDocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863DA943DED8DA1776D14349 /* SpotlightDocumentTests.swift */; };
+		2EB0E1DA22256AD4A58AB941 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB7D4002A59BECB8D5AD8A2E /* Assets.xcassets */; };
 		311F7B54496404B1402D0B9E /* ProfileSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5CC939595DE28099AD690D2 /* ProfileSettingsView.swift */; };
 		317C491A3EB5752A9A0734A0 /* TaskDefinitionInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 846902596F01934C722F104C /* TaskDefinitionInspector.swift */; };
 		31C5F4864D7BE793A3050DCB /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3CBD9627A2DD91C1B58FE3 /* LoginView.swift */; };
@@ -41,6 +43,7 @@
 		5435AAD1B1F5828523919017 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75CF10A1BE895B232CA98E1C /* WorkspaceView.swift */; };
 		585898DF8BF508BCA4567717 /* NoteEditorWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E46BEEA745E6F4C4B065FF24 /* NoteEditorWindowView.swift */; };
 		596F48F770923E7D6B89DE25 /* FlowSpaceMenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F19AF300F4A60EE9A495D2E2 /* FlowSpaceMenuBarView.swift */; };
+		5F0CB5E9E6099A7275CCF0AA /* FlowSpaceMacUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F8F503DACCC9F4E6DA2599 /* FlowSpaceMacUITests.swift */; };
 		62B7A09121A0243033972499 /* NoteMetadataInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A418FD22531363D2C9FFBE35 /* NoteMetadataInspector.swift */; };
 		6585ED969B97FD2A132883F8 /* RuntimeSettingsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 338160E984C45763D7C7FADF /* RuntimeSettingsModels.swift */; };
 		6AA28DD7E3283449433996FE /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B346A87FF76AE517C89C9A /* TasksView.swift */; };
@@ -53,9 +56,11 @@
 		7ABF2A3810350AE7D9E761B1 /* CapabilityDiagnosticView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 296563AD93B1A5999850FAF0 /* CapabilityDiagnosticView.swift */; };
 		7AC403318CDD608447457A75 /* GitHubAuthenticationSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29D330DAB269CEA2C9FCDBD3 /* GitHubAuthenticationSession.swift */; };
 		7EFEEE6BD5C1D676D8425702 /* SearchNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBDEA1FB43A1C71A646C7917 /* SearchNavigationTests.swift */; };
+		82C5CC2A42D6286846D4F979 /* TaskMetadataEditors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008F2C9625B53A3CE12373E1 /* TaskMetadataEditors.swift */; };
 		85B04DF45406E87CD2C26B03 /* AppNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F4F7EDB0C2EFD4DC28E16C0 /* AppNotificationService.swift */; };
 		87C361F799007CB19F541E14 /* RichEditorBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBBB5E32403CB7277091CEA /* RichEditorBridgeTests.swift */; };
 		8C785F0758E549803892421B /* KnowledgeCodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 114734F904EAC1E1364EA5FF /* KnowledgeCodingTests.swift */; };
+		92E80946D8954F085734F7FA /* UpdateSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90DC04A3B010F6CFE73D5571 /* UpdateSettingsView.swift */; };
 		99AB037947776CD61620E15A /* JSONCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB474DF7ABA9EE63A781E33 /* JSONCoding.swift */; };
 		A4E5CCB9E56114305FF8B9DF /* PodcastImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11FAA389E528A49A656B9B29 /* PodcastImportSheet.swift */; };
 		A5339B6D048A09847F22D25F /* AppSpotlightService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39BE518E63A1374C0A0FB701 /* AppSpotlightService.swift */; };
@@ -85,10 +90,12 @@
 		DB38200D0998D522F530DF1B /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C58EA538D572D71A9B627DF4 /* AppModels.swift */; };
 		DE591D7DEBC7F7EF064757EF /* AccountSettingsCodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C65C0A07A9439116846204BF /* AccountSettingsCodingTests.swift */; };
 		DEB9C17476027D289697488B /* OccurrenceInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF857CFA7D87D761D68FDCE1 /* OccurrenceInspector.swift */; };
+		E158F31AE2B1D4764C584FE2 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = EDA4AFBB280B7D1403288CCE /* Sparkle */; };
 		E5C581B9D7CD7A5F4B220AEA /* TaskBatchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D936C3067356A68D18A77856 /* TaskBatchModels.swift */; };
 		EA0A27DB5C40280317476566 /* JSONCodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F49AF0E2F77BEDC690E394EE /* JSONCodingTests.swift */; };
 		EEC694730F693FE9F0A05FBC /* RequiredPasswordChangeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF6ABD44220ACA467055DED7 /* RequiredPasswordChangeView.swift */; };
 		EEC90396C6BFDEBACC4F0998 /* RoadmapProjectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E68420ADAD83C7ACEEFB4C2 /* RoadmapProjectView.swift */; };
+		EF6E536BCCB9A63663F724F3 /* AppUpdateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEDDB091136A2F6D07683E2F /* AppUpdateService.swift */; };
 		F392F3C8C3F916CADB19F89A /* TaskBatchOperationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD74A260B90FC7366D0F847 /* TaskBatchOperationSheet.swift */; };
 		F48E14326023B367F98C7ED1 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 673939BC5B5DF984F9B99CEB /* WorkspaceStore.swift */; };
 		F685E1FD34E2CC7017B03D65 /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59B3E36311BDE797834FBDB7 /* NotificationSettingsView.swift */; };
@@ -98,6 +105,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		6623F9AB6635E5895DAEB2A1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 76B924577F5866EA7E819E98 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E4341EBE66530CEF82EE7D47;
+			remoteInfo = FlowSpaceMac;
+		};
 		8D6990D063092D5037A41B22 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 76B924577F5866EA7E819E98 /* Project object */;
@@ -108,6 +122,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		008F2C9625B53A3CE12373E1 /* TaskMetadataEditors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskMetadataEditors.swift; sourceTree = "<group>"; };
 		0116A16018A19ACBACF48073 /* NotificationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationServiceTests.swift; sourceTree = "<group>"; };
 		114734F904EAC1E1364EA5FF /* KnowledgeCodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnowledgeCodingTests.swift; sourceTree = "<group>"; };
 		11FAA389E528A49A656B9B29 /* PodcastImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastImportSheet.swift; sourceTree = "<group>"; };
@@ -122,6 +137,7 @@
 		338160E984C45763D7C7FADF /* RuntimeSettingsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeSettingsModels.swift; sourceTree = "<group>"; };
 		34F2B84934D0E16FD6ED7B21 /* SyncCodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCodingTests.swift; sourceTree = "<group>"; };
 		39BE518E63A1374C0A0FB701 /* AppSpotlightService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSpotlightService.swift; sourceTree = "<group>"; };
+		3A4CAF3814027319BBD68500 /* AppUpdateConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateConfigurationTests.swift; sourceTree = "<group>"; };
 		3FD67A0000EC378F19FA07F2 /* SyncModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncModels.swift; sourceTree = "<group>"; };
 		4023872E3B4B746681312665 /* NavigationSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationSelection.swift; sourceTree = "<group>"; };
 		411BDD9BA9D8606A26664F9F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -141,6 +157,7 @@
 		75CF10A1BE895B232CA98E1C /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
 		791987B9C856CE9B5F8484FA /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		7A184AED0B8C25145167681A /* ProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsView.swift; sourceTree = "<group>"; };
+		7AB934AC4F5F8E2B700AE67E /* FlowSpaceMacUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FlowSpaceMacUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7BE1D077AFE1E83300ED31A9 /* OccurrenceCollectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OccurrenceCollectionTests.swift; sourceTree = "<group>"; };
 		8124D45EF451E5286A0A7B70 /* SyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSettingsView.swift; sourceTree = "<group>"; };
 		83F7F2F3855B558E50BC402E /* AccountSecuritySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSecuritySettingsView.swift; sourceTree = "<group>"; };
@@ -151,6 +168,7 @@
 		8CB474DF7ABA9EE63A781E33 /* JSONCoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCoding.swift; sourceTree = "<group>"; };
 		8F58DF933FE9FCF68AAF0B44 /* CalendarWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarWorkspaceView.swift; sourceTree = "<group>"; };
 		90CB102EA67586CF7DAE35F2 /* FlowSpaceMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FlowSpaceMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		90DC04A3B010F6CFE73D5571 /* UpdateSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateSettingsView.swift; sourceTree = "<group>"; };
 		9266930F6F72EC357B14C1E9 /* CalendarDropPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarDropPlannerTests.swift; sourceTree = "<group>"; };
 		96DF02B2784E1055BBD25684 /* GitHubAuthenticationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAuthenticationTests.swift; sourceTree = "<group>"; };
 		9734FFEA26F9B78986768BE4 /* TaskRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskRows.swift; sourceTree = "<group>"; };
@@ -181,6 +199,7 @@
 		CF857CFA7D87D761D68FDCE1 /* OccurrenceInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OccurrenceInspector.swift; sourceTree = "<group>"; };
 		D110A9CA54BC2000A5941EB8 /* TaskBatchModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskBatchModelsTests.swift; sourceTree = "<group>"; };
 		D1C6834EFD5574F7FBCE0629 /* AttachmentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentModels.swift; sourceTree = "<group>"; };
+		D1F8F503DACCC9F4E6DA2599 /* FlowSpaceMacUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowSpaceMacUITests.swift; sourceTree = "<group>"; };
 		D479B40918674C21D54746DF /* ServiceConnectivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnectivityTests.swift; sourceTree = "<group>"; };
 		D6ACC3FF1028AE1D638C4944 /* TaskEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskEditorSheet.swift; sourceTree = "<group>"; };
 		D6D4A4A8B3E70384D5A2FC5A /* TaskWorkspaceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskWorkspaceModels.swift; sourceTree = "<group>"; };
@@ -192,13 +211,26 @@
 		ED4588125A4CBCB31C8DA12C /* RuntimeAISettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeAISettingsView.swift; sourceTree = "<group>"; };
 		EE4F09F8468827C49B076FEF /* RuntimeStorageSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeStorageSettingsView.swift; sourceTree = "<group>"; };
 		EE4F63E5AD44CD9E20F03859 /* AppSessionOfflineRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSessionOfflineRestoreTests.swift; sourceTree = "<group>"; };
+		EEDDB091136A2F6D07683E2F /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
 		F19AF300F4A60EE9A495D2E2 /* FlowSpaceMenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowSpaceMenuBarView.swift; sourceTree = "<group>"; };
 		F368D6E7D863C9BD18251544 /* RichNoteEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichNoteEditor.swift; sourceTree = "<group>"; };
 		F49AF0E2F77BEDC690E394EE /* JSONCodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCodingTests.swift; sourceTree = "<group>"; };
 		F8BEFC66FD5412E1A5D565C6 /* GlobalSearchWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchWindowView.swift; sourceTree = "<group>"; };
+		FB7D4002A59BECB8D5AD8A2E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FC405D914DE8809D01FE448D /* FlowSpaceMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FlowSpaceMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FDD8D5B48B10AA1E468D9898 /* ServerAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		25567DB09F12053A13E895B9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E158F31AE2B1D4764C584FE2 /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		01053B5B55AAC2F73BA31315 /* Stores */ = {
@@ -241,6 +273,7 @@
 			children = (
 				C65C0A07A9439116846204BF /* AccountSettingsCodingTests.swift */,
 				EE4F63E5AD44CD9E20F03859 /* AppSessionOfflineRestoreTests.swift */,
+				3A4CAF3814027319BBD68500 /* AppUpdateConfigurationTests.swift */,
 				9266930F6F72EC357B14C1E9 /* CalendarDropPlannerTests.swift */,
 				A94DD07EAF0F92BC5232B3DD /* ContentImportCodingTests.swift */,
 				96DF02B2784E1055BBD25684 /* GitHubAuthenticationTests.swift */,
@@ -271,6 +304,7 @@
 				791987B9C856CE9B5F8484FA /* APIClient.swift */,
 				5F4F7EDB0C2EFD4DC28E16C0 /* AppNotificationService.swift */,
 				39BE518E63A1374C0A0FB701 /* AppSpotlightService.swift */,
+				EEDDB091136A2F6D07683E2F /* AppUpdateService.swift */,
 				29D330DAB269CEA2C9FCDBD3 /* GitHubAuthenticationSession.swift */,
 				8CB474DF7ABA9EE63A781E33 /* JSONCoding.swift */,
 				B9699EB35A722EF2BE80D737 /* RecentWorkspaceCache.swift */,
@@ -286,6 +320,7 @@
 				9AD74A260B90FC7366D0F847 /* TaskBatchOperationSheet.swift */,
 				846902596F01934C722F104C /* TaskDefinitionInspector.swift */,
 				D6ACC3FF1028AE1D638C4944 /* TaskEditorSheet.swift */,
+				008F2C9625B53A3CE12373E1 /* TaskMetadataEditors.swift */,
 				9734FFEA26F9B78986768BE4 /* TaskRows.swift */,
 				41B346A87FF76AE517C89C9A /* TasksView.swift */,
 			);
@@ -401,6 +436,7 @@
 				EE4F09F8468827C49B076FEF /* RuntimeStorageSettingsView.swift */,
 				5117089AC32F13562BE005AA /* SettingsRootView.swift */,
 				8124D45EF451E5286A0A7B70 /* SyncSettingsView.swift */,
+				90DC04A3B010F6CFE73D5571 /* UpdateSettingsView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -452,6 +488,7 @@
 			children = (
 				90CB102EA67586CF7DAE35F2 /* FlowSpaceMac.app */,
 				FC405D914DE8809D01FE448D /* FlowSpaceMacTests.xctest */,
+				7AB934AC4F5F8E2B700AE67E /* FlowSpaceMacUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -472,9 +509,18 @@
 			path = Calendar;
 			sourceTree = "<group>";
 		};
+		F829E2A11F874F88EEA3AC85 /* FlowSpaceMacUITests */ = {
+			isa = PBXGroup;
+			children = (
+				D1F8F503DACCC9F4E6DA2599 /* FlowSpaceMacUITests.swift */,
+			);
+			path = FlowSpaceMacUITests;
+			sourceTree = "<group>";
+		};
 		FC5FCCB04CDC25CE6DB7E888 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				FB7D4002A59BECB8D5AD8A2E /* Assets.xcassets */,
 				CB3D07902C41C580C16DD6A5 /* RichEditor */,
 			);
 			path = Resources;
@@ -485,6 +531,7 @@
 			children = (
 				C2544EA71F9CFDA980E19586 /* FlowSpaceMac */,
 				1156AD33F6EAE5C9A77C509F /* FlowSpaceMacTests */,
+				F829E2A11F874F88EEA3AC85 /* FlowSpaceMacUITests */,
 				E924D209BE311FF932567948 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -510,12 +557,31 @@
 			productReference = FC405D914DE8809D01FE448D /* FlowSpaceMacTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		B40B4B746405F7C39B101088 /* FlowSpaceMacUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E8A14571040484D2DDBA9A7B /* Build configuration list for PBXNativeTarget "FlowSpaceMacUITests" */;
+			buildPhases = (
+				DA80582D97295FA7B87BB169 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0C20C3575A4A1CEDF27DC62F /* PBXTargetDependency */,
+			);
+			name = FlowSpaceMacUITests;
+			packageProductDependencies = (
+			);
+			productName = FlowSpaceMacUITests;
+			productReference = 7AB934AC4F5F8E2B700AE67E /* FlowSpaceMacUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		E4341EBE66530CEF82EE7D47 /* FlowSpaceMac */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F777863007A720A9F26A58B2 /* Build configuration list for PBXNativeTarget "FlowSpaceMac" */;
 			buildPhases = (
 				5E26E3097ECBE18C42F1A411 /* Sources */,
 				6D82A795DD9CFFD5B29D61A0 /* Resources */,
+				25567DB09F12053A13E895B9 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -523,6 +589,7 @@
 			);
 			name = FlowSpaceMac;
 			packageProductDependencies = (
+				EDA4AFBB280B7D1403288CCE /* Sparkle */,
 			);
 			productName = FlowSpaceMac;
 			productReference = 90CB102EA67586CF7DAE35F2 /* FlowSpaceMac.app */;
@@ -537,6 +604,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					B40B4B746405F7C39B101088 = {
+						TestTargetID = E4341EBE66530CEF82EE7D47;
+					};
 					E4341EBE66530CEF82EE7D47 = {
 						ProvisioningStyle = Automatic;
 					};
@@ -551,6 +621,9 @@
 			);
 			mainGroup = FE6BAE5AC39D7C5911E5FDEB;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				929079AA03ABBDEF8D5FE038 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E924D209BE311FF932567948 /* Products */;
 			projectDirPath = "";
@@ -558,6 +631,7 @@
 			targets = (
 				E4341EBE66530CEF82EE7D47 /* FlowSpaceMac */,
 				7A2D581C89FAB5607C581000 /* FlowSpaceMacTests */,
+				B40B4B746405F7C39B101088 /* FlowSpaceMacUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -567,6 +641,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2EB0E1DA22256AD4A58AB941 /* Assets.xcassets in Resources */,
 				CA2F17341A87E2276CF344BA /* RichEditor in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -586,6 +661,7 @@
 				85B04DF45406E87CD2C26B03 /* AppNotificationService.swift in Sources */,
 				D3279D235D680D4BDB003848 /* AppSession.swift in Sources */,
 				A5339B6D048A09847F22D25F /* AppSpotlightService.swift in Sources */,
+				EF6E536BCCB9A63663F724F3 /* AppUpdateService.swift in Sources */,
 				7134231F5331FA7D448D1DAD /* AttachmentModels.swift in Sources */,
 				329CE5AE7BE59BB3A70946F1 /* CalendarDragModels.swift in Sources */,
 				D651492D5EF36EA6EF2E8853 /* CalendarWorkspaceView.swift in Sources */,
@@ -636,11 +712,13 @@
 				F392F3C8C3F916CADB19F89A /* TaskBatchOperationSheet.swift in Sources */,
 				317C491A3EB5752A9A0734A0 /* TaskDefinitionInspector.swift in Sources */,
 				16CAA2C51DA1C7041A04E205 /* TaskEditorSheet.swift in Sources */,
+				82C5CC2A42D6286846D4F979 /* TaskMetadataEditors.swift in Sources */,
 				094EFE0C8EA9B0813A2DF18C /* TaskModels.swift in Sources */,
 				1DACA035BCACE499238D9D6D /* TaskRows.swift in Sources */,
 				1AAF9F5FEFA3A2DD3A8EF880 /* TaskWorkspaceModels.swift in Sources */,
 				6AA28DD7E3283449433996FE /* TasksView.swift in Sources */,
 				431996EC226FBEAC94C43FB0 /* TodayView.swift in Sources */,
+				92E80946D8954F085734F7FA /* UpdateSettingsView.swift in Sources */,
 				F48E14326023B367F98C7ED1 /* WorkspaceStore.swift in Sources */,
 				5435AAD1B1F5828523919017 /* WorkspaceView.swift in Sources */,
 			);
@@ -652,6 +730,7 @@
 			files = (
 				DE591D7DEBC7F7EF064757EF /* AccountSettingsCodingTests.swift in Sources */,
 				CA545D032A9E035DFD928085 /* AppSessionOfflineRestoreTests.swift in Sources */,
+				02AB12D4D8EC79AD31F68CD1 /* AppUpdateConfigurationTests.swift in Sources */,
 				F81F236E0D50F4A28E2419A0 /* CalendarDropPlannerTests.swift in Sources */,
 				70CDD99C8AF6DFAAFF850F88 /* ContentImportCodingTests.swift in Sources */,
 				2CEE8CA87D6B62C51801B735 /* GitHubAuthenticationTests.swift in Sources */,
@@ -675,9 +754,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DA80582D97295FA7B87BB169 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5F0CB5E9E6099A7275CCF0AA /* FlowSpaceMacUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		0C20C3575A4A1CEDF27DC62F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E4341EBE66530CEF82EE7D47 /* FlowSpaceMac */;
+			targetProxy = 6623F9AB6635E5895DAEB2A1 /* PBXContainerItemProxy */;
+		};
 		47B58521679CFBB910502401 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = E4341EBE66530CEF82EE7D47 /* FlowSpaceMac */;
@@ -778,6 +870,8 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				FLOWSPACE_UPDATE_FEED_URL = "";
+				FLOWSPACE_UPDATE_PUBLIC_ED_KEY = "";
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -805,6 +899,23 @@
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
+		};
+		B03E39CC2BF3BC28F63FBCB0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.flowspace.mac.ui-tests";
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = FlowSpaceMac;
+			};
+			name = Release;
 		};
 		CCA66A43788CCD8C7233B637 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -844,6 +955,8 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				FLOWSPACE_UPDATE_FEED_URL = "";
+				FLOWSPACE_UPDATE_PUBLIC_ED_KEY = "";
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -885,6 +998,23 @@
 			};
 			name = Debug;
 		};
+		F095ED2886C7E0759A555C09 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.flowspace.mac.ui-tests";
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = FlowSpaceMac;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -906,6 +1036,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		E8A14571040484D2DDBA9A7B /* Build configuration list for PBXNativeTarget "FlowSpaceMacUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F095ED2886C7E0759A555C09 /* Debug */,
+				B03E39CC2BF3BC28F63FBCB0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		F777863007A720A9F26A58B2 /* Build configuration list for PBXNativeTarget "FlowSpaceMac" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -916,6 +1055,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		929079AA03ABBDEF8D5FE038 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		EDA4AFBB280B7D1403288CCE /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 929079AA03ABBDEF8D5FE038 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 76B924577F5866EA7E819E98 /* Project object */;
 }

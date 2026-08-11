@@ -140,6 +140,14 @@ struct TargetSyncResult: Codable, Sendable {
     let items: [SyncResultItem]
 }
 
+struct ExternalDeletedNote: Codable, Identifiable, Hashable, Sendable {
+    var id: String { noteID }
+    let noteID: String
+    let title: String
+    let externalPath: String
+    let lastSyncedAt: Int64?
+}
+
 struct SyncTargetDraft: Identifiable {
     let id = UUID()
     var targetID: String?

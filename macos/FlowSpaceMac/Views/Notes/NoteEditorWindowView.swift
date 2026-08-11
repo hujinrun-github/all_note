@@ -40,6 +40,8 @@ struct NoteEditorWindowView: View {
     @State private var isAnnotating = false
     @State private var annotationNotice: String?
     @State private var closeFailure: CloseFailure?
+    @State private var contentImport: ContentImport?
+    @State private var transcriptItem: ContentImport?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -204,6 +206,13 @@ struct NoteEditorWindowView: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(spacing: 16) {
+                        if let contentImport {
+                            PodcastSourceInspectorCard(item: contentImport) {
+                                transcriptItem = contentImport
+                            }
+                            .padding(.horizontal, 16)
+                            Divider()
+                        }
                         NoteMetadataInspector(
                             noteID: noteID,
                             store: store,
@@ -231,6 +240,9 @@ struct NoteEditorWindowView: View {
                 )
             }
                 .inspectorColumnWidth(min: 270, ideal: 320, max: 400)
+        }
+        .sheet(item: $transcriptItem) { item in
+            ContentImportTranscriptSheet(item: item, store: store)
         }
         .task { await load() }
         .task {
@@ -317,6 +329,7 @@ struct NoteEditorWindowView: View {
             updatedAt = note.updatedAt
             didLoad = true
             state = .saved
+            contentImport = try? await store.contentImport(forNoteID: noteID)
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -443,6 +456,50 @@ struct NoteEditorWindowView: View {
             guard annotationNotice == message else { return }
             withAnimation { annotationNotice = nil }
         }
+    }
+}
+
+private struct PodcastSourceInspectorCard: View {
+    let item: ContentImport
+    let showTranscript: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("播客来源", systemImage: "headphones")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(nonblank(item.podcastTitle) ?? "播客节目")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(nonblank(item.title) ?? "播客单集")
+                    .fontWeight(.semibold)
+                Text(sourceDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                if let url = URL(string: item.canonicalURL ?? item.sourceURL) {
+                    Link(destination: url) {
+                        Label("原始链接", systemImage: "arrow.up.right.square")
+                    }
+                }
+                Button("查看逐字稿", systemImage: "text.quote", action: showTranscript)
+            }
+            .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sourceDetail: String {
+        let source = item.sourceType == "apple" ? "Apple Podcasts" : "小宇宙"
+        let minutes = item.durationSeconds.map { max(1, Int(($0 + 30) / 60)) }
+        let duration = minutes.map { $0 >= 60 ? "\($0 / 60) 小时 \($0 % 60) 分钟" : "\($0) 分钟" } ?? "时长未提供"
+        return "\(source) · \(duration) · \(item.summarizeWithAI ? "AI 整理笔记" : "完整逐字稿")"
+    }
+
+    private func nonblank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

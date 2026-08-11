@@ -1,0 +1,62 @@
+name: macOS quality gates
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'macos/**'
+      - 'Makefile'
+      - '.github/workflows/macos.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-release-build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Run macOS unit tests
+        run: >-
+          xcodebuild test
+          -project macos/FlowSpaceMac.xcodeproj
+          -scheme FlowSpaceMacUnitTests
+          -configuration Debug
+          -destination 'platform=macOS'
+
+      - name: Run macOS UI smoke tests
+        run: >-
+          xcodebuild test
+          -project macos/FlowSpaceMac.xcodeproj
+          -scheme FlowSpaceMacUITests
+          -configuration Debug
+          -destination 'platform=macOS'
+
+      - name: Build unsigned universal Release app
+        run: >-
+          xcodebuild build
+          -project macos/FlowSpaceMac.xcodeproj
+          -scheme FlowSpaceMac
+          -configuration Release
+          -destination 'generic/platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/FlowSpaceMacDerivedData"
+          ARCHS='arm64 x86_64'
+          ONLY_ACTIVE_ARCH=NO
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify universal executable
+        run: >-
+          scripts/verify-macos-app.sh
+          "$RUNNER_TEMP/FlowSpaceMacDerivedData/Build/Products/Release/FlowSpaceMac.app"

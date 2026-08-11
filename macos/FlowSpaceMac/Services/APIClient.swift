@@ -69,11 +69,13 @@ private struct ContentImportPayload: Decodable {
     let item: ContentImport
     enum CodingKeys: String, CodingKey { case item = "import" }
 }
+private struct ContentImportTranscriptPayload: Decodable { let transcript: String }
 private struct SyncTargetListPayload: Decodable { let targets: [SyncTarget] }
 private struct SyncTargetPayload: Decodable { let target: SyncTarget }
 private struct SyncBatchPayload: Decodable { let result: SyncBatchResult }
 private struct TargetSyncPayload: Decodable { let result: TargetSyncResult }
 private struct SyncItemPayload: Decodable { let item: SyncResultItem }
+private struct ExternalDeletedNoteListPayload: Decodable { let items: [ExternalDeletedNote] }
 private struct AdminUserListPayload: Decodable { let users: [AccountUser] }
 private struct AdminUserPayload: Decodable { let user: AccountUser }
 private struct AuthProviderPayload: Decodable { let providers: [String] }
@@ -584,6 +586,24 @@ actor APIClient {
         )
     }
 
+    func contentImportTranscript(id: String) async throws -> String {
+        let payload: ContentImportTranscriptPayload = try await requestData(
+            path: "/api/content-imports/\(id.urlPathEncoded)/transcript"
+        )
+        return payload.transcript
+    }
+
+    func contentImportForNote(noteID: String) async throws -> ContentImport? {
+        do {
+            let payload: ContentImportPayload = try await requestData(
+                path: "/api/notes/\(noteID.urlPathEncoded)/content-import"
+            )
+            return payload.item
+        } catch let error as APIError where error.status == 404 {
+            return nil
+        }
+    }
+
     func listSyncTargets() async throws -> [SyncTarget] {
         let payload: SyncTargetListPayload = try await requestData(path: "/api/sync/targets")
         return payload.targets
@@ -634,6 +654,29 @@ actor APIClient {
             method: "POST"
         )
         return payload.result
+    }
+
+    func listSyncTargetDeletions(id: String) async throws -> [ExternalDeletedNote] {
+        let payload: ExternalDeletedNoteListPayload = try await requestData(
+            path: "/api/sync/targets/\(id.urlPathEncoded)/deletions"
+        )
+        return payload.items
+    }
+
+    func confirmSyncTargetDeletion(targetID: String, noteID: String) async throws {
+        try await requestNoContent(
+            path: "/api/sync/targets/\(targetID.urlPathEncoded)/deletions/\(noteID.urlPathEncoded)/confirm",
+            method: "POST",
+            body: Optional<String>.none
+        )
+    }
+
+    func restoreSyncTargetDeletion(targetID: String, noteID: String) async throws -> SyncResultItem {
+        let payload: SyncItemPayload = try await requestData(
+            path: "/api/sync/targets/\(targetID.urlPathEncoded)/deletions/\(noteID.urlPathEncoded)/restore",
+            method: "POST"
+        )
+        return payload.item
     }
 
     func getNoteSyncBinding(noteID: String) async throws -> NoteSyncBindingResponse {

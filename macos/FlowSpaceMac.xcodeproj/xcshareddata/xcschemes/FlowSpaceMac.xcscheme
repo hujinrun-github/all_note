@@ -50,6 +50,17 @@
                ReferencedContainer = "container:FlowSpaceMac.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B40B4B746405F7C39B101088"
+               BuildableName = "FlowSpaceMacUITests.xctest"
+               BlueprintName = "FlowSpaceMacUITests"
+               ReferencedContainer = "container:FlowSpaceMac.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

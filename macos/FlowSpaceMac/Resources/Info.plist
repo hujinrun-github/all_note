@@ -48,5 +48,17 @@
 	<string>FlowSpace 需要连接你选择的自托管服务。</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>$(FLOWSPACE_UPDATE_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(FLOWSPACE_UPDATE_PUBLIC_ED_KEY)</string>
 </dict>
 </plist>

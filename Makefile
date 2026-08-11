@@ -15,6 +15,21 @@ TEST_TAILSCALE_SERVE_PATH ?= /all-note-test
 TEST_DB_PATH ?=
 BACKEND_CMD ?=
 FRONTEND_CMD ?=
+MACOS_DERIVED_DATA_PATH ?= $(CURDIR)/.codex-run/macos-derived-data
+MACOS_RELEASE_OUTPUT_DIR ?= $(CURDIR)/dist/macos
+MACOS_VERSION_SETTINGS =
+ifneq ($(strip $(FLOWSPACE_MARKETING_VERSION)),)
+MACOS_VERSION_SETTINGS += MARKETING_VERSION='$(FLOWSPACE_MARKETING_VERSION)'
+endif
+ifneq ($(strip $(FLOWSPACE_BUILD_NUMBER)),)
+MACOS_VERSION_SETTINGS += CURRENT_PROJECT_VERSION='$(FLOWSPACE_BUILD_NUMBER)'
+endif
+ifneq ($(strip $(FLOWSPACE_UPDATE_FEED_URL)),)
+MACOS_VERSION_SETTINGS += FLOWSPACE_UPDATE_FEED_URL='$(FLOWSPACE_UPDATE_FEED_URL)'
+endif
+ifneq ($(strip $(FLOWSPACE_UPDATE_PUBLIC_ED_KEY)),)
+MACOS_VERSION_SETTINGS += FLOWSPACE_UPDATE_PUBLIC_ED_KEY='$(FLOWSPACE_UPDATE_PUBLIC_ED_KEY)'
+endif
 
 START_FLAGS = --env $(DB_ENV) --backend-port $(PORT) --frontend-port $(FRONTEND_PORT)
 TAILSCALE_FLAGS = --env $(DB_ENV) --proxy-host $(TAILSCALE_BACKEND_HOST) --backend-port $(PORT) --frontend-port $(TAILSCALE_FRONTEND_PORT) --frontend-base $(TAILSCALE_BASE)
@@ -41,7 +56,7 @@ TEST_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
 TEST_TAILSCALE_FLAGS += --frontend-cmd "$(FRONTEND_CMD)"
 endif
 
-.PHONY: dev dev-prod dev-test kill kill-prod kill-test start-backend start-frontend start-prod-backend start-prod-frontend start-test-backend start-test-frontend start-tailscale-frontend kill-tailscale-frontend serve-tailscale start-test-tailscale-frontend kill-test-tailscale-frontend serve-test-tailscale serve-all-tailscale macos-editor macos-generate macos-build macos-test
+.PHONY: dev dev-prod dev-test kill kill-prod kill-test start-backend start-frontend start-prod-backend start-prod-frontend start-test-backend start-test-frontend start-tailscale-frontend kill-tailscale-frontend serve-tailscale start-test-tailscale-frontend kill-test-tailscale-frontend serve-test-tailscale serve-all-tailscale macos-editor macos-generate macos-build macos-test macos-ui-test macos-test-all macos-release macos-release-verify macos-distribute
 
 dev: dev-test
 
@@ -105,4 +120,23 @@ macos-build: macos-generate
 	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 
 macos-test: macos-generate
-	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMac -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMacUnitTests -configuration Debug -destination 'platform=macOS' test
+
+macos-ui-test: macos-generate
+	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMacUITests -configuration Debug -destination 'platform=macOS' test
+
+macos-test-all: macos-test macos-ui-test
+
+macos-release: macos-generate
+	cd macos && xcodebuild -project FlowSpaceMac.xcodeproj -scheme FlowSpaceMac -configuration Release -destination 'generic/platform=macOS' -derivedDataPath '$(MACOS_DERIVED_DATA_PATH)' ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO $(MACOS_VERSION_SETTINGS) build
+
+macos-release-verify: macos-release
+	scripts/verify-macos-app.sh '$(MACOS_DERIVED_DATA_PATH)/Build/Products/Release/FlowSpaceMac.app'
+
+macos-distribute:
+	@test -n "$(FLOWSPACE_DEVELOPER_ID_APPLICATION)" || (echo "FLOWSPACE_DEVELOPER_ID_APPLICATION is required" >&2; exit 2)
+	@test -n "$(FLOWSPACE_NOTARY_PROFILE)" || (echo "FLOWSPACE_NOTARY_PROFILE is required" >&2; exit 2)
+	@test -n "$(FLOWSPACE_UPDATE_FEED_URL)" || (echo "FLOWSPACE_UPDATE_FEED_URL is required" >&2; exit 2)
+	@test -n "$(FLOWSPACE_UPDATE_PUBLIC_ED_KEY)" || (echo "FLOWSPACE_UPDATE_PUBLIC_ED_KEY is required" >&2; exit 2)
+	$(MAKE) macos-release
+	FLOWSPACE_RELEASE_OUTPUT_DIR='$(MACOS_RELEASE_OUTPUT_DIR)' scripts/package-macos-release.sh '$(MACOS_DERIVED_DATA_PATH)/Build/Products/Release/FlowSpaceMac.app'

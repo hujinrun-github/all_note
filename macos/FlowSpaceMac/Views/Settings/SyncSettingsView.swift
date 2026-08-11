@@ -4,6 +4,7 @@ struct SyncSettingsView: View {
     let store: WorkspaceStore
     @State private var draft: SyncTargetDraft?
     @State private var deletingTarget: SyncTarget?
+    @State private var deletionTarget: SyncTarget?
     @State private var notice: SyncNotice?
 
     private var groupedTargets: [(SyncTargetType, [SyncTarget])] {
@@ -64,6 +65,7 @@ struct SyncSettingsView: View {
                                                 edit: { draft = SyncTargetDraft(target: target) },
                                                 push: { await push(target) },
                                                 pull: { await pull(target) },
+                                                reviewDeletions: { deletionTarget = target },
                                                 delete: { deletingTarget = target }
                                             )
                                             .padding(.vertical, 9)
@@ -86,6 +88,9 @@ struct SyncSettingsView: View {
                 store: store,
                 save: { edited in await save(edited) }
             )
+        }
+        .sheet(item: $deletionTarget) { target in
+            SyncDeletionReviewSheet(target: target, store: store)
         }
         .confirmationDialog(
             "删除“\(deletingTarget?.name ?? "")”？",
@@ -131,6 +136,7 @@ struct SyncSettingsView: View {
             notice = SyncNotice(
                 message: "已从 \(target.name) 拉取：更新 \(result.pulled)，导入 \(result.imported)，失败 \(result.failed)\(pending)"
             )
+            if result.externalDeleted > 0 { deletionTarget = target }
         } catch {
             notice = SyncNotice(message: error.localizedDescription, isError: true)
         }
@@ -153,6 +159,7 @@ private struct SyncTargetRow: View {
     let edit: () -> Void
     let push: () async -> Void
     let pull: () async -> Void
+    let reviewDeletions: () -> Void
     let delete: () -> Void
 
     var body: some View {
@@ -179,6 +186,7 @@ private struct SyncTargetRow: View {
             Button("\(target.type.title) → FlowSpace") { Task { await pull() } }
                 .disabled(isMutating)
             Menu("更多", systemImage: "ellipsis") {
+                Button("处理外部删除", systemImage: "trash.slash", action: reviewDeletions)
                 Button("编辑", action: edit)
                 Divider()
                 Button("删除", role: .destructive, action: delete)
@@ -194,6 +202,127 @@ private struct SyncTargetRow: View {
             return "\(target.vaultPath) / \(target.baseFolder)"
         }
         return target.parsedConfig["data_source_id"] as? String ?? "Notion Data Source"
+    }
+}
+
+private struct SyncDeletionReviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let target: SyncTarget
+    let store: WorkspaceStore
+    @State private var items: [ExternalDeletedNote] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var confirmingItem: ExternalDeletedNote?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading && items.isEmpty {
+                    ProgressView("正在读取外部删除记录…")
+                } else if items.isEmpty {
+                    ContentUnavailableView(
+                        "没有待处理的外部删除",
+                        systemImage: "checkmark.circle",
+                        description: Text("\(target.name) 的本地笔记与外部文稿已对齐。")
+                    )
+                } else {
+                    List(items) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.title.isEmpty ? "未命名笔记" : item.title)
+                                        .font(.headline)
+                                    Text(item.externalPath)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                    if let timestamp = item.lastSyncedAt {
+                                        Text("上次同步：\(Date(timeIntervalSince1970: TimeInterval(timestamp)).formatted(date: .abbreviated, time: .shortened))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Button("恢复外部文稿", systemImage: "arrow.uturn.backward") {
+                                    Task { await restore(item) }
+                                }
+                                .disabled(store.mutationsDisabled)
+                                Button("确认删除本地笔记", systemImage: "trash", role: .destructive) {
+                                    confirmingItem = item
+                                }
+                                .disabled(store.mutationsDisabled)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                    }
+                }
+            }
+            .navigationTitle("处理外部删除 · \(target.name)")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+                ToolbarItem {
+                    Button("刷新", systemImage: "arrow.clockwise") { Task { await load() } }
+                        .disabled(isLoading)
+                }
+            }
+        }
+        .frame(width: 760, height: 520)
+        .task(id: target.id) { await load() }
+        .confirmationDialog(
+            "确认删除 FlowSpace 中的这篇笔记？",
+            isPresented: Binding(
+                get: { confirmingItem != nil },
+                set: { if !$0 { confirmingItem = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除本地笔记", role: .destructive) {
+                guard let item = confirmingItem else { return }
+                Task { await confirm(item) }
+            }
+            Button("返回", role: .cancel) {}
+        } message: {
+            Text("外部文稿已经不存在。确认后会删除 FlowSpace 中对应的笔记，此操作无法撤销。")
+        }
+        .overlay(alignment: .bottom) {
+            if let errorMessage {
+                ErrorBanner(message: errorMessage) { self.errorMessage = nil }.padding()
+            }
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            items = try await store.externalDeletedNotes(for: target)
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func restore(_ item: ExternalDeletedNote) async {
+        do {
+            _ = try await store.restoreExternalDeletion(item, target: target)
+            items.removeAll { $0.noteID == item.noteID }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func confirm(_ item: ExternalDeletedNote) async {
+        do {
+            try await store.confirmExternalDeletion(item, target: target)
+            confirmingItem = nil
+            items.removeAll { $0.noteID == item.noteID }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
