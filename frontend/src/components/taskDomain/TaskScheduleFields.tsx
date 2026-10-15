@@ -6,11 +6,29 @@ import type {
 
 export interface TaskScheduleDraft {
   recurrenceType: RecurrenceType
+  /** Explicit weekly days are used by the workday/weekend presets. */
+  weeklyDays?: number[]
   timingType: TimingType
   startsOn: string
   startTime: string
   endTime: string
 }
+
+export type RecurrenceSelection =
+  | RecurrenceType
+  | 'weekdays'
+  | 'weekends'
+  | 'custom'
+
+const weekdayOptions = [
+  { value: 1, shortLabel: '一', label: '星期一' },
+  { value: 2, shortLabel: '二', label: '星期二' },
+  { value: 3, shortLabel: '三', label: '星期三' },
+  { value: 4, shortLabel: '四', label: '星期四' },
+  { value: 5, shortLabel: '五', label: '星期五' },
+  { value: 6, shortLabel: '六', label: '星期六' },
+  { value: 0, shortLabel: '日', label: '星期日' },
+]
 
 export function createTaskScheduleDraft(
   timingType: TimingType = 'unscheduled'
@@ -61,7 +79,13 @@ export function buildTaskScheduleInput(
             : {}),
           ...(draft.recurrenceType === 'none'
             ? {}
-            : { rule: recurrenceRule(draft.recurrenceType, draft.startsOn) }),
+            : {
+                rule: recurrenceRule(
+                  draft.recurrenceType,
+                  draft.startsOn,
+                  draft.weeklyDays
+                ),
+              }),
         }
       : {}),
   }
@@ -69,11 +93,16 @@ export function buildTaskScheduleInput(
 
 export function recurrenceRule(
   recurrenceType: Exclude<RecurrenceType, 'none'>,
-  startsOn: string
+  startsOn: string,
+  weeklyDays?: number[]
 ) {
   const date = new Date(`${startsOn}T12:00:00`)
   if (recurrenceType === 'weekly') {
-    return { interval: 1, weekdays: [date.getDay()] }
+    const selectedDays = normalizeWeeklyDays(weeklyDays ?? [])
+    return {
+      interval: 1,
+      weekdays: selectedDays.length > 0 ? selectedDays : [date.getDay()],
+    }
   }
   if (recurrenceType === 'monthly') {
     return { interval: 1, month_days: [date.getDate()] }
@@ -125,7 +154,9 @@ export function TaskScheduleFields({
       </label>
       {value.timingType !== 'unscheduled' ? (
         <label>
-          <span>{value.recurrenceType === 'none' ? '执行日期' : '起始日期'}</span>
+          <span>
+            {value.recurrenceType === 'none' ? '执行日期' : '起始日期'}
+          </span>
           <input
             aria-label={`${labelPrefix}${
               value.recurrenceType === 'none' ? '执行日期' : '重复起始日期'
@@ -184,18 +215,36 @@ export function TaskRecurrenceField({
   labelPrefix?: string
   showStartDate?: boolean
 }) {
+  const selection = recurrenceSelection(value)
+
   return (
     <>
       <label>
         <span>重复</span>
         <select
           aria-label={`${labelPrefix}重复方式`}
-          value={value.recurrenceType}
+          value={selection}
           onChange={(event) => {
-            const recurrenceType = event.target.value as RecurrenceType
+            const nextSelection = event.target.value as RecurrenceSelection
+            const recurrenceType =
+              nextSelection === 'weekdays' ||
+              nextSelection === 'weekends' ||
+              nextSelection === 'custom'
+                ? 'weekly'
+                : nextSelection
             onChange({
               ...value,
               recurrenceType,
+              weeklyDays:
+                nextSelection === 'weekdays'
+                  ? [1, 2, 3, 4, 5]
+                  : nextSelection === 'weekends'
+                    ? [0, 6]
+                    : nextSelection === 'custom'
+                      ? value.weeklyDays?.length
+                        ? value.weeklyDays
+                        : [weekdayFromDate(value.startsOn)]
+                      : undefined,
               timingType:
                 recurrenceType !== 'none' && value.timingType === 'unscheduled'
                   ? 'date'
@@ -205,10 +254,20 @@ export function TaskRecurrenceField({
         >
           <option value="none">不重复</option>
           <option value="daily">每天</option>
+          <option value="weekdays">工作日</option>
+          <option value="weekends">周末</option>
           <option value="weekly">每周</option>
+          <option value="custom">自定义</option>
           <option value="monthly">每月</option>
         </select>
       </label>
+      {selection === 'custom' ? (
+        <WeekdayPicker
+          days={value.weeklyDays ?? [weekdayFromDate(value.startsOn)]}
+          onChange={(weeklyDays) => onChange({ ...value, weeklyDays })}
+          labelPrefix={labelPrefix}
+        />
+      ) : null}
       {showStartDate && value.recurrenceType !== 'none' ? (
         <label>
           <span>起始日期</span>
@@ -226,6 +285,73 @@ export function TaskRecurrenceField({
   )
 }
 
+export function WeekdayPicker({
+  days,
+  onChange,
+  labelPrefix = '任务',
+}: {
+  days: number[]
+  onChange: (days: number[]) => void
+  labelPrefix?: string
+}) {
+  const normalizedDays = normalizeWeeklyDays(days)
+
+  return (
+    <fieldset className="task-weekday-picker">
+      <legend>选择周几</legend>
+      <div role="group" aria-label={`${labelPrefix}重复星期`}>
+        {weekdayOptions.map((weekday) => {
+          const selected = normalizedDays.includes(weekday.value)
+          return (
+            <button
+              key={weekday.value}
+              type="button"
+              className={selected ? 'is-active' : ''}
+              aria-label={`${labelPrefix}重复${weekday.label}`}
+              aria-pressed={selected}
+              disabled={selected && normalizedDays.length === 1}
+              onClick={() => {
+                if (selected && normalizedDays.length === 1) return
+                const nextDays = selected
+                  ? normalizedDays.filter((day) => day !== weekday.value)
+                  : [...normalizedDays, weekday.value]
+                onChange(normalizeWeeklyDays(nextDays))
+              }}
+            >
+              {weekday.shortLabel}
+            </button>
+          )
+        })}
+      </div>
+    </fieldset>
+  )
+}
+
+function recurrenceSelection(value: TaskScheduleDraft): RecurrenceSelection {
+  if (value.recurrenceType !== 'weekly') return value.recurrenceType
+  if (sameDays(value.weeklyDays, [1, 2, 3, 4, 5])) return 'weekdays'
+  if (sameDays(value.weeklyDays, [0, 6])) return 'weekends'
+  if (value.weeklyDays?.length) return 'custom'
+  return 'weekly'
+}
+
+function sameDays(left: number[] | undefined, right: number[]) {
+  if (!left || left.length !== right.length) return false
+  const normalizedLeft = normalizeWeeklyDays(left)
+  return normalizedLeft.every((day, index) => day === right[index])
+}
+
+function normalizeWeeklyDays(days: number[]) {
+  return [...new Set(days.filter((day) => day >= 0 && day <= 6))].sort(
+    (left, right) => left - right
+  )
+}
+
+function weekdayFromDate(value: string) {
+  const date = new Date(`${value}T12:00:00`)
+  return Number.isNaN(date.getTime()) ? new Date().getDay() : date.getDay()
+}
+
 export function timeRangeMinutes(start: string, end: string) {
   return timeToMinutes(end) - timeToMinutes(start)
 }
@@ -238,7 +364,7 @@ function taskScheduleHint(draft: TaskScheduleDraft) {
     draft.recurrenceType === 'daily'
       ? '每天重复'
       : draft.recurrenceType === 'weekly'
-        ? '每周重复'
+        ? weeklyRecurrenceText(draft.weeklyDays)
         : draft.recurrenceType === 'monthly'
           ? '每月重复'
           : '仅执行一次'
@@ -249,6 +375,18 @@ function taskScheduleHint(draft: TaskScheduleDraft) {
     draft.startTime,
     draft.endTime
   )} 分钟的时间块。`
+}
+
+function weeklyRecurrenceText(days: number[] | undefined) {
+  if (sameDays(days, [1, 2, 3, 4, 5])) return '工作日重复'
+  if (sameDays(days, [0, 6])) return '周末重复'
+  if (days?.length) {
+    const labels = [1, 2, 3, 4, 5, 6, 0]
+      .filter((day) => days.includes(day))
+      .map((day) => ['日', '一', '二', '三', '四', '五', '六'][day])
+    return `每周${labels.join('、')}重复`
+  }
+  return '每周重复'
 }
 
 function todayInputValue() {

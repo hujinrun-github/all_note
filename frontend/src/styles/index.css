@@ -1171,6 +1171,54 @@
   font-size: 12px;
 }
 
+.task-weekday-picker {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.task-weekday-picker legend {
+  padding: 0;
+  color: var(--color-fs-text-secondary);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.task-weekday-picker > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.task-weekday-picker button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(196, 116, 47, 0.28);
+  border-radius: 50%;
+  color: var(--color-fs-text-secondary);
+  background: #fffdfa;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 720;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.task-weekday-picker button.is-active {
+  border-color: var(--color-fs-accent);
+  color: #fff;
+  background: var(--color-fs-accent);
+}
+
+.task-weekday-picker button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
 .task-schedule-disclosure {
   border: 1px solid rgba(196, 116, 47, 0.2);
   border-radius: 11px;
@@ -1940,6 +1988,12 @@ body {
   display: grid;
   place-items: center;
   transition: all 0.15s;
+}
+
+.day-chip-preset {
+  width: auto;
+  min-width: 48px;
+  padding: 0 8px;
 }
 
 .day-chip.is-active {

@@ -24,6 +24,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  useRef,
   useState,
 } from 'react'
 import { Link } from 'react-router-dom'
@@ -45,6 +46,8 @@ import {
   taskCompletionProgress,
 } from './TaskCompletionGate'
 import { TaskRetentionActions } from './TaskRetentionActions'
+import { WeekdayPicker } from './TaskScheduleFields'
+import { DetailPanel } from '../ui/DetailPanel'
 
 export interface OccurrenceRowProps {
   occurrence: OccurrenceV2
@@ -52,7 +55,7 @@ export interface OccurrenceRowProps {
   project?: ProjectV2
   selected?: boolean
   onSelect: () => void
-  onComplete?: () => void
+  onComplete?: () => Promise<unknown> | void
   trailingAction?: ReactNode
   showDefinitionState?: boolean
 }
@@ -67,15 +70,20 @@ export function OccurrenceRow({
   trailingAction,
   showDefinitionState = false,
 }: OccurrenceRowProps) {
+  const [completing, setCompleting] = useState(false)
+  const [completionError, setCompletionError] = useState('')
+  const submitting = useRef(false)
   const title = occurrenceTitle(occurrence, task)
   const schedule = formatOccurrenceSchedule(occurrence)
   const completionProgress = taskCompletionProgress(task)
   const canComplete =
     onComplete !== undefined &&
-    occurrence.execution_status !== 'done' &&
+    ['open', 'active', 'blocked'].includes(occurrence.execution_status) &&
+    !completing &&
     completionProgress.remaining === 0
 
   function handleKeyboard(event: KeyboardEvent<HTMLElement>) {
+    if (event.target !== event.currentTarget) return
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
     onSelect()
@@ -102,9 +110,20 @@ export function OccurrenceRow({
             : undefined
         }
         disabled={!canComplete}
-        onClick={(event) => {
+        onClick={async (event) => {
           event.stopPropagation()
-          onComplete?.()
+          if (submitting.current || !canComplete) return
+          submitting.current = true
+          setCompleting(true)
+          setCompletionError('')
+          try {
+            await onComplete?.()
+          } catch {
+            setCompletionError('完成失败，请重试或打开详情查看。')
+          } finally {
+            submitting.current = false
+            setCompleting(false)
+          }
         }}
       >
         {occurrence.execution_status === 'done' ? (
@@ -156,6 +175,11 @@ export function OccurrenceRow({
       <div className="td-row-action">
         {trailingAction ?? <MoreHorizontal aria-hidden="true" />}
       </div>
+      {completionError && (
+        <p className="td-row-error" role="alert">
+          {completionError}
+        </p>
+      )}
     </article>
   )
 }
@@ -195,6 +219,30 @@ export function OccurrenceInspector({
   busy = false,
   children,
 }: OccurrenceInspectorProps) {
+  const [commandError, setCommandError] = useState('')
+  const [running, setRunning] = useState(false)
+  const submitting = useRef(false)
+  const commandBusy = busy || running
+  async function runCommand(command?: () => Promise<unknown> | void) {
+    if (!command || submitting.current) return false
+    submitting.current = true
+    setRunning(true)
+    setCommandError('')
+    try {
+      await command()
+      return true
+    } catch (caught) {
+      setCommandError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '任务已在其他窗口更新，请刷新后重试。当前输入已保留。'
+          : '任务操作失败，请稍后重试。当前输入已保留。'
+      )
+      return false
+    } finally {
+      submitting.current = false
+      setRunning(false)
+    }
+  }
   const [blocking, setBlocking] = useState(false)
   const [blockedReason, setBlockedReason] = useState(
     occurrence.blocked_reason ?? ''
@@ -207,11 +255,7 @@ export function OccurrenceInspector({
   const completionProgress = taskCompletionProgress(task)
 
   return (
-    <aside
-      className="td-inspector"
-      role="complementary"
-      aria-label={`执行详情：${title}`}
-    >
+    <DetailPanel label={`执行详情：${title}`} onClose={onClose}>
       <header className="td-inspector-header">
         <div>
           <span>执行详情</span>
@@ -228,8 +272,8 @@ export function OccurrenceInspector({
             <button
               type="button"
               className="is-primary"
-              disabled={!onReopen || busy}
-              onClick={() => void onReopen?.()}
+              disabled={!onReopen || commandBusy}
+              onClick={() => void runCommand(onReopen)}
             >
               <RotateCcw aria-hidden="true" />
               重新打开
@@ -240,8 +284,8 @@ export function OccurrenceInspector({
                 <button
                   type="button"
                   className="is-primary"
-                  disabled={!onUnblock || busy}
-                  onClick={() => void onUnblock?.()}
+                  disabled={!onUnblock || commandBusy}
+                  onClick={() => void runCommand(onUnblock)}
                 >
                   <Play aria-hidden="true" />
                   继续
@@ -251,9 +295,11 @@ export function OccurrenceInspector({
                   type="button"
                   className="is-primary"
                   disabled={
-                    !onStart || occurrence.execution_status === 'active' || busy
+                    !onStart ||
+                    occurrence.execution_status === 'active' ||
+                    commandBusy
                   }
-                  onClick={() => void onStart?.()}
+                  onClick={() => void runCommand(onStart)}
                 >
                   <Play aria-hidden="true" />
                   开始
@@ -261,7 +307,7 @@ export function OccurrenceInspector({
               )}
               <button
                 type="button"
-                disabled={!onBlock || busy}
+                disabled={!onBlock || commandBusy}
                 onClick={() => setBlocking((current) => !current)}
               >
                 <AlertOctagon aria-hidden="true" />
@@ -271,14 +317,14 @@ export function OccurrenceInspector({
                 type="button"
                 className="is-success"
                 disabled={
-                  !onComplete || busy || completionProgress.remaining > 0
+                  !onComplete || commandBusy || completionProgress.remaining > 0
                 }
                 title={
                   completionProgress.remaining > 0
                     ? '还需完成 ' + completionProgress.remaining + ' 个必选项'
                     : undefined
                 }
-                onClick={() => void onComplete?.()}
+                onClick={() => void runCommand(onComplete)}
               >
                 {completionProgress.remaining > 0 ? (
                   <LockKeyhole aria-hidden="true" />
@@ -293,17 +339,25 @@ export function OccurrenceInspector({
           )}
         </div>
 
+        {commandError && (
+          <div className="td-inline-error" role="alert">
+            {commandError}
+          </div>
+        )}
+
         {task ? <TaskCompletionGate task={task} /> : null}
 
         {blocking ? (
           <form
             className="td-block-form"
-            onSubmit={(event) => {
+            onSubmit={async (event) => {
               event.preventDefault()
               if (blockedReason.trim() === '' || nextAction.trim() === '')
                 return
-              void onBlock?.(blockedReason.trim(), nextAction.trim())
-              setBlocking(false)
+              const succeeded = await runCommand(() =>
+                onBlock?.(blockedReason.trim(), nextAction.trim())
+              )
+              if (succeeded) setBlocking(false)
             }}
           >
             <label>
@@ -323,7 +377,9 @@ export function OccurrenceInspector({
             <button
               type="submit"
               disabled={
-                blockedReason.trim() === '' || nextAction.trim() === '' || busy
+                blockedReason.trim() === '' ||
+                nextAction.trim() === '' ||
+                commandBusy
               }
             >
               保存阻塞
@@ -398,7 +454,7 @@ export function OccurrenceInspector({
           />
         ) : null}
       </div>
-    </aside>
+    </DetailPanel>
   )
 }
 
@@ -417,6 +473,7 @@ export interface TaskDefinitionInspectorProps {
   onUpdate?: (input: TaskDefinitionEditInput) => Promise<unknown>
   onScheduleUpdate?: (input: TaskScheduleEditInput) => Promise<unknown>
   busy?: boolean
+  commandError?: string
 }
 
 export interface TaskDefinitionEditInput {
@@ -430,6 +487,7 @@ export interface TaskScheduleEditInput {
   timing_type: Exclude<TimingType, 'unscheduled'>
   timezone: string
   starts_on: string
+  weekdays?: number[]
   local_start_time?: string
   duration_minutes?: number
 }
@@ -449,6 +507,7 @@ export function TaskDefinitionInspector({
   onUpdate,
   onScheduleUpdate,
   busy = false,
+  commandError,
 }: TaskDefinitionInspectorProps) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(task.title)
@@ -461,6 +520,9 @@ export function TaskDefinitionInspector({
   const [recurrenceType, setRecurrenceType] = useState<
     '' | Exclude<RecurrenceType, 'none'>
   >('')
+  const [scheduleWeekdays, setScheduleWeekdays] = useState<
+    number[] | undefined
+  >(undefined)
   const [scheduleTimingType, setScheduleTimingType] =
     useState<Exclude<TimingType, 'unscheduled'>>('date')
   const [scheduleDate, setScheduleDate] = useState('')
@@ -501,6 +563,7 @@ export function TaskDefinitionInspector({
         ? next.recurrence_type
         : ''
     )
+    setScheduleWeekdays(undefined)
     setScheduleTimingType(
       next?.timing_type === 'time_block' ? 'time_block' : 'date'
     )
@@ -534,6 +597,9 @@ export function TaskDefinitionInspector({
         timing_type: scheduleTimingType,
         timezone: scheduleTimezone,
         starts_on: scheduleDate,
+        ...(recurrenceType === 'weekly' && scheduleWeekdays
+          ? { weekdays: scheduleWeekdays }
+          : {}),
         ...(scheduleTimingType === 'time_block'
           ? {
               local_start_time: scheduleTime,
@@ -578,11 +644,7 @@ export function TaskDefinitionInspector({
   }
 
   return (
-    <aside
-      className="td-inspector"
-      role="complementary"
-      aria-label={`任务定义：${task.title}`}
-    >
+    <DetailPanel label={`任务定义：${task.title}`} onClose={onClose}>
       <header className="td-inspector-header">
         <div>
           <span>任务定义</span>
@@ -593,6 +655,11 @@ export function TaskDefinitionInspector({
         </button>
       </header>
       <div className="td-inspector-body">
+        {commandError && (
+          <div className="td-inline-error" role="alert">
+            {commandError}
+          </div>
+        )}
         {editing ? (
           <form className="td-task-edit-form" onSubmit={saveTask}>
             <label>
@@ -775,19 +842,56 @@ export function TaskDefinitionInspector({
               <select
                 aria-label="重复频率"
                 required
-                value={recurrenceType}
-                onChange={(event) =>
+                value={scheduleRecurrenceSelection(
+                  recurrenceType,
+                  scheduleWeekdays
+                )}
+                onChange={(event) => {
+                  const selection = event.target.value as
+                    | ''
+                    | Exclude<RecurrenceType, 'none'>
+                    | 'weekdays'
+                    | 'weekends'
+                    | 'custom'
                   setRecurrenceType(
-                    event.target.value as '' | Exclude<RecurrenceType, 'none'>
+                    selection === 'weekdays' ||
+                      selection === 'weekends' ||
+                      selection === 'custom'
+                      ? 'weekly'
+                      : selection
                   )
-                }
+                  setScheduleWeekdays(
+                    selection === 'weekdays'
+                      ? [1, 2, 3, 4, 5]
+                      : selection === 'weekends'
+                        ? [0, 6]
+                        : selection === 'custom'
+                          ? scheduleWeekdays?.length
+                            ? scheduleWeekdays
+                            : [weekdayForScheduleDate(scheduleDate)]
+                          : undefined
+                  )
+                }}
               >
                 <option value="">请选择</option>
                 <option value="daily">每天</option>
+                <option value="weekdays">工作日</option>
+                <option value="weekends">周末</option>
                 <option value="weekly">每周</option>
+                <option value="custom">自定义</option>
                 <option value="monthly">每月</option>
               </select>
             </label>
+            {scheduleRecurrenceSelection(recurrenceType, scheduleWeekdays) ===
+            'custom' ? (
+              <WeekdayPicker
+                days={
+                  scheduleWeekdays ?? [weekdayForScheduleDate(scheduleDate)]
+                }
+                onChange={setScheduleWeekdays}
+                labelPrefix="任务"
+              />
+            ) : null}
             <label>
               <span>开始日期</span>
               <input
@@ -841,7 +945,7 @@ export function TaskDefinitionInspector({
               </div>
             ) : null}
             <p className="td-schedule-editor-hint">
-              {scheduleRuleHint(recurrenceType, scheduleDate)}
+              {scheduleRuleHint(recurrenceType, scheduleDate, scheduleWeekdays)}
             </p>
             {scheduleError ? (
               <div className="td-inline-error" role="alert">
@@ -909,7 +1013,7 @@ export function TaskDefinitionInspector({
           busy={busy}
         />
       </div>
-    </aside>
+    </DetailPanel>
   )
 }
 
@@ -1220,14 +1324,53 @@ function scheduleDurationMinutes(occurrence: OccurrenceV2 | undefined) {
 
 function scheduleRuleHint(
   recurrenceType: '' | Exclude<RecurrenceType, 'none'>,
-  startsOn: string
+  startsOn: string,
+  weekdays?: number[]
 ) {
   if (!recurrenceType || !startsOn)
     return '选择频率后，将生成未来 90 天的执行实例。'
   if (recurrenceType === 'daily') return '从开始日期起每天重复。'
   const date = new Date(`${startsOn}T12:00:00`)
   if (recurrenceType === 'weekly') {
+    if (sameScheduleDays(weekdays, [1, 2, 3, 4, 5])) {
+      return '从开始日期起，每个工作日重复。'
+    }
+    if (sameScheduleDays(weekdays, [0, 6])) {
+      return '从开始日期起，每个周末重复。'
+    }
+    if (weekdays?.length) {
+      return `从开始日期起，每周${scheduleWeekdayLabels(weekdays)}重复。`
+    }
     return `从开始日期起，每周${['日', '一', '二', '三', '四', '五', '六'][date.getDay()]}重复。`
   }
   return `从开始日期起，每月 ${date.getDate()} 日重复。`
+}
+
+function scheduleRecurrenceSelection(
+  recurrenceType: '' | Exclude<RecurrenceType, 'none'>,
+  weekdays?: number[]
+) {
+  if (recurrenceType !== 'weekly') return recurrenceType
+  if (sameScheduleDays(weekdays, [1, 2, 3, 4, 5])) return 'weekdays'
+  if (sameScheduleDays(weekdays, [0, 6])) return 'weekends'
+  if (weekdays?.length) return 'custom'
+  return 'weekly'
+}
+
+function sameScheduleDays(left: number[] | undefined, right: number[]) {
+  if (!left || left.length !== right.length) return false
+  const normalized = [...new Set(left)].sort((a, b) => a - b)
+  return normalized.every((day, index) => day === right[index])
+}
+
+function weekdayForScheduleDate(value: string) {
+  const date = new Date(`${value}T12:00:00`)
+  return Number.isNaN(date.getTime()) ? new Date().getDay() : date.getDay()
+}
+
+function scheduleWeekdayLabels(days: number[]) {
+  return [1, 2, 3, 4, 5, 6, 0]
+    .filter((day) => days.includes(day))
+    .map((day) => ['日', '一', '二', '三', '四', '五', '六'][day])
+    .join('、')
 }

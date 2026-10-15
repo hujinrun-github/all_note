@@ -120,6 +120,7 @@ export default function ProjectDetail() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [completionDecisionOpen, setCompletionDecisionOpen] = useState(false)
+  const [completingProject, setCompletingProject] = useState(false)
   const [completionDecision, setCompletionDecision] = useState<
     'choose' | 'move'
   >('choose')
@@ -351,17 +352,29 @@ export default function ProjectDetail() {
     }
   }
 
-  function requestCompletion() {
+  async function requestCompletion() {
     const project = projectQuery.data
-    if (!project) return
+    if (!project || completingProject) return
+    setError('')
     if (openOccurrences.length > 0) {
       setCompletionDecisionOpen(true)
       return
     }
-    void completeProject.mutateAsync({
-      projectID,
-      expectedRevision: { expected_project_revision: project.revision },
-    })
+    setCompletingProject(true)
+    try {
+      await completeProject.mutateAsync({
+        projectID,
+        expectedRevision: { expected_project_revision: project.revision },
+      })
+    } catch (caught) {
+      setError(
+        caught instanceof TaskDomainRevisionConflictError
+          ? '项目已在其他窗口更新，请刷新后再完成。'
+          : '完成项目失败，请刷新项目后重试。'
+      )
+    } finally {
+      setCompletingProject(false)
+    }
   }
 
   async function startProject() {
@@ -422,15 +435,16 @@ export default function ProjectDetail() {
 
   async function completeAfterCancelling() {
     const project = projectQuery.data
-    if (!project) return
+    if (!project || completingProject) return
     setError('')
+    setCompletingProject(true)
     try {
       const taskIDs = new Set(
         openOccurrences.map((occurrence) => occurrence.task_id)
       )
       for (const taskID of taskIDs) {
         const expectedRevisions = taskRevisions(taskID)
-        if (!expectedRevisions) continue
+        if (!expectedRevisions) throw new Error('Task data is unavailable')
         await cancelTask.mutateAsync({
           projectID,
           taskID,
@@ -448,20 +462,23 @@ export default function ProjectDetail() {
           ? '任务或项目已更新，请刷新并重新确认未完成实例。'
           : '取消任务后完成项目失败，请稍后重试。'
       )
+    } finally {
+      setCompletingProject(false)
     }
   }
 
   async function completeAfterMoving() {
     const project = projectQuery.data
-    if (!project || targetProjectID === '') return
+    if (!project || targetProjectID === '' || completingProject) return
     setError('')
+    setCompletingProject(true)
     try {
       const taskIDs = new Set(
         openOccurrences.map((occurrence) => occurrence.task_id)
       )
       for (const taskID of taskIDs) {
         const task = tasksByID.get(taskID)
-        if (!task) continue
+        if (!task) throw new Error('Task data is unavailable')
         await updateTask.mutateAsync({
           projectID,
           taskID,
@@ -483,6 +500,8 @@ export default function ProjectDetail() {
           ? '任务或项目已更新，你选择的目标项目已保留。'
           : '迁移任务后完成项目失败，请稍后重试。'
       )
+    } finally {
+      setCompletingProject(false)
     }
   }
 
@@ -560,10 +579,20 @@ export default function ProjectDetail() {
             <button
               type="button"
               className="td-secondary-action"
-              onClick={requestCompletion}
+              disabled={
+                completingProject ||
+                tasksQuery.isLoading ||
+                tasksQuery.isError ||
+                occurrencesQuery.isLoading ||
+                occurrencesQuery.isError
+              }
+              onClick={() => void requestCompletion()}
             >
-              完成项目
+              {completingProject ? '正在完成…' : '完成项目'}
             </button>
+          ) : null}
+          {project.status === 'completed' ? (
+            <span role="status">项目已完成</span>
           ) : null}
           <div className="td-project-actions" ref={projectActionsRef}>
             <button
@@ -686,7 +715,7 @@ export default function ProjectDetail() {
           </button>
         </form>
       ) : null}
-      {error ? (
+      {error && !selectedTask && !completionDecisionOpen ? (
         <div className="td-inline-error" role="alert">
           {error}
         </div>
@@ -872,6 +901,7 @@ export default function ProjectDetail() {
 
         {selectedTask ? (
           <TaskDefinitionInspector
+            commandError={error}
             task={selectedTask}
             project={project}
             occurrences={selectedTaskOccurrences}
@@ -901,7 +931,8 @@ export default function ProjectDetail() {
                     ...input,
                     rule: recurrenceRule(
                       input.recurrence_type,
-                      input.starts_on
+                      input.starts_on,
+                      input.weekdays
                     ),
                   },
                 },
@@ -1142,10 +1173,16 @@ export default function ProjectDetail() {
               </div>
             </header>
             <p>请明确取消这些实例，或把对应任务迁移到其他项目。</p>
+            {error ? (
+              <div className="td-inline-error" role="alert">
+                {error}
+              </div>
+            ) : null}
             {completionDecision === 'choose' ? (
               <div className="td-form-actions">
                 <button
                   type="button"
+                  disabled={completingProject}
                   onClick={() => setCompletionDecision('move')}
                 >
                   迁移到其他项目
@@ -1153,10 +1190,10 @@ export default function ProjectDetail() {
                 <button
                   type="button"
                   className="is-primary"
-                  disabled={cancelTask.isPending || completeProject.isPending}
+                  disabled={completingProject}
                   onClick={() => void completeAfterCancelling()}
                 >
-                  取消未完成实例并完成
+                  {completingProject ? '正在完成…' : '取消未完成实例并完成'}
                 </button>
               </div>
             ) : (
@@ -1186,6 +1223,7 @@ export default function ProjectDetail() {
                 <div className="td-form-actions">
                   <button
                     type="button"
+                    disabled={completingProject}
                     onClick={() => setCompletionDecision('choose')}
                   >
                     返回
@@ -1193,14 +1231,10 @@ export default function ProjectDetail() {
                   <button
                     type="button"
                     className="is-primary"
-                    disabled={
-                      targetProjectID === '' ||
-                      updateTask.isPending ||
-                      completeProject.isPending
-                    }
+                    disabled={targetProjectID === '' || completingProject}
                     onClick={() => void completeAfterMoving()}
                   >
-                    迁移任务并完成
+                    {completingProject ? '正在完成…' : '迁移任务并完成'}
                   </button>
                 </div>
               </div>
@@ -1208,6 +1242,7 @@ export default function ProjectDetail() {
             <button
               type="button"
               className="td-dialog-dismiss"
+              disabled={completingProject}
               onClick={() => {
                 setCompletionDecisionOpen(false)
                 setCompletionDecision('choose')

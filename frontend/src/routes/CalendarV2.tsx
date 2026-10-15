@@ -15,9 +15,15 @@ import {
   useRescheduleThisAndFollowingMutation,
 } from '../hooks/useTaskDomain'
 import { ScheduleCreateDialog } from '../components/taskDomain/ScheduleCreateDialog'
+import {
+  recurrenceRule,
+  WeekdayPicker,
+} from '../components/taskDomain/TaskScheduleFields'
+import { DetailPanel } from '../components/ui/DetailPanel'
+import { useMediaQuery } from '../hooks/useMediaQuery'
 
 type ScheduleScope = 'only-this' | 'this-and-following'
-type CalendarView = 'week' | 'month' | 'year'
+type CalendarView = 'week' | 'month' | 'year' | 'agenda'
 
 interface CalendarV2Props {
   initialDate?: string
@@ -33,6 +39,7 @@ interface ScheduleDraft {
   localStartTime: string
   durationMinutes: number
   recurrenceType: Exclude<RecurrenceType, 'none'>
+  weeklyDays?: number[]
   effectiveFrom: string
   generateThroughExclusive: string
   selectedOffsetSeconds?: number
@@ -292,18 +299,41 @@ function draftForEntry(entry: CalendarEntryV2): ScheduleDraft {
       : '09:00',
     durationMinutes: durationInMinutes(entry),
     recurrenceType: 'daily',
+    weeklyDays: undefined,
     effectiveFrom: plannedDate,
     generateThroughExclusive: addDays(plannedDate, 31),
   }
 }
 
+function calendarRecurrenceSelection(draft: ScheduleDraft) {
+  if (draft.recurrenceType !== 'weekly') return draft.recurrenceType
+  if (sameCalendarDays(draft.weeklyDays, [1, 2, 3, 4, 5])) return 'weekdays'
+  if (sameCalendarDays(draft.weeklyDays, [0, 6])) return 'weekends'
+  if (draft.weeklyDays?.length) return 'custom'
+  return 'weekly'
+}
+
+function sameCalendarDays(left: number[] | undefined, right: number[]) {
+  if (!left || left.length !== right.length) return false
+  const normalized = [...new Set(left)].sort((a, b) => a - b)
+  return normalized.every((day, index) => day === right[index])
+}
+
+function weekdayFromCalendarDate(value: string) {
+  const date = parseLocalDate(value)
+  return Number.isNaN(date.getTime()) ? new Date().getDay() : date.getDay()
+}
+
 export default function CalendarV2({
   initialDate = localDateValue(),
   initialTimezone = defaultTimezone(),
-  initialView = 'week',
+  initialView,
 }: CalendarV2Props) {
+  const mobile = useMediaQuery('(max-width: 820px)')
   const [anchorDate, setAnchorDate] = useState(initialDate)
-  const [calendarView, setCalendarView] = useState<CalendarView>(initialView)
+  const [calendarView, setCalendarView] = useState<CalendarView>(
+    initialView ?? (mobile ? 'agenda' : 'week')
+  )
   const [timezone, setTimezone] = useState(initialTimezone)
   const [selectedEntry, setSelectedEntry] = useState<CalendarEntryV2 | null>(
     null
@@ -326,6 +356,11 @@ export default function CalendarV2({
   const weekDates = useMemo(
     () => Array.from({ length: 7 }, (_, index) => addDays(weekStart, index)),
     [weekStart]
+  )
+  const agendaEnd = addDays(anchorDate, 7)
+  const agendaDates = useMemo(
+    () => Array.from({ length: 7 }, (_, index) => addDays(anchorDate, index)),
+    [anchorDate]
   )
   const monthStart = monthStartOf(anchorDate)
   const monthRange = useMemo(() => monthGridRange(anchorDate), [anchorDate])
@@ -354,11 +389,13 @@ export default function CalendarV2({
     [yearMonths]
   )
   const queryRange =
-    calendarView === 'week'
-      ? { from: weekStart, to: weekEnd }
-      : calendarView === 'month'
-        ? monthRange
-        : { from: yearStart, to: yearEnd }
+    calendarView === 'agenda'
+      ? { from: anchorDate, to: agendaEnd }
+      : calendarView === 'week'
+        ? { from: weekStart, to: weekEnd }
+        : calendarView === 'month'
+          ? monthRange
+          : { from: yearStart, to: yearEnd }
   const entriesQuery = useCalendarEntries({
     from: queryRange.from,
     to: queryRange.to,
@@ -429,13 +466,19 @@ export default function CalendarV2({
     return counts
   }, [visibleEntries])
   const periodTitle =
-    calendarView === 'week'
-      ? formatWeekTitle(weekStart, weekEnd)
-      : calendarView === 'month'
-        ? formatMonthTitle(monthStart)
-        : formatYearTitle(yearStart)
+    calendarView === 'agenda'
+      ? formatWeekTitle(anchorDate, agendaEnd)
+      : calendarView === 'week'
+        ? formatWeekTitle(weekStart, weekEnd)
+        : calendarView === 'month'
+          ? formatMonthTitle(monthStart)
+          : formatYearTitle(yearStart)
   const periodName =
-    calendarView === 'week' ? '周' : calendarView === 'month' ? '月' : '年'
+    calendarView === 'week' || calendarView === 'agenda'
+      ? '周'
+      : calendarView === 'month'
+        ? '月'
+        : '年'
   const timezoneOptions = commonTimezones.includes(timezone)
     ? commonTimezones
     : [timezone, ...commonTimezones]
@@ -518,7 +561,11 @@ export default function CalendarV2({
                     duration_minutes: draft.durationMinutes,
                   }
                 : {}),
-              rule: { interval: 1 },
+              rule: recurrenceRule(
+                draft.recurrenceType,
+                draft.effectiveFrom,
+                draft.weeklyDays
+              ),
             },
             ...(selectedOffsets ? { selected_offsets: selectedOffsets } : {}),
           },
@@ -583,7 +630,8 @@ export default function CalendarV2({
 
   function navigatePeriod(direction: -1 | 1) {
     setAnchorDate((current) => {
-      if (calendarView === 'week') return addDays(current, direction * 7)
+      if (calendarView === 'week' || calendarView === 'agenda')
+        return addDays(current, direction * 7)
       if (calendarView === 'month') return addMonths(current, direction)
       return addYears(current, direction)
     })
@@ -608,11 +656,11 @@ export default function CalendarV2({
     <section className="td-page td-calendar-page calendar-v2-page">
       <header className="td-page-header calendar-v2-heading">
         <div>
+          <span className="workspace-eyebrow">掌握节奏</span>
           <div className="td-title-line">
             <h1>日历</h1>
-            <span>统一任务安排</span>
           </div>
-          <p>全天安排与时间块都来自任务实例；未安排任务不会出现在日历中。</p>
+          <p>为重要的事留出时间。</p>
         </div>
         <aside className="calendar-v2-controls" aria-label="日历显示设置">
           <div className="calendar-v2-view-setting">
@@ -627,6 +675,7 @@ export default function CalendarV2({
             >
               {(
                 [
+                  ['agenda', '清单'],
                   ['week', '周'],
                   ['month', '月'],
                   ['year', '年'],
@@ -722,6 +771,66 @@ export default function CalendarV2({
             <div className="td-inline-error" role="alert">
               日历加载失败，请稍后重试。
             </div>
+          ) : calendarView === 'agenda' ? (
+            <div className="calendar-agenda" aria-label="日程清单">
+              {agendaDates.map((date) => {
+                const entries = entriesByDate.get(date) ?? []
+                return (
+                  <section
+                    key={date}
+                    className={`calendar-agenda-day ${date === todayValue ? 'is-today' : ''}`}
+                  >
+                    <header>
+                      <div>
+                        <time dateTime={date}>{formatDate(date)}</time>
+                        <span>
+                          {date === todayValue ? '今天' : formatWeekday(date)}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={`在${date}添加日程`}
+                        onClick={() => openCreateSchedule({ startsOn: date })}
+                      >
+                        <Plus aria-hidden="true" />
+                      </button>
+                    </header>
+                    {entries.map((entry) => (
+                      <button
+                        type="button"
+                        className={`calendar-agenda-entry is-${entry.execution_status}`}
+                        key={entry.occurrence_id}
+                        aria-label={`编辑日程：${entry.task_title}`}
+                        onClick={() => openEditor(entry)}
+                      >
+                        <time>
+                          {entry.timing_type === 'date'
+                            ? '全天'
+                            : formatTime(entry.planned_start_at!, timezone)}
+                        </time>
+                        <span>
+                          <strong>{entry.task_title}</strong>
+                          <small>
+                            {entry.timing_type === 'date'
+                              ? allDayRangeLabel(entry)
+                              : `至 ${formatTime(entry.planned_end_at!, timezone)}`}
+                            {entry.location ? ` · ${entry.location}` : ''}
+                          </small>
+                        </span>
+                        <ChevronRight aria-hidden="true" />
+                      </button>
+                    ))}
+                    {entries.length === 0 && (
+                      <p>
+                        {entriesQuery.isLoading
+                          ? '正在加载…'
+                          : '暂无安排，留一点时间给自己。'}
+                      </p>
+                    )}
+                  </section>
+                )
+              })}
+            </div>
           ) : calendarView === 'week' ? (
             <>
               <div className="calendar-v2-week-head" aria-hidden="true">
@@ -772,6 +881,7 @@ export default function CalendarV2({
                         key={entry.occurrence_id}
                         type="button"
                         className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
+                        title={entry.task_title}
                         style={
                           {
                             '--calendar-column-start': startIndex + 1,
@@ -1017,11 +1127,11 @@ export default function CalendarV2({
         </section>
 
         {selectedEntry && draft ? (
-          <section
+          <DetailPanel
             className="calendar-v2-editor"
-            role="dialog"
-            aria-modal="false"
-            aria-label={`编辑日程：${selectedEntry.task_title}`}
+            desktopRole="dialog"
+            label={`编辑日程：${selectedEntry.task_title}`}
+            onClose={closeEditor}
           >
             <header>
               <div>
@@ -1154,19 +1264,56 @@ export default function CalendarV2({
                   <span>重复规则</span>
                   <select
                     aria-label="重复规则"
-                    value={draft.recurrenceType}
-                    onChange={(event) =>
+                    value={calendarRecurrenceSelection(draft)}
+                    onChange={(event) => {
+                      const selection = event.target.value as
+                        | ScheduleDraft['recurrenceType']
+                        | 'weekdays'
+                        | 'weekends'
+                        | 'custom'
                       updateDraft({
-                        recurrenceType: event.target
-                          .value as ScheduleDraft['recurrenceType'],
+                        recurrenceType:
+                          selection === 'weekdays' ||
+                          selection === 'weekends' ||
+                          selection === 'custom'
+                            ? 'weekly'
+                            : selection,
+                        weeklyDays:
+                          selection === 'weekdays'
+                            ? [1, 2, 3, 4, 5]
+                            : selection === 'weekends'
+                              ? [0, 6]
+                              : selection === 'custom'
+                                ? draft.weeklyDays?.length
+                                  ? draft.weeklyDays
+                                  : [
+                                      weekdayFromCalendarDate(
+                                        draft.effectiveFrom
+                                      ),
+                                    ]
+                                : undefined,
                       })
-                    }
+                    }}
                   >
                     <option value="daily">每天</option>
+                    <option value="weekdays">工作日</option>
+                    <option value="weekends">周末</option>
                     <option value="weekly">每周</option>
+                    <option value="custom">自定义</option>
                     <option value="monthly">每月</option>
                   </select>
                 </label>
+                {calendarRecurrenceSelection(draft) === 'custom' ? (
+                  <WeekdayPicker
+                    days={
+                      draft.weeklyDays ?? [
+                        weekdayFromCalendarDate(draft.effectiveFrom),
+                      ]
+                    }
+                    onChange={(weeklyDays) => updateDraft({ weeklyDays })}
+                    labelPrefix="日程"
+                  />
+                ) : null}
                 <label>
                   <span>生效日期</span>
                   <input
@@ -1239,7 +1386,7 @@ export default function CalendarV2({
                 保存日程
               </button>
             </footer>
-          </section>
+          </DetailPanel>
         ) : null}
       </div>
 

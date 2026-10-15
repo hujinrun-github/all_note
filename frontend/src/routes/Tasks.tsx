@@ -1403,6 +1403,14 @@ export function LegacyTasks() {
             onFrequencyChange={setRecurringFrequency}
             onIntervalChange={(v) => setRecurringInterval(Number(v))}
             onToggleWeekday={toggleRecurringWeekday}
+            onSetWeekdays={() => {
+              setRecurringFrequency('weekly')
+              setRecurringWeekdays([1, 2, 3, 4, 5])
+            }}
+            onSetWeekends={() => {
+              setRecurringFrequency('weekly')
+              setRecurringWeekdays([6, 7])
+            }}
             onToggleMonthDay={toggleRecurringMonthDay}
             onStartDateChange={setRecurringStartDate}
             onEndDateChange={setRecurringEndDate}
@@ -3540,6 +3548,8 @@ function RecurringTaskView({
   onFrequencyChange,
   onIntervalChange,
   onToggleWeekday,
+  onSetWeekdays,
+  onSetWeekends,
   onToggleMonthDay,
   onStartDateChange,
   onEndDateChange,
@@ -3564,6 +3574,8 @@ function RecurringTaskView({
   onFrequencyChange: (v: RecurrenceConfig['frequency']) => void
   onIntervalChange: (v: number) => void
   onToggleWeekday: (d: number) => void
+  onSetWeekdays: () => void
+  onSetWeekends: () => void
   onToggleMonthDay: (d: number) => void
   onStartDateChange: (v: string) => void
   onEndDateChange: (v: string) => void
@@ -3647,6 +3659,20 @@ function RecurringTaskView({
       {frequency === 'weekly' && (
         <div className="recurring-day-picker">
           <span>每周几：</span>
+          <button
+            type="button"
+            className="day-chip day-chip-preset"
+            onClick={onSetWeekdays}
+          >
+            工作日
+          </button>
+          <button
+            type="button"
+            className="day-chip day-chip-preset"
+            onClick={onSetWeekends}
+          >
+            周末
+          </button>
           {[1, 2, 3, 4, 5, 6, 7].map((d) => (
             <button
               key={d}

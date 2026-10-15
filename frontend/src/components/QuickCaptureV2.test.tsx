@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -93,6 +93,7 @@ describe('QuickCaptureV2', () => {
   it('can create a task with a concrete date and time range', async () => {
     render(<QuickCaptureV2 />)
     const user = userEvent.setup()
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '安排评审')
 
     await user.selectOptions(
       screen.getByRole('combobox', { name: '任务安排方式' }),
@@ -123,6 +124,7 @@ describe('QuickCaptureV2', () => {
   it('creates a weekly recurring task from quick capture', async () => {
     render(<QuickCaptureV2 />)
     const user = userEvent.setup()
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '每周复盘')
 
     await user.selectOptions(
       screen.getByRole('combobox', { name: '任务重复方式' }),
@@ -143,5 +145,85 @@ describe('QuickCaptureV2', () => {
         },
       })
     )
+  })
+
+  it('supports workday and weekend recurring presets', async () => {
+    render(<QuickCaptureV2 />)
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '工作日练习')
+    const recurrence = screen.getByRole('combobox', { name: '任务重复方式' })
+
+    await user.selectOptions(recurrence, 'weekdays')
+    await user.clear(screen.getByLabelText('任务重复起始日期'))
+    await user.type(screen.getByLabelText('任务重复起始日期'), '2026-08-03')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schedule: expect.objectContaining({
+          recurrence_type: 'weekly',
+          rule: { interval: 1, weekdays: [1, 2, 3, 4, 5] },
+        }),
+      })
+    )
+
+    createTask.mockClear()
+    await user.clear(screen.getByLabelText('快速捕获任务标题'))
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '周末整理')
+    await user.selectOptions(recurrence, 'weekends')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schedule: expect.objectContaining({
+          recurrence_type: 'weekly',
+          rule: { interval: 1, weekdays: [0, 6] },
+        }),
+      })
+    )
+  })
+
+  it('allows selecting individual weekdays for a recurring task', async () => {
+    render(<QuickCaptureV2 />)
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '周一周五复盘')
+    const recurrence = screen.getByRole('combobox', { name: '任务重复方式' })
+
+    await user.selectOptions(recurrence, 'weekly')
+    await user.clear(screen.getByLabelText('任务重复起始日期'))
+    await user.type(screen.getByLabelText('任务重复起始日期'), '2026-08-03')
+    await user.selectOptions(recurrence, 'custom')
+    await user.click(screen.getByRole('button', { name: '任务重复星期五' }))
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schedule: expect.objectContaining({
+          recurrence_type: 'weekly',
+          rule: { interval: 1, weekdays: [1, 5] },
+        }),
+      })
+    )
+  })
+
+  it('starts empty and does not create an example task', () => {
+    render(<QuickCaptureV2 />)
+    expect(screen.getByLabelText('快速捕获任务标题')).toHaveValue('')
+    expect(screen.getByRole('button', { name: '创建任务' })).toBeDisabled()
+  })
+
+  it('retains input after a failed submission so it can be retried', async () => {
+    createTask.mockRejectedValueOnce(new Error('offline'))
+    render(<QuickCaptureV2 />)
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('快速捕获任务标题'), '保留我的想法')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('创建失败')
+    expect(screen.getByLabelText('快速捕获任务标题')).toHaveValue(
+      '保留我的想法'
+    )
+    createTask.mockResolvedValueOnce({})
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(createTask).toHaveBeenCalledTimes(2))
   })
 })

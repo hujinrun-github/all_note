@@ -156,9 +156,7 @@ describe('CalendarV2', () => {
       isError: false,
     } as ReturnType<typeof useProjects>)
     vi.mocked(useCreateTaskMutation).mockReturnValue(
-      mutationResult(createTaskMock) as ReturnType<
-        typeof useCreateTaskMutation
-      >
+      mutationResult(createTaskMock) as ReturnType<typeof useCreateTaskMutation>
     )
     vi.mocked(useCalendarEntries).mockReturnValue({
       data: entries,
@@ -299,6 +297,54 @@ describe('CalendarV2', () => {
         }),
       }),
     })
+  })
+
+  it('supports workday and weekend rules for a recurring calendar schedule', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
+    await user.click(screen.getByRole('radio', { name: '本次及以后' }))
+    await user.selectOptions(screen.getByLabelText('重复规则'), 'weekdays')
+    await user.click(screen.getByRole('button', { name: '保存日程' }))
+
+    expect(followingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          schedule: expect.objectContaining({
+            recurrence_type: 'weekly',
+            rule: { interval: 1, weekdays: [1, 2, 3, 4, 5] },
+          }),
+        }),
+      })
+    )
+  })
+
+  it('allows choosing individual weekdays for a recurring calendar schedule', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
+    await user.click(screen.getByRole('radio', { name: '本次及以后' }))
+    const recurrence = screen.getByLabelText('重复规则')
+    await user.selectOptions(recurrence, 'weekly')
+    fireEvent.change(screen.getByLabelText('生效日期'), {
+      target: { value: '2026-08-03' },
+    })
+    await user.selectOptions(recurrence, 'custom')
+    await user.click(screen.getByRole('button', { name: '日程重复星期五' }))
+    await user.click(screen.getByRole('button', { name: '保存日程' }))
+
+    expect(followingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          schedule: expect.objectContaining({
+            recurrence_type: 'weekly',
+            rule: { interval: 1, weekdays: [1, 5] },
+          }),
+        }),
+      })
+    )
   })
 
   it('prevents moving done occurrences and offers the explicit reopen command', async () => {
