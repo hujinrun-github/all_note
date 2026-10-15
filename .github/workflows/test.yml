@@ -103,7 +103,7 @@ jobs:
             --publish 9000:9000 \
             --env MINIO_ROOT_USER="$FLOWSPACE_TEST_MINIO_ACCESS_KEY" \
             --env MINIO_ROOT_PASSWORD="$FLOWSPACE_TEST_MINIO_SECRET_KEY" \
-            minio/minio:latest server /data
+            quay.io/minio/aistor/minio:latest server /data
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://localhost:9000/minio/health/live >/dev/null; then
               exit 0
