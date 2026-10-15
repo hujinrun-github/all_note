@@ -27,7 +27,13 @@ vi.mock('@tiptap/react', () => ({
     tiptapMock.captureEditorOptions(options)
     const editor = {
       isDestroyed: false,
-      view: { composing: false },
+      view: {
+        composing: false,
+        dom: {
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        },
+      },
       storage: {
         markdown: {
           getMarkdown: tiptapMock.getMarkdown,
@@ -481,6 +487,105 @@ describe('Editor auto sync', () => {
       ]
     )
     expect(await screen.findByText('已注音')).toBeVisible()
+  })
+
+  it('does not apply an in-flight annotation while IME composition is active', async () => {
+    let resolveFirstRequest!: (value: {
+      source: 'local'
+      segments: Array<{ text: string; reading?: string }>
+    }) => void
+    vi.mocked(japaneseApi.annotateJapanese)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRequest = resolve
+          })
+      )
+      .mockResolvedValueOnce({
+        source: 'local',
+        segments: [{ text: '日本語', reading: 'にほんご' }],
+      })
+
+    const user = userEvent.setup()
+    renderEditor()
+
+    expect(await screen.findByDisplayValue('Auto Sync Note')).toBeVisible()
+    await user.click(screen.getByRole('checkbox', { name: '实时注音' }))
+
+    const requestEditor = tiptapMock.captureEditor.mock.lastCall?.[0] as {
+      view: { composing: boolean }
+      state: { selection: unknown }
+    }
+    requestEditor.state.selection = {
+      from: 4,
+      to: 4,
+      empty: true,
+      $from: {
+        parentOffset: 3,
+        parent: {
+          type: { name: 'paragraph' },
+          forEach: (
+            callback: (
+              node: { isText: boolean; text: string; nodeSize: number },
+              offset: number
+            ) => void
+          ) => callback({ isText: true, text: '日本語', nodeSize: 3 }, 0),
+        },
+        start: () => 1,
+      },
+    }
+    tiptapMock.textBetween.mockReturnValue('日本語')
+
+    const options = tiptapMock.captureEditorOptions.mock.lastCall?.[0] as {
+      onUpdate: (payload: { editor: unknown }) => void
+    }
+    options.onUpdate({ editor: requestEditor })
+
+    await waitFor(
+      () => expect(japaneseApi.annotateJapanese).toHaveBeenCalledTimes(1),
+      { timeout: 1500 }
+    )
+
+    const eventEditor = tiptapMock.captureEditor.mock.lastCall?.[0] as {
+      view: {
+        composing: boolean
+        dom: {
+          addEventListener: { mock: { calls: Array<[string, EventListener]> } }
+        }
+      }
+      state: { selection: unknown }
+    }
+    const compositionStart =
+      eventEditor.view.dom.addEventListener.mock.calls.find(
+        ([name]) => name === 'compositionstart'
+      )?.[1]
+    const compositionEnd =
+      eventEditor.view.dom.addEventListener.mock.calls.find(
+        ([name]) => name === 'compositionend'
+      )?.[1]
+    expect(compositionStart).toBeDefined()
+    expect(compositionEnd).toBeDefined()
+
+    requestEditor.view.composing = true
+    eventEditor.view.composing = true
+    compositionStart?.(new Event('compositionstart'))
+    resolveFirstRequest({
+      source: 'local',
+      segments: [{ text: '日本語', reading: 'にほんご' }],
+    })
+    await Promise.resolve()
+
+    expect(tiptapMock.insertContentAt).not.toHaveBeenCalled()
+
+    requestEditor.view.composing = false
+    eventEditor.view.composing = false
+    eventEditor.state.selection = requestEditor.state.selection
+    compositionEnd?.(new Event('compositionend'))
+
+    await waitFor(
+      () => expect(japaneseApi.annotateJapanese).toHaveBeenCalledTimes(2),
+      { timeout: 1500 }
+    )
   })
 
   it('falls back to the manual dialog when automatic annotation fails', async () => {

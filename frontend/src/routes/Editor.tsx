@@ -67,6 +67,7 @@ type LiveFuriganaTarget = {
   from: number
   to: number
   text: string
+  doc: Editor['state']['doc']
 }
 
 type EditorInlineContent = {
@@ -136,6 +137,7 @@ function getLiveFuriganaTarget(editor: Editor): LiveFuriganaTarget | null {
     from,
     to: from + latestMatch[0].length,
     text: latestMatch[0],
+    doc: editor.state.doc,
   }
 }
 
@@ -428,6 +430,45 @@ export default function EditorPage() {
     []
   )
 
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return
+
+    const handleCompositionStart = () => {
+      liveFuriganaGenerationRef.current += 1
+      if (liveFuriganaTimerRef.current !== null) {
+        window.clearTimeout(liveFuriganaTimerRef.current)
+        liveFuriganaTimerRef.current = null
+      }
+      liveFuriganaRequestRef.current?.abort()
+      liveFuriganaRequestRef.current = null
+      if (liveFuriganaEnabledRef.current) {
+        setLiveFuriganaStatus('waiting')
+      }
+    }
+
+    const handleCompositionEnd = () => {
+      if (!liveFuriganaEnabledRef.current) return
+      window.setTimeout(() => {
+        if (!editor.isDestroyed && liveFuriganaEnabledRef.current) {
+          scheduleLiveFurigana(editor)
+        }
+      }, 0)
+    }
+
+    editor.view.dom.addEventListener('compositionstart', handleCompositionStart)
+    editor.view.dom.addEventListener('compositionend', handleCompositionEnd)
+    return () => {
+      editor.view.dom.removeEventListener(
+        'compositionstart',
+        handleCompositionStart
+      )
+      editor.view.dom.removeEventListener(
+        'compositionend',
+        handleCompositionEnd
+      )
+    }
+  }, [editor])
+
   if (isLoading) {
     return (
       <div className="editor-skeleton">
@@ -464,6 +505,7 @@ export default function EditorPage() {
     }
     liveFuriganaRequestRef.current?.abort()
     liveFuriganaRequestRef.current = null
+    const generation = ++liveFuriganaGenerationRef.current
 
     if (activeEditor.view.composing) {
       setLiveFuriganaStatus('waiting')
@@ -476,7 +518,6 @@ export default function EditorPage() {
       return
     }
 
-    const generation = ++liveFuriganaGenerationRef.current
     const target = getLiveFuriganaTarget(activeEditor)
     if (!target) {
       setLiveFuriganaStatus('ready')
@@ -496,6 +537,16 @@ export default function EditorPage() {
     generation: number
   ) {
     if (!liveFuriganaEnabledRef.current || activeEditor.isDestroyed) return
+    if (activeEditor.view.composing) {
+      setLiveFuriganaStatus('waiting')
+      liveFuriganaTimerRef.current = window.setTimeout(() => {
+        liveFuriganaTimerRef.current = null
+        if (liveFuriganaEnabledRef.current && !activeEditor.isDestroyed) {
+          scheduleLiveFurigana(activeEditor)
+        }
+      }, LIVE_FURIGANA_COMPOSITION_RECHECK_MS)
+      return
+    }
 
     const controller = new AbortController()
     liveFuriganaRequestRef.current = controller
@@ -510,13 +561,18 @@ export default function EditorPage() {
         controller.signal.aborted ||
         generation !== liveFuriganaGenerationRef.current ||
         !liveFuriganaEnabledRef.current ||
-        activeEditor.isDestroyed
+        activeEditor.isDestroyed ||
+        activeEditor.view.composing
       ) {
+        if (activeEditor.view.composing && liveFuriganaEnabledRef.current) {
+          scheduleLiveFurigana(activeEditor)
+        }
         return
       }
       if (
+        activeEditor.state.doc !== target.doc ||
         activeEditor.state.doc.textBetween(target.from, target.to, '') !==
-        target.text
+          target.text
       ) {
         setLiveFuriganaStatus('ready')
         return
