@@ -85,8 +85,8 @@ jobs:
       FLOWSPACE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowspace_test?sslmode=disable
       FLOWSPACE_REQUIRE_POSTGRES_TESTS: 'true'
       FLOWSPACE_TEST_MINIO_ENDPOINT: http://localhost:9000
-      FLOWSPACE_TEST_MINIO_ACCESS_KEY: minioadmin
-      FLOWSPACE_TEST_MINIO_SECRET_KEY: minioadmin
+      FLOWSPACE_TEST_MINIO_ACCESS_KEY: flowspace-ci
+      FLOWSPACE_TEST_MINIO_SECRET_KEY: flowspace-ci-secret
       FLOWSPACE_REQUIRE_MINIO_TESTS: 'true'
     defaults:
       run:
@@ -97,20 +97,19 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: Start isolated MinIO
+      - name: Start isolated S3-compatible test server
         run: |
-          docker run --detach --rm --name flowspace-minio \
-            --publish 9000:9000 \
-            --env MINIO_ROOT_USER="$FLOWSPACE_TEST_MINIO_ACCESS_KEY" \
-            --env MINIO_ROOT_PASSWORD="$FLOWSPACE_TEST_MINIO_SECRET_KEY" \
-            quay.io/minio/aistor/minio:latest server /data
+          docker run --detach --rm --name flowspace-s3mock \
+            --publish 9000:9090 \
+            --env COM_ADOBE_TESTING_S3MOCK_STORE_REGION=us-east-1 \
+            adobe/s3mock:latest
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://localhost:9000/minio/health/live >/dev/null; then
+            if curl --fail --silent http://localhost:9000/favicon.ico >/dev/null; then
               exit 0
             fi
             sleep 1
           done
-          docker logs flowspace-minio
+          docker logs flowspace-s3mock
           exit 1
       - name: PostgreSQL contracts and migrations
         run: make test-contract-postgres
