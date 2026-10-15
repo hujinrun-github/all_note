@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { getCurrentUser, logout } from '../../api/auth'
 import { useUIStore } from '../../stores/ui'
 
@@ -77,7 +77,25 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState('')
   const accountMenuRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const setCaptureOpen = useUIStore((s) => s.setCaptureOpen)
+
+  useEffect(() => {
+    function handleSearchShortcut(event: KeyboardEvent) {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === 'k' &&
+        !document.querySelector('dialog[open]')
+      ) {
+        event.preventDefault()
+        if (searchInputRef.current?.getClientRects().length)
+          searchInputRef.current.focus()
+        else navigate('/search')
+      }
+    }
+    document.addEventListener('keydown', handleSearchShortcut)
+    return () => document.removeEventListener('keydown', handleSearchShortcut)
+  }, [navigate])
 
   const meta = pathname.startsWith('/editor/')
     ? { title: '编辑器', subtitle: '专注写作，并把内容连接到任务和日程' }
@@ -149,11 +167,20 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
     <div className={`workspace-topbar ${compact ? 'is-compact' : ''}`}>
       <div className="min-w-0">
         {compact ? (
-          <div className="workspace-breadcrumb" aria-label="当前位置">
-            <span>FlowSpace</span>
-            <i aria-hidden="true">/</i>
-            <strong>{meta.title}</strong>
-          </div>
+          <>
+            <Link
+              className="mobile-wordmark"
+              to="/"
+              aria-label="FlowSpace 首页"
+            >
+              FlowSpace
+            </Link>
+            <div className="workspace-breadcrumb" aria-label="当前位置">
+              <span>FlowSpace</span>
+              <i aria-hidden="true">/</i>
+              <strong>{meta.title}</strong>
+            </div>
+          </>
         ) : (
           <>
             <h1 className="page-title">{meta.title}</h1>
@@ -169,6 +196,7 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
         >
           <SearchIcon />
           <input
+            ref={searchInputRef}
             value={searchValue}
             onChange={(event) => setSearchValue(event.target.value)}
             onKeyDown={(event) => {
@@ -182,6 +210,14 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
           />
           <kbd>⌘K</kbd>
         </form>
+        <button
+          type="button"
+          className="mobile-search-button"
+          aria-label="打开搜索"
+          onClick={() => navigate('/search')}
+        >
+          <SearchIcon />
+        </button>
         <button onClick={() => setCaptureOpen(true)} className="primary-action">
           <PlusIcon />
           快速捕获

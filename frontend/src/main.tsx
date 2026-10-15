@@ -6,6 +6,8 @@ import { router } from './router'
 import './styles/index.css'
 import './styles/task-domain-v2.css'
 import './styles/roadmap-plan.css'
+import './styles/workspace-responsive.css'
+import './styles/workspace-desktop.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,5 +20,5 @@ createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>
-  </StrictMode>,
+  </StrictMode>
 )

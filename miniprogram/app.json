@@ -1,0 +1,12 @@
+{
+  "pages": ["pages/bind/bind"],
+  "window": {
+    "navigationBarTitleText": "FlowSpace",
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f7f7f7",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

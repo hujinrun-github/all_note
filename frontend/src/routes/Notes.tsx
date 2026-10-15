@@ -9,8 +9,12 @@ import { markdownToPlainText } from '../utils/noteText'
 import { SyncSettingsPanel } from '../components/sync/SyncSettingsPanel'
 import { PodcastImportDialog } from '../components/imports/PodcastImportDialog'
 import { ContentImportTray } from '../components/imports/ContentImportTray'
+import { useMediaQuery } from '../hooks/useMediaQuery'
+import { DetailPanel } from '../components/ui/DetailPanel'
 
 export default function Notes() {
+  const mobile = useMediaQuery('(max-width: 820px)')
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const navigate = useNavigate()
   const [sort, setSort] = useState<'recent' | 'az'>('recent')
   const [syncOpen, setSyncOpen] = useState(false)
@@ -107,6 +111,7 @@ export default function Notes() {
     setProjectID(id)
     setUnassigned(showUnassigned)
     setActiveTag('')
+    setFiltersOpen(false)
   }
 
   function handleOpenSyncSettings() {
@@ -126,116 +131,141 @@ export default function Notes() {
 
   return (
     <div className="notes-page">
-      <div className="page-local-actions notes-page-actions">
-        {createError ? <p role="alert">{createError}</p> : null}
+      <header className="td-page-header notes-page-header">
+        <div>
+          <span className="workspace-eyebrow">知识空间</span>
+          <div className="td-title-line">
+            <h1>笔记库</h1>
+          </div>
+          <p>收集想法，连接知识。让每一次记录都有迹可循。</p>
+        </div>
+        <div className="page-local-actions notes-page-actions">
+          {createError ? <p role="alert">{createError}</p> : null}
+          <button
+            type="button"
+            onClick={handleOpenSyncSettings}
+            className="secondary-action"
+          >
+            <SyncIcon />
+            同步设置
+          </button>
+          <button
+            type="button"
+            onClick={() => setPodcastImportOpen(true)}
+            className="secondary-action"
+          >
+            <PodcastImportIcon />
+            导入播客
+          </button>
+          <button
+            onClick={handleCreateNote}
+            disabled={createNote.isPending}
+            className="primary-action"
+          >
+            <PlusIcon />
+            {createNote.isPending ? '创建中' : '新建笔记'}
+          </button>
+        </div>
+      </header>
+
+      {mobile && (
         <button
           type="button"
-          onClick={handleOpenSyncSettings}
-          className="secondary-action"
+          className="notes-filter-toggle"
+          aria-expanded={filtersOpen}
+          aria-controls="note-filters"
+          onClick={() => setFiltersOpen((open) => !open)}
         >
-          <SyncIcon />
-          同步设置
+          <span>{filtersOpen ? '收起筛选' : '筛选笔记'}</span>
+          <small>{scopeTitle}</small>
         </button>
-        <button
-          type="button"
-          onClick={() => setPodcastImportOpen(true)}
-          className="secondary-action"
-        >
-          <PodcastImportIcon />
-          导入播客
-        </button>
-        <button
-          onClick={handleCreateNote}
-          disabled={createNote.isPending}
-          className="primary-action"
-        >
-          <PlusIcon />
-          {createNote.isPending ? '创建中' : '新建笔记'}
-        </button>
-      </div>
+      )}
 
       <div className="notes-workspace">
-        <aside className="surface-panel note-filter-panel">
-          <div className="note-filter-heading">
-            <div>
-              <span>资料库</span>
-              <strong>{notes.length}</strong>
+        {(!mobile || filtersOpen) && (
+          <aside className="surface-panel note-filter-panel" id="note-filters">
+            <div className="note-filter-heading">
+              <div>
+                <span>资料库</span>
+                <strong>{notes.length}</strong>
+              </div>
+              <p>篇笔记</p>
             </div>
-            <p>篇笔记</p>
-          </div>
 
-          <section>
-            <h2>项目</h2>
-            <button
-              className={
-                !projectID && !unassigned && !activeTag ? 'is-active' : ''
-              }
-              onClick={() => selectProject()}
-            >
-              <span>
-                <LibraryIcon />
-                全部笔记
-              </span>
-              <em>{notes.length}</em>
-            </button>
-            <button
-              className={unassigned ? 'is-active' : ''}
-              onClick={() => selectProject('', true)}
-            >
-              <span>
-                <FolderIcon />
-                未归属
-              </span>
-              <em>{unassignedCount}</em>
-            </button>
-            {allProjects.map((project) => {
-              const count = notes.filter((note) =>
-                getNoteProjects(note).some(
-                  (noteProject) => noteProject.id === project.id
+            <section>
+              <h2>项目</h2>
+              <button
+                className={
+                  !projectID && !unassigned && !activeTag ? 'is-active' : ''
+                }
+                onClick={() => selectProject()}
+              >
+                <span>
+                  <LibraryIcon />
+                  全部笔记
+                </span>
+                <em>{notes.length}</em>
+              </button>
+              <button
+                className={unassigned ? 'is-active' : ''}
+                onClick={() => selectProject('', true)}
+              >
+                <span>
+                  <FolderIcon />
+                  未归属
+                </span>
+                <em>{unassignedCount}</em>
+              </button>
+              {allProjects.map((project) => {
+                const count = notes.filter((note) =>
+                  getNoteProjects(note).some(
+                    (noteProject) => noteProject.id === project.id
+                  )
+                ).length
+                return (
+                  <button
+                    key={project.id}
+                    className={projectID === project.id ? 'is-active' : ''}
+                    onClick={() => selectProject(project.id)}
+                    title={formatProjectOption(project)}
+                  >
+                    <span>
+                      <ProjectIcon />
+                      {project.name}
+                    </span>
+                    <em>{count}</em>
+                  </button>
                 )
-              ).length
-              return (
-                <button
-                  key={project.id}
-                  className={projectID === project.id ? 'is-active' : ''}
-                  onClick={() => selectProject(project.id)}
-                  title={formatProjectOption(project)}
-                >
-                  <span>
-                    <ProjectIcon />
-                    {project.name}
-                  </span>
-                  <em>{count}</em>
-                </button>
-              )
-            })}
-          </section>
+              })}
+            </section>
 
-          <section>
-            <h2>标签</h2>
-            {tagCounts.length > 0 ? (
-              tagCounts.map(([tag, count]) => (
-                <button
-                  key={tag}
-                  className={activeTag === tag ? 'is-active' : ''}
-                  onClick={() => {
-                    setActiveTag(activeTag === tag ? '' : tag)
-                    setProjectID('')
-                    setUnassigned(false)
-                  }}
-                >
-                  <span>
-                    <TagIcon />
-                    {tag}
-                  </span>
-                  <em>{count}</em>
-                </button>
-              ))
-            ) : (
-              <p className="note-filter-empty">暂无标签</p>
-            )}
-          </section>
-        </aside>
+            <section>
+              <h2>标签</h2>
+              {tagCounts.length > 0 ? (
+                tagCounts.map(([tag, count]) => (
+                  <button
+                    key={tag}
+                    className={activeTag === tag ? 'is-active' : ''}
+                    onClick={() => {
+                      setActiveTag(activeTag === tag ? '' : tag)
+                      setProjectID('')
+                      setUnassigned(false)
+                      setFiltersOpen(false)
+                    }}
+                  >
+                    <span>
+                      <TagIcon />
+                      {tag}
+                    </span>
+                    <em>{count}</em>
+                  </button>
+                ))
+              ) : (
+                <p className="note-filter-empty">暂无标签</p>
+              )}
+            </section>
+          </aside>
+        )}
 
         <section className="surface-panel notes-list-panel">
           <header className="notes-list-header">
@@ -337,79 +367,90 @@ export default function Notes() {
           )}
         </section>
 
-        <aside className="surface-panel note-detail-panel">
-          {selectedNote ? (
-            <>
-              <div className="note-detail-heading">
-                <div>
-                  <span className="note-detail-kicker">笔记预览</span>
-                  <h2>{selectedNote.title || '未命名笔记'}</h2>
-                  <p>最后更新于 {formatFullDate(selectedNote.updated_at)}</p>
+        {(!mobile || selectedNoteID) && (
+          <DetailPanel
+            className="surface-panel note-detail-panel"
+            mediaQuery="(max-width: 820px)"
+            label={`笔记预览：${selectedNote?.title ?? '未选择'}`}
+            onClose={() => setSelectedNoteID('')}
+          >
+            {selectedNote ? (
+              <>
+                <div className="note-detail-heading">
+                  <div>
+                    <span className="note-detail-kicker">笔记预览</span>
+                    <h2>{selectedNote.title || '未命名笔记'}</h2>
+                    <p>最后更新于 {formatFullDate(selectedNote.updated_at)}</p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={mobile ? '关闭笔记预览' : '打开笔记编辑器'}
+                    title={mobile ? '关闭笔记预览' : '打开笔记编辑器'}
+                    onClick={() =>
+                      mobile
+                        ? setSelectedNoteID('')
+                        : navigate(
+                            `/editor/${encodeURIComponent(selectedNote.id)}`
+                          )
+                    }
+                  >
+                    {mobile ? <CloseIcon /> : <OpenIcon />}
+                  </button>
                 </div>
+
+                <div
+                  className={`note-detail-body ${(selectedNote.body ?? '').trim() ? '' : 'is-empty'}`}
+                >
+                  {markdownToPlainText(selectedNote.body ?? '') ||
+                    '这篇笔记还没有正文。'}
+                </div>
+
+                <div className="note-properties">
+                  <h3>信息</h3>
+                  <dl>
+                    <div>
+                      <dt>项目</dt>
+                      <dd>
+                        {getNoteProjects(selectedNote).length > 0
+                          ? getNoteProjects(selectedNote)
+                              .map((project) => project.name)
+                              .join('、')
+                          : '未归属'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>标签</dt>
+                      <dd>
+                        {selectedTags.length > 0
+                          ? selectedTags.map((tag) => `#${tag}`).join(' ')
+                          : '无标签'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>字数</dt>
+                      <dd>{countCharacters(selectedNote.body ?? '')}</dd>
+                    </div>
+                  </dl>
+                </div>
+
                 <button
-                  type="button"
-                  aria-label="打开笔记编辑器"
-                  title="打开笔记编辑器"
+                  className="wide-secondary-action note-edit-action"
                   onClick={() =>
                     navigate(`/editor/${encodeURIComponent(selectedNote.id)}`)
                   }
                 >
-                  <OpenIcon />
+                  <EditIcon />
+                  打开编辑
                 </button>
+              </>
+            ) : (
+              <div className="note-detail-empty">
+                <NoteIcon />
+                <strong>选择一篇笔记</strong>
               </div>
-
-              <div
-                className={`note-detail-body ${(selectedNote.body ?? '').trim() ? '' : 'is-empty'}`}
-              >
-                {markdownToPlainText(selectedNote.body ?? '') ||
-                  '这篇笔记还没有正文。'}
-              </div>
-
-              <div className="note-properties">
-                <h3>信息</h3>
-                <dl>
-                  <div>
-                    <dt>项目</dt>
-                    <dd>
-                      {getNoteProjects(selectedNote).length > 0
-                        ? getNoteProjects(selectedNote)
-                            .map((project) => project.name)
-                            .join('、')
-                        : '未归属'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>标签</dt>
-                    <dd>
-                      {selectedTags.length > 0
-                        ? selectedTags.map((tag) => `#${tag}`).join(' ')
-                        : '无标签'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>字数</dt>
-                    <dd>{countCharacters(selectedNote.body ?? '')}</dd>
-                  </div>
-                </dl>
-              </div>
-
-              <button
-                className="wide-secondary-action note-edit-action"
-                onClick={() =>
-                  navigate(`/editor/${encodeURIComponent(selectedNote.id)}`)
-                }
-              >
-                <EditIcon />
-                打开编辑
-              </button>
-            </>
-          ) : (
-            <div className="note-detail-empty">
-              <NoteIcon />
-              <strong>选择一篇笔记</strong>
-            </div>
-          )}
-        </aside>
+            )}
+          </DetailPanel>
+        )}
       </div>
       {syncMounted && (
         <SyncSettingsPanel open={syncOpen} onClose={() => setSyncOpen(false)} />

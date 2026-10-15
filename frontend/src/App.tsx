@@ -3,6 +3,8 @@ import { Outlet, useLocation } from 'react-router-dom'
 import { useUIStore } from './stores/ui'
 import { Sidebar } from './components/layout/Sidebar'
 import { TopBar } from './components/layout/TopBar'
+import { MobileNavigation } from './components/layout/MobileNavigation'
+import { WorkspaceNotice } from './components/layout/WorkspaceNotice'
 import { QuickCapture } from './components/QuickCapture'
 import { useTaskDomainCapabilities } from './hooks/useTaskDomain'
 
@@ -23,7 +25,9 @@ export function App() {
     location.pathname.endsWith('/mind-map')
 
   return (
-    <div className={`workspace-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
+    <div
+      className={`workspace-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}
+    >
       <Sidebar
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
@@ -33,11 +37,21 @@ export function App() {
           isRoadmapCanvasRoute ? ' is-roadmap-canvas-route' : ''
         }`}
       >
-        {isRoadmapCanvasRoute ? null : <TopBar compact={isV2TaskRoute} />}
-        <Suspense fallback={<div className="text-fs-text-muted">Loading...</div>}>
+        {isRoadmapCanvasRoute ? null : (
+          <TopBar compact={isV2TaskRoute || location.pathname === '/notes'} />
+        )}
+        <Suspense
+          fallback={
+            <div className="workspace-loading" role="status">
+              正在加载页面…
+            </div>
+          }
+        >
           <Outlet />
         </Suspense>
       </main>
+      <MobileNavigation />
+      <WorkspaceNotice />
       {captureOpen && <QuickCapture />}
     </div>
   )

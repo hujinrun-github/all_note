@@ -1,9 +1,10 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { getCurrentUser } from '../../api/auth'
 import { useTaskInbox } from '../../hooks/useTaskInbox'
 import { useTaskDomainCapabilities } from '../../hooks/useTaskDomain'
+import { Settings2 } from 'lucide-react'
 
 const navGroups = [
   {
@@ -36,13 +37,16 @@ const navGroups = [
 type SidebarProps = {
   collapsed?: boolean
   onToggleCollapsed?: () => void
+  onNavigate?: () => void
 }
 
 export function Sidebar({
   collapsed = false,
   onToggleCollapsed,
+  onNavigate,
 }: SidebarProps) {
   const queryClient = useQueryClient()
+  const location = useLocation()
   const { occurrencesQuery: inboxQuery } = useTaskInbox()
   const inboxCount = inboxQuery.data?.length ?? 0
   const toggleLabel = collapsed ? '展开侧边栏' : '收起侧边栏'
@@ -98,7 +102,9 @@ export function Sidebar({
                     to={to}
                     end={to === '/'}
                     onClick={() => {
-                      void queryClient.invalidateQueries()
+                      if (location.pathname === to)
+                        void queryClient.invalidateQueries()
+                      onNavigate?.()
                     }}
                     className={({ isActive }) =>
                       `sidebar-link ${isActive ? 'is-active' : ''}`
@@ -123,11 +129,25 @@ export function Sidebar({
         ))}
       </nav>
 
-      <div className="sidebar-status">
-        <span>本地优先</span>
-        <strong>FlowSpace v0.2</strong>
-        <em>快速捕获 · 任务 · 知识</em>
-      </div>
+      <NavLink
+        to="/settings"
+        className="sidebar-account"
+        aria-label="用户设置"
+        onClick={onNavigate}
+      >
+        <span className="sidebar-account-avatar" aria-hidden="true">
+          {(currentUser.data?.user.display_name || 'F')
+            .slice(0, 1)
+            .toUpperCase()}
+        </span>
+        <span className="sidebar-account-copy">
+          <strong>
+            {currentUser.data?.user.display_name || '我的工作空间'}
+          </strong>
+          <small>个人工作空间</small>
+        </span>
+        <Settings2 aria-hidden="true" />
+      </NavLink>
     </aside>
   )
 }

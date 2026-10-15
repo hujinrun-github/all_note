@@ -1,0 +1,15 @@
+page {
+  background: #f7f7f7;
+  color: #1a1a1a;
+  font-family: -apple-system-font, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-size: 28rpx;
+  line-height: 1.6;
+}
+
+.container {
+  padding: 32rpx;
+}
+
+.muted {
+  color: #8a8a8a;
+}

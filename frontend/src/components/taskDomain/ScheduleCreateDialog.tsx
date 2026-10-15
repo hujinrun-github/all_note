@@ -1,5 +1,7 @@
 import { CalendarClock, X } from 'lucide-react'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useRef, useState } from 'react'
+import { Modal } from '../ui/Modal'
+import { useUIStore } from '../../stores/ui'
 
 import type { ProjectV2 } from '../../api/taskDomain'
 import { useCreateTaskMutation } from '../../hooks/useTaskDomain'
@@ -25,6 +27,8 @@ export function ScheduleCreateDialog({
   timezone?: string
 }) {
   const createTask = useCreateTaskMutation()
+  const submitting = useRef(false)
+  const showNotice = useUIStore((state) => state.showNotice)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [schedule, setSchedule] = useState(() => ({
@@ -48,6 +52,7 @@ export function ScheduleCreateDialog({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (submitting.current) return
     const scheduleError = taskScheduleValidationError(schedule)
     if (title.trim() === '' || !selectedProject || scheduleError !== '') {
       setError(scheduleError || '请填写日程标题。')
@@ -55,6 +60,7 @@ export function ScheduleCreateDialog({
     }
 
     setError('')
+    submitting.current = true
     try {
       await createTask.mutateAsync({
         project_id: selectedProject.id,
@@ -63,19 +69,25 @@ export function ScheduleCreateDialog({
         priority,
         schedule: buildTaskScheduleInput(schedule, timezone),
       })
+      showNotice(`日程已添加到「${selectedProject.name}」`)
       onClose()
     } catch {
       setError('日程创建失败，请稍后重试。')
+    } finally {
+      submitting.current = false
     }
   }
 
   return (
-    <div className="schedule-create-overlay" onClick={onClose}>
+    <Modal
+      className="schedule-dialog"
+      labelledBy="schedule-create-title"
+      onClose={() => {
+        if (!submitting.current) onClose()
+      }}
+    >
       <form
         className="schedule-create-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="schedule-create-title"
         onSubmit={handleSubmit}
         onClick={(event) => event.stopPropagation()}
       >
@@ -87,7 +99,12 @@ export function ScheduleCreateDialog({
             <h2 id="schedule-create-title">新增日程</h2>
             <p>创建一个有明确开始和结束时间的任务安排。</p>
           </div>
-          <button type="button" aria-label="关闭新增日程" onClick={onClose}>
+          <button
+            type="button"
+            aria-label="关闭新增日程"
+            disabled={createTask.isPending}
+            onClick={onClose}
+          >
             <X aria-hidden="true" />
           </button>
         </header>
@@ -99,6 +116,7 @@ export function ScheduleCreateDialog({
               aria-label="日程标题"
               value={title}
               autoFocus
+              data-modal-autofocus
               placeholder="例如：项目方案评审"
               onChange={(event) => setTitle(event.target.value)}
             />
@@ -214,7 +232,12 @@ export function ScheduleCreateDialog({
         </div>
 
         <footer className="schedule-create-actions">
-          <button type="button" className="secondary-action" onClick={onClose}>
+          <button
+            type="button"
+            className="secondary-action"
+            disabled={createTask.isPending}
+            onClick={onClose}
+          >
             取消
           </button>
           <button
@@ -228,6 +251,6 @@ export function ScheduleCreateDialog({
           </button>
         </footer>
       </form>
-    </div>
+    </Modal>
   )
 }

@@ -192,6 +192,126 @@ func TestTaskDomainV2HTTPSQLiteSmoke(t *testing.T) {
 		t.Fatalf("unscheduled inbox task appeared on calendar: %#v", entryTypes)
 	}
 
+	t.Run("complete learning project after cancelling draft tasks", func(t *testing.T) {
+		project := taskDomainV2SmokeCreateProject(t, client, server.URL, primaryCookie, "草稿任务项目", "learning", "long")
+		tasks := make([]taskDomainV2SmokeCreateTaskResponse, 0, 2)
+		for _, title := range []string{"搭建训练流程", "模型微调"} {
+			task := taskDomainV2SmokeCreateTask(t, client, server.URL, primaryCookie, map[string]any{
+				"project_id": project.ID, "title": title,
+				"schedule": map[string]any{"recurrence_type": "none", "timing_type": "unscheduled", "timezone": "UTC"},
+			})
+			if task.Task.LifecycleStatus != "draft" || len(task.Occurrences) != 1 {
+				t.Fatalf("expected draft with one occurrence, got %#v", task)
+			}
+			tasks = append(tasks, task)
+		}
+		for _, task := range tasks {
+			occurrence := task.Occurrences[0]
+			cancelled := taskDomainV2SmokeRequest[handler.TaskAggregateCommandResponse](t, client, server.URL, primaryCookie, http.MethodPost,
+				"/api/tasks/"+task.Task.ID+"/cancel", map[string]any{
+					"expected_task_revision": task.Task.Revision, "expected_schedule_revision": task.Task.ScheduleRevision,
+					"expected_occurrence_revisions": map[string]int64{occurrence.ID: occurrence.Revision},
+				}, http.StatusOK)
+			if cancelled.TaskRevision != task.Task.Revision+1 || cancelled.OccurrenceRevisions[occurrence.ID] != occurrence.Revision+1 {
+				t.Fatalf("cancel revisions = %#v", cancelled)
+			}
+			read := taskDomainV2SmokeRequest[struct {
+				Task handler.TaskV2DTO `json:"task"`
+			}](t, client, server.URL, primaryCookie, http.MethodGet, "/api/tasks/"+task.Task.ID, nil, http.StatusOK)
+			if read.Task.LifecycleStatus != "cancelled" {
+				t.Fatalf("draft was not cancelled: %#v", read.Task)
+			}
+		}
+		taskDomainV2SmokeRequest[handler.ProjectCommandV2Response](t, client, server.URL, primaryCookie, http.MethodPost,
+			"/api/projects/"+project.ID+"/complete", map[string]any{"expected_project_revision": project.Revision}, http.StatusOK)
+		read := taskDomainV2SmokeRequest[struct {
+			Project handler.ProjectV2DTO `json:"project"`
+		}](t, client, server.URL, primaryCookie, http.MethodGet, "/api/projects/"+project.ID, nil, http.StatusOK)
+		if read.Project.Status != "completed" || read.Project.Revision != project.Revision+1 {
+			t.Fatalf("project was not completed: %#v", read.Project)
+		}
+		occurrences := taskDomainV2SmokeRequest[struct {
+			Occurrences []handler.OccurrenceV2DTO `json:"occurrences"`
+		}](t, client, server.URL, primaryCookie, http.MethodGet, "/api/task-occurrences?project_id="+project.ID, nil, http.StatusOK)
+		if len(occurrences.Occurrences) != 2 {
+			t.Fatalf("completion lost occurrences: %#v", occurrences)
+		}
+		for _, occurrence := range occurrences.Occurrences {
+			if occurrence.ExecutionStatus != "cancelled" {
+				t.Fatalf("project still has unfinished occurrence: %#v", occurrence)
+			}
+		}
+	})
+
+	t.Run("permanently delete learning project with roadmap and cancelled task", func(t *testing.T) {
+		project := taskDomainV2SmokeCreateProject(t, client, server.URL, primaryCookie, "永久删除验收项目", "learning", "long")
+		roadmap := taskDomainV2SmokeRequest[struct {
+			Roadmap struct {
+				ID string `json:"id"`
+			} `json:"roadmap"`
+		}](t, client, server.URL, primaryCookie, http.MethodPost, "/api/projects/"+project.ID+"/roadmap", map[string]any{
+			"title": "删除验收路线", "description": "验证项目级联删除",
+		}, http.StatusCreated)
+		node := taskDomainV2SmokeRequest[struct {
+			Node struct {
+				ID string `json:"id"`
+			} `json:"node"`
+		}](t, client, server.URL, primaryCookie, http.MethodPost, "/api/roadmaps/"+roadmap.Roadmap.ID+"/nodes", map[string]any{
+			"title": "删除验收节点", "description": "关联取消任务", "node_type": "stage", "position": 1,
+		}, http.StatusCreated)
+		task := taskDomainV2SmokeCreateTask(t, client, server.URL, primaryCookie, map[string]any{
+			"project_id": project.ID, "roadmap_node_id": node.Node.ID, "title": "待随项目删除的任务",
+			"schedule": map[string]any{"recurrence_type": "none", "timing_type": "unscheduled", "timezone": "UTC"},
+		})
+		occurrence := task.Occurrences[0]
+		taskDomainV2SmokeRequest[handler.TaskAggregateCommandResponse](t, client, server.URL, primaryCookie, http.MethodPost,
+			"/api/tasks/"+task.Task.ID+"/cancel", map[string]any{
+				"expected_task_revision": task.Task.Revision, "expected_schedule_revision": task.Task.ScheduleRevision,
+				"expected_occurrence_revisions": map[string]int64{occurrence.ID: occurrence.Revision},
+			}, http.StatusOK)
+		completed := taskDomainV2SmokeRequest[handler.ProjectCommandV2Response](t, client, server.URL, primaryCookie, http.MethodPost,
+			"/api/projects/"+project.ID+"/complete", map[string]any{"expected_project_revision": project.Revision}, http.StatusOK)
+		deleted := taskDomainV2SmokeRequest[handler.ProjectCommandV2Response](t, client, server.URL, primaryCookie, http.MethodDelete,
+			"/api/projects/"+project.ID, map[string]any{"expected_project_revision": completed.ProjectRevision}, http.StatusOK)
+		if !deleted.Deleted || deleted.ProjectID != project.ID {
+			t.Fatalf("delete response = %#v", deleted)
+		}
+		taskDomainV2SmokeRawRequest[map[string]any](t, client, server.URL, primaryCookie, http.MethodGet,
+			"/api/projects/"+project.ID, nil, http.StatusNotFound)
+		unrelated := taskDomainV2SmokeRequest[struct {
+			Project handler.ProjectV2DTO `json:"project"`
+		}](t, client, server.URL, primaryCookie, http.MethodGet, "/api/projects/"+standard.ID, nil, http.StatusOK)
+		if unrelated.Project.ID != standard.ID {
+			t.Fatalf("unrelated project changed after delete: %#v", unrelated.Project)
+		}
+
+		db, err := sql.Open("sqlite", tenantConfig.SQLitePath+"?_pragma=foreign_keys(1)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		countRows := func(query string, args ...any) int {
+			t.Helper()
+			var count int
+			if err := db.QueryRow(query, args...).Scan(&count); err != nil {
+				t.Fatalf("count deleted HTTP fixture rows: %v", err)
+			}
+			return count
+		}
+		for table, count := range map[string]int{
+			"project":     countRows(`SELECT COUNT(*) FROM domain_projects_v2 WHERE workspace_id=? AND id=?`, routerTestWorkspaceID, project.ID),
+			"roadmap":     countRows(`SELECT COUNT(*) FROM domain_learning_roadmaps_v2 WHERE workspace_id=? AND project_id=?`, routerTestWorkspaceID, project.ID),
+			"nodes":       countRows(`SELECT COUNT(*) FROM domain_roadmap_nodes_v2 WHERE workspace_id=? AND project_id=?`, routerTestWorkspaceID, project.ID),
+			"tasks":       countRows(`SELECT COUNT(*) FROM domain_tasks_v2 WHERE workspace_id=? AND project_id=?`, routerTestWorkspaceID, project.ID),
+			"occurrences": countRows(`SELECT COUNT(*) FROM domain_task_occurrences_v2 WHERE workspace_id=? AND task_id=?`, routerTestWorkspaceID, task.Task.ID),
+			"logs":        countRows(`SELECT COUNT(*) FROM domain_task_execution_logs_v2 WHERE workspace_id=? AND occurrence_id=?`, routerTestWorkspaceID, occurrence.ID),
+		} {
+			if count != 0 {
+				t.Fatalf("%s retained %d rows after HTTP project delete", table, count)
+			}
+		}
+	})
+
 	planning := taskDomainV2SmokeCreateProjectWithStatus(t, client, server.URL, primaryCookie, "待启动项目", "standard", "short", "planning")
 	planningTask := taskDomainV2SmokeCreateTask(t, client, server.URL, primaryCookie, map[string]any{
 		"project_id": planning.ID, "title": "首次更新前", "priority": 1,

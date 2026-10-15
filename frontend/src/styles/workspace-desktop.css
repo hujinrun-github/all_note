@@ -1,0 +1,1205 @@
+/* Desktop workspace: quiet navigation, readable lists, and a shared page rhythm. */
+.workspace-eyebrow,
+.today-overview,
+.today-context {
+  display: none;
+}
+.today-main,
+.today-layout {
+  min-width: 0;
+}
+.sidebar-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 12px 8px;
+  color: var(--color-fs-text);
+  border-top: 1px solid var(--color-fs-border);
+  text-decoration: none;
+}
+.sidebar-account-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: #eaece5;
+  color: #53634b;
+  font-size: 13px;
+  font-weight: 700;
+}
+.sidebar-account-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.sidebar-account-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.sidebar-account-copy small {
+  font-size: 11px;
+  color: var(--color-fs-text-muted);
+}
+.sidebar-account > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--color-fs-text-muted);
+}
+.is-collapsed .sidebar-account-copy,
+.is-collapsed .sidebar-account > svg,
+.mobile-menu-dialog .sidebar-account {
+  display: none;
+}
+.notes-page-header .notes-page-actions {
+  margin: 0;
+}
+
+@media (min-width: 821px) {
+  .workspace-shell,
+  .workspace-modal {
+    --fs-sidebar-w: 220px;
+    --fs-page-x: clamp(24px, 2.4vw, 40px);
+    --color-fs-bg: #f8f9fb;
+    --color-fs-surface: #ffffff;
+    --color-fs-hover: #f0f2f5;
+    --color-fs-border: #e7e9ee;
+    --color-fs-border-hover: #cdd1da;
+    --color-fs-text: #252b38;
+    --color-fs-text-secondary: #606876;
+    --color-fs-text-muted: #77808f;
+    --color-fs-accent: #b85b3c;
+    --color-fs-accent-hover: #98482f;
+    --td-paper: #f8f9fb;
+    --td-surface: #ffffff;
+    --td-ink: #252b38;
+    --td-muted: #697281;
+    --td-faint: #8b93a0;
+    --td-line: #e7e9ee;
+    --td-line-strong: #d9dde5;
+    --td-copper: #b85b3c;
+    --td-copper-dark: #97492f;
+    --td-copper-soft: #fbefea;
+    --td-shadow: 0 12px 40px rgb(30 39 55 / 8%);
+    --font-family-heading:
+      'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+    --shadow-card: 0 2px 6px rgb(30 39 55 / 2%);
+    background: var(--color-fs-bg);
+    color: var(--color-fs-text);
+  }
+  .workspace-shell.is-sidebar-collapsed {
+    --fs-sidebar-w: 72px;
+  }
+  .workspace-shell .workspace-sidebar {
+    padding: 24px 14px 14px;
+    gap: 22px;
+    background: #f1f3f6;
+    border-right: 1px solid #e5e8ed;
+  }
+  .workspace-shell .sidebar-brand {
+    padding: 0 6px 16px;
+  }
+  .workspace-shell .sidebar-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: #303a4b;
+    box-shadow: none;
+    font-size: 18px;
+  }
+  .workspace-shell .sidebar-brand strong {
+    font-size: 16px;
+    letter-spacing: -0.6px;
+  }
+  .workspace-shell .sidebar-brand-copy > span {
+    display: none;
+  }
+  .workspace-shell .sidebar-collapse-button {
+    width: 24px;
+    height: 28px;
+    border: 0;
+    background: transparent;
+  }
+  .workspace-shell .sidebar-group {
+    padding: 0;
+    margin: 0 0 20px;
+    border: 0;
+  }
+  .workspace-shell .sidebar-group-title {
+    padding: 0 12px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #949ba6;
+    letter-spacing: 0.1em;
+  }
+  .workspace-shell .sidebar-link {
+    min-height: 40px;
+    margin: 2px 0;
+    gap: 12px;
+    border-radius: 7px;
+    color: #68717f;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .workspace-shell .sidebar-link:hover {
+    background: #e9ecf1;
+    color: #2d3543;
+  }
+  .workspace-shell .sidebar-link.is-active {
+    color: #a04c32;
+    background: #fff;
+    box-shadow: 0 1px 4px rgb(27 39 57 / 5%);
+    font-weight: 650;
+  }
+  .workspace-shell .sidebar-link.is-active::before {
+    display: none;
+  }
+  .workspace-shell .sidebar-link svg {
+    width: 18px;
+    height: 18px;
+    stroke-width: 1.6;
+  }
+  .workspace-shell .sidebar-badge {
+    background: #ebedf1;
+    color: #68717f;
+    box-shadow: none;
+    border-radius: 5px;
+  }
+  .workspace-shell .sidebar-account:hover {
+    background: #e9ecf1;
+    border-radius: 8px;
+  }
+  .workspace-shell .workspace-main,
+  .workspace-shell .workspace-main.is-task-route {
+    --fs-page-x: clamp(24px, 2.4vw, 40px);
+    padding: 0 var(--fs-page-x) 36px;
+    gap: 0;
+    background: var(--color-fs-bg);
+  }
+  .workspace-shell .workspace-topbar,
+  .workspace-shell .workspace-topbar.is-compact {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    width: calc(100% + var(--fs-page-x) * 2);
+    max-width: none;
+    min-height: 66px;
+    margin: 0 calc(var(--fs-page-x) * -1) 0;
+    padding: 12px var(--fs-page-x);
+    border-bottom: 1px solid var(--td-line);
+    background: #ffffff;
+  }
+  .workspace-shell .workspace-breadcrumb {
+    gap: 10px;
+    font-size: 12px;
+  }
+  .workspace-shell .workspace-breadcrumb > span {
+    color: #939aa5;
+  }
+  .workspace-shell .workspace-breadcrumb strong {
+    font-weight: 500;
+    color: #545e6d;
+  }
+  .workspace-shell .workspace-actions {
+    gap: 12px;
+  }
+  .workspace-shell .workspace-search-hint {
+    width: 235px;
+    min-width: 0;
+    min-height: 34px;
+    border: 1px solid #edf0f3;
+    border-radius: 7px;
+    padding: 0 10px;
+    background: #f7f8fa;
+    font-size: 12px;
+  }
+  .workspace-shell .workspace-search-hint kbd {
+    white-space: nowrap;
+    box-shadow: none;
+    background: #fff;
+  }
+  .workspace-shell .workspace-actions > .primary-action {
+    min-height: 34px;
+    border: 1px solid var(--td-line);
+    border-radius: 7px;
+    background: #fff;
+    color: #5a6371;
+    padding: 0 12px;
+    box-shadow: none;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .workspace-shell .workspace-actions > .primary-action:hover {
+    background: #f6f7f9;
+  }
+  .workspace-shell .avatar-button {
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 50%;
+    background: #e9ede5;
+    color: #53634b;
+    font-size: 12px;
+    box-shadow: none;
+  }
+  .workspace-shell .page-title {
+    font-size: 18px;
+    font-weight: 650;
+  }
+  .workspace-shell .workspace-subtitle {
+    display: none;
+  }
+  .workspace-shell .td-page,
+  .workspace-shell .notes-page {
+    width: 100%;
+    margin: 0;
+  }
+  .workspace-shell .workspace-eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    color: #939aa6;
+    font-size: 10px;
+    font-weight: 550;
+    letter-spacing: 0.12em;
+  }
+  .workspace-eyebrow svg {
+    width: 13px;
+    height: 13px;
+    stroke-width: 1.6;
+  }
+  .workspace-shell .td-page-header {
+    min-height: 126px;
+    padding: 28px 0 24px;
+    align-items: center;
+    gap: 20px;
+    border: 0;
+  }
+  .workspace-shell .td-title-line {
+    gap: 14px;
+  }
+  .workspace-shell .td-title-line h1 {
+    font-size: 29px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.8px;
+  }
+  .workspace-shell .td-title-line time {
+    color: #89919d;
+    font-size: 12px;
+  }
+  .workspace-shell .td-page-header p {
+    margin-top: 8px;
+    color: #717c8b;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .workspace-shell .td-primary-action,
+  .workspace-shell .td-secondary-action,
+  .workspace-shell .notes-page-actions button {
+    min-height: 35px;
+    border-radius: 7px;
+    padding: 0 13px;
+    font-size: 12px;
+    font-weight: 550;
+    box-shadow: none;
+  }
+  .workspace-shell .td-primary-action {
+    border-color: var(--td-copper);
+    background: var(--td-copper);
+    color: white;
+  }
+  .workspace-shell .td-secondary-action,
+  .workspace-shell .notes-page-actions .secondary-action {
+    background: white;
+    color: #657080;
+    border-color: var(--td-line);
+  }
+  .workspace-shell .td-page-actions svg {
+    width: 15px;
+    height: 15px;
+  }
+  .workspace-shell .td-tabs {
+    gap: 22px;
+    padding: 0 20px;
+    min-height: 54px;
+    background: white;
+    border: 1px solid var(--td-line);
+    border-radius: 10px 10px 0 0;
+  }
+  .workspace-shell .td-tabs button {
+    min-height: 53px;
+    padding: 0;
+    color: #7b8390;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .workspace-shell .td-tabs button.is-active {
+    color: #a65236;
+    font-weight: 650;
+  }
+  .workspace-shell .td-tabs button.is-active::after {
+    height: 2px;
+    bottom: 0;
+    background: var(--td-copper);
+  }
+  .workspace-shell .td-tabs button > span {
+    min-width: 18px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #f1f3f6;
+    color: #8a93a0;
+    font-size: 10px;
+  }
+  .workspace-shell .td-tabs button.is-active > span {
+    background: var(--td-copper-soft);
+    color: var(--td-copper);
+  }
+  .workspace-shell .td-filterbar {
+    gap: 16px;
+    margin: 0;
+    padding: 13px 20px;
+    background: #fff;
+    border: 1px solid var(--td-line);
+    border-top: 0;
+  }
+  .workspace-shell .td-filterbar label {
+    gap: 7px;
+    color: #87909d;
+    font-size: 11px;
+  }
+  .workspace-shell .td-filterbar select {
+    min-height: 29px;
+    padding: 0 24px 0 8px;
+    border: 1px solid #e9ecf1;
+    border-radius: 5px;
+    background: #fafbfc;
+    color: #626d7c;
+    font-size: 11px;
+  }
+  .workspace-shell .td-workspace {
+    min-height: 390px;
+    border: 1px solid var(--td-line);
+    border-top: 0;
+    border-radius: 0 0 10px 10px;
+    background: white;
+    overflow: clip;
+  }
+  .workspace-shell .td-list-canvas {
+    padding: 16px 18px 24px;
+  }
+  .workspace-shell .td-workspace.has-inspector .td-list-canvas {
+    padding-right: 18px;
+  }
+  .workspace-shell .td-section-heading {
+    margin: 0;
+    padding: 4px 10px 13px;
+    color: #606b7b;
+  }
+  .workspace-shell .td-section-heading > strong {
+    font-size: 11px;
+    font-weight: 650;
+  }
+  .workspace-shell .td-section-heading > span {
+    color: #717c8b;
+    font-size: 10px;
+  }
+  .workspace-shell .td-occurrence-row {
+    min-height: 70px;
+    padding: 12px 10px;
+    border-radius: 6px;
+    border-bottom: 1px solid #f0f2f5;
+    background: #fff;
+    gap: 10px;
+  }
+  .workspace-shell .td-occurrence-row:hover {
+    background: #f8f9fb;
+  }
+  .workspace-shell .td-occurrence-row.is-selected {
+    background: #fbf1ed;
+  }
+  .workspace-shell .td-occurrence-row.is-selected::after {
+    display: none;
+  }
+  .workspace-shell .td-occurrence-copy > strong {
+    font-size: 14px;
+    font-weight: 550;
+    line-height: 1.5;
+  }
+  .workspace-shell .td-occurrence-meta {
+    font-size: 10px;
+    color: #979eaa;
+  }
+  .workspace-shell .td-occurrence-schedule {
+    font-size: 11px;
+    color: #8c94a1;
+  }
+  .workspace-shell .td-status {
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 4px;
+  }
+  .workspace-shell .td-empty-state {
+    min-height: 300px;
+    gap: 10px;
+  }
+  .workspace-shell .td-empty-state > svg {
+    width: 48px;
+    height: 48px;
+    padding: 12px;
+    box-sizing: content-box;
+    border: 1px solid #edf0f4;
+    border-radius: 22px;
+    background: #f8f9fb;
+    color: #a4adbc;
+    stroke-width: 1.2;
+  }
+  .workspace-shell .td-empty-state > strong {
+    margin-top: 8px;
+    color: #677282;
+    font-size: 14px;
+    font-weight: 550;
+  }
+  .workspace-shell .td-empty-state > span {
+    color: #717c8b;
+    font-size: 12px;
+  }
+  .workspace-shell .td-inspector {
+    border-left: 1px solid var(--td-line);
+    background: #fcfcfd;
+    padding: 22px;
+  }
+  .workspace-shell .td-inspector-header h2 {
+    font-size: 18px;
+    line-height: 1.5;
+  }
+
+  .workspace-shell .td-row-action button {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    font-size: 0;
+  }
+  .workspace-shell .td-row-action button::after {
+    display: none;
+  }
+  .workspace-shell .td-row-action button svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+  }
+  .workspace-shell .calendar-v2-toolbar {
+    background: #fff;
+  }
+  .workspace-shell .calendar-v2-entry.is-all-day {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 8px;
+  }
+  .workspace-shell .calendar-v2-entry.is-all-day strong {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .workspace-shell .calendar-v2-entry.is-all-day span {
+    color: #92785f;
+    font-size: 10px;
+  }
+  .workspace-shell .calendar-v2-time-column {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 59px,
+      #edf0f5 59px,
+      #edf0f5 60px
+    );
+  }
+  .workspace-shell .calendar-v2-month-day,
+  .workspace-shell .calendar-v2-month-weekdays {
+    border-color: var(--td-line);
+    background: #fff;
+  }
+  .workspace-shell .calendar-v2-month-day.is-outside {
+    background: #fafbfc;
+  }
+  .workspace-modal {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 20px 70px rgb(30 39 55 / 16%);
+  }
+  .workspace-modal::backdrop {
+    background: rgb(35 45 60 / 25%);
+    backdrop-filter: blur(3px);
+  }
+  .workspace-modal .quick-capture-modal,
+  .workspace-modal .schedule-create-dialog {
+    background: #fff;
+  }
+  .workspace-modal .quick-capture-heading h2 {
+    font-family: var(--font-family-heading);
+    font-size: 24px;
+  }
+  .workspace-modal .td-inspector {
+    background: #fff;
+  }
+
+  /* Today has a compact overview and a useful context column, including when empty. */
+  .today-overview {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .workspace-shell .today-metric {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-height: 102px;
+    padding: 20px;
+    text-align: left;
+    border: 1px solid var(--td-line);
+    border-radius: 10px;
+    background: #fff;
+  }
+  .workspace-shell .today-metric:hover {
+    border-color: #cbd1dc;
+    box-shadow: 0 3px 12px rgb(30 39 55 / 3%);
+  }
+  .today-metric-icon {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: #fbefea;
+    color: #b46c50;
+  }
+  .today-metric-icon svg {
+    width: 19px;
+    height: 19px;
+    stroke-width: 1.6;
+  }
+  .today-metric.is-week .today-metric-icon {
+    background: #eef0fb;
+    color: #8582b6;
+  }
+  .today-metric.is-done .today-metric-icon {
+    background: #eaf3ee;
+    color: #67957c;
+  }
+  .today-metric-copy {
+    display: grid;
+    gap: 6px;
+  }
+  .today-metric-copy > span {
+    color: #8c94a0;
+    font-size: 11px;
+  }
+  .today-metric-copy > strong {
+    color: #2e3747;
+    font-size: 28px;
+    line-height: 1;
+    font-weight: 650;
+    letter-spacing: -1px;
+    font-variant-numeric: tabular-nums;
+  }
+  .today-metric-copy small {
+    margin-left: 8px;
+    color: #a6acb5;
+    font-size: 10px;
+    font-weight: 400;
+  }
+  .today-metric-arrow {
+    width: 14px;
+    height: 14px;
+    color: #b7bec8;
+    margin-left: auto;
+    align-self: start;
+  }
+  .today-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 258px;
+    gap: 22px;
+    align-items: start;
+  }
+  .today-layout.has-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .today-context {
+    display: grid;
+    gap: 18px;
+  }
+  .today-context section {
+    padding: 20px 16px 14px;
+    border: 1px solid var(--td-line);
+    border-radius: 10px;
+    background: white;
+  }
+  .today-context header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .today-context h2 {
+    margin: 0;
+    color: #556171;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .today-context header a {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: #9da6b3;
+  }
+  .today-context svg {
+    width: 15px;
+    height: 15px;
+    stroke-width: 1.6;
+  }
+  .today-context p {
+    margin: 5px 0 16px;
+    color: #717c8b;
+    font-size: 10px;
+  }
+  .today-project {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 0;
+    border-bottom: 1px solid #f1f3f6;
+    color: #626e7f;
+    text-decoration: none;
+  }
+  .today-project > span:nth-child(2) {
+    display: grid;
+    min-width: 0;
+    gap: 5px;
+    flex: 1;
+  }
+  .today-project strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 550;
+  }
+  .today-project small {
+    color: #717c8b;
+    font-size: 10px;
+  }
+  .today-project-icon {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: #f2f4f8;
+    color: #8493ac;
+  }
+  .today-project-icon.is-learning {
+    background: #f2eef8;
+    color: #9a83b0;
+  }
+  .today-project > svg {
+    width: 12px;
+    color: #b4bdc9;
+  }
+  .today-projects-link {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 15px;
+    color: #717c8b;
+    font-size: 10px;
+    text-decoration: none;
+  }
+  .today-shortcuts > a {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 20px;
+    font-size: 12px;
+    color: #667283;
+    text-decoration: none;
+  }
+  .today-shortcuts small {
+    display: block;
+    margin-top: 6px;
+    font-size: 10px;
+    color: #717c8b;
+  }
+  .today-context a:hover {
+    color: var(--td-copper);
+  }
+  .today-main .td-tabs {
+    gap: 18px;
+  }
+  .today-main .td-occurrence-row {
+    grid-template-columns: 28px minmax(0, 1fr) 75px 58px 20px;
+  }
+  .today-main .td-occurrence-schedule {
+    white-space: normal;
+  }
+
+  /* Notes are one connected library, rather than three unrelated cards. */
+  .workspace-shell .notes-page {
+    display: block;
+  }
+  .workspace-shell .notes-page-header {
+    display: flex;
+    flex-direction: row;
+  }
+  .workspace-shell .notes-page-actions {
+    width: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0;
+  }
+  .workspace-shell .notes-workspace {
+    display: grid;
+    grid-template-columns: 172px minmax(280px, 1fr) minmax(260px, 0.95fr);
+    gap: 0;
+    align-items: stretch;
+    overflow: clip;
+    border: 1px solid var(--td-line);
+    border-radius: 10px;
+    background: #fff;
+  }
+  .workspace-shell .note-filter-panel,
+  .workspace-shell .notes-list-panel,
+  .workspace-shell .note-detail-panel {
+    min-height: max(450px, calc(100dvh - 255px));
+    position: static;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: #fff;
+  }
+  .workspace-shell .note-filter-panel {
+    padding: 18px 10px;
+    background: #fafbfc;
+    border-right: 1px solid var(--td-line);
+  }
+  .workspace-shell .note-filter-heading {
+    padding: 0 8px 18px;
+    border-bottom: 1px solid #e9ecf0;
+  }
+  .workspace-shell .note-filter-heading strong {
+    font-size: 17px;
+    color: #657080;
+  }
+  .workspace-shell .note-filter-heading span,
+  .workspace-shell .note-filter-heading p {
+    font-size: 10px;
+    color: #717c8b;
+    font-weight: 500;
+  }
+  .workspace-shell .note-filter-panel section {
+    border-color: #ebedf1;
+  }
+  .workspace-shell .note-filter-panel h2 {
+    color: #717c8b;
+    font-size: 10px;
+    font-weight: 550;
+  }
+  .workspace-shell .note-filter-panel button {
+    min-height: 34px;
+    padding: 0 9px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #748091;
+    background: transparent;
+  }
+  .workspace-shell .note-filter-panel button.is-active {
+    color: #a9563a;
+    background: #f6ebe5;
+  }
+  .workspace-shell .note-filter-panel button::before {
+    display: none;
+  }
+  .workspace-shell .note-filter-panel button svg {
+    width: 14px;
+    height: 14px;
+  }
+  .workspace-shell .note-filter-panel button em {
+    background: transparent;
+    font-size: 10px;
+    color: #717c8b;
+  }
+  .workspace-shell .notes-list-panel {
+    border-right: 1px solid var(--td-line);
+  }
+  .workspace-shell .notes-list-header {
+    min-height: 58px;
+    padding: 12px 16px;
+    gap: 8px;
+    border-bottom: 1px solid var(--td-line);
+  }
+  .workspace-shell .notes-list-header > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .workspace-shell .notes-list-header > div:first-child span {
+    font-size: 11px;
+    color: #667282;
+  }
+  .workspace-shell .notes-list-header > div:first-child strong {
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: #f1f3f6;
+    color: #929ba9;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .workspace-shell .notes-list-header .note-tabs {
+    padding: 2px;
+    gap: 0;
+    background: #f4f5f8;
+    border-color: transparent;
+    border-radius: 5px;
+  }
+  .workspace-shell .notes-list-header .note-tabs button {
+    min-height: 26px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 500;
+  }
+  .workspace-shell .notes-list-header .note-tabs button.is-active {
+    background: white;
+    color: #576373;
+    box-shadow: 0 1px 3px rgb(30 39 55 / 6%);
+  }
+  .workspace-shell .notes-search {
+    margin: 12px 14px;
+    min-height: 34px;
+    border-radius: 6px;
+    border-color: #e9edf2;
+    background: #fafbfc;
+  }
+  .workspace-shell .notes-search input {
+    font-size: 11px;
+  }
+  .workspace-shell .note-card-list {
+    display: grid;
+    gap: 5px;
+    padding: 0 8px 16px;
+  }
+  .workspace-shell .note-library-card {
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: #fff;
+    box-shadow: none;
+    grid-template-columns: minmax(0, 1fr) 28px;
+  }
+  .workspace-shell .note-library-card.is-selected {
+    border-color: #efe1d9;
+    background: #fcf5f1;
+    box-shadow: none;
+  }
+  .workspace-shell .note-library-select {
+    padding: 15px 10px;
+  }
+  .workspace-shell .note-row-heading {
+    align-items: baseline;
+  }
+  .workspace-shell .note-row-heading strong {
+    font-size: 13px;
+    font-weight: 600;
+    color: #515e70;
+  }
+  .workspace-shell .note-row-heading time {
+    font-size: 10px;
+    color: #717c8b;
+  }
+  .workspace-shell .note-row-preview {
+    color: #87909e;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+  .workspace-shell .note-row-meta em,
+  .workspace-shell .note-row-meta i {
+    padding: 2px 5px;
+    font-size: 9px;
+    color: #9795a4;
+    background: #f1f0f5;
+    border-radius: 3px;
+  }
+  .workspace-shell .note-row-meta small {
+    font-size: 9px;
+    color: #717c8b;
+  }
+  .workspace-shell .note-delete-button {
+    opacity: 0;
+    width: 26px;
+    height: 30px;
+    color: #a6afba;
+  }
+  .workspace-shell .note-library-card:hover .note-delete-button,
+  .workspace-shell .note-library-card:focus-within .note-delete-button {
+    opacity: 1;
+  }
+  .workspace-shell .note-detail-panel {
+    display: flex;
+    padding: 24px;
+  }
+  .workspace-shell .note-detail-heading {
+    border-color: #edf0f4;
+    padding-bottom: 20px;
+  }
+  .workspace-shell .note-detail-kicker {
+    color: #717c8b;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    font-weight: 500;
+  }
+  .workspace-shell .note-detail-heading h2 {
+    font-size: 21px;
+    color: #374456;
+    font-weight: 650;
+    line-height: 1.6;
+  }
+  .workspace-shell .note-detail-heading p {
+    color: #717c8b;
+    font-size: 10px;
+  }
+  .workspace-shell .note-detail-body {
+    min-height: 200px;
+    padding: 24px 0;
+    color: #697586;
+    font-size: 13px;
+    line-height: 2;
+    border-color: #edf0f4;
+  }
+  .workspace-shell .note-properties h3 {
+    font-size: 10px;
+    font-weight: 550;
+    color: #717c8b;
+  }
+  .workspace-shell .note-properties dl > div {
+    font-size: 10px;
+    border-color: #f0f2f5;
+  }
+  .workspace-shell .note-edit-action {
+    min-height: 34px;
+    border-radius: 6px;
+    background: #fff;
+    border: 1px solid #e5e9ef;
+    color: #718094;
+    font-size: 11px;
+    box-shadow: none;
+  }
+
+  /* Calendar controls sit in one row; the schedule owns the canvas. */
+  .workspace-shell .calendar-v2-heading {
+    flex-direction: row;
+  }
+  .workspace-shell .calendar-v2-controls {
+    display: flex;
+    width: auto;
+    align-items: center;
+    gap: 14px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .workspace-shell .calendar-v2-control-label {
+    display: none;
+  }
+  .workspace-shell .calendar-v2-view-switch {
+    border: 1px solid var(--td-line);
+    border-radius: 7px;
+    background: #eef0f4;
+    padding: 3px;
+    gap: 1px;
+  }
+  .workspace-shell .calendar-v2-view-switch button {
+    min-height: 29px;
+    min-width: 38px;
+    padding: 0 10px;
+    color: #8a93a0;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .workspace-shell .calendar-v2-view-switch button.is-active {
+    background: #fff;
+    color: #556071;
+    box-shadow: 0 1px 3px rgb(30 39 55 / 8%);
+  }
+  .workspace-shell .calendar-v2-timezone {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .workspace-shell .calendar-v2-timezone > span {
+    display: none;
+  }
+  .workspace-shell .calendar-v2-timezone select {
+    width: 145px;
+    min-height: 35px;
+    background: white;
+    border: 1px solid var(--td-line);
+    border-radius: 7px;
+    padding: 0 10px;
+    color: #85909f;
+    font-size: 11px;
+  }
+  .workspace-shell .calendar-v2-shell {
+    border: 1px solid var(--td-line);
+    border-radius: 10px;
+    box-shadow: none;
+    background: white;
+  }
+  .workspace-shell .calendar-v2-toolbar {
+    min-height: 68px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--td-line);
+  }
+  .workspace-shell .calendar-v2-toolbar button {
+    min-height: 30px;
+    border-radius: 6px;
+    font-size: 11px;
+    border-color: #e5e9ef;
+    background: white;
+    color: #718094;
+  }
+  .workspace-shell .calendar-v2-toolbar button.calendar-v2-create {
+    background: var(--td-copper);
+    color: white;
+  }
+  .workspace-shell .calendar-v2-toolbar > strong {
+    font-size: 14px;
+    color: #485569;
+  }
+  .workspace-shell .calendar-v2-period-status {
+    color: #717c8b;
+    font-size: 10px;
+  }
+  .workspace-shell .calendar-v2-week-head {
+    background: #fafbfc;
+    border-color: var(--td-line);
+  }
+  .workspace-shell .calendar-v2-week-head > strong {
+    font-size: 11px;
+    font-weight: 500;
+    color: #8a94a3;
+    border-color: #eef0f4;
+    padding: 14px 8px;
+  }
+  .workspace-shell .calendar-v2-week-head > strong span {
+    color: #58677a;
+    font-size: 18px;
+    font-weight: 550;
+  }
+  .workspace-shell .calendar-v2-week-head > strong.is-today {
+    background: #fdf6f2;
+  }
+  .workspace-shell .calendar-v2-all-day,
+  .workspace-shell .calendar-v2-time-section,
+  .workspace-shell .calendar-v2-time-column,
+  .workspace-shell .calendar-v2-drop-day {
+    border-color: #edf0f5;
+  }
+  .workspace-shell .calendar-v2-lane-label,
+  .workspace-shell .calendar-v2-hour-axis,
+  .workspace-shell .calendar-v2-empty-lane {
+    color: #717c8b;
+    background: #fcfcfd;
+    font-size: 10px;
+  }
+  .workspace-shell .calendar-v2-entry {
+    border-radius: 4px;
+    background: #f3eee9;
+    color: #a47f61;
+    border-color: #e9ddd3;
+    box-shadow: none;
+  }
+  .workspace-shell .calendar-v2-entry strong {
+    font-weight: 500;
+  }
+  .workspace-shell .calendar-agenda-day > header time {
+    font-size: 13px;
+    color: #677386;
+  }
+  .workspace-shell .calendar-agenda-entry {
+    min-height: 62px;
+    border-radius: 6px;
+    border-color: #edf0f4;
+  }
+}
+
+@media (min-width: 821px) and (max-width: 1180px) {
+  .today-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .today-context {
+    display: none;
+  }
+  .workspace-shell .td-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-shell .notes-workspace {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+  .workspace-shell .note-detail-panel {
+    grid-column: 2;
+    min-height: 300px;
+    border-top: 1px solid var(--td-line);
+  }
+  .workspace-shell .note-filter-panel {
+    grid-row: span 2;
+  }
+  .workspace-shell .notes-list-panel {
+    min-height: 300px;
+    border-right: 0;
+  }
+  .workspace-shell .workspace-search-hint {
+    width: 190px;
+  }
+  .workspace-shell .notes-page-header {
+    flex-wrap: wrap;
+  }
+  .workspace-shell .calendar-v2-controls {
+    flex-wrap: wrap;
+    max-width: 215px;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 820px) {
+  .notes-page-header {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+    gap: 16px;
+  }
+  .notes-page-header .td-title-line h1 {
+    font-size: 26px;
+  }
+  .notes-page-header p {
+    display: none;
+  }
+  .notes-page-header .notes-page-actions {
+    width: 100%;
+  }
+}

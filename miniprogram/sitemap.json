@@ -1,0 +1,4 @@
+{
+  "desc": "S1 scaffold",
+  "rules": [{ "action": "allow", "page": "*" }]
+}

@@ -17,7 +17,7 @@ func CompleteTask(current TaskLifecycleStatus) (TaskLifecycleStatus, error) {
 }
 
 func CancelTask(current TaskLifecycleStatus) (TaskLifecycleStatus, error) {
-	if current != TaskLifecycleActive && current != TaskLifecyclePaused {
+	if current != TaskLifecycleDraft && current != TaskLifecycleActive && current != TaskLifecyclePaused {
 		return current, ErrInvalidTaskTransition
 	}
 	return TaskLifecycleCancelled, nil

@@ -18,6 +18,7 @@ func TestTaskLifecycleLegalTransitions(t *testing.T) {
 		{name: "pause active", from: TaskLifecycleActive, want: TaskLifecyclePaused, act: PauseTask},
 		{name: "resume paused", from: TaskLifecyclePaused, want: TaskLifecycleActive, act: ResumeTask},
 		{name: "complete active", from: TaskLifecycleActive, want: TaskLifecycleCompleted, act: CompleteTask},
+		{name: "cancel draft", from: TaskLifecycleDraft, want: TaskLifecycleCancelled, act: CancelTask},
 		{name: "cancel active", from: TaskLifecycleActive, want: TaskLifecycleCancelled, act: CancelTask},
 		{name: "cancel paused", from: TaskLifecyclePaused, want: TaskLifecycleCancelled, act: CancelTask},
 		{name: "reopen completed occurrence", from: TaskLifecycleCompleted, want: TaskLifecycleActive, act: ReopenTaskFromOccurrence},
@@ -49,6 +50,9 @@ func TestTaskLifecycleIllegalTransitionsReturnStableError(t *testing.T) {
 		act  func(TaskLifecycleStatus) (TaskLifecycleStatus, error)
 	}{
 		{name: "draft cannot complete", from: TaskLifecycleDraft, act: CompleteTask},
+		{name: "completed cannot cancel", from: TaskLifecycleCompleted, act: CancelTask},
+		{name: "cancelled cannot cancel again", from: TaskLifecycleCancelled, act: CancelTask},
+		{name: "archived cannot cancel", from: TaskLifecycleArchived, act: CancelTask},
 		{name: "archived cannot archive again", from: TaskLifecycleArchived, act: ArchiveTask},
 		{name: "cancelled task cannot reopen via occurrence", from: TaskLifecycleCancelled, act: ReopenTaskFromOccurrence},
 		{name: "completed cannot publish", from: TaskLifecycleCompleted, act: PublishTask},

@@ -95,50 +95,54 @@ func TestTaskServiceLifecycleCommandsUsePureTransitionsAndAtomicSave(t *testing.
 }
 
 func TestTaskServiceCancelPersistsTaskOccurrencesAndLogsAtomically(t *testing.T) {
-	now := serviceCommandTime()
-	current := serviceTaskAggregate(TaskLifecycleActive)
-	current.Occurrences = []Occurrence{
-		serviceOccurrence("open", ExecutionStatusOpen, 10, now),
-		serviceOccurrence("active", ExecutionStatusActive, 11, now),
-		serviceOccurrence("done", ExecutionStatusDone, 12, now),
-	}
-	writer := &serviceWriter{}
-	fencer := &serviceFencer{writer: writer}
-	reader := &serviceStateReader{fencer: fencer, state: TaskAggregateState{Aggregate: current, ScheduleRevision: 7}}
-	service := NewTaskService(fencer, reader)
-	request := serviceLifecycleRequest(TaskCommandCancel)
-	request.Expected.Occurrences = map[string]int64{"open": 10, "active": 11}
+	for _, status := range []TaskLifecycleStatus{TaskLifecycleDraft, TaskLifecycleActive, TaskLifecyclePaused} {
+		t.Run(string(status), func(t *testing.T) {
+			now := serviceCommandTime()
+			current := serviceTaskAggregate(status)
+			current.Occurrences = []Occurrence{
+				serviceOccurrence("open", ExecutionStatusOpen, 10, now),
+				serviceOccurrence("active", ExecutionStatusActive, 11, now),
+				serviceOccurrence("done", ExecutionStatusDone, 12, now),
+			}
+			writer := &serviceWriter{}
+			fencer := &serviceFencer{writer: writer}
+			reader := &serviceStateReader{fencer: fencer, state: TaskAggregateState{Aggregate: current, ScheduleRevision: 7}}
+			service := NewTaskService(fencer, reader)
+			request := serviceLifecycleRequest(TaskCommandCancel)
+			request.Expected.Occurrences = map[string]int64{"open": 10, "active": 11}
 
-	result, err := service.ExecuteLifecycleCommand(context.Background(), request)
-	if err != nil {
-		t.Fatalf("ExecuteLifecycleCommand(cancel) unexpected error: %v", err)
+			result, err := service.ExecuteLifecycleCommand(context.Background(), request)
+			if err != nil {
+				t.Fatalf("ExecuteLifecycleCommand(cancel) unexpected error: %v", err)
+			}
+			if writer.saveCalls != 1 {
+				t.Fatalf("SaveTaskAggregate() calls = %d, want 1", writer.saveCalls)
+			}
+			write := writer.saved
+			if write.Aggregate.LifecycleStatus != TaskLifecycleCancelled || write.Aggregate.GenerationEnabled || write.Aggregate.Revision != 6 {
+				t.Fatalf("cancelled task after-image = %#v", write.Aggregate)
+			}
+			assertServiceOccurrenceStatus(t, write.Aggregate, "open", ExecutionStatusCancelled, 11)
+			assertServiceOccurrenceStatus(t, write.Aggregate, "active", ExecutionStatusCancelled, 12)
+			assertServiceOccurrenceStatus(t, write.Aggregate, "done", ExecutionStatusDone, 12)
+			if !reflect.DeepEqual(write.ExpectedRevisions.Occurrences, request.Expected.Occurrences) || write.ExpectedScheduleRevision != 7 || len(write.ExecutionLogs) != 2 {
+				t.Fatalf("cancel atomic write = %#v", write)
+			}
+			logs := result.ExecutionLogs()
+			if len(logs) != 2 || logs[0].ToStatus() != ExecutionStatusCancelled || logs[1].ToStatus() != ExecutionStatusCancelled {
+				t.Fatalf("cancel result logs = %#v", logs)
+			}
+			revisions := result.OccurrenceRevisions()
+			if !reflect.DeepEqual(revisions, map[string]int64{"open": 11, "active": 12}) {
+				t.Fatalf("cancel result occurrence revisions = %#v", revisions)
+			}
+			revisions["open"] = 999
+			if got := result.OccurrenceRevisions()["open"]; got != 11 {
+				t.Fatalf("OccurrenceRevisions() leaked mutable state: %d", got)
+			}
+			assertServiceAudit(t, result, TaskCommandCancel, "command-1", "task-1")
+		})
 	}
-	if writer.saveCalls != 1 {
-		t.Fatalf("SaveTaskAggregate() calls = %d, want 1", writer.saveCalls)
-	}
-	write := writer.saved
-	if write.Aggregate.LifecycleStatus != TaskLifecycleCancelled || write.Aggregate.GenerationEnabled || write.Aggregate.Revision != 6 {
-		t.Fatalf("cancelled task after-image = %#v", write.Aggregate)
-	}
-	assertServiceOccurrenceStatus(t, write.Aggregate, "open", ExecutionStatusCancelled, 11)
-	assertServiceOccurrenceStatus(t, write.Aggregate, "active", ExecutionStatusCancelled, 12)
-	assertServiceOccurrenceStatus(t, write.Aggregate, "done", ExecutionStatusDone, 12)
-	if !reflect.DeepEqual(write.ExpectedRevisions.Occurrences, request.Expected.Occurrences) || write.ExpectedScheduleRevision != 7 || len(write.ExecutionLogs) != 2 {
-		t.Fatalf("cancel atomic write = %#v", write)
-	}
-	logs := result.ExecutionLogs()
-	if len(logs) != 2 || logs[0].ToStatus() != ExecutionStatusCancelled || logs[1].ToStatus() != ExecutionStatusCancelled {
-		t.Fatalf("cancel result logs = %#v", logs)
-	}
-	revisions := result.OccurrenceRevisions()
-	if !reflect.DeepEqual(revisions, map[string]int64{"open": 11, "active": 12}) {
-		t.Fatalf("cancel result occurrence revisions = %#v", revisions)
-	}
-	revisions["open"] = 999
-	if got := result.OccurrenceRevisions()["open"]; got != 11 {
-		t.Fatalf("OccurrenceRevisions() leaked mutable state: %d", got)
-	}
-	assertServiceAudit(t, result, TaskCommandCancel, "command-1", "task-1")
 }
 
 func TestTaskServiceArchivePersistsTaskOccurrencesAndLogsAtomically(t *testing.T) {

@@ -1,0 +1,318 @@
+[
+  {
+    "name": "request-digest-entities-sorted",
+    "kind": "request",
+    "input": {
+      "command_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "origin_device_client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "workspace-1",
+      "command_type": "note.update",
+      "target": {
+        "entity_id": "n-1",
+        "client_id": null
+      },
+      "created_runtime_epoch": "8",
+      "expected": {
+        "entity_revision": {
+          "source": "exact",
+          "value": "3"
+        }
+      },
+      "depends_on_command_id": null,
+      "supersedes_command_id": null,
+      "request_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forwarded_by_device_client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "payload": {
+        "entities": [
+          {
+            "entity_type": "task",
+            "entity_id": "t-2",
+            "client_id": null
+          },
+          {
+            "entity_type": "project",
+            "entity_id": "p-1",
+            "client_id": null
+          },
+          {
+            "entity_type": "task",
+            "entity_id": "t-1",
+            "client_id": null
+          }
+        ]
+      }
+    },
+    "expected": "sha256:aaf8d82bd375c1c688c568e514ef8b6ee98cada9c175d74ba58aba50ffa8b466"
+  },
+  {
+    "name": "request-digest-entities-codepoint-order",
+    "kind": "request",
+    "input": {
+      "command_id": "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1",
+      "origin_device_client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "workspace-1",
+      "command_type": "note.update",
+      "target": {
+        "entity_id": "n-1",
+        "client_id": null
+      },
+      "created_runtime_epoch": "8",
+      "expected": {
+        "entity_revision": {
+          "source": "exact",
+          "value": "3"
+        }
+      },
+      "depends_on_command_id": null,
+      "supersedes_command_id": null,
+      "request_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forwarded_by_device_client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "payload": {
+        "entities": [
+          {
+            "entity_type": "😀",
+            "entity_id": "e-1",
+            "client_id": null
+          },
+          {
+            "entity_type": "",
+            "entity_id": "e-2",
+            "client_id": null
+          }
+        ]
+      }
+    },
+    "expected": "sha256:a7cf2e14bf43733b54d082ae28b69c4fd9488b79500d99b5c4af76c3f4e6dbb1"
+  },
+  {
+    "name": "jcs-object-key-utf16-order",
+    "kind": "jcs",
+    "input": "{\"😀\":1,\"\":2}",
+    "expected": "{\"😀\":1,\"\":2}"
+  },
+  {
+    "name": "request-digest-identity-mappings-sorted",
+    "kind": "request",
+    "input": {
+      "command_id": "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2",
+      "origin_device_client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "workspace-1",
+      "command_type": "note.update",
+      "target": {
+        "entity_id": "n-1",
+        "client_id": null
+      },
+      "created_runtime_epoch": "8",
+      "expected": {
+        "entity_revision": {
+          "source": "exact",
+          "value": "3"
+        }
+      },
+      "depends_on_command_id": null,
+      "supersedes_command_id": null,
+      "request_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forwarded_by_device_client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "payload": {
+        "identity_mappings": [
+          {
+            "entity_type": "task",
+            "client_id": "c-2",
+            "entity_id": "t-2"
+          },
+          {
+            "entity_type": "note",
+            "client_id": "c-9",
+            "entity_id": "n-9"
+          },
+          {
+            "entity_type": "task",
+            "client_id": "c-1",
+            "entity_id": "t-1"
+          }
+        ]
+      }
+    },
+    "expected": "sha256:6def19b815869b4558cbbe79c1d295e03c4eb8500dc3f528a77f19c53a2ba85c"
+  },
+  {
+    "name": "request-digest-schedule-version-identity",
+    "kind": "request",
+    "input": {
+      "command_id": "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3",
+      "origin_device_client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "workspace-1",
+      "command_type": "note.update",
+      "target": {
+        "entity_id": "n-1",
+        "client_id": null
+      },
+      "created_runtime_epoch": "8",
+      "expected": {
+        "entity_revision": {
+          "source": "exact",
+          "value": "3"
+        }
+      },
+      "depends_on_command_id": null,
+      "supersedes_command_id": null,
+      "request_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forwarded_by_device_client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "payload": {
+        "entities": [
+          {
+            "entity_type": "schedule_version",
+            "client_id": null,
+            "payload": {
+              "task_id": "t-9",
+              "schedule_revision": "12"
+            }
+          },
+          {
+            "entity_type": "schedule_version",
+            "client_id": null,
+            "payload": {
+              "task_id": "t-1",
+              "schedule_revision": "3"
+            }
+          }
+        ]
+      }
+    },
+    "expected": "sha256:dbf32bb299c0a3011c8583a1ababeab8c4cf5cf6d5ab2bf1c38bc22112e22625"
+  },
+  {
+    "name": "request-digest-field-paths-sorted",
+    "kind": "request",
+    "input": {
+      "command_id": "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4",
+      "origin_device_client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "workspace-1",
+      "command_type": "note.update",
+      "target": {
+        "entity_id": "n-1",
+        "client_id": null
+      },
+      "created_runtime_epoch": "8",
+      "expected": {
+        "entity_revision": {
+          "source": "exact",
+          "value": "3"
+        }
+      },
+      "depends_on_command_id": null,
+      "supersedes_command_id": null,
+      "request_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forwarded_by_device_client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "payload": {
+        "field_paths": [
+          "description",
+          "title",
+          "z",
+          "a"
+        ]
+      }
+    },
+    "expected": "sha256:87578bd5b36ef2443bcb8a656ece77c5b4d1f429b7dd18aba9b43f8cd73d19e5"
+  },
+  {
+    "name": "request-digest-realistic-note-update",
+    "kind": "request",
+    "input": {
+      "command_id": "e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5",
+      "origin_device_client_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "workspace_id": "workspace-1",
+      "command_type": "note.update",
+      "target": {
+        "entity_id": "n-1",
+        "client_id": null
+      },
+      "created_runtime_epoch": "8",
+      "expected": {
+        "entity_revision": {
+          "source": "exact",
+          "value": "3"
+        }
+      },
+      "depends_on_command_id": null,
+      "supersedes_command_id": null,
+      "request_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "forwarded_by_device_client_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "payload": {
+        "title": "晨间笔记",
+        "content": "今天要完成 #任务 与 😀 复盘",
+        "revision": "9007199254740993",
+        "flag": true,
+        "count": 42,
+        "ratio": 0.5
+      }
+    },
+    "expected": "sha256:a79b0b3d773a23eb8a3390828b8c1c245e079f65b26ecb3a10c356562621e0e9"
+  },
+  {
+    "name": "page-checksum",
+    "kind": "page",
+    "input": {
+      "snapshot_id": "s",
+      "page_index": 0,
+      "as_of_sequence": "42",
+      "entities": [
+        {
+          "entity_type": "task",
+          "entity_id": "t",
+          "client_id": null
+        },
+        {
+          "entity_type": "project",
+          "entity_id": "p",
+          "client_id": null
+        }
+      ]
+    },
+    "expected": "sha256:65c3bef0fbc940de8d5614bbc1381c265a3a811d8cb514bbeac6cf3ab60d330d"
+  },
+  {
+    "name": "manifest-checksum",
+    "kind": "manifest",
+    "input": {
+      "snapshot_id": "s",
+      "as_of_sequence": "42",
+      "scope_generation": "g",
+      "page_checksums": [
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ]
+    },
+    "expected": "sha256:9a6552abf47cc3871d6abfa456aa7c7ef2260eec929874eba77ea77550dd42bb"
+  },
+  {
+    "name": "jcs-number-zero-and-negative-zero",
+    "kind": "jcs",
+    "input": "{\"a\":0,\"b\":-0}",
+    "expected": "{\"a\":0,\"b\":0}"
+  },
+  {
+    "name": "jcs-number-thresholds",
+    "kind": "jcs",
+    "input": "{\"tiny\":1e-7,\"threshold\":1e-6,\"million\":1e6,\"huge\":1e21}",
+    "expected": "{\"huge\":1e+21,\"million\":1000000,\"threshold\":0.000001,\"tiny\":1e-7}"
+  },
+  {
+    "name": "jcs-number-binary64-boundaries",
+    "kind": "jcs",
+    "input": "{\"maxSafe\":9007199254740991,\"rounded\":9007199254740992,\"small\":5e-324}",
+    "expected": "{\"maxSafe\":9007199254740991,\"rounded\":9007199254740992,\"small\":5e-324}"
+  },
+  {
+    "name": "jcs-string-escapes",
+    "kind": "jcs",
+    "input": "{\"quote\":\"\\\"\",\"backslash\":\"\\\\\",\"newline\":\"\\n\",\"tab\":\"\\t\",\"control\":\"\\u0001\",\"chinese\":\"中文\",\"emoji\":\"😀\"}",
+    "expected": "{\"backslash\":\"\\\\\",\"chinese\":\"中文\",\"control\":\"\\u0001\",\"emoji\":\"😀\",\"newline\":\"\\n\",\"quote\":\"\\\"\",\"tab\":\"\\t\"}"
+  },
+  {
+    "name": "jcs-nested-array-order-preserved",
+    "kind": "jcs",
+    "input": "{\"rule\":{\"weekdays\":[5,1,3],\"interval\":1},\"type\":\"weekly\"}",
+    "expected": "{\"rule\":{\"interval\":1,\"weekdays\":[5,1,3]},\"type\":\"weekly\"}"
+  }
+]

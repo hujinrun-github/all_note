@@ -113,7 +113,6 @@ func RunTaskDomainV2ProjectCommandSuite(t *testing.T, fixture TaskDomainV2Projec
 		restored.Project().ArchivedFromStatus != nil {
 		t.Fatalf("restore result=%#v err=%v", restored, err)
 	}
-	mustExec(t, fixture.DB, `DELETE FROM domain_tasks_v2 WHERE workspace_id='project-command-w1' AND project_id='command-project'`)
 	deleted, err := service.DeleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandDelete, 8, at))
 	if err != nil || !deleted.Deleted() {
 		t.Fatalf("delete result=%#v err=%v", deleted, err)
@@ -121,6 +120,150 @@ func RunTaskDomainV2ProjectCommandSuite(t *testing.T, fixture TaskDomainV2Projec
 	if _, err := fixture.Reader(workspaceID).GetProject(ctx, project.ID); !errors.Is(err, taskdomain.ErrProjectNotFound) {
 		t.Fatalf("deleted project read error=%v", err)
 	}
+	if count := projectCommandRowCount(t, fixture.DB, `SELECT COUNT(*) FROM domain_tasks_v2 WHERE workspace_id='project-command-w1' AND project_id='command-project'`); count != 0 {
+		t.Fatalf("deleted standard project retained %d tasks", count)
+	}
+
+	t.Run("delete_cascades_learning_project_aggregate", func(t *testing.T) {
+		learning := taskdomain.Project{
+			WorkspaceID: workspaceID, ID: "delete-learning-project", Name: "Delete learning project",
+			Kind: taskdomain.ProjectKindLearning, Horizon: taskdomain.ProjectHorizonLong, Status: taskdomain.ProjectStatusActive,
+		}
+		unrelated := taskdomain.Project{
+			WorkspaceID: workspaceID, ID: "delete-unrelated-project", Name: "Unrelated project",
+			Kind: taskdomain.ProjectKindStandard, Horizon: taskdomain.ProjectHorizonShort, Status: taskdomain.ProjectStatusActive,
+		}
+		for _, candidate := range []taskdomain.Project{learning, unrelated} {
+			if _, err := service.CreateProject(ctx, taskdomain.CreateProjectRequest{
+				WorkspaceID: workspaceID, ExpectedRuntimeEpoch: 1, Project: candidate,
+				CommandID: "create-" + candidate.ID, ActorID: "user-1", At: at,
+			}); err != nil {
+				t.Fatalf("create %s: %v", candidate.ID, err)
+			}
+		}
+		if err := fixture.Writer.BeginFencedWrite(ctx, workspaceID, 1, func(tx storage.TenantWriteTx) error {
+			roadmapWriter := tx.RoadmapWriter()
+			if err := roadmapWriter.CreateRoadmap(ctx, taskdomain.LearningRoadmap{
+				WorkspaceID: workspaceID, ID: "delete-roadmap", ProjectID: learning.ID,
+				Status: taskdomain.RoadmapStatusActive, Title: "Delete roadmap", Revision: 1,
+			}); err != nil {
+				return err
+			}
+			if err := roadmapWriter.CreateRoadmapNode(ctx, taskdomain.RoadmapNode{
+				WorkspaceID: workspaceID, ID: "delete-node-1", ProjectID: learning.ID, RoadmapID: "delete-roadmap",
+				Title: "Foundation", Type: taskdomain.RoadmapNodeStage, Position: 1, Revision: 1,
+			}); err != nil {
+				return err
+			}
+			if err := roadmapWriter.CreateRoadmapNode(ctx, taskdomain.RoadmapNode{
+				WorkspaceID: workspaceID, ID: "delete-node-2", ProjectID: learning.ID, RoadmapID: "delete-roadmap",
+				ParentID: "delete-node-1", Title: "Practice", Type: taskdomain.RoadmapNodeTopic, Position: 2, Revision: 1,
+			}); err != nil {
+				return err
+			}
+			writer := tx.TaskDomainWriter()
+			linked := queryUnscheduledAggregate(workspaceID, "delete-linked-task", learning.ID)
+			linked.Task.RoadmapNodeID = "delete-node-2"
+			if err := writer.CreateTaskAggregate(ctx, linked); err != nil {
+				return err
+			}
+			if err := writer.CreateTaskAggregate(ctx, queryUnscheduledAggregate(workspaceID, "delete-unlinked-task", learning.ID)); err != nil {
+				return err
+			}
+			return writer.CreateTaskAggregate(ctx, queryUnscheduledAggregate(workspaceID, "delete-unrelated-task", unrelated.ID))
+		}); err != nil {
+			t.Fatalf("seed delete project aggregates: %v", err)
+		}
+		mustExecArgs(t, fixture.DB, `INSERT INTO domain_roadmap_edges_v2
+			(workspace_id,id,project_id,roadmap_id,from_node_id,to_node_id,edge_type,revision,created_at)
+			VALUES (?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP)`, fixture.Dialect,
+			workspaceID, "delete-edge", learning.ID, "delete-roadmap", "delete-node-1", "delete-node-2", "prerequisite")
+		mustExecArgs(t, fixture.DB, `INSERT INTO domain_task_dependencies_v2
+			(workspace_id,predecessor_task_id,successor_task_id,dependency_type,created_at)
+			VALUES (?,?,?,?,CURRENT_TIMESTAMP)`, fixture.Dialect,
+			workspaceID, "delete-linked-task", "delete-unlinked-task", "finish_to_start")
+		for _, taskID := range []string{"delete-linked-task", "delete-unlinked-task"} {
+			mustExecArgs(t, fixture.DB, `UPDATE domain_tasks_v2 SET lifecycle_status=? WHERE workspace_id=? AND id=?`, fixture.Dialect,
+				"cancelled", workspaceID, taskID)
+			mustExecArgs(t, fixture.DB, `UPDATE domain_task_occurrences_v2 SET execution_status=? WHERE workspace_id=? AND task_id=?`, fixture.Dialect,
+				"cancelled", workspaceID, taskID)
+		}
+		mustExecArgs(t, fixture.DB, `INSERT INTO domain_task_execution_logs_v2
+			(workspace_id,id,occurrence_id,from_status,to_status,blocked_reason,next_action,actor_id,metadata,created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`, fixture.Dialect,
+			workspaceID, "delete-log", "delete-linked-task-occ", "open", "cancelled", nil, nil, "user-1", `{}`)
+
+		completed, err := service.CompleteProject(ctx, projectCommandExistingRequest(workspaceID, learning.ID, taskdomain.ProjectCommandComplete, 1, at))
+		if err != nil || completed.Revision() != 2 {
+			t.Fatalf("complete learning project result=%#v err=%v", completed, err)
+		}
+		deleted, err := service.DeleteProject(ctx, projectCommandExistingRequest(workspaceID, learning.ID, taskdomain.ProjectCommandDelete, 2, at))
+		if err != nil || !deleted.Deleted() {
+			t.Fatalf("delete learning project result=%#v err=%v", deleted, err)
+		}
+
+		for table, predicate := range map[string]string{
+			"domain_projects_v2":               "id='delete-learning-project'",
+			"domain_learning_roadmaps_v2":      "project_id='delete-learning-project'",
+			"domain_roadmap_nodes_v2":          "project_id='delete-learning-project'",
+			"domain_roadmap_edges_v2":          "project_id='delete-learning-project'",
+			"domain_tasks_v2":                  "project_id='delete-learning-project'",
+			"domain_task_schedules_v2":         "task_id IN ('delete-linked-task','delete-unlinked-task')",
+			"domain_task_schedule_versions_v2": "task_id IN ('delete-linked-task','delete-unlinked-task')",
+			"domain_task_occurrences_v2":       "task_id IN ('delete-linked-task','delete-unlinked-task')",
+			"domain_task_execution_logs_v2":    "id='delete-log'",
+			"domain_task_dependencies_v2":      "predecessor_task_id='delete-linked-task' OR successor_task_id='delete-unlinked-task'",
+			"domain_task_delete_context_v2":    "task_id IN ('delete-linked-task','delete-unlinked-task')",
+		} {
+			query := "SELECT COUNT(*) FROM " + table + " WHERE workspace_id='project-command-w1' AND (" + predicate + ")"
+			if count := projectCommandRowCount(t, fixture.DB, query); count != 0 {
+				t.Fatalf("%s retained %d deleted-project rows", table, count)
+			}
+		}
+		if count := projectCommandRowCount(t, fixture.DB, `SELECT COUNT(*) FROM domain_projects_v2 WHERE workspace_id='project-command-w1' AND id='delete-unrelated-project'`); count != 1 {
+			t.Fatalf("unrelated project count=%d", count)
+		}
+		if count := projectCommandRowCount(t, fixture.DB, `SELECT COUNT(*) FROM domain_tasks_v2 WHERE workspace_id='project-command-w1' AND id='delete-unrelated-task'`); count != 1 {
+			t.Fatalf("unrelated task count=%d", count)
+		}
+	})
+
+	t.Run("delete_rolls_back_all_dependents_when_project_delete_fails", func(t *testing.T) {
+		project := taskdomain.Project{
+			WorkspaceID: workspaceID, ID: "rollback-delete-project", Name: "Rollback delete",
+			Kind: taskdomain.ProjectKindStandard, Horizon: taskdomain.ProjectHorizonShort, Status: taskdomain.ProjectStatusActive,
+		}
+		if _, err := service.CreateProject(ctx, taskdomain.CreateProjectRequest{
+			WorkspaceID: workspaceID, ExpectedRuntimeEpoch: 1, Project: project,
+			CommandID: "create-rollback-delete", ActorID: "user-1", At: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.Writer.BeginFencedWrite(ctx, workspaceID, 1, func(tx storage.TenantWriteTx) error {
+			return tx.TaskDomainWriter().CreateTaskAggregate(ctx, queryUnscheduledAggregate(workspaceID, "rollback-delete-task", project.ID))
+		}); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, fixture.DB, `CREATE TABLE project_delete_contract_blocker (
+			workspace_id TEXT NOT NULL,
+			project_id TEXT NOT NULL,
+			FOREIGN KEY (workspace_id,project_id) REFERENCES domain_projects_v2(workspace_id,id)
+		)`)
+		mustExec(t, fixture.DB, `INSERT INTO project_delete_contract_blocker(workspace_id,project_id) VALUES('project-command-w1','rollback-delete-project')`)
+		if _, err := service.DeleteProject(ctx, projectCommandExistingRequest(workspaceID, project.ID, taskdomain.ProjectCommandDelete, 1, at)); err == nil {
+			t.Fatal("delete unexpectedly succeeded with a blocking foreign key")
+		}
+		if count := projectCommandRowCount(t, fixture.DB, `SELECT COUNT(*) FROM domain_projects_v2 WHERE workspace_id='project-command-w1' AND id='rollback-delete-project'`); count != 1 {
+			t.Fatalf("rollback project count=%d", count)
+		}
+		if count := projectCommandRowCount(t, fixture.DB, `SELECT COUNT(*) FROM domain_tasks_v2 WHERE workspace_id='project-command-w1' AND id='rollback-delete-task'`); count != 1 {
+			t.Fatalf("rollback task count=%d", count)
+		}
+		if count := projectCommandRowCount(t, fixture.DB, `SELECT COUNT(*) FROM domain_task_occurrences_v2 WHERE workspace_id='project-command-w1' AND task_id='rollback-delete-task'`); count != 1 {
+			t.Fatalf("rollback occurrence count=%d", count)
+		}
+		mustExec(t, fixture.DB, `DROP TABLE project_delete_contract_blocker`)
+	})
 
 	t.Run("CAS_system_epoch_rollback_and_closed_capability", func(t *testing.T) {
 		cas := taskdomain.Project{
@@ -270,6 +413,15 @@ func RunTaskDomainV2ProjectCommandSuite(t *testing.T, fixture TaskDomainV2Projec
 
 func projectCommandExistingRequest(workspaceID, projectID string, command taskdomain.ProjectCommand, revision int64, at time.Time) taskdomain.ExistingProjectRequest {
 	return taskdomain.ExistingProjectRequest{WorkspaceID: workspaceID, ProjectID: projectID, Command: command, ExpectedRuntimeEpoch: 1, ExpectedProjectRevision: revision, CommandID: "command-" + string(command), ActorID: "user-1", At: at}
+}
+
+func projectCommandRowCount(t *testing.T, db *sql.DB, query string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(query).Scan(&count); err != nil {
+		t.Fatalf("count project command rows: %v\n%s", err, query)
+	}
+	return count
 }
 
 func setProjectCommandOccurrenceStatus(t *testing.T, fixture TaskDomainV2ProjectCommandFixture, occurrenceID string, status taskdomain.ExecutionStatus) {

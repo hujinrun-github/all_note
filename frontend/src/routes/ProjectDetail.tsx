@@ -918,8 +918,9 @@ export default function ProjectDetail() {
                 },
               })
             }
-            onScheduleUpdate={(input) =>
-              rescheduleThisAndFollowing.mutateAsync({
+            onScheduleUpdate={(input) => {
+              const { weekdays, ...schedule } = input
+              return rescheduleThisAndFollowing.mutateAsync({
                 projectID,
                 taskID: selectedTask.id,
                 input: {
@@ -928,16 +929,16 @@ export default function ProjectDetail() {
                   effective_from: input.starts_on,
                   generate_through_exclusive: addDays(input.starts_on, 91),
                   schedule: {
-                    ...input,
+                    ...schedule,
                     rule: recurrenceRule(
                       input.recurrence_type,
                       input.starts_on,
-                      input.weekdays
+                      weekdays
                     ),
                   },
                 },
               })
-            }
+            }}
             onPublish={() =>
               handleTaskCommand(() =>
                 publishTask.mutateAsync(taskCommandVariables(selectedTask))

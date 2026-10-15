@@ -1,0 +1,27 @@
+{
+  "description": "FlowSpace WeChat Mini Program (mobile-v2 sync client)",
+  "appid": "wx2d739a54c9d9d0ea",
+  "projectname": "flowspace-miniprogram",
+  "compileType": "miniprogram",
+  "libVersion": "3.5.0",
+  "packOptions": {
+    "ignore": [
+      { "type": "file", "value": "package.json" },
+      { "type": "file", "value": "package-lock.json" },
+      { "type": "folder", "value": "node_modules" },
+      { "type": "folder", "value": "test" }
+    ],
+    "include": []
+  },
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "useCompilerPlugins": ["typescript"]
+  },
+  "condition": {}
+}

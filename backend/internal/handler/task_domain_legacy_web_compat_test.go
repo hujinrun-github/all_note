@@ -198,6 +198,45 @@ func TestLegacyWebV2TodayProjectsCurrentAndOverdueOccurrences(t *testing.T) {
 	}
 }
 
+func TestLegacyWebV2TodaySkipsStatesMissingFromLegacyContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	now := time.Now()
+	activeOccurrence := legacyWebOccurrence("workspace-1", "task-active", "occ-active", taskdomain.TimingDate, now.Format("2006-01-02"), nil, nil, "")
+	draftOccurrence := legacyWebOccurrence("workspace-1", "task-draft", "occ-draft", taskdomain.TimingDate, now.Format("2006-01-02"), nil, nil, "")
+	draftOccurrence.LifecycleStatus = taskdomain.TaskLifecycleDraft
+	skippedOccurrence := legacyWebOccurrence("workspace-1", "task-skipped", "occ-skipped", taskdomain.TimingDate, now.Format("2006-01-02"), nil, nil, "")
+	skippedOccurrence.Status = taskdomain.ExecutionStatusSkipped
+
+	application := &legacyWebApplicationFake{
+		workspaceID: "workspace-1",
+		occurrencesByScope: map[taskdomain.OccurrenceListScope][]taskdomain.QueryOccurrenceSnapshot{
+			taskdomain.OccurrenceListToday: {activeOccurrence, draftOccurrence, skippedOccurrence},
+		},
+		tasks: map[string]taskdomain.TaskAggregateQueryResult{
+			"task-active": legacyWebTask("workspace-1", "task-active", taskdomain.TimingDate, now.Format("2006-01-02"), "", 0),
+		},
+		projects: map[string]taskdomain.ProjectSnapshot{
+			"project-1": {Project: taskdomain.Project{WorkspaceID: "workspace-1", ID: "project-1", Name: "Personal", Kind: taskdomain.ProjectKindStandard, Horizon: taskdomain.ProjectHorizonShort, Status: taskdomain.ProjectStatusActive}, Revision: 7},
+		},
+	}
+	response := httptest.NewRecorder()
+	legacyWebCompatRouter(application).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/today?timezone=Asia/Shanghai", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"occurrence_id":"occ-active"`) {
+		t.Fatalf("body = %s, want active occurrence", response.Body.String())
+	}
+	for _, omitted := range []string{"occ-draft", "occ-skipped"} {
+		if strings.Contains(response.Body.String(), omitted) {
+			t.Fatalf("body = %s, unexpectedly contains %s", response.Body.String(), omitted)
+		}
+	}
+	if application.getTaskCalls != 1 || application.getProjectCalls != 1 {
+		t.Fatalf("application calls get-task=%d get-project=%d", application.getTaskCalls, application.getProjectCalls)
+	}
+}
+
 func legacyWebCompatRouter(application LegacyWebTaskDomainApplication) *gin.Engine {
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

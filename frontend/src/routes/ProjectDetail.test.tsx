@@ -153,10 +153,7 @@ describe('Project detail v2', () => {
       'weekly'
     )
     await user.clear(screen.getByLabelText('新任务重复起始日期'))
-    await user.type(
-      screen.getByLabelText('新任务重复起始日期'),
-      '2026-08-03'
-    )
+    await user.type(screen.getByLabelText('新任务重复起始日期'), '2026-08-03')
     await user.click(screen.getByRole('button', { name: '添加任务' }))
 
     expect(createTask).toHaveBeenCalledWith(
@@ -469,6 +466,95 @@ describe('Project detail v2', () => {
     expect(completeProject).toHaveBeenCalled()
   })
 
+  it('cancels every draft task before completing and keeps the whole operation busy', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [
+        { ...taskDefinition, lifecycle_status: 'draft' },
+        {
+          ...taskDefinition,
+          id: 'task-2',
+          title: '第二项草稿',
+          lifecycle_status: 'draft',
+        },
+      ],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: [
+        openOccurrence,
+        { ...openOccurrence, id: 'occurrence-2', task_id: 'task-2' },
+      ],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useOccurrences>)
+    let finishFirst!: () => void
+    cancelTask.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = resolve
+        })
+    )
+    cancelTask.mockResolvedValueOnce({})
+    completeProject.mockResolvedValueOnce({})
+    renderDetail()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '完成项目' }))
+    const dialog = screen.getByRole('dialog', { name: '处理未完成执行实例' })
+    await user.click(
+      within(dialog).getByRole('button', { name: '取消未完成实例并完成' })
+    )
+    expect(
+      within(dialog).getByRole('button', { name: '正在完成…' })
+    ).toBeDisabled()
+    expect(
+      within(dialog).getByRole('button', { name: '迁移到其他项目' })
+    ).toBeDisabled()
+    expect(completeProject).not.toHaveBeenCalled()
+    finishFirst()
+    await waitFor(() => expect(completeProject).toHaveBeenCalledTimes(1))
+    expect(
+      cancelTask.mock.calls.map(([variables]) => variables.taskID)
+    ).toEqual(['task-1', 'task-2'])
+    expect(cancelTask.mock.invocationCallOrder[1]).toBeLessThan(
+      completeProject.mock.invocationCallOrder[0]
+    )
+    expect(
+      screen.queryByRole('dialog', { name: '处理未完成执行实例' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows cancellation failure inside the decision dialog and does not complete the project', async () => {
+    cancelTask.mockRejectedValueOnce(new Error('request failed'))
+    renderDetail()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '完成项目' }))
+    const dialog = screen.getByRole('dialog', { name: '处理未完成执行实例' })
+    await user.click(
+      within(dialog).getByRole('button', { name: '取消未完成实例并完成' })
+    )
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      '取消任务后完成项目失败'
+    )
+    expect(completeProject).not.toHaveBeenCalled()
+    expect(
+      within(dialog).getByRole('button', { name: '取消未完成实例并完成' })
+    ).toBeEnabled()
+  })
+
+  it('handles direct project completion failure when there are no open occurrences', async () => {
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: [],
+      isLoading: false,
+    } as unknown as ReturnType<typeof taskHooks.useOccurrences>)
+    completeProject.mockRejectedValueOnce(new Error('request failed'))
+    renderDetail()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '完成项目' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '完成项目失败，请刷新项目后重试。'
+    )
+    expect(screen.getByRole('button', { name: '完成项目' })).toBeEnabled()
+  })
+
   it('edits the task name, description, and attachment links', async () => {
     updateTask.mockResolvedValue({
       ...taskDefinition,
@@ -555,6 +641,47 @@ describe('Project detail v2', () => {
             timezone: expect.any(String),
             starts_on: '2026-08-03',
             rule: { interval: 1, weekdays: [1] },
+          },
+        },
+      })
+    )
+  })
+
+  it('saves the workday preset without leaking UI-only weekdays into the schedule body', async () => {
+    rescheduleThisAndFollowing.mockResolvedValue({
+      task_revision: 4,
+      schedule_revision: 3,
+      schedule_version: 3,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '设置重复' }))
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '重复频率' }),
+      'weekdays'
+    )
+    const startsOn = screen.getByLabelText('重复开始日期')
+    await user.clear(startsOn)
+    await user.type(startsOn, '2026-10-13')
+    await user.click(screen.getByRole('button', { name: '保存安排' }))
+
+    await waitFor(() =>
+      expect(rescheduleThisAndFollowing).toHaveBeenCalledWith({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        input: {
+          expected_task_revision: 4,
+          expected_schedule_revision: 2,
+          effective_from: '2026-10-13',
+          generate_through_exclusive: '2027-01-12',
+          schedule: {
+            recurrence_type: 'weekly',
+            timing_type: 'date',
+            timezone: expect.any(String),
+            starts_on: '2026-10-13',
+            rule: { interval: 1, weekdays: [1, 2, 3, 4, 5] },
           },
         },
       })

@@ -954,6 +954,35 @@ func (w *postgresTaskDomainV2ProjectWriter) DeleteProject(ctx context.Context, p
 	if err := taskdomain.ValidateProjectDeletion(current.Project); err != nil {
 		return err
 	}
+	if _, err := w.queryer.ExecContext(ctx, `INSERT INTO domain_task_delete_context_v2(workspace_id,task_id)
+		SELECT workspace_id,id FROM domain_tasks_v2 WHERE workspace_id=$1 AND project_id=$2`, w.workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_task_execution_logs_v2 WHERE workspace_id=$1 AND occurrence_id IN (
+		SELECT occurrence.id
+		FROM domain_task_occurrences_v2 occurrence
+		JOIN domain_tasks_v2 task ON task.workspace_id=occurrence.workspace_id AND task.id=occurrence.task_id
+		WHERE task.workspace_id=$1 AND task.project_id=$2
+	)`, w.workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_task_delete_context_v2 WHERE workspace_id=$1 AND task_id IN (
+		SELECT id FROM domain_tasks_v2 WHERE workspace_id=$1 AND project_id=$2
+	)`, w.workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_tasks_v2 WHERE workspace_id=$1 AND project_id=$2`, w.workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_roadmap_edges_v2 WHERE workspace_id=$1 AND project_id=$2`, w.workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_roadmap_nodes_v2 WHERE workspace_id=$1 AND project_id=$2`, w.workspaceID, projectID); err != nil {
+		return err
+	}
+	if _, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_learning_roadmaps_v2 WHERE workspace_id=$1 AND project_id=$2`, w.workspaceID, projectID); err != nil {
+		return err
+	}
 	result, err := w.queryer.ExecContext(ctx, `DELETE FROM domain_projects_v2 WHERE workspace_id=$1 AND id=$2 AND revision=$3`, w.workspaceID, projectID, expectedRevision)
 	if err != nil {
 		return err

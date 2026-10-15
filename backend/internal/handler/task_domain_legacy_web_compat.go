@@ -404,6 +404,13 @@ func (handler legacyWebTaskDomainV2Handler) projectLegacyOccurrences(
 		if occurrence.WorkspaceID != identity.workspaceID {
 			return nil, taskapp.ErrInvalidRuntime
 		}
+		// Draft, paused, cancelled and archived tasks are valid v2 state, as
+		// are skipped and cancelled occurrences. The legacy Today contract has
+		// no field that can preserve those states, so omit them from this
+		// compatibility overview instead of failing the entire response.
+		if !legacyWebTodayOccurrenceRepresentable(occurrence) {
+			continue
+		}
 		aggregate, exists := taskCache[occurrence.TaskID]
 		if !exists {
 			var err error
@@ -441,6 +448,21 @@ func (handler legacyWebTaskDomainV2Handler) projectLegacyOccurrences(
 		tasks = append(tasks, projected)
 	}
 	return tasks, nil
+}
+
+func legacyWebTodayOccurrenceRepresentable(occurrence taskdomain.QueryOccurrenceSnapshot) bool {
+	switch occurrence.LifecycleStatus {
+	case taskdomain.TaskLifecycleActive, taskdomain.TaskLifecycleCompleted:
+	default:
+		return false
+	}
+	switch occurrence.Status {
+	case taskdomain.ExecutionStatusOpen, taskdomain.ExecutionStatusActive,
+		taskdomain.ExecutionStatusBlocked, taskdomain.ExecutionStatusDone:
+		return true
+	default:
+		return false
+	}
 }
 
 func filterLegacyWebOverdueWindow(

@@ -350,17 +350,13 @@ export default function TaskOccurrenceWorkspace() {
     <section className="td-page td-tasks-page" aria-labelledby="tasks-heading">
       <header className="td-page-header">
         <div>
+          <span className="workspace-eyebrow">专注行动</span>
           <div className="td-title-line">
             <h1 id="tasks-heading">任务</h1>
-            <span>执行工作台</span>
           </div>
-          <p>每一行都是一次真实行动；任务定义和重复规则在检查器中管理。</p>
+          <p>整理待办，安排优先级，一次专注一件事。</p>
         </div>
         <div className="td-page-actions">
-          <button type="button" className="td-secondary-action">
-            <ListChecks aria-hidden="true" />
-            批量选择
-          </button>
           <button
             type="button"
             className="td-primary-action"
@@ -584,10 +580,8 @@ export default function TaskOccurrenceWorkspace() {
                       onComplete={
                         task
                           ? () =>
-                              void handleTaskCommand(() =>
-                                completeOccurrence.mutateAsync(
-                                  occurrenceCommandVariables(task, occurrence)
-                                )
+                              completeOccurrence.mutateAsync(
+                                occurrenceCommandVariables(task, occurrence)
                               )
                           : undefined
                       }
@@ -620,7 +614,7 @@ export default function TaskOccurrenceWorkspace() {
               执行实例暂时不可用，请刷新后重试。
             </div>
           ) : null}
-          {taskCommandError ? (
+          {taskCommandError && !selectedTask ? (
             <div className="td-inline-error" role="alert">
               {taskCommandError}
             </div>
@@ -648,43 +642,30 @@ export default function TaskOccurrenceWorkspace() {
               setEditingOccurrenceID('')
             }}
             onStart={() =>
-              handleTaskCommand(() =>
-                startOccurrence.mutateAsync(
-                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
-                )
+              startOccurrence.mutateAsync(
+                occurrenceCommandVariables(selectedTask, selectedOccurrence)
               )
             }
             onComplete={() =>
-              handleTaskCommand(() =>
-                completeOccurrence.mutateAsync(
-                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
-                )
+              completeOccurrence.mutateAsync(
+                occurrenceCommandVariables(selectedTask, selectedOccurrence)
               )
             }
             onReopen={() =>
-              handleTaskCommand(() =>
-                reopenOccurrence.mutateAsync(
-                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
-                )
+              reopenOccurrence.mutateAsync(
+                occurrenceCommandVariables(selectedTask, selectedOccurrence)
               )
             }
             onBlock={(reason, nextAction) =>
-              handleTaskCommand(() =>
-                blockOccurrence.mutateAsync({
-                  ...occurrenceCommandVariables(
-                    selectedTask,
-                    selectedOccurrence
-                  ),
-                  blockedReason: reason,
-                  nextAction,
-                })
-              )
+              blockOccurrence.mutateAsync({
+                ...occurrenceCommandVariables(selectedTask, selectedOccurrence),
+                blockedReason: reason,
+                nextAction,
+              })
             }
             onUnblock={() =>
-              handleTaskCommand(() =>
-                unblockOccurrence.mutateAsync(
-                  occurrenceCommandVariables(selectedTask, selectedOccurrence)
-                )
+              unblockOccurrence.mutateAsync(
+                occurrenceCommandVariables(selectedTask, selectedOccurrence)
               )
             }
             onReschedule={() => beginReschedule(selectedOccurrence)}
@@ -863,6 +844,7 @@ export default function TaskOccurrenceWorkspace() {
           </OccurrenceInspector>
         ) : selectedTask ? (
           <TaskDefinitionInspector
+            commandError={taskCommandError}
             task={selectedTask}
             project={selectedProject}
             occurrences={selectedTaskOccurrences}
