@@ -206,6 +206,24 @@ func TestScheduleServiceThisAndFutureReplacesUntouchedUnscheduledOccurrence(t *t
 	}
 }
 
+func TestScheduleServiceThisAndFutureRejectsEffectiveDateBeforeCurrentVersion(t *testing.T) {
+	state := scheduleServiceState()
+	state.Versions[0].EffectiveFrom = "2026-07-23"
+	writer, fencer, reader := scheduleServiceHarness(state)
+	service := NewScheduleService(fencer, reader)
+	request := scheduleServiceFutureRequest()
+	request.EffectiveFrom = "2026-07-22"
+	request.Schedule.StartsOn = "2026-07-22"
+
+	result, err := service.RescheduleThisAndFuture(context.Background(), request)
+	if ErrorCodeOf(err) != ErrorCodeInvalidSchedule || !result.IsZero() {
+		t.Fatalf("backdated schedule = result:%#v err:%v code:%q", result, err, ErrorCodeOf(err))
+	}
+	if writer.versionCalls != 0 || writer.rescheduleCalls != 0 {
+		t.Fatalf("backdated schedule wrote state: %#v", writer)
+	}
+}
+
 func TestScheduleServiceDSTErrorsReturnCandidatesAndNeverWrite(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -220,6 +238,7 @@ func TestScheduleServiceDSTErrorsReturnCandidatesAndNeverWrite(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state := scheduleServiceState()
+			state.Versions[0].EffectiveFrom = "2026-01-01"
 			state.Occurrences = []ScheduleOccurrenceSnapshot{scheduleServiceOccurrence("past", "2026-01-01", ExecutionStatusOpen, 20, false)}
 			writer, _, reader := scheduleServiceHarness(state)
 			service := NewScheduleService(reader.fencer, reader)

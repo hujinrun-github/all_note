@@ -920,14 +920,18 @@ export default function ProjectDetail() {
             }
             onScheduleUpdate={(input) => {
               const { weekdays, ...schedule } = input
+              const effectiveFrom = scheduleChangeEffectiveFrom(
+                selectedTaskOccurrences,
+                input.starts_on
+              )
               return rescheduleThisAndFollowing.mutateAsync({
                 projectID,
                 taskID: selectedTask.id,
                 input: {
                   expected_task_revision: selectedTask.revision,
                   expected_schedule_revision: selectedTask.schedule_revision,
-                  effective_from: input.starts_on,
-                  generate_through_exclusive: addDays(input.starts_on, 91),
+                  effective_from: effectiveFrom,
+                  generate_through_exclusive: addDays(effectiveFrom, 91),
                   schedule: {
                     ...schedule,
                     rule: recurrenceRule(
@@ -1266,6 +1270,23 @@ function addDays(value: string, days: number) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function scheduleChangeEffectiveFrom(
+  occurrences: OccurrenceV2[],
+  startsOn: string
+) {
+  let effectiveFrom = startsOn
+  for (const occurrence of occurrences) {
+    if (occurrence.execution_status === 'open' || !occurrence.planned_date) {
+      continue
+    }
+    const afterProtectedOccurrence = addDays(occurrence.planned_date, 1)
+    if (afterProtectedOccurrence > effectiveFrom) {
+      effectiveFrom = afterProtectedOccurrence
+    }
+  }
+  return effectiveFrom
 }
 
 function ProjectRoadmapOverview({

@@ -222,7 +222,8 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 	if err != nil {
 		return ScheduleCommandResult{}, err
 	}
-	if _, err := requiredGeneratorDate(request.EffectiveFrom, "effective from"); err != nil {
+	requestedEffectiveFrom, err := requiredGeneratorDate(request.EffectiveFrom, "effective from")
+	if err != nil {
 		return ScheduleCommandResult{}, err
 	}
 	if _, err := CalculateOccurrenceKeys(normalized,
@@ -252,6 +253,15 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 		current, found := currentScheduleVersion(state)
 		if !found {
 			return ErrInvalidScheduleCommand
+		}
+		if current.EffectiveFrom != "" {
+			currentEffectiveFrom, err := requiredGeneratorDate(current.EffectiveFrom, "current schedule effective from")
+			if err != nil {
+				return ErrInvalidScheduleCommand
+			}
+			if requestedEffectiveFrom.Before(currentEffectiveFrom) {
+				return invalidSchedule("effective_from precedes the current schedule version")
+			}
 		}
 		newScheduleRevision := nextScheduleVersion(state.Versions)
 		newVersion, err := persistenceScheduleVersion(request.WorkspaceID, request.TaskID, newScheduleRevision, request.EffectiveFrom, normalized)

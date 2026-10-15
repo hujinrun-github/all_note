@@ -688,6 +688,66 @@ describe('Project detail v2', () => {
     )
   })
 
+  it('starts a replacement schedule after later completed occurrences', async () => {
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: [
+        {
+          ...openOccurrence,
+          id: 'overdue-open',
+          occurrence_key: '2026-10-14',
+          planned_date: '2026-10-14',
+        },
+        {
+          ...openOccurrence,
+          id: 'completed-15',
+          occurrence_key: '2026-10-15',
+          planned_date: '2026-10-15',
+          execution_status: 'done',
+          completed_at: '2026-10-15T03:00:00Z',
+        },
+        {
+          ...openOccurrence,
+          id: 'completed-16',
+          occurrence_key: '2026-10-16',
+          planned_date: '2026-10-16',
+          execution_status: 'done',
+          completed_at: '2026-10-16T03:00:00Z',
+        },
+      ],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useOccurrences>)
+    rescheduleThisAndFollowing.mockResolvedValue({
+      task_revision: 4,
+      schedule_revision: 3,
+      schedule_version: 3,
+    })
+    renderDetail()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('复习 N2 语法'))
+    await user.click(screen.getByRole('button', { name: '设置重复' }))
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: '重复频率' }),
+      'weekdays'
+    )
+    await user.click(screen.getByRole('button', { name: '保存安排' }))
+
+    await waitFor(() =>
+      expect(rescheduleThisAndFollowing).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            effective_from: '2026-10-17',
+            generate_through_exclusive: '2027-01-16',
+            schedule: expect.objectContaining({
+              starts_on: '2026-10-14',
+              rule: { interval: 1, weekdays: [1, 2, 3, 4, 5] },
+            }),
+          }),
+        })
+      )
+    )
+  })
+
   it('shows and restores the current recurring schedule metadata', async () => {
     vi.mocked(taskHooks.useOccurrences).mockReturnValue({
       data: [
