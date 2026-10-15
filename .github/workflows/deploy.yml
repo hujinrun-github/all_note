@@ -138,6 +138,11 @@ jobs:
             git rev-parse --show-toplevel
             git rev-parse --short HEAD
 
+            # The frontend image copies the whole frontend directory into its
+            # build context. Remove stale untracked source files left by older
+            # deployments so production builds exactly the checked-in commit.
+            git clean -fd -- frontend/src
+
             if [ ! -f docker-compose.yml ]; then
               echo "docker-compose.yml was not found in APP_DIR after checkout."
               echo "APP_DIR must point to the repository root that contains docker-compose.yml."
