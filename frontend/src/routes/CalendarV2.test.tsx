@@ -64,6 +64,24 @@ const entries: CalendarEntryV2[] = [
   {
     project_id: 'project-1',
     project_revision: 2,
+    task_id: 'task-all-day-same-day',
+    task_revision: 9,
+    schedule_revision: 7,
+    task_title: '补充材料整理',
+    occurrence_id: 'occurrence-all-day-same-day',
+    occurrence_key: 'once',
+    occurrence_revision: 13,
+    generated_schedule_revision: 7,
+    execution_status: 'open',
+    timing_type: 'date',
+    timezone: 'Asia/Shanghai',
+    recurring: false,
+    planned_date: '2026-07-23',
+    all_day_end_date: '2026-07-24',
+  },
+  {
+    project_id: 'project-1',
+    project_revision: 2,
     task_id: 'task-done',
     task_revision: 4,
     schedule_revision: 2,
@@ -189,6 +207,12 @@ describe('CalendarV2', () => {
     expect(allDayEntry).toHaveTextContent('发布准备')
     expect(allDayEntry).toHaveTextContent('7月22日–7月24日')
     expect(allDayEntry).toHaveAttribute('data-exclusive-end', '2026-07-25')
+    expect(allDayEntry).toHaveAttribute('data-calendar-row', '1')
+    expect(
+      within(allDayLane).getByRole('button', {
+        name: /编辑日程：补充材料整理/,
+      })
+    ).toHaveAttribute('data-calendar-row', '2')
     expect(
       within(timeGrid).getByRole('button', { name: /编辑日程：设计评审/ })
     ).toHaveTextContent('09:30–10:30')

@@ -279,6 +279,62 @@ function allDayRangeLabel(entry: CalendarEntryV2) {
     : `${formatDate(start)}–${formatDate(inclusiveEnd)}`
 }
 
+interface AllDayEntryLayout {
+  entry: CalendarEntryV2
+  startIndex: number
+  endIndex: number
+  row: number
+}
+
+function layoutAllDayEntries(
+  entries: CalendarEntryV2[],
+  rangeStart: string,
+  dayCount: number
+) {
+  const ranges = entries
+    .flatMap<AllDayEntryLayout>((entry) => {
+      if (!entry.planned_date) return []
+      const exclusiveEnd =
+        entry.all_day_end_date || addDays(entry.planned_date, 1)
+      const rawStartIndex = daysBetween(rangeStart, entry.planned_date)
+      const rawEndIndex = daysBetween(rangeStart, exclusiveEnd)
+      if (rawEndIndex <= 0 || rawStartIndex >= dayCount) return []
+
+      return [
+        {
+          entry,
+          startIndex: Math.max(0, rawStartIndex),
+          endIndex: Math.min(
+            dayCount,
+            Math.max(rawEndIndex, rawStartIndex + 1)
+          ),
+          row: 0,
+        },
+      ]
+    })
+    .sort(
+      (left, right) =>
+        left.startIndex - right.startIndex ||
+        right.endIndex - left.endIndex ||
+        left.entry.task_title.localeCompare(right.entry.task_title)
+    )
+
+  const rowEndIndexes: number[] = []
+  for (const range of ranges) {
+    const availableRow = rowEndIndexes.findIndex(
+      (rowEndIndex) => rowEndIndex <= range.startIndex
+    )
+    const row = availableRow === -1 ? rowEndIndexes.length : availableRow
+    range.row = row + 1
+    rowEndIndexes[row] = range.endIndex
+  }
+
+  return {
+    entries: ranges,
+    rowCount: Math.max(1, rowEndIndexes.length),
+  }
+}
+
 function offsetLabel(offsetSeconds: number) {
   const sign = offsetSeconds < 0 ? '-' : '+'
   const absolute = Math.abs(offsetSeconds)
@@ -425,6 +481,10 @@ export default function CalendarV2({
           entry.planned_end_at
       ),
     [visibleEntries]
+  )
+  const allDayLayout = useMemo(
+    () => layoutAllDayEntries(dateEntries, weekStart, weekDates.length),
+    [dateEntries, weekStart, weekDates.length]
   )
   const entriesByDate = useMemo(() => {
     const grouped = new Map<string, CalendarEntryV2[]>()
@@ -852,7 +912,14 @@ export default function CalendarV2({
                 aria-label="全天安排"
               >
                 <strong className="calendar-v2-lane-label">全天</strong>
-                <div className="calendar-v2-all-day-grid">
+                <div
+                  className="calendar-v2-all-day-grid"
+                  style={
+                    {
+                      '--calendar-all-day-rows': allDayLayout.rowCount,
+                    } as CSSProperties
+                  }
+                >
                   {weekDates.map((date) => (
                     <div
                       key={date}
@@ -862,44 +929,38 @@ export default function CalendarV2({
                       aria-hidden="true"
                     />
                   ))}
-                  {dateEntries.map((entry) => {
-                    const startIndex = Math.max(
-                      0,
-                      Math.min(6, daysBetween(weekStart, entry.planned_date!))
-                    )
-                    const exclusiveEnd =
-                      entry.all_day_end_date || addDays(entry.planned_date!, 1)
-                    const endIndex = Math.min(
-                      7,
-                      Math.max(
-                        startIndex + 1,
-                        daysBetween(weekStart, exclusiveEnd)
+                  {allDayLayout.entries.map(
+                    ({ entry, startIndex, endIndex, row }) => {
+                      const exclusiveEnd =
+                        entry.all_day_end_date ||
+                        addDays(entry.planned_date!, 1)
+                      return (
+                        <button
+                          key={entry.occurrence_id}
+                          type="button"
+                          className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
+                          title={entry.task_title}
+                          style={
+                            {
+                              '--calendar-column-start': startIndex + 1,
+                              '--calendar-column-end': endIndex + 1,
+                              '--calendar-row': row,
+                            } as CSSProperties
+                          }
+                          data-exclusive-end={exclusiveEnd}
+                          data-calendar-row={row}
+                          draggable={entry.execution_status !== 'done'}
+                          onDragStart={(event) => handleDragStart(event, entry)}
+                          onClick={() => openEditor(entry)}
+                          aria-label={`编辑日程：${entry.task_title}`}
+                        >
+                          <strong>{entry.task_title}</strong>
+                          <span>{allDayRangeLabel(entry)}</span>
+                        </button>
                       )
-                    )
-                    return (
-                      <button
-                        key={entry.occurrence_id}
-                        type="button"
-                        className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
-                        title={entry.task_title}
-                        style={
-                          {
-                            '--calendar-column-start': startIndex + 1,
-                            '--calendar-column-end': endIndex + 1,
-                          } as CSSProperties
-                        }
-                        data-exclusive-end={exclusiveEnd}
-                        draggable={entry.execution_status !== 'done'}
-                        onDragStart={(event) => handleDragStart(event, entry)}
-                        onClick={() => openEditor(entry)}
-                        aria-label={`编辑日程：${entry.task_title}`}
-                      >
-                        <strong>{entry.task_title}</strong>
-                        <span>{allDayRangeLabel(entry)}</span>
-                      </button>
-                    )
-                  })}
-                  {dateEntries.length === 0 ? (
+                    }
+                  )}
+                  {allDayLayout.entries.length === 0 ? (
                     <p className="calendar-v2-empty-lane">本周没有全天安排</p>
                   ) : null}
                 </div>
