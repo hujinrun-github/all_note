@@ -68,14 +68,21 @@ async function fixtureAPI(page: Page) {
       if (path === '/api/auth/me')
         return data({
           user: {
-            id: 'user',
-            display_name: '小胡',
-            email: 'test@example.com',
+            id: 'web-regression-user',
+            display_name: '网页回归用户',
+            email: 'web-regression@example.test',
             role: 'user',
             status: 'active',
           },
-          workspace: { id: 'ui-fixture', name: 'UI fixture' },
+          workspace: {
+            id: 'workspace-web-regression',
+            name: '网页回归工作区',
+          },
           must_change_password: false,
+        })
+      if (path === '/api/projects/personal')
+        return data({
+          project: projects.find((project) => project.id === 'personal'),
         })
       if (path === '/api/projects') return data({ projects })
       if (path === '/api/tasks' && route.request().method() === 'POST')
@@ -130,6 +137,37 @@ async function fixtureAPI(page: Page) {
             pagination: { page: 1, page_size: 100, total: 1 },
           },
         })
+      if (path === '/api/summary')
+        return route.fulfill({
+          json: {
+            data: {
+              groups: [
+                {
+                  date: '2026-10-02',
+                  count: 1,
+                  tasks: [
+                    {
+                      id: 'summary-task-1',
+                      title: '完成网页回归检查',
+                      done: 1,
+                      project: { id: 'personal', name: '个人事务' },
+                    },
+                  ],
+                },
+              ],
+              active_days: 1,
+              project_count: 1,
+            },
+            pagination: { page: 1, page_size: 50, total: 1 },
+          },
+        })
+      if (path === '/api/today')
+        return data({
+          todayTasks: [],
+          overdueTasks: [],
+          events: [],
+          recentNotes: [],
+        })
       return route.fulfill({
         status: 404,
         json: { error: { code: 'UNMOCKED', message: path } },
@@ -151,6 +189,90 @@ async function expectNoPageOverflow(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => fixtureAPI(page))
+
+test('desktop sidebar and account controls open the expected destinations', async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, 'Desktop navigation coverage')
+  await page.goto('/')
+
+  const navigation = page.getByRole('navigation', {
+    name: '主导航',
+    exact: true,
+  })
+  const destinations = [
+    ['今日', '/', '今天'],
+    ['任务', '/tasks', '任务'],
+    ['项目', '/projects', '项目'],
+    ['日历', '/calendar', '日历'],
+    ['未整理', '/inbox', '未整理'],
+    ['笔记', '/notes', '笔记库'],
+    ['搜索', '/search', '全局搜索'],
+    ['每日总结', '/summary', '每日总结'],
+  ] as const
+
+  for (const [label, path, heading] of destinations) {
+    await navigation.getByRole('link', { name: label, exact: true }).click()
+    await expect(page).toHaveURL(
+      new RegExp(`${path === '/' ? '/$' : `${path}$`}`)
+    )
+    await expect(
+      page.getByRole('heading', { name: heading, exact: true }).first()
+    ).toBeVisible()
+  }
+
+  await page.getByRole('button', { name: '收起侧边栏' }).click()
+  await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible()
+  await page.getByRole('button', { name: '展开侧边栏' }).click()
+
+  await page.getByRole('button', { name: '打开账号菜单' }).click()
+  const accountMenu = page.getByRole('menu', { name: '账号菜单' })
+  await expect(accountMenu.getByText('网页回归用户')).toBeVisible()
+  await expect(
+    accountMenu.getByText('web-regression@example.test')
+  ).toBeVisible()
+  await expect(
+    accountMenu.getByRole('menuitem', { name: '用户设置' })
+  ).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(accountMenu).not.toBeVisible()
+})
+
+test('project list opens project details and primary controls show their panels', async ({
+  page,
+}) => {
+  await page.goto('/projects')
+  await page.getByRole('link', { name: '打开个人事务' }).click()
+
+  await expect(page).toHaveURL(/\/projects\/personal$/)
+  await expect(
+    page.getByRole('heading', { name: '个人事务', exact: true })
+  ).toBeVisible()
+  await expect(page.getByText('Unexpected Application Error!')).toHaveCount(0)
+
+  await page.getByRole('tab', { name: /任务\s*1/ }).click()
+  await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '打开添加任务' }).click()
+  await expect(page.getByRole('textbox', { name: '任务标题' })).toBeFocused()
+  await page.getByRole('button', { name: '取消' }).click()
+  await expect(page.getByRole('textbox', { name: '任务标题' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: '项目操作' }).click()
+  await page.getByRole('menuitem', { name: /编辑项目信息/ }).click()
+  const editDialog = page.getByRole('dialog', { name: '编辑项目信息' })
+  await expect(
+    editDialog.getByRole('textbox', { name: '项目名称' })
+  ).toHaveValue('个人事务')
+  await editDialog.getByRole('button', { name: '取消' }).click()
+  await expect(editDialog).not.toBeVisible()
+
+  await page.getByRole('button', { name: '完成项目' }).click()
+  await expect(
+    page.getByRole('dialog', { name: '处理未完成执行实例' })
+  ).toBeVisible()
+})
 
 test('desktop pages keep navigation and content usable at laptop and wide widths', async ({
   page,

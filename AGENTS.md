@@ -61,3 +61,11 @@
   4. Runtime settings show the MinIO `object_s3` binding.
   5. Launch the iPhone Simulator app and confirm it reaches the workspace with a recent successful sync instead of showing “登录响应中没有可用工作区”。
 - Keychain/session injection was a one-time recovery technique and is not part of the standard startup. Future runs should preserve a valid control-database session or use the normal login flow.
+
+## Frontend regression requirement
+
+- After every frontend code, dependency, styling, routing, or deployment-config change, run `npm run test:regression` from `frontend/` before considering the work complete.
+- The regression command must pass frontend lint, all Vitest tests, the production build, and the Playwright UI suite for desktop Chrome, Android Chrome, and iPhone WebKit.
+- On a new machine, install the browser runtimes with `npx playwright install chromium webkit` before running the UI suite.
+- Use `docs/frontend-web-regression-checklist.md` for button-by-button manual coverage and post-deployment checks. When adding or changing a page, button, dialog, or navigation entry, update the checklist and add or update an automated test.
+- Production releases must not proceed when the frontend regression job in `.github/workflows/test.yml` fails. After deployment, verify the project-list-to-project-detail path and deep-link refresh behavior against the live site.

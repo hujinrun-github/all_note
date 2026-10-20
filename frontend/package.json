@@ -7,10 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:unit": "vitest run",
+    "test": "node scripts/run-vitest.mjs",
+    "test:unit": "node scripts/run-vitest.mjs",
     "test:e2e": "playwright test",
     "test:ui": "playwright test --config playwright.ui.config.ts",
+    "test:regression": "npm run lint && npm run test:unit && npm run build && npm run test:ui",
     "lint": "eslint src/",
     "format": "prettier --write src/"
   },
