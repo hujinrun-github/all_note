@@ -3,6 +3,7 @@ import {
   useQuery,
   useQueryClient,
   type QueryClient,
+  type QueryKey,
 } from '@tanstack/react-query'
 import { useMemo } from 'react'
 
@@ -271,6 +272,10 @@ type OccurrenceCommand = (
   revisions: taskDomainAPI.TaskDomainExpectedRevisions
 ) => Promise<taskDomainAPI.TaskAggregateCommandResponse>
 
+interface OccurrenceCommandContext {
+  snapshots: Array<[QueryKey, unknown]>
+}
+
 export function useUpdateTaskDefinitionMutation() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -385,13 +390,48 @@ function useTaskCommandMutation(
   })
 }
 
-function useOccurrenceCommandMutation(command: OccurrenceCommand) {
+function useOccurrenceCommandMutation(
+  command: OccurrenceCommand,
+  executionStatus: taskDomainAPI.ExecutionStatus
+) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (variables: OccurrenceCommandVariables) =>
       command(variables.occurrenceID, variables.expectedRevisions),
-    onSuccess: (response, variables) =>
-      invalidateAffectedTaskDomain(queryClient, variables, response),
+    onMutate: async (variables): Promise<OccurrenceCommandContext> => {
+      await Promise.all([
+        queryClient.cancelQueries({
+          queryKey: taskDomainQueryKeys.occurrences(),
+        }),
+        queryClient.cancelQueries({ queryKey: taskDomainQueryKeys.calendar() }),
+      ])
+      const snapshots = [
+        ...queryClient.getQueriesData({
+          queryKey: taskDomainQueryKeys.occurrences(),
+        }),
+        ...queryClient.getQueriesData({
+          queryKey: taskDomainQueryKeys.calendar(),
+        }),
+      ]
+      applyOccurrenceExecutionStatus(queryClient, variables, executionStatus)
+      return { snapshots }
+    },
+    onError: (_error, _variables, context) => {
+      context?.snapshots.forEach(([queryKey, data]) => {
+        queryClient.setQueryData(queryKey, data)
+      })
+    },
+    onSuccess: (response, variables) => {
+      applyOccurrenceCommandResult(
+        queryClient,
+        variables,
+        executionStatus,
+        response
+      )
+      void invalidateAffectedTaskDomain(queryClient, variables, response).catch(
+        () => undefined
+      )
+    },
   })
 }
 
@@ -445,27 +485,30 @@ export function useDeleteTaskMutation() {
 }
 
 export function useStartOccurrenceMutation() {
-  return useOccurrenceCommandMutation(taskDomainAPI.startOccurrence)
+  return useOccurrenceCommandMutation(taskDomainAPI.startOccurrence, 'active')
 }
 
 export function useUnblockOccurrenceMutation() {
-  return useOccurrenceCommandMutation(taskDomainAPI.unblockOccurrence)
+  return useOccurrenceCommandMutation(taskDomainAPI.unblockOccurrence, 'open')
 }
 
 export function useCompleteOccurrenceMutation() {
-  return useOccurrenceCommandMutation(taskDomainAPI.completeOccurrence)
+  return useOccurrenceCommandMutation(taskDomainAPI.completeOccurrence, 'done')
 }
 
 export function useSkipOccurrenceMutation() {
-  return useOccurrenceCommandMutation(taskDomainAPI.skipOccurrence)
+  return useOccurrenceCommandMutation(taskDomainAPI.skipOccurrence, 'skipped')
 }
 
 export function useCancelOccurrenceMutation() {
-  return useOccurrenceCommandMutation(taskDomainAPI.cancelOccurrence)
+  return useOccurrenceCommandMutation(
+    taskDomainAPI.cancelOccurrence,
+    'cancelled'
+  )
 }
 
 export function useReopenOccurrenceMutation() {
-  return useOccurrenceCommandMutation(taskDomainAPI.reopenOccurrence)
+  return useOccurrenceCommandMutation(taskDomainAPI.reopenOccurrence, 'open')
 }
 
 export function useBlockOccurrenceMutation() {
@@ -511,6 +554,210 @@ async function invalidateAffectedTaskDomain(
   ]
   await Promise.all(
     queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+  )
+}
+
+function applyOccurrenceExecutionStatus(
+  queryClient: QueryClient,
+  variables: OccurrenceCommandVariables,
+  executionStatus: taskDomainAPI.ExecutionStatus
+) {
+  const source = findCachedOccurrence(queryClient, variables.occurrenceID)
+  const optimisticOccurrence = source
+    ? {
+        ...source,
+        project_id: source.project_id ?? variables.projectID,
+        execution_status: executionStatus,
+      }
+    : undefined
+
+  queryClient
+    .getQueriesData<taskDomainAPI.OccurrenceV2[]>({
+      queryKey: taskDomainQueryKeys.occurrenceLists(),
+    })
+    .forEach(([queryKey, occurrences]) => {
+      if (!occurrences) return
+      let found = false
+      const next = occurrences.flatMap((occurrence) => {
+        if (occurrence.id !== variables.occurrenceID) return [occurrence]
+        found = true
+        const updated = {
+          ...occurrence,
+          execution_status: executionStatus,
+        }
+        return occurrenceBelongsInExecutionProjection(queryKey, updated)
+          ? [updated]
+          : []
+      })
+      if (
+        !found &&
+        optimisticOccurrence &&
+        completedProjectionAccepts(queryKey, optimisticOccurrence)
+      ) {
+        next.unshift(optimisticOccurrence)
+      }
+      queryClient.setQueryData(queryKey, next)
+    })
+
+  queryClient.setQueryData<taskDomainAPI.OccurrenceV2>(
+    taskDomainQueryKeys.occurrence(variables.occurrenceID),
+    (occurrence) =>
+      occurrence
+        ? { ...occurrence, execution_status: executionStatus }
+        : occurrence
+  )
+  queryClient.setQueriesData<taskDomainAPI.CalendarEntryV2[]>(
+    { queryKey: taskDomainQueryKeys.calendar() },
+    (entries) =>
+      entries?.map((entry) =>
+        entry.occurrence_id === variables.occurrenceID
+          ? { ...entry, execution_status: executionStatus }
+          : entry
+      )
+  )
+}
+
+function findCachedOccurrence(queryClient: QueryClient, occurrenceID: string) {
+  const detail = queryClient.getQueryData<taskDomainAPI.OccurrenceV2>(
+    taskDomainQueryKeys.occurrence(occurrenceID)
+  )
+  if (detail?.id === occurrenceID) return detail
+  for (const [, occurrences] of queryClient.getQueriesData<
+    taskDomainAPI.OccurrenceV2[]
+  >({ queryKey: taskDomainQueryKeys.occurrenceLists() })) {
+    const occurrence = occurrences?.find((item) => item.id === occurrenceID)
+    if (occurrence) return occurrence
+  }
+  return undefined
+}
+
+function occurrenceBelongsInExecutionProjection(
+  queryKey: QueryKey,
+  occurrence: taskDomainAPI.OccurrenceV2
+) {
+  const executionStatus = queryKey[5]
+  if (
+    typeof executionStatus === 'string' &&
+    executionStatus !== occurrence.execution_status
+  ) {
+    return false
+  }
+  const scope = queryKey[9]
+  if (scope === 'upcoming' || scope === 'overdue') {
+    return !['done', 'skipped', 'cancelled'].includes(
+      occurrence.execution_status
+    )
+  }
+  if (scope === 'completed') return occurrence.execution_status === 'done'
+  return true
+}
+
+function completedProjectionAccepts(
+  queryKey: QueryKey,
+  occurrence: taskDomainAPI.OccurrenceV2,
+  completedAt = Date.now()
+) {
+  if (queryKey[9] !== 'completed' || occurrence.execution_status !== 'done') {
+    return false
+  }
+  const taskID = queryKey[3]
+  const projectID = queryKey[4]
+  const executionStatus = queryKey[5]
+  const from = queryKey[6]
+  const to = queryKey[7]
+  const recurring = queryKey[10]
+  if (typeof taskID === 'string' && taskID !== occurrence.task_id) return false
+  if (typeof projectID === 'string' && projectID !== occurrence.project_id) {
+    return false
+  }
+  if (typeof executionStatus === 'string' && executionStatus !== 'done') {
+    return false
+  }
+  if (
+    typeof recurring === 'boolean' &&
+    recurring !== Boolean(occurrence.recurring)
+  ) {
+    return false
+  }
+  if (typeof from === 'string' && completedAt < new Date(from).getTime()) {
+    return false
+  }
+  if (typeof to === 'string' && completedAt >= new Date(to).getTime()) {
+    return false
+  }
+  return true
+}
+
+function applyOccurrenceCommandResult(
+  queryClient: QueryClient,
+  variables: OccurrenceCommandVariables,
+  executionStatus: taskDomainAPI.ExecutionStatus,
+  response: taskDomainAPI.TaskAggregateCommandResponse
+) {
+  applyOccurrenceExecutionStatus(queryClient, variables, executionStatus)
+  const occurrenceRevision =
+    response.occurrence_revisions[variables.occurrenceID]
+  const updateOccurrence = (
+    occurrence: taskDomainAPI.OccurrenceV2
+  ): taskDomainAPI.OccurrenceV2 =>
+    occurrence.id === variables.occurrenceID
+      ? {
+          ...occurrence,
+          revision: occurrenceRevision ?? occurrence.revision,
+          task_revision: response.task_revision,
+          schedule_revision:
+            response.schedule_revision ?? occurrence.schedule_revision,
+        }
+      : occurrence
+
+  queryClient.setQueriesData<taskDomainAPI.OccurrenceV2[]>(
+    { queryKey: taskDomainQueryKeys.occurrenceLists() },
+    (occurrences) => occurrences?.map(updateOccurrence)
+  )
+  queryClient.setQueryData<taskDomainAPI.OccurrenceV2>(
+    taskDomainQueryKeys.occurrence(variables.occurrenceID),
+    (occurrence) => (occurrence ? updateOccurrence(occurrence) : occurrence)
+  )
+  queryClient.setQueriesData<taskDomainAPI.CalendarEntryV2[]>(
+    { queryKey: taskDomainQueryKeys.calendar() },
+    (entries) =>
+      entries?.map((entry) =>
+        entry.occurrence_id === variables.occurrenceID
+          ? {
+              ...entry,
+              occurrence_revision:
+                occurrenceRevision ?? entry.occurrence_revision,
+              task_revision: response.task_revision,
+              schedule_revision:
+                response.schedule_revision ?? entry.schedule_revision,
+            }
+          : entry
+      )
+  )
+  applyTaskRevisionResult(queryClient, variables.taskID, response)
+}
+
+function applyTaskRevisionResult(
+  queryClient: QueryClient,
+  taskID: string,
+  response: taskDomainAPI.TaskAggregateCommandResponse
+) {
+  const apply = (task: taskDomainAPI.TaskV2): taskDomainAPI.TaskV2 =>
+    task.id === taskID
+      ? {
+          ...task,
+          revision: response.task_revision,
+          schedule_revision:
+            response.schedule_revision ?? task.schedule_revision,
+        }
+      : task
+  queryClient.setQueryData<taskDomainAPI.TaskV2>(
+    taskDomainQueryKeys.task(taskID),
+    (task) => (task ? apply(task) : task)
+  )
+  queryClient.setQueriesData<taskDomainAPI.TaskV2[]>(
+    { queryKey: taskDomainQueryKeys.taskLists() },
+    (tasks) => tasks?.map(apply)
   )
 }
 

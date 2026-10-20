@@ -321,6 +321,92 @@ describe('task-domain mutation hooks', () => {
     )
   })
 
+  it('updates occurrence projections immediately without waiting for background refetches', async () => {
+    const response: taskDomainAPI.TaskAggregateCommandResponse = {
+      task_revision: 8,
+      schedule_revision: 5,
+      occurrence_revisions: { 'occurrence-1': 12 },
+    }
+    const command = deferred<taskDomainAPI.TaskAggregateCommandResponse>()
+    vi.mocked(taskDomainAPI.completeOccurrence).mockReturnValue(command.promise)
+    const { client, wrapper } = createQueryWrapper()
+    const todayKey = taskDomainQueryKeys.occurrenceList({ scope: 'today' })
+    const upcomingKey = taskDomainQueryKeys.occurrenceList({
+      scope: 'upcoming',
+    })
+    const completedKey = taskDomainQueryKeys.occurrenceList({
+      scope: 'completed',
+      from: '2020-01-01T00:00:00.000Z',
+      to: '2100-01-01T00:00:00.000Z',
+    })
+    const calendarKey = taskDomainQueryKeys.calendarEntries({
+      from: '2026-07-01T00:00:00.000Z',
+      to: '2026-08-01T00:00:00.000Z',
+      timezone: 'Asia/Shanghai',
+    })
+    const cachedOccurrence = {
+      ...occurrenceFixture,
+      project_id: 'project-1',
+    }
+    client.setQueryData(todayKey, [cachedOccurrence])
+    client.setQueryData(upcomingKey, [cachedOccurrence])
+    client.setQueryData(completedKey, [])
+    client.setQueryData(
+      taskDomainQueryKeys.occurrence('occurrence-1'),
+      cachedOccurrence
+    )
+    client.setQueryData(calendarKey, [calendarEntryFixture])
+    client.setQueryData(taskDomainQueryKeys.taskList(), [taskFixture])
+    vi.spyOn(client, 'invalidateQueries').mockImplementation(
+      () => new Promise(() => {})
+    )
+    const { result } = renderHook(() => useCompleteOccurrenceMutation(), {
+      wrapper,
+    })
+
+    let mutationPromise!: Promise<taskDomainAPI.TaskAggregateCommandResponse>
+    act(() => {
+      mutationPromise = result.current.mutateAsync({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        occurrenceID: 'occurrence-1',
+        expectedRevisions: revisionsFixture(),
+      })
+    })
+
+    await waitFor(() => {
+      expect(
+        client.getQueryData<taskDomainAPI.OccurrenceV2[]>(todayKey)?.[0]
+          .execution_status
+      ).toBe('done')
+    })
+    expect(
+      client.getQueryData<taskDomainAPI.OccurrenceV2[]>(upcomingKey)
+    ).toEqual([])
+    expect(
+      client.getQueryData<taskDomainAPI.OccurrenceV2[]>(completedKey)?.[0]
+    ).toMatchObject({ id: 'occurrence-1', execution_status: 'done' })
+    expect(
+      client.getQueryData<taskDomainAPI.CalendarEntryV2[]>(calendarKey)?.[0]
+        .execution_status
+    ).toBe('done')
+
+    command.resolve(response)
+    await act(async () => {
+      await mutationPromise
+    })
+
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(
+      client.getQueryData<taskDomainAPI.OccurrenceV2[]>(todayKey)?.[0]
+    ).toMatchObject({ execution_status: 'done', revision: 12 })
+    expect(
+      client.getQueryData<taskDomainAPI.TaskV2[]>(
+        taskDomainQueryKeys.taskList()
+      )?.[0]
+    ).toMatchObject({ revision: 8, schedule_revision: 5 })
+  })
+
   it('removes deleted task detail and invalidates every affected projection', async () => {
     vi.mocked(taskDomainAPI.deleteTaskDefinition).mockResolvedValue({
       task_id: 'task-1',
@@ -657,7 +743,11 @@ describe('task-domain mutation hooks', () => {
     const { client, wrapper } = createQueryWrapper()
     const invalidate = vi.spyOn(client, 'invalidateQueries')
     const editorDraft = { title: '调用方尚未保存的标题' }
+    const occurrenceListKey = taskDomainQueryKeys.occurrenceList({
+      scope: 'today',
+    })
     client.setQueryData(taskDomainQueryKeys.task('task-1'), editorDraft)
+    client.setQueryData(occurrenceListKey, [occurrenceFixture])
     const { result } = renderHook(() => useCompleteOccurrenceMutation(), {
       wrapper,
     })
@@ -681,6 +771,10 @@ describe('task-domain mutation hooks', () => {
     expect(client.getQueryData(taskDomainQueryKeys.task('task-1'))).toBe(
       editorDraft
     )
+    expect(
+      client.getQueryData<taskDomainAPI.OccurrenceV2[]>(occurrenceListKey)?.[0]
+        .execution_status
+    ).toBe('open')
     expect(invalidate).not.toHaveBeenCalled()
   })
 
@@ -880,6 +974,16 @@ function revisionsFixture(): taskDomainAPI.TaskDomainExpectedRevisions {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 const projectFixture: taskDomainAPI.ProjectV2 = {
   id: 'project-1',
   name: '项目',
@@ -907,4 +1011,22 @@ const occurrenceFixture: taskDomainAPI.OccurrenceV2 = {
   execution_status: 'open',
   revision: 1,
   generated_schedule_revision: 1,
+}
+
+const calendarEntryFixture: taskDomainAPI.CalendarEntryV2 = {
+  project_id: 'project-1',
+  project_revision: 1,
+  task_id: 'task-1',
+  task_revision: 7,
+  task_title: '任务',
+  occurrence_id: 'occurrence-1',
+  occurrence_key: 'once',
+  occurrence_revision: 11,
+  schedule_revision: 5,
+  generated_schedule_revision: 1,
+  execution_status: 'open',
+  timing_type: 'date',
+  timezone: 'Asia/Shanghai',
+  recurring: false,
+  planned_date: '2026-07-22',
 }
