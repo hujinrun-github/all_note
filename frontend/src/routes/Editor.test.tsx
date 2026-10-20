@@ -186,10 +186,12 @@ describe('Editor auto sync', () => {
       revision: 4,
       schedule_revision: 4,
     })
-    vi.mocked(japaneseApi.annotateJapanese).mockResolvedValue({
-      source: 'ai',
-      segments: [{ text: '近', reading: 'ちか' }, { text: 'く' }],
-    })
+    vi.mocked(japaneseApi.annotateJapanese)
+      .mockReset()
+      .mockResolvedValue({
+        source: 'ai',
+        segments: [{ text: '近', reading: 'ちか' }, { text: 'く' }],
+      })
     vi.mocked(syncApi.getSyncTargets).mockResolvedValue([
       {
         id: 'notion-1',
@@ -546,7 +548,7 @@ describe('Editor auto sync', () => {
       { timeout: 1500 }
     )
 
-    const eventEditor = tiptapMock.captureEditor.mock.lastCall?.[0] as {
+    type EditorWithCompositionListeners = {
       view: {
         composing: boolean
         dom: {
@@ -554,6 +556,23 @@ describe('Editor auto sync', () => {
         }
       }
       state: { selection: unknown }
+    }
+
+    let eventEditor: EditorWithCompositionListeners | undefined
+    await waitFor(() => {
+      eventEditor = [...tiptapMock.captureEditor.mock.calls]
+        .reverse()
+        .map(([candidate]) => candidate as EditorWithCompositionListeners)
+        .find((candidate) =>
+          candidate.view.dom.addEventListener.mock.calls.some(
+            ([name]) => name === 'compositionstart'
+          )
+        )
+      expect(eventEditor).toBeDefined()
+    })
+
+    if (!eventEditor) {
+      throw new Error('composition listeners were not registered')
     }
     const compositionStart =
       eventEditor.view.dom.addEventListener.mock.calls.find(
