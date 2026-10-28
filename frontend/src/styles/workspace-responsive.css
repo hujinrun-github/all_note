@@ -262,6 +262,21 @@ a {
   background: var(--td-surface);
   text-align: left;
 }
+.calendar-agenda-entry-frame {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 6px;
+  margin: 6px 0;
+}
+.calendar-agenda-entry-frame .calendar-agenda-entry {
+  margin: 0;
+}
+.calendar-agenda-entry-frame > .calendar-entry-complete-toggle {
+  width: 30px;
+  height: 30px;
+  align-self: center;
+}
 .calendar-agenda-entry:hover {
   background: var(--td-copper-soft);
 }

@@ -1,5 +1,12 @@
 import { useMemo, useState, type CSSProperties, type DragEvent } from 'react'
-import { ChevronLeft, ChevronRight, Globe2, Plus } from 'lucide-react'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Circle,
+  Globe2,
+  Plus,
+} from 'lucide-react'
 
 import {
   TaskDomainAPIError,
@@ -9,6 +16,7 @@ import {
 } from '../api/taskDomain'
 import {
   useCalendarEntries,
+  useCompleteOccurrenceMutation,
   useProjects,
   useReopenOccurrenceMutation,
   useRescheduleOccurrenceMutation,
@@ -133,6 +141,39 @@ function addYears(value: string, years: number) {
 function daysBetween(from: string, to: string) {
   return Math.round(
     (parseLocalDate(to).getTime() - parseLocalDate(from).getTime()) / 86_400_000
+  )
+}
+
+function CalendarEntryCompletionButton({
+  entry,
+  pending,
+  onComplete,
+}: {
+  entry: CalendarEntryV2
+  pending: boolean
+  onComplete: () => void
+}) {
+  const done = entry.execution_status === 'done'
+  const canComplete = ['open', 'active', 'blocked'].includes(
+    entry.execution_status
+  )
+  return (
+    <button
+      type="button"
+      className={`calendar-entry-complete-toggle ${done ? 'is-done' : ''}`}
+      aria-label={`完成${entry.task_title}`}
+      aria-pressed={done}
+      title={
+        done ? '任务已完成' : canComplete ? '完成任务' : '当前状态不可完成'
+      }
+      disabled={!canComplete || pending}
+      onClick={(event) => {
+        event.stopPropagation()
+        onComplete()
+      }}
+    >
+      {done ? <Check aria-hidden="true" /> : <Circle aria-hidden="true" />}
+    </button>
   )
 }
 
@@ -399,12 +440,14 @@ export default function CalendarV2({
     Array<{ offset_seconds: number; utc: string }>
   >([])
   const [editorError, setEditorError] = useState('')
+  const [completionError, setCompletionError] = useState('')
   const [createScheduleDefaults, setCreateScheduleDefaults] =
     useState<CalendarCreateScheduleDefaults | null>(null)
 
   const projectsQuery = useProjects()
   const onlyThis = useRescheduleOccurrenceMutation()
   const thisAndFollowing = useRescheduleThisAndFollowingMutation()
+  const complete = useCompleteOccurrenceMutation()
   const reopen = useReopenOccurrenceMutation()
   const todayValue = localDateValue()
   const weekStart = mondayOf(anchorDate)
@@ -683,6 +726,30 @@ export default function CalendarV2({
     closeEditor()
   }
 
+  async function completeEntry(entry: CalendarEntryV2) {
+    if (entry.execution_status === 'done' || complete.isPending) return
+    setCompletionError('')
+    try {
+      await complete.mutateAsync({
+        projectID: entry.project_id,
+        taskID: entry.task_id,
+        occurrenceID: entry.occurrence_id,
+        expectedRevisions: {
+          expected_task_revision: entry.task_revision,
+          expected_schedule_revision: entry.schedule_revision,
+          expected_occurrence_revisions: {
+            [entry.occurrence_id]: entry.occurrence_revision,
+          },
+        },
+      })
+      if (selectedEntry?.occurrence_id === entry.occurrence_id) {
+        closeEditor()
+      }
+    } catch {
+      setCompletionError('完成任务失败，请稍后重试。')
+    }
+  }
+
   function changeCalendarView(nextView: CalendarView) {
     setCalendarView(nextView)
     closeEditor()
@@ -827,6 +894,12 @@ export default function CalendarV2({
             )}
           </div>
 
+          {completionError ? (
+            <div className="td-inline-error" role="alert">
+              {completionError}
+            </div>
+          ) : null}
+
           {entriesQuery.isError ? (
             <div className="td-inline-error" role="alert">
               日历加载失败，请稍后重试。
@@ -856,29 +929,38 @@ export default function CalendarV2({
                       </button>
                     </header>
                     {entries.map((entry) => (
-                      <button
-                        type="button"
-                        className={`calendar-agenda-entry is-${entry.execution_status}`}
+                      <div
+                        className="calendar-agenda-entry-frame"
                         key={entry.occurrence_id}
-                        aria-label={`编辑日程：${entry.task_title}`}
-                        onClick={() => openEditor(entry)}
                       >
-                        <time>
-                          {entry.timing_type === 'date'
-                            ? '全天'
-                            : formatTime(entry.planned_start_at!, timezone)}
-                        </time>
-                        <span>
-                          <strong>{entry.task_title}</strong>
-                          <small>
+                        <button
+                          type="button"
+                          className={`calendar-agenda-entry is-${entry.execution_status}`}
+                          aria-label={`编辑日程：${entry.task_title}`}
+                          onClick={() => openEditor(entry)}
+                        >
+                          <time>
                             {entry.timing_type === 'date'
-                              ? allDayRangeLabel(entry)
-                              : `至 ${formatTime(entry.planned_end_at!, timezone)}`}
-                            {entry.location ? ` · ${entry.location}` : ''}
-                          </small>
-                        </span>
-                        <ChevronRight aria-hidden="true" />
-                      </button>
+                              ? '全天'
+                              : formatTime(entry.planned_start_at!, timezone)}
+                          </time>
+                          <span>
+                            <strong>{entry.task_title}</strong>
+                            <small>
+                              {entry.timing_type === 'date'
+                                ? allDayRangeLabel(entry)
+                                : `至 ${formatTime(entry.planned_end_at!, timezone)}`}
+                              {entry.location ? ` · ${entry.location}` : ''}
+                            </small>
+                          </span>
+                          <ChevronRight aria-hidden="true" />
+                        </button>
+                        <CalendarEntryCompletionButton
+                          entry={entry}
+                          pending={complete.isPending}
+                          onComplete={() => void completeEntry(entry)}
+                        />
+                      </div>
                     ))}
                     {entries.length === 0 && (
                       <p>
@@ -935,11 +1017,9 @@ export default function CalendarV2({
                         entry.all_day_end_date ||
                         addDays(entry.planned_date!, 1)
                       return (
-                        <button
+                        <div
                           key={entry.occurrence_id}
-                          type="button"
-                          className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
-                          title={entry.task_title}
+                          className="calendar-v2-entry-frame is-all-day"
                           style={
                             {
                               '--calendar-column-start': startIndex + 1,
@@ -947,16 +1027,29 @@ export default function CalendarV2({
                               '--calendar-row': row,
                             } as CSSProperties
                           }
-                          data-exclusive-end={exclusiveEnd}
-                          data-calendar-row={row}
-                          draggable={entry.execution_status !== 'done'}
-                          onDragStart={(event) => handleDragStart(event, entry)}
-                          onClick={() => openEditor(entry)}
-                          aria-label={`编辑日程：${entry.task_title}`}
                         >
-                          <strong>{entry.task_title}</strong>
-                          <span>{allDayRangeLabel(entry)}</span>
-                        </button>
+                          <button
+                            type="button"
+                            className={`calendar-v2-entry is-all-day is-${entry.execution_status}`}
+                            title={entry.task_title}
+                            data-exclusive-end={exclusiveEnd}
+                            data-calendar-row={row}
+                            draggable={entry.execution_status !== 'done'}
+                            onDragStart={(event) =>
+                              handleDragStart(event, entry)
+                            }
+                            onClick={() => openEditor(entry)}
+                            aria-label={`编辑日程：${entry.task_title}`}
+                          >
+                            <strong>{entry.task_title}</strong>
+                            <span>{allDayRangeLabel(entry)}</span>
+                          </button>
+                          <CalendarEntryCompletionButton
+                            entry={entry}
+                            pending={complete.isPending}
+                            onComplete={() => void completeEntry(entry)}
+                          />
+                        </div>
                       )
                     }
                   )}
@@ -1017,10 +1110,9 @@ export default function CalendarV2({
                       {timeEntries
                         .filter((entry) => entry.planned_date === date)
                         .map((entry) => (
-                          <button
+                          <div
                             key={entry.occurrence_id}
-                            type="button"
-                            className={`calendar-v2-entry is-time-block is-${entry.execution_status}`}
+                            className="calendar-v2-entry-frame is-time-block"
                             style={
                               {
                                 '--calendar-start-minute': Math.max(
@@ -1037,19 +1129,29 @@ export default function CalendarV2({
                                 ),
                               } as CSSProperties
                             }
-                            draggable={entry.execution_status !== 'done'}
-                            onDragStart={(event) =>
-                              handleDragStart(event, entry)
-                            }
-                            onClick={() => openEditor(entry)}
-                            aria-label={`编辑日程：${entry.task_title}`}
                           >
-                            <time>
-                              {formatTime(entry.planned_start_at!, timezone)}–
-                              {formatTime(entry.planned_end_at!, timezone)}
-                            </time>
-                            <strong>{entry.task_title}</strong>
-                          </button>
+                            <button
+                              type="button"
+                              className={`calendar-v2-entry is-time-block is-${entry.execution_status}`}
+                              draggable={entry.execution_status !== 'done'}
+                              onDragStart={(event) =>
+                                handleDragStart(event, entry)
+                              }
+                              onClick={() => openEditor(entry)}
+                              aria-label={`编辑日程：${entry.task_title}`}
+                            >
+                              <time>
+                                {formatTime(entry.planned_start_at!, timezone)}–
+                                {formatTime(entry.planned_end_at!, timezone)}
+                              </time>
+                              <strong>{entry.task_title}</strong>
+                            </button>
+                            <CalendarEntryCompletionButton
+                              entry={entry}
+                              pending={complete.isPending}
+                              onComplete={() => void completeEntry(entry)}
+                            />
+                          </div>
                         ))}
                     </div>
                   ))}
@@ -1093,27 +1195,36 @@ export default function CalendarV2({
                       </header>
                       <div className="calendar-v2-month-entries">
                         {dayEntries.slice(0, 3).map((entry) => (
-                          <button
+                          <div
+                            className="calendar-v2-month-entry-frame"
                             key={`${date}-${entry.occurrence_id}`}
-                            type="button"
-                            className={`calendar-v2-month-entry is-${entry.timing_type} is-${entry.execution_status}`}
-                            draggable={entry.execution_status !== 'done'}
-                            onDragStart={(event) =>
-                              handleDragStart(event, entry)
-                            }
-                            onClick={() => openEditor(entry)}
-                            aria-label={`编辑日程：${entry.task_title}`}
                           >
-                            {entry.timing_type === 'time_block' &&
-                            entry.planned_start_at ? (
-                              <time>
-                                {formatTime(entry.planned_start_at, timezone)}
-                              </time>
-                            ) : (
-                              <i aria-hidden="true" />
-                            )}
-                            <span>{entry.task_title}</span>
-                          </button>
+                            <button
+                              type="button"
+                              className={`calendar-v2-month-entry is-${entry.timing_type} is-${entry.execution_status}`}
+                              draggable={entry.execution_status !== 'done'}
+                              onDragStart={(event) =>
+                                handleDragStart(event, entry)
+                              }
+                              onClick={() => openEditor(entry)}
+                              aria-label={`编辑日程：${entry.task_title}`}
+                            >
+                              {entry.timing_type === 'time_block' &&
+                              entry.planned_start_at ? (
+                                <time>
+                                  {formatTime(entry.planned_start_at, timezone)}
+                                </time>
+                              ) : (
+                                <i aria-hidden="true" />
+                              )}
+                              <span>{entry.task_title}</span>
+                            </button>
+                            <CalendarEntryCompletionButton
+                              entry={entry}
+                              pending={complete.isPending}
+                              onComplete={() => void completeEntry(entry)}
+                            />
+                          </div>
                         ))}
                         {dayEntries.length > 3 ? (
                           <span className="calendar-v2-more">

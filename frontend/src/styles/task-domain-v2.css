@@ -2166,6 +2166,94 @@
   color: var(--td-red);
 }
 
+.calendar-entry-complete-toggle {
+  z-index: 2;
+  display: inline-grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 auto;
+  align-self: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: #b6a695;
+  cursor: pointer;
+}
+
+.calendar-entry-complete-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.calendar-entry-complete-toggle:hover:not(:disabled),
+.calendar-entry-complete-toggle:focus-visible {
+  color: var(--td-copper);
+  outline: none;
+}
+
+.calendar-entry-complete-toggle.is-done {
+  background: var(--td-green);
+  color: white;
+  cursor: not-allowed;
+}
+
+.calendar-entry-complete-toggle:disabled:not(.is-done) {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.calendar-v2-entry-frame.is-all-day {
+  z-index: 1;
+  grid-column: var(--calendar-column-start) / var(--calendar-column-end);
+  grid-row: var(--calendar-row, 1);
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  min-height: 38px;
+  margin: 3px 5px;
+}
+
+.calendar-v2-entry-frame.is-all-day > .calendar-v2-entry {
+  grid-column: auto;
+  grid-row: auto;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.calendar-v2-entry-frame.is-time-block {
+  position: absolute;
+  z-index: 1;
+  top: calc(var(--calendar-start-minute) * 1px);
+  right: 5px;
+  left: 5px;
+  min-height: 38px;
+  height: calc(var(--calendar-duration-minute) * 1px);
+  overflow: hidden;
+}
+
+.calendar-v2-entry-frame.is-time-block > .calendar-v2-entry {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  width: 100%;
+  height: 100%;
+  min-height: 38px;
+  padding-right: 36px;
+}
+
+.calendar-v2-entry-frame.is-time-block > .calendar-entry-complete-toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
 .calendar-v2-month-view {
   min-width: 760px;
 }
@@ -2269,6 +2357,24 @@
   color: var(--td-copper-dark);
   font-size: 9px;
   text-align: left;
+}
+
+.calendar-v2-month-entry-frame {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.calendar-v2-month-entry-frame > .calendar-v2-month-entry {
+  width: 100%;
+}
+
+.calendar-v2-month-entry-frame > .calendar-entry-complete-toggle {
+  width: 21px;
+  height: 21px;
+  align-self: center;
 }
 
 .calendar-v2-month-entry:hover,

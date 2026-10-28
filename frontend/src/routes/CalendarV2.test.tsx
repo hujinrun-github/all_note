@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TaskDomainAPIError, type CalendarEntryV2 } from '../api/taskDomain'
 import {
   useCalendarEntries,
+  useCompleteOccurrenceMutation,
   useCreateTaskMutation,
   useProjects,
   useReopenOccurrenceMutation,
@@ -16,6 +17,7 @@ import CalendarV2 from './CalendarV2'
 
 vi.mock('../hooks/useTaskDomain', () => ({
   useCalendarEntries: vi.fn(),
+  useCompleteOccurrenceMutation: vi.fn(),
   useCreateTaskMutation: vi.fn(),
   useProjects: vi.fn(),
   useReopenOccurrenceMutation: vi.fn(),
@@ -118,6 +120,7 @@ const entries: CalendarEntryV2[] = [
 const onlyThisMock = vi.fn()
 const followingMock = vi.fn()
 const reopenMock = vi.fn()
+const completeMock = vi.fn()
 const createTaskMock = vi.fn()
 
 function mutationResult(mutateAsync: ReturnType<typeof vi.fn>) {
@@ -158,6 +161,11 @@ describe('CalendarV2', () => {
       schedule_revision: 2,
       occurrence_revisions: { 'occurrence-done': 10 },
     })
+    completeMock.mockResolvedValue({
+      task_revision: 7,
+      schedule_revision: 5,
+      occurrence_revisions: { 'occurrence-all-day': 12 },
+    })
     createTaskMock.mockResolvedValue({})
     vi.mocked(useProjects).mockReturnValue({
       data: [
@@ -191,6 +199,9 @@ describe('CalendarV2', () => {
     vi.mocked(useReopenOccurrenceMutation).mockReturnValue(
       mutationResult(reopenMock)
     )
+    vi.mocked(useCompleteOccurrenceMutation).mockReturnValue(
+      mutationResult(completeMock)
+    )
   })
 
   afterEach(() => vi.useRealTimers())
@@ -217,6 +228,27 @@ describe('CalendarV2', () => {
       within(timeGrid).getByRole('button', { name: /编辑日程：设计评审/ })
     ).toHaveTextContent('09:30–10:30')
     expect(screen.queryByText('不应出现在日历')).not.toBeInTheDocument()
+  })
+
+  it('completes a calendar occurrence from its checkbox without opening the editor', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    await user.click(screen.getByRole('button', { name: '完成发布准备' }))
+
+    expect(completeMock).toHaveBeenCalledWith({
+      projectID: 'project-1',
+      taskID: 'task-all-day',
+      occurrenceID: 'occurrence-all-day',
+      expectedRevisions: {
+        expected_task_revision: 7,
+        expected_schedule_revision: 5,
+        expected_occurrence_revisions: { 'occurrence-all-day': 11 },
+      },
+    })
+    expect(
+      screen.queryByRole('button', { name: '保存日程' })
+    ).not.toBeInTheDocument()
   })
 
   it('creates an editable schedule from the selected week-grid time', async () => {
