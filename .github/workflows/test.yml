@@ -15,7 +15,10 @@ permissions:
 jobs:
   frontend:
     name: frontend regression
-    runs-on: ubuntu-latest
+    # Playwright's --with-deps installer is not yet compatible with the
+    # Ubuntu 26 image behind ubuntu-latest. Keep browser CI on the supported
+    # Ubuntu 24.04 image until the installer adds Ubuntu 26 support.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
