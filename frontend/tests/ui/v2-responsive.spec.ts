@@ -361,7 +361,10 @@ test('responsive navigation, task details, focus return and calendar editing', a
   await expect(
     page.getByRole('dialog', { name: `编辑日程：${title}` })
   ).toBeVisible()
-  await page.getByRole('button', { name: '关闭日程设置' }).click()
+  await page.keyboard.press('Escape')
+  await expect(
+    page.getByRole('dialog', { name: `编辑日程：${title}` })
+  ).not.toBeVisible()
 })
 
 test('capture starts empty, keeps focus contained, and confirms successful creation', async ({
