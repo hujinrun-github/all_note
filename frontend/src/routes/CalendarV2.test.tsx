@@ -318,6 +318,21 @@ describe('CalendarV2', () => {
     })
   })
 
+  it('closes the desktop schedule editor with Escape without saving', async () => {
+    const user = userEvent.setup()
+    renderCalendar()
+
+    await user.click(screen.getByRole('button', { name: /编辑日程：发布准备/ }))
+    expect(screen.getByRole('button', { name: '保存日程' })).toBeVisible()
+
+    await user.keyboard('{Escape}')
+
+    expect(
+      screen.queryByRole('button', { name: '保存日程' })
+    ).not.toBeInTheDocument()
+    expect(onlyThisMock).not.toHaveBeenCalled()
+  })
+
   it('changes a recurring schedule only after choosing this-and-following explicitly', async () => {
     const user = userEvent.setup()
     renderCalendar()

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { Modal } from './Modal'
 
@@ -18,6 +18,20 @@ export function DetailPanel({
   mediaQuery?: string
 }) {
   const compact = useMediaQuery(mediaQuery)
+
+  useEffect(() => {
+    if (compact || desktopRole !== 'dialog') return
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [compact, desktopRole, onClose])
+
   if (compact) {
     return (
       <Modal className="workspace-panel-dialog" label={label} onClose={onClose}>

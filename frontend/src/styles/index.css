@@ -5331,6 +5331,11 @@ body {
   max-width: 100%;
   outline: none;
   min-height: 520px;
+  /* ProseMirror injects break-spaces for contenteditable nodes. Keeping the
+     editor in the standard pre-wrapped mode keeps Chrome's visual line and
+     caret coordinate mapping aligned in long paragraphs. */
+  white-space: pre-wrap !important;
+  overflow-wrap: break-word;
   font-size: 17px;
   line-height: 1.85;
   padding: 2.5rem 3rem;
