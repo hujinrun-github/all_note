@@ -774,7 +774,7 @@
   }
   .workspace-shell .notes-workspace {
     display: grid;
-    grid-template-columns: 172px minmax(280px, 1fr) minmax(260px, 0.95fr);
+    grid-template-columns: minmax(0, 172px) minmax(280px, 1fr) minmax(260px, 0.95fr);
     gap: 0;
     align-items: stretch;
     overflow: clip;
@@ -793,6 +793,7 @@
     background: #fff;
   }
   .workspace-shell .note-filter-panel {
+    min-width: 0;
     padding: 18px 10px;
     background: #fafbfc;
     border-right: 1px solid var(--td-line);
@@ -812,6 +813,7 @@
     font-weight: 500;
   }
   .workspace-shell .note-filter-panel section {
+    min-width: 0;
     border-color: #ebedf1;
   }
   .workspace-shell .note-filter-panel h2 {
@@ -820,6 +822,7 @@
     font-weight: 550;
   }
   .workspace-shell .note-filter-panel button {
+    min-width: 0;
     min-height: 34px;
     padding: 0 9px;
     border-radius: 6px;
