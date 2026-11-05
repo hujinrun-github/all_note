@@ -227,9 +227,46 @@ describe('Task occurrence workspace', () => {
     await user.click(screen.getByText('准备评审'))
     await user.click(screen.getByRole('button', { name: '完成' }))
 
-    expect(
-      await screen.findByRole('alert', { name: '' })
-    ).toHaveTextContent('任务操作失败，请稍后重试。')
+    expect(await screen.findByRole('alert', { name: '' })).toHaveTextContent(
+      '任务操作失败，请稍后重试。'
+    )
+  })
+
+  it('opens a draft with the keyboard and publishes its task definition', async () => {
+    const draft = {
+      ...task('draft-task', '准备草稿'),
+      lifecycle_status: 'draft' as const,
+    }
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [draft],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    const publish = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue({
+      mutateAsync: publish,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.usePublishTaskMutation>)
+    const user = userEvent.setup()
+    renderWorkspace()
+
+    await user.click(screen.getByRole('tab', { name: '草稿 1' }))
+    expect(screen.getByLabelText('按状态筛选')).toBeDisabled()
+    expect(screen.getByLabelText('按日期范围筛选')).toBeDisabled()
+    const row = within(
+      screen.getByRole('list', { name: '任务草稿' })
+    ).getByRole('listitem')
+    row.focus()
+    await user.keyboard('{Enter}')
+    await user.click(screen.getByRole('button', { name: '发布' }))
+    expect(publish).toHaveBeenCalledWith({
+      projectID: draft.project_id,
+      taskID: draft.id,
+      expectedRevisions: {
+        expected_task_revision: draft.revision,
+        expected_schedule_revision: draft.schedule_revision,
+        expected_occurrence_revisions: {},
+      },
+    })
   })
 
   it('offers task archive and delete from a completed execution', async () => {

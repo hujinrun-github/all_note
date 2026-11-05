@@ -20,13 +20,18 @@ export function App() {
     location.pathname.startsWith('/calendar')
   const isV2TaskRoute =
     isTaskRoute && taskDomainCapability.data?.model_version === 'v2'
+  const isPlanningRoute =
+    isV2TaskRoute &&
+    (location.pathname === '/' ||
+      location.pathname === '/tasks' ||
+      location.pathname === '/tasks/')
   const isRoadmapCanvasRoute =
     location.pathname.includes('/roadmap/nodes/') &&
     location.pathname.endsWith('/mind-map')
 
   return (
     <div
-      className={`workspace-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}
+      className={`workspace-shell${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}${isPlanningRoute ? ' planning-theme' : ''}`}
     >
       <Sidebar
         collapsed={sidebarCollapsed}

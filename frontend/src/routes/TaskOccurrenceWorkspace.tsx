@@ -1,9 +1,34 @@
-import { CalendarClock, Filter, Inbox, ListChecks, Plus } from 'lucide-react'
-import { type FormEvent, useMemo, useState } from 'react'
+import {
+  CalendarClock,
+  CircleAlert,
+  Inbox,
+  ListChecks,
+  Plus,
+} from 'lucide-react'
+import { type FormEvent, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import type { OccurrenceV2, TaskV2, TimingType } from '../api/taskDomain'
 import { TaskDomainRevisionConflictError } from '../api/taskDomain'
+import {
+  PlanningHeading,
+  PlanningLoading,
+  PlanningTabs,
+} from '../components/planning/PlanningWorkspace'
+import { Alert, AlertTitle } from '../components/ui/alert'
+import { Button } from '../components/ui/button'
+import { Card } from '../components/ui/card'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '../components/ui/empty'
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '../components/ui/native-select'
 import {
   OccurrenceInspector,
   OccurrenceRow,
@@ -67,6 +92,8 @@ export default function TaskOccurrenceWorkspace() {
   const priorityFilter = searchParams.get('priority') ?? ''
   const statusFilter = searchParams.get('status') ?? ''
   const dateFilter = (searchParams.get('date') ?? 'current') as DateFilter
+
+  const projectFilterRef = useRef<HTMLSelectElement>(null)
 
   const [editingOccurrenceID, setEditingOccurrenceID] = useState('')
   const [rescheduleDate, setRescheduleDate] = useState('')
@@ -346,565 +373,614 @@ export default function TaskOccurrenceWorkspace() {
   const activeCount =
     activeTab === 'draft' ? activeDrafts.length : activeOccurrences.length
 
+  const listQuery = activeQuery ?? draftsQuery
+  const hasFilters = Boolean(
+    projectFilter || priorityFilter || statusFilter || dateFilter !== 'current'
+  )
+
   return (
-    <section className="td-page td-tasks-page" aria-labelledby="tasks-heading">
-      <header className="td-page-header">
-        <div>
-          <span className="workspace-eyebrow">专注行动</span>
-          <div className="td-title-line">
-            <h1 id="tasks-heading">任务</h1>
-          </div>
-          <p>整理待办，安排优先级，一次专注一件事。</p>
-        </div>
-        <div className="td-page-actions">
-          <button
-            type="button"
-            className="td-primary-action"
-            onClick={() => setCaptureOpen(true)}
-          >
-            <Plus aria-hidden="true" />
-            创建任务
-          </button>
-        </div>
-      </header>
-
-      <div
-        className="td-tabs is-scrollable"
-        role="tablist"
-        aria-label="任务执行筛选"
+    <section className="planning-page" aria-labelledby="tasks-heading">
+      <PlanningHeading
+        id="tasks-heading"
+        title="任务"
+        description="按项目、优先级和时间查看任务，安排下一步。"
       >
-        {tabDefinitions.map((tab) => {
-          const count =
-            tab.id === 'draft'
-              ? (draftsQuery.data?.length ?? 0)
-              : (occurrenceQueries[tab.id].data?.length ?? 0)
-          return (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              className={activeTab === tab.id ? 'is-active' : ''}
-              key={tab.id}
-              onClick={() =>
-                updateSearchParams({
-                  view: tab.id === 'upcoming' ? null : tab.id,
-                  occurrence_id: null,
-                  task_id: null,
-                })
-              }
-            >
-              {tab.label} <span>{count}</span>
-            </button>
-          )
-        })}
-      </div>
+        <Button type="button" onClick={() => setCaptureOpen(true)}>
+          <Plus aria-hidden="true" data-icon="inline-start" />
+          创建任务
+        </Button>
+      </PlanningHeading>
 
-      <div className="td-filterbar" aria-label="任务筛选">
-        <label>
-          <Filter aria-hidden="true" />
-          <span>项目</span>
-          <select
-            aria-label="按项目筛选"
-            value={projectFilter}
-            onChange={(event) =>
-              updateSearchParams({
-                project: event.target.value || null,
-                occurrence_id: null,
-                task_id: null,
-              })
-            }
-          >
-            <option value="">全部</option>
-            {(projectsQuery.data ?? []).map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>优先级</span>
-          <select
-            aria-label="按优先级筛选"
-            value={priorityFilter}
-            onChange={(event) =>
-              updateSearchParams({
-                priority: event.target.value || null,
-                occurrence_id: null,
-                task_id: null,
-              })
-            }
-          >
-            <option value="">全部</option>
-            <option value="3">紧急</option>
-            <option value="2">高</option>
-            <option value="1">中</option>
-            <option value="0">普通</option>
-          </select>
-        </label>
-        <label>
-          <span>状态</span>
-          <select
-            aria-label="按状态筛选"
-            value={statusFilter}
-            disabled={activeTab === 'draft'}
-            onChange={(event) =>
-              updateSearchParams({
-                status: event.target.value || null,
-                occurrence_id: null,
-                task_id: null,
-              })
-            }
-          >
-            <option value="">全部</option>
-            <option value="open">未开始</option>
-            <option value="active">进行中</option>
-            <option value="blocked">阻塞</option>
-            <option value="done">已完成</option>
-            <option value="skipped">已跳过</option>
-            <option value="cancelled">已取消</option>
-          </select>
-        </label>
-        <label>
-          <span>日期范围</span>
-          <select
-            aria-label="按日期范围筛选"
-            value={dateFilter}
-            disabled={activeTab === 'draft'}
-            onChange={(event) =>
-              updateSearchParams({
-                date:
-                  event.target.value === 'current' ? null : event.target.value,
-                occurrence_id: null,
-                task_id: null,
-              })
-            }
-          >
-            <option value="current">当前视图</option>
-            <option value="today">今天</option>
-            <option value="next-7-days">未来 7 天</option>
-            <option value="unscheduled">无日期</option>
-          </select>
-        </label>
-        <span>{activeCount} 个结果</span>
-      </div>
-
-      <div
-        className={`td-workspace ${
-          selectedOccurrence || selectedTask ? 'has-inspector' : ''
-        }`}
-      >
-        <div className="td-list-canvas">
-          {activeTab === 'inbox' && inboxProject ? (
-            <div className="td-context-note">
-              <Inbox aria-hidden="true" />
-              <div>
-                <strong>{inboxProject.name}</strong>
-                <span>这里收纳尚未整理到具体项目的任务。</span>
-              </div>
-            </div>
-          ) : null}
-
-          {activeTab === 'draft' ? (
-            <div
-              className="td-definition-list"
-              role="list"
-              aria-label="任务草稿"
-            >
-              {activeDrafts.map((task) => (
-                <article
-                  className={`td-definition-row ${
-                    selectedTaskID === task.id ? 'is-selected' : ''
-                  }`}
-                  role="listitem"
-                  tabIndex={0}
-                  key={task.id}
-                  onClick={() =>
+      <Card className="min-w-0 gap-0 py-0 shadow-none">
+        <PlanningTabs
+          label="任务执行筛选"
+          value={activeTab}
+          tabs={tabDefinitions.map((tab) => ({
+            ...tab,
+            count:
+              tab.id === 'draft'
+                ? (draftsQuery.data?.length ?? 0)
+                : (occurrenceQueries[tab.id].data?.length ?? 0),
+          }))}
+          onChange={(tab) =>
+            updateSearchParams({
+              view: tab === 'upcoming' ? null : tab,
+              occurrence_id: null,
+              task_id: null,
+            })
+          }
+        >
+          <div className="planning-filters" role="group" aria-label="任务筛选">
+            <label>
+              <span>项目</span>
+              <NativeSelect
+                ref={projectFilterRef}
+                aria-label="按项目筛选"
+                value={projectFilter}
+                onChange={(event) =>
+                  updateSearchParams({
+                    project: event.target.value || null,
+                    occurrence_id: null,
+                    task_id: null,
+                  })
+                }
+              >
+                <NativeSelectOption value="">全部</NativeSelectOption>
+                {(projectsQuery.data ?? []).map((project) => (
+                  <NativeSelectOption key={project.id} value={project.id}>
+                    {project.name}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+            <label>
+              <span>优先级</span>
+              <NativeSelect
+                aria-label="按优先级筛选"
+                value={priorityFilter}
+                onChange={(event) =>
+                  updateSearchParams({
+                    priority: event.target.value || null,
+                    occurrence_id: null,
+                    task_id: null,
+                  })
+                }
+              >
+                <NativeSelectOption value="">全部</NativeSelectOption>
+                <NativeSelectOption value="3">紧急</NativeSelectOption>
+                <NativeSelectOption value="2">高</NativeSelectOption>
+                <NativeSelectOption value="1">中</NativeSelectOption>
+                <NativeSelectOption value="0">普通</NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <label>
+              <span>状态</span>
+              <NativeSelect
+                aria-label="按状态筛选"
+                value={statusFilter}
+                disabled={activeTab === 'draft'}
+                onChange={(event) =>
+                  updateSearchParams({
+                    status: event.target.value || null,
+                    occurrence_id: null,
+                    task_id: null,
+                  })
+                }
+              >
+                <NativeSelectOption value="">全部</NativeSelectOption>
+                <NativeSelectOption value="open">未开始</NativeSelectOption>
+                <NativeSelectOption value="active">进行中</NativeSelectOption>
+                <NativeSelectOption value="blocked">阻塞</NativeSelectOption>
+                <NativeSelectOption value="done">已完成</NativeSelectOption>
+                <NativeSelectOption value="skipped">已跳过</NativeSelectOption>
+                <NativeSelectOption value="cancelled">
+                  已取消
+                </NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <label>
+              <span>日期范围</span>
+              <NativeSelect
+                aria-label="按日期范围筛选"
+                value={dateFilter}
+                disabled={activeTab === 'draft'}
+                onChange={(event) =>
+                  updateSearchParams({
+                    date:
+                      event.target.value === 'current'
+                        ? null
+                        : event.target.value,
+                    occurrence_id: null,
+                    task_id: null,
+                  })
+                }
+              >
+                <NativeSelectOption value="current">
+                  当前视图
+                </NativeSelectOption>
+                <NativeSelectOption value="today">今天</NativeSelectOption>
+                <NativeSelectOption value="next-7-days">
+                  未来 7 天
+                </NativeSelectOption>
+                <NativeSelectOption value="unscheduled">
+                  无日期
+                </NativeSelectOption>
+              </NativeSelect>
+            </label>
+            <div className="planning-filter-summary">
+              <span role="status">{activeCount} 个结果</span>
+              {hasFilters ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
                     updateSearchParams({
-                      task_id: task.id,
+                      project: null,
+                      priority: null,
+                      status: null,
+                      date: null,
                       occurrence_id: null,
+                      task_id: null,
                     })
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      updateSearchParams({
-                        task_id: task.id,
-                        occurrence_id: null,
-                      })
-                    }
+                    projectFilterRef.current?.focus()
                   }}
                 >
-                  <div>
-                    <strong>{task.title}</strong>
-                    <span>
-                      {projectsByID.get(task.project_id)?.name ?? '未命名项目'}
-                    </span>
-                  </div>
-                  <span>草稿</span>
-                </article>
-              ))}
+                  清除筛选
+                </Button>
+              ) : null}
             </div>
-          ) : (
-            <>
-              <div className="td-list-columns" aria-hidden="true">
-                <span />
-                <span>任务 / 项目</span>
-                <span>安排</span>
-                <span>状态</span>
-                <span />
-              </div>
-              <div
-                className="td-occurrence-list"
-                role="list"
-                aria-label="任务执行实例"
-              >
-                {activeOccurrences.map((occurrence) => {
-                  const task = definitionsByID.get(occurrence.task_id)
-                  const project = task
-                    ? projectsByID.get(task.project_id)
-                    : undefined
-                  const title = occurrenceTitle(occurrence, task)
-                  return (
-                    <OccurrenceRow
-                      key={occurrence.id}
-                      occurrence={occurrence}
-                      task={task}
-                      project={project}
-                      selected={occurrence.id === selectedOccurrenceID}
-                      onSelect={() =>
+          </div>
+
+          <div
+            className={`td-workspace planning-workspace ${
+              selectedOccurrence || selectedTask ? 'has-inspector' : ''
+            }`}
+          >
+            <div className="td-list-canvas">
+              {activeTab === 'inbox' && inboxProject ? (
+                <div className="td-context-note">
+                  <Inbox aria-hidden="true" />
+                  <div>
+                    <strong>{inboxProject.name}</strong>
+                    <span>这里收纳尚未整理到具体项目的任务。</span>
+                  </div>
+                </div>
+              ) : null}
+
+              {activeTab === 'draft' ? (
+                <div
+                  className="td-definition-list"
+                  role="list"
+                  aria-label="任务草稿"
+                >
+                  {activeDrafts.map((task) => (
+                    <article
+                      className={`td-definition-row ${
+                        selectedTaskID === task.id ? 'is-selected' : ''
+                      }`}
+                      role="listitem"
+                      tabIndex={0}
+                      key={task.id}
+                      onClick={() =>
                         updateSearchParams({
-                          occurrence_id: occurrence.id,
-                          task_id: null,
+                          task_id: task.id,
+                          occurrence_id: null,
                         })
                       }
-                      onComplete={
-                        task
-                          ? () =>
-                              completeOccurrence.mutateAsync(
-                                occurrenceCommandVariables(task, occurrence)
-                              )
-                          : undefined
-                      }
-                      trailingAction={
-                        <button
-                          type="button"
-                          aria-label={`改期${title}`}
-                          onClick={() => beginReschedule(occurrence)}
-                        >
-                          <CalendarClock aria-hidden="true" />
-                        </button>
-                      }
-                    />
-                  )
-                })}
-              </div>
-            </>
-          )}
-
-          {(activeQuery?.isLoading || draftsQuery.isLoading) &&
-          activeCount === 0 ? (
-            <div className="td-loading-list" aria-label="正在加载任务">
-              <span />
-              <span />
-              <span />
-            </div>
-          ) : null}
-          {activeQuery?.isError ? (
-            <div className="td-inline-error" role="alert">
-              执行实例暂时不可用，请刷新后重试。
-            </div>
-          ) : null}
-          {taskCommandError && !selectedTask ? (
-            <div className="td-inline-error" role="alert">
-              {taskCommandError}
-            </div>
-          ) : null}
-          {activeCount === 0 &&
-          !activeQuery?.isLoading &&
-          !draftsQuery.isLoading ? (
-            <div className="td-empty-state">
-              <ListChecks aria-hidden="true" />
-              <strong>这个视图还没有任务</strong>
-              <span>创建任务或切换到其他视图。</span>
-            </div>
-          ) : null}
-        </div>
-
-        {selectedOccurrence && selectedTask ? (
-          <OccurrenceInspector
-            key={selectedOccurrence.id}
-            occurrence={selectedOccurrence}
-            task={selectedTask}
-            project={selectedProject}
-            busy={commandBusy}
-            onClose={() => {
-              updateSearchParams({ occurrence_id: null, task_id: null })
-              setEditingOccurrenceID('')
-            }}
-            onStart={() =>
-              startOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
-              )
-            }
-            onComplete={() =>
-              completeOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
-              )
-            }
-            onReopen={() =>
-              reopenOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
-              )
-            }
-            onBlock={(reason, nextAction) =>
-              blockOccurrence.mutateAsync({
-                ...occurrenceCommandVariables(selectedTask, selectedOccurrence),
-                blockedReason: reason,
-                nextAction,
-              })
-            }
-            onUnblock={() =>
-              unblockOccurrence.mutateAsync(
-                occurrenceCommandVariables(selectedTask, selectedOccurrence)
-              )
-            }
-            onReschedule={() => beginReschedule(selectedOccurrence)}
-            onViewTask={() =>
-              updateSearchParams({
-                task_id: selectedTask.id,
-                occurrence_id: null,
-              })
-            }
-            onArchive={() =>
-              archiveTask
-                .mutateAsync(taskCommandVariables(selectedTask))
-                .then(() =>
-                  updateSearchParams({ occurrence_id: null, task_id: null })
-                )
-            }
-            onDelete={() =>
-              deleteTask
-                .mutateAsync(taskCommandVariables(selectedTask))
-                .then(() =>
-                  updateSearchParams({ occurrence_id: null, task_id: null })
-                )
-            }
-          >
-            {editingOccurrence?.id === selectedOccurrence.id ? (
-              <form className="td-reschedule-form" onSubmit={handleReschedule}>
-                <div>
-                  <strong>调整本次安排</strong>
-                  <span>可设置全天日期或具体时间，只影响这一次执行。</span>
-                </div>
-                <div className="td-reschedule-grid">
-                  <label>
-                    <span>安排方式</span>
-                    <select
-                      aria-label="新的安排方式"
-                      value={rescheduleTimingType}
-                      onChange={(event) =>
-                        setRescheduleTimingType(
-                          event.target.value as Exclude<
-                            TimingType,
-                            'unscheduled'
-                          >
-                        )
-                      }
-                    >
-                      <option value="date">全天</option>
-                      <option value="time_block">具体时间</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>新的执行日期</span>
-                    <input
-                      type="date"
-                      aria-label="新的执行日期"
-                      value={rescheduleDate}
-                      onChange={(event) =>
-                        setRescheduleDate(event.target.value)
-                      }
-                    />
-                  </label>
-                </div>
-                {rescheduleTimingType === 'time_block' ? (
-                  <div className="td-reschedule-time-row">
-                    <label>
-                      <span>开始时间</span>
-                      <input
-                        type="time"
-                        aria-label="新的开始时间"
-                        value={rescheduleTimeRange.start}
-                        onChange={(event) => {
-                          const start = event.target.value
-                          setRescheduleTimeRange((current) => ({
-                            start,
-                            end:
-                              timeRangeMinutes(start, current.end) > 0
-                                ? current.end
-                                : addMinutes(start, 60),
-                          }))
-                        }}
-                      />
-                    </label>
-                    <span aria-hidden="true">至</span>
-                    <label>
-                      <span>结束时间</span>
-                      <input
-                        type="time"
-                        aria-label="新的结束时间"
-                        value={rescheduleTimeRange.end}
-                        onChange={(event) =>
-                          setRescheduleTimeRange((current) => ({
-                            ...current,
-                            end: event.target.value,
-                          }))
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          updateSearchParams({
+                            task_id: task.id,
+                            occurrence_id: null,
+                          })
                         }
-                      />
-                    </label>
-                  </div>
-                ) : null}
-                <div className="td-form-actions">
-                  <button
-                    type="button"
-                    onClick={() => setEditingOccurrenceID('')}
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="submit"
-                    className="is-primary"
-                    disabled={
-                      rescheduleDate === '' ||
-                      (rescheduleTimingType === 'time_block' &&
-                        timeRangeMinutes(
-                          rescheduleTimeRange.start,
-                          rescheduleTimeRange.end
-                        ) <= 0) ||
-                      rescheduleOccurrence.isPending
-                    }
-                  >
-                    保存改期
-                  </button>
+                      }}
+                    >
+                      <div>
+                        <strong>{task.title}</strong>
+                        <span>
+                          {projectsByID.get(task.project_id)?.name ??
+                            '未命名项目'}
+                        </span>
+                      </div>
+                      <span>草稿</span>
+                    </article>
+                  ))}
                 </div>
-                {rescheduleConflict ? (
-                  <div className="td-conflict" role="alert">
-                    <strong>执行实例已在其他窗口更新</strong>
-                    <p>
-                      你的安排仍保留为{' '}
-                      {formatRescheduleDraft(
-                        rescheduleDate,
-                        rescheduleTimingType,
-                        rescheduleTimeRange
-                      )}
-                      ，没有覆盖服务器版本。
-                    </p>
+              ) : (
+                <>
+                  {activeCount > 0 ? (
+                    <div className="td-list-columns" aria-hidden="true">
+                      <span />
+                      <span>任务 / 项目</span>
+                      <span>安排</span>
+                      <span>状态</span>
+                      <span />
+                    </div>
+                  ) : null}
+                  <div
+                    className="td-occurrence-list"
+                    role="list"
+                    aria-label="任务执行实例"
+                  >
+                    {activeOccurrences.map((occurrence) => {
+                      const task = definitionsByID.get(occurrence.task_id)
+                      const project = task
+                        ? projectsByID.get(task.project_id)
+                        : undefined
+                      const title = occurrenceTitle(occurrence, task)
+                      return (
+                        <OccurrenceRow
+                          key={occurrence.id}
+                          occurrence={occurrence}
+                          task={task}
+                          project={project}
+                          selected={occurrence.id === selectedOccurrenceID}
+                          onSelect={() =>
+                            updateSearchParams({
+                              occurrence_id: occurrence.id,
+                              task_id: null,
+                            })
+                          }
+                          onComplete={
+                            task
+                              ? () =>
+                                  completeOccurrence.mutateAsync(
+                                    occurrenceCommandVariables(task, occurrence)
+                                  )
+                              : undefined
+                          }
+                          trailingAction={
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label={`改期${title}`}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                beginReschedule(occurrence)
+                              }}
+                            >
+                              <CalendarClock aria-hidden="true" />
+                            </Button>
+                          }
+                        />
+                      )
+                    })}
+                  </div>
+                </>
+              )}
+
+              {listQuery.isLoading && activeCount === 0 ? (
+                <PlanningLoading label="正在加载任务" />
+              ) : null}
+              {listQuery.isError ? (
+                <Alert variant="destructive">
+                  <CircleAlert aria-hidden="true" />
+                  <AlertTitle>
+                    {activeTab === 'draft'
+                      ? '任务草稿暂时不可用，请刷新后重试。'
+                      : '执行实例暂时不可用，请刷新后重试。'}
+                  </AlertTitle>
+                </Alert>
+              ) : null}
+              {taskCommandError && !selectedTask ? (
+                <Alert variant="destructive">
+                  <CircleAlert aria-hidden="true" />
+                  <AlertTitle>{taskCommandError}</AlertTitle>
+                </Alert>
+              ) : null}
+              {activeCount === 0 &&
+              !listQuery.isLoading &&
+              !listQuery.isError ? (
+                <Empty className="planning-empty">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <ListChecks aria-hidden="true" />
+                    </EmptyMedia>
+                    <EmptyTitle>
+                      {hasFilters
+                        ? '没有符合筛选条件的任务'
+                        : '这个视图还没有任务'}
+                    </EmptyTitle>
+                    <EmptyDescription>
+                      {hasFilters
+                        ? '调整上方筛选条件后再试。'
+                        : '创建任务或切换到其他视图。'}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              ) : null}
+            </div>
+
+            {selectedOccurrence && selectedTask ? (
+              <OccurrenceInspector
+                key={selectedOccurrence.id}
+                occurrence={selectedOccurrence}
+                task={selectedTask}
+                project={selectedProject}
+                busy={commandBusy}
+                onClose={() => {
+                  updateSearchParams({ occurrence_id: null, task_id: null })
+                  setEditingOccurrenceID('')
+                }}
+                onStart={() =>
+                  startOccurrence.mutateAsync(
+                    occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                  )
+                }
+                onComplete={() =>
+                  completeOccurrence.mutateAsync(
+                    occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                  )
+                }
+                onReopen={() =>
+                  reopenOccurrence.mutateAsync(
+                    occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                  )
+                }
+                onBlock={(reason, nextAction) =>
+                  blockOccurrence.mutateAsync({
+                    ...occurrenceCommandVariables(
+                      selectedTask,
+                      selectedOccurrence
+                    ),
+                    blockedReason: reason,
+                    nextAction,
+                  })
+                }
+                onUnblock={() =>
+                  unblockOccurrence.mutateAsync(
+                    occurrenceCommandVariables(selectedTask, selectedOccurrence)
+                  )
+                }
+                onReschedule={() => beginReschedule(selectedOccurrence)}
+                onViewTask={() =>
+                  updateSearchParams({
+                    task_id: selectedTask.id,
+                    occurrence_id: null,
+                  })
+                }
+                onArchive={() =>
+                  archiveTask
+                    .mutateAsync(taskCommandVariables(selectedTask))
+                    .then(() =>
+                      updateSearchParams({ occurrence_id: null, task_id: null })
+                    )
+                }
+                onDelete={() =>
+                  deleteTask
+                    .mutateAsync(taskCommandVariables(selectedTask))
+                    .then(() =>
+                      updateSearchParams({ occurrence_id: null, task_id: null })
+                    )
+                }
+              >
+                {editingOccurrence?.id === selectedOccurrence.id ? (
+                  <form
+                    className="td-reschedule-form"
+                    onSubmit={handleReschedule}
+                  >
+                    <div>
+                      <strong>调整本次安排</strong>
+                      <span>可设置全天日期或具体时间，只影响这一次执行。</span>
+                    </div>
+                    <div className="td-reschedule-grid">
+                      <label>
+                        <span>安排方式</span>
+                        <select
+                          aria-label="新的安排方式"
+                          value={rescheduleTimingType}
+                          onChange={(event) =>
+                            setRescheduleTimingType(
+                              event.target.value as Exclude<
+                                TimingType,
+                                'unscheduled'
+                              >
+                            )
+                          }
+                        >
+                          <option value="date">全天</option>
+                          <option value="time_block">具体时间</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>新的执行日期</span>
+                        <input
+                          type="date"
+                          aria-label="新的执行日期"
+                          value={rescheduleDate}
+                          onChange={(event) =>
+                            setRescheduleDate(event.target.value)
+                          }
+                        />
+                      </label>
+                    </div>
+                    {rescheduleTimingType === 'time_block' ? (
+                      <div className="td-reschedule-time-row">
+                        <label>
+                          <span>开始时间</span>
+                          <input
+                            type="time"
+                            aria-label="新的开始时间"
+                            value={rescheduleTimeRange.start}
+                            onChange={(event) => {
+                              const start = event.target.value
+                              setRescheduleTimeRange((current) => ({
+                                start,
+                                end:
+                                  timeRangeMinutes(start, current.end) > 0
+                                    ? current.end
+                                    : addMinutes(start, 60),
+                              }))
+                            }}
+                          />
+                        </label>
+                        <span aria-hidden="true">至</span>
+                        <label>
+                          <span>结束时间</span>
+                          <input
+                            type="time"
+                            aria-label="新的结束时间"
+                            value={rescheduleTimeRange.end}
+                            onChange={(event) =>
+                              setRescheduleTimeRange((current) => ({
+                                ...current,
+                                end: event.target.value,
+                              }))
+                            }
+                          />
+                        </label>
+                      </div>
+                    ) : null}
                     <div className="td-form-actions">
                       <button
                         type="button"
-                        onClick={() => {
-                          setRescheduleConflict(null)
-                          void activeQuery?.refetch()
-                        }}
+                        onClick={() => setEditingOccurrenceID('')}
                       >
-                        刷新服务器版本
+                        取消
                       </button>
                       <button
-                        type="button"
-                        onClick={() => setShowComparison((visible) => !visible)}
+                        type="submit"
+                        className="is-primary"
+                        disabled={
+                          rescheduleDate === '' ||
+                          (rescheduleTimingType === 'time_block' &&
+                            timeRangeMinutes(
+                              rescheduleTimeRange.start,
+                              rescheduleTimeRange.end
+                            ) <= 0) ||
+                          rescheduleOccurrence.isPending
+                        }
                       >
-                        比较差异
+                        保存改期
                       </button>
                     </div>
-                    {showComparison ? (
-                      <dl className="td-revision-comparison">
-                        <div>
-                          <dt>本地 revision</dt>
-                          <dd>{editingOccurrence.revision}</dd>
+                    {rescheduleConflict ? (
+                      <div className="td-conflict" role="alert">
+                        <strong>执行实例已在其他窗口更新</strong>
+                        <p>
+                          你的安排仍保留为{' '}
+                          {formatRescheduleDraft(
+                            rescheduleDate,
+                            rescheduleTimingType,
+                            rescheduleTimeRange
+                          )}
+                          ，没有覆盖服务器版本。
+                        </p>
+                        <div className="td-form-actions">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRescheduleConflict(null)
+                              void activeQuery?.refetch()
+                            }}
+                          >
+                            刷新服务器版本
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowComparison((visible) => !visible)
+                            }
+                          >
+                            比较差异
+                          </button>
                         </div>
-                        <div>
-                          <dt>服务器 revision</dt>
-                          <dd>
-                            {rescheduleConflict.currentRevisions
-                              ?.occurrence_revisions?.[editingOccurrence.id] ??
-                              '未知'}
-                          </dd>
-                        </div>
-                      </dl>
+                        {showComparison ? (
+                          <dl className="td-revision-comparison">
+                            <div>
+                              <dt>本地 revision</dt>
+                              <dd>{editingOccurrence.revision}</dd>
+                            </div>
+                            <div>
+                              <dt>服务器 revision</dt>
+                              <dd>
+                                {rescheduleConflict.currentRevisions
+                                  ?.occurrence_revisions?.[
+                                  editingOccurrence.id
+                                ] ?? '未知'}
+                              </dd>
+                            </div>
+                          </dl>
+                        ) : null}
+                      </div>
                     ) : null}
-                  </div>
+                    {rescheduleError ? (
+                      <div className="td-inline-error" role="alert">
+                        {rescheduleError}
+                      </div>
+                    ) : null}
+                  </form>
                 ) : null}
-                {rescheduleError ? (
-                  <div className="td-inline-error" role="alert">
-                    {rescheduleError}
-                  </div>
-                ) : null}
-              </form>
+              </OccurrenceInspector>
+            ) : selectedTask ? (
+              <TaskDefinitionInspector
+                commandError={taskCommandError}
+                task={selectedTask}
+                project={selectedProject}
+                occurrences={selectedTaskOccurrences}
+                busy={commandBusy}
+                onClose={() =>
+                  updateSearchParams({ occurrence_id: null, task_id: null })
+                }
+                onUpdate={(input) =>
+                  updateTask.mutateAsync({
+                    projectID: selectedTask.project_id,
+                    taskID: selectedTask.id,
+                    input: {
+                      ...input,
+                      expected_task_revision: selectedTask.revision,
+                      expected_schedule_revision:
+                        selectedTask.schedule_revision,
+                    },
+                  })
+                }
+                onPublish={() =>
+                  handleTaskCommand(() =>
+                    publishTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onPause={() =>
+                  handleTaskCommand(() =>
+                    pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onResume={() =>
+                  handleTaskCommand(() =>
+                    resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onCancel={() =>
+                  handleTaskCommand(() =>
+                    cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onRestore={() =>
+                  handleTaskCommand(() =>
+                    restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onArchive={() =>
+                  archiveTask
+                    .mutateAsync(taskCommandVariables(selectedTask))
+                    .then(() =>
+                      updateSearchParams({ occurrence_id: null, task_id: null })
+                    )
+                }
+                onDelete={() =>
+                  deleteTask
+                    .mutateAsync(taskCommandVariables(selectedTask))
+                    .then(() =>
+                      updateSearchParams({ occurrence_id: null, task_id: null })
+                    )
+                }
+              />
             ) : null}
-          </OccurrenceInspector>
-        ) : selectedTask ? (
-          <TaskDefinitionInspector
-            commandError={taskCommandError}
-            task={selectedTask}
-            project={selectedProject}
-            occurrences={selectedTaskOccurrences}
-            busy={commandBusy}
-            onClose={() =>
-              updateSearchParams({ occurrence_id: null, task_id: null })
-            }
-            onUpdate={(input) =>
-              updateTask.mutateAsync({
-                projectID: selectedTask.project_id,
-                taskID: selectedTask.id,
-                input: {
-                  ...input,
-                  expected_task_revision: selectedTask.revision,
-                  expected_schedule_revision: selectedTask.schedule_revision,
-                },
-              })
-            }
-            onPublish={() =>
-              handleTaskCommand(() =>
-                publishTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onPause={() =>
-              handleTaskCommand(() =>
-                pauseTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onResume={() =>
-              handleTaskCommand(() =>
-                resumeTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onCancel={() =>
-              handleTaskCommand(() =>
-                cancelTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onRestore={() =>
-              handleTaskCommand(() =>
-                restoreTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onArchive={() =>
-              archiveTask
-                .mutateAsync(taskCommandVariables(selectedTask))
-                .then(() =>
-                  updateSearchParams({ occurrence_id: null, task_id: null })
-                )
-            }
-            onDelete={() =>
-              deleteTask
-                .mutateAsync(taskCommandVariables(selectedTask))
-                .then(() =>
-                  updateSearchParams({ occurrence_id: null, task_id: null })
-                )
-            }
-          />
-        ) : null}
-      </div>
+          </div>
+        </PlanningTabs>
+      </Card>
     </section>
   )
 }

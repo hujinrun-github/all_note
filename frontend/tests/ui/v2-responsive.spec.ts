@@ -311,6 +311,55 @@ test('desktop pages keep navigation and content usable at laptop and wide widths
   }
 })
 
+test('planning overview links, keyboard tabs and task filters stay in sync with the URL', async ({
+  page,
+}, info) => {
+  await page.goto('/')
+  const weekMetric = page.getByRole('button', { name: /本周安排/ })
+  await weekMetric.click()
+  await expect(page).toHaveURL(/\?view=week$/)
+  await expect(weekMetric).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('tab', { name: /^本周/ })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
+
+  await page.getByRole('link', { name: /还没安排的任务/ }).click()
+  await expect(page).toHaveURL(/\/tasks\?view=unscheduled$/)
+  const unscheduled = page.getByRole('tab', { name: /^无日期/ })
+  const recurring = page.getByRole('tab', { name: /^重复/ })
+  await expect(unscheduled).toHaveAttribute('aria-selected', 'true')
+  await unscheduled.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(recurring).toBeFocused()
+  await expect(unscheduled).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/tasks\?view=recurring$/)
+  await expect(recurring).toHaveAttribute('aria-selected', 'true')
+  await page.goBack()
+  await expect(unscheduled).toHaveAttribute('aria-selected', 'true')
+
+  const project = page.getByRole('combobox', { name: '按项目筛选' })
+  const priority = page.getByRole('combobox', { name: '按优先级筛选' })
+  await project.selectOption('learning')
+  await priority.selectOption('2')
+  await expect(page).toHaveURL(/project=learning&priority=2/)
+  await expect(page.getByText('没有符合筛选条件的任务')).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: '0 个结果' })).toBeVisible()
+  await page.reload()
+  await expect(project).toHaveValue('learning')
+  await expect(priority).toHaveValue('2')
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  await expect(page).toHaveURL(/\/tasks\?view=unscheduled$/)
+  await expect(project).toBeFocused()
+  await expect(project).toHaveValue('')
+  await expect(priority).toHaveValue('')
+  await expect(page.getByRole('listitem').filter({ hasText: title })).toBeVisible()
+  await expectNoPageOverflow(page)
+  await page.screenshot({ path: info.outputPath('tasks.png') })
+})
+
 test('responsive navigation, task details, focus return and calendar editing', async ({
   page,
   isMobile,

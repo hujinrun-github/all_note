@@ -8,12 +8,36 @@ import {
   CheckCheck,
   CircleDot,
   FolderOpen,
-  Sun,
+  CalendarClock,
+  NotebookPen,
+  CircleAlert,
 } from 'lucide-react'
 import { type ReactNode, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import type { OccurrenceV2, TaskV2 } from '../api/taskDomain'
+import {
+  PlanningHeading,
+  PlanningLoading,
+  PlanningTabs,
+} from '../components/planning/PlanningWorkspace'
+import { Alert, AlertTitle } from '../components/ui/alert'
+import { Button } from '../components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '../components/ui/card'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '../components/ui/empty'
 import {
   OccurrenceInspector,
   OccurrenceRow,
@@ -238,40 +262,41 @@ export default function DashboardV2() {
     )
   }
 
-  return (
-    <section className="td-page td-today-page" aria-labelledby="today-heading">
-      <header className="td-page-header">
-        <div>
-          <span className="workspace-eyebrow">
-            <Sun aria-hidden="true" /> 我的工作日
-          </span>
-          <div className="td-title-line">
-            <h1 id="today-heading">今天</h1>
-            <time>{formatToday()}</time>
-          </div>
-          <p>把注意力留给重要的事，每天向前一点。</p>
-        </div>
-        <div className="td-page-actions">
-          <button
-            type="button"
-            className="td-secondary-action"
-            onClick={() => setScheduleCreateOpen(true)}
-          >
-            <CalendarPlus aria-hidden="true" />
-            新增日程
-          </button>
-          <button
-            type="button"
-            className="td-primary-action"
-            onClick={() => setCaptureOpen(true)}
-          >
-            <Plus aria-hidden="true" />
-            添加任务
-          </button>
-        </div>
-      </header>
+  function selectTab(tab: TodayTab) {
+    updateSearchParams({
+      view: tab === 'today' ? null : tab,
+      occurrence_id: null,
+      task_id: null,
+    })
+  }
 
-      <div className="today-overview" aria-label="任务概览">
+  return (
+    <section className="planning-page" aria-labelledby="today-heading">
+      <PlanningHeading
+        id="today-heading"
+        title="今天"
+        date={formatToday()}
+        description="查看今日安排，推进手头的任务。"
+      >
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setScheduleCreateOpen(true)}
+        >
+          <CalendarPlus aria-hidden="true" data-icon="inline-start" />
+          新增日程
+        </Button>
+        <Button type="button" onClick={() => setCaptureOpen(true)}>
+          <Plus aria-hidden="true" data-icon="inline-start" />
+          添加任务
+        </Button>
+      </PlanningHeading>
+
+      <div
+        className="mb-5 grid grid-cols-3 gap-2.5 sm:gap-4"
+        role="group"
+        aria-label="任务概览"
+      >
         {(
           [
             {
@@ -294,285 +319,316 @@ export default function DashboardV2() {
             },
           ] as const
         ).map(({ tab, label, query, icon: Icon }) => (
-          <button
-            key={tab}
-            type="button"
-            className={`today-metric is-${tab}`}
-            onClick={() =>
-              updateSearchParams({
-                view: tab === 'today' ? null : tab,
-                occurrence_id: null,
-                task_id: null,
-              })
-            }
-          >
-            <span className="today-metric-icon">
-              <Icon aria-hidden="true" />
-            </span>
-            <span className="today-metric-copy">
-              <span>{label}</span>
-              <strong>
-                {query.isLoading || query.isError
-                  ? '—'
-                  : tab === 'today'
-                    ? (query.data ?? []).filter(
-                        (item) =>
-                          !['done', 'skipped', 'cancelled'].includes(
-                            item.execution_status
-                          )
-                      ).length
-                    : (query.data?.length ?? 0)}
-                <small>项</small>
-              </strong>
-            </span>
-            <ArrowUpRight className="today-metric-arrow" aria-hidden="true" />
-          </button>
+          <Card key={tab} className="relative min-w-0 gap-0 py-0 shadow-none">
+            <Button
+              type="button"
+              variant="ghost"
+              aria-pressed={activeTab === tab}
+              className="planning-metric"
+              onClick={() => selectTab(tab)}
+            >
+              <span className="planning-metric-icon">
+                <Icon aria-hidden="true" />
+              </span>
+              <span className="flex min-w-0 flex-col gap-1 text-left">
+                <span className="text-xs font-medium sm:text-sm">{label}</span>
+                <strong className="text-2xl font-semibold leading-none tracking-tight tabular-nums sm:text-[1.8rem]">
+                  {query.isLoading || query.isError
+                    ? '—'
+                    : tab === 'today'
+                      ? (query.data ?? []).filter(
+                          (item) =>
+                            !['done', 'skipped', 'cancelled'].includes(
+                              item.execution_status
+                            )
+                        ).length
+                      : (query.data?.length ?? 0)}
+                  <small className="ml-1 text-xs font-normal text-muted-foreground">
+                    项
+                  </small>
+                </strong>
+              </span>
+              <ArrowUpRight
+                className="planning-metric-arrow"
+                aria-hidden="true"
+              />
+            </Button>
+          </Card>
         ))}
       </div>
 
-      <div className={`today-layout ${selectedOccurrence ? 'has-detail' : ''}`}>
-        <div className="today-main">
-          <div className="td-tabs" role="tablist" aria-label="今日任务筛选">
-            {todayTabs.map((tab) => {
-              const count = queries[tab.id].data?.length ?? 0
-              return (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === tab.id}
-                  className={activeTab === tab.id ? 'is-active' : ''}
-                  key={tab.id}
-                  onClick={() =>
-                    updateSearchParams({
-                      view: tab.id === 'today' ? null : tab.id,
-                      occurrence_id: null,
-                      task_id: null,
-                    })
-                  }
-                >
-                  {tab.label} <span>{count}</span>
-                </button>
-              )
-            })}
-          </div>
-
-          <div
-            className={`td-workspace ${selectedOccurrence ? 'has-inspector' : ''}`}
+      <div className={selectedOccurrence ? 'min-w-0' : 'planning-dashboard'}>
+        <Card className="planning-agenda min-w-0 gap-0 py-0 shadow-none">
+          <PlanningTabs
+            label="今日任务筛选"
+            value={activeTab}
+            tabs={todayTabs.map((tab) => ({
+              ...tab,
+              count: queries[tab.id].data?.length ?? 0,
+            }))}
+            onChange={selectTab}
           >
-            <div className="td-list-canvas">
-              {activeQuery.isLoading || definitionsQuery.isLoading ? (
-                <div className="td-loading-list" aria-label="正在加载今日执行">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              ) : null}
-              {activeQuery.isError ? (
-                <div className="td-inline-error" role="alert">
-                  今日执行暂时不可用，请刷新后重试。
-                </div>
-              ) : null}
+            <div
+              className={`td-workspace planning-workspace ${selectedOccurrence ? 'has-inspector' : ''}`}
+            >
+              <div className="td-list-canvas">
+                {activeQuery.isLoading || definitionsQuery.isLoading ? (
+                  <PlanningLoading label="正在加载今日执行" />
+                ) : null}
+                {activeQuery.isError ? (
+                  <Alert variant="destructive">
+                    <CircleAlert aria-hidden="true" />
+                    <AlertTitle>今日执行暂时不可用，请刷新后重试。</AlertTitle>
+                  </Alert>
+                ) : null}
 
-              {occurrenceSections.timedCount > 0 ? (
-                <>
-                  <SectionHeading
-                    title="固定时间"
-                    count={`${occurrenceSections.timedCount} 个安排`}
-                  />
-                  <div
-                    className="td-occurrence-list is-timeline"
-                    role="list"
-                    aria-label="固定时间任务"
-                  >
-                    {occurrenceSections.timedCollections.map(
-                      renderOccurrenceCollection
-                    )}
-                  </div>
-                </>
-              ) : null}
+                {occurrenceSections.timedCount > 0 ? (
+                  <>
+                    <SectionHeading
+                      title="固定时间"
+                      count={`${occurrenceSections.timedCount} 个安排`}
+                    />
+                    <div
+                      className="td-occurrence-list is-timeline"
+                      role="list"
+                      aria-label="固定时间任务"
+                    >
+                      {occurrenceSections.timedCollections.map(
+                        renderOccurrenceCollection
+                      )}
+                    </div>
+                  </>
+                ) : null}
 
-              <SectionHeading
-                title={occurrenceSectionTitle(activeTab)}
-                count={`${occurrenceSections.flexibleCount} 个行动`}
-              />
-              <div
-                className="td-occurrence-list"
-                role="list"
-                aria-label={`${todayTabLabel(activeTab)}执行实例`}
-              >
-                {occurrenceSections.flexibleCollections.map(
-                  renderOccurrenceCollection
-                )}
+                {activeOccurrences.length > 0 ? (
+                  <>
+                    <SectionHeading
+                      title={occurrenceSectionTitle(activeTab)}
+                      count={`${occurrenceSections.flexibleCount} 个行动`}
+                    />
+                    <div
+                      className="td-occurrence-list"
+                      role="list"
+                      aria-label={`${todayTabLabel(activeTab)}执行实例`}
+                    >
+                      {occurrenceSections.flexibleCollections.map(
+                        renderOccurrenceCollection
+                      )}
+                    </div>
+                  </>
+                ) : null}
+
+                {activeOccurrences.length === 0 &&
+                !activeQuery.isLoading &&
+                !definitionsQuery.isLoading &&
+                !activeQuery.isError ? (
+                  <Empty className="planning-empty">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <CalendarDays aria-hidden="true" />
+                      </EmptyMedia>
+                      <EmptyTitle>
+                        {activeTab === 'today'
+                          ? '今天的安排，从这里开始'
+                          : '这个视图还没有任务'}
+                      </EmptyTitle>
+                      <EmptyDescription>
+                        {emptyStateDescription(activeTab)}
+                      </EmptyDescription>
+                    </EmptyHeader>
+                    {activeTab === 'today' ? (
+                      <EmptyContent>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setCaptureOpen(true)}
+                        >
+                          <Plus aria-hidden="true" data-icon="inline-start" />
+                          记录一个任务
+                        </Button>
+                      </EmptyContent>
+                    ) : null}
+                  </Empty>
+                ) : null}
               </div>
 
-              {activeOccurrences.length === 0 &&
-              !activeQuery.isLoading &&
-              !activeQuery.isError ? (
-                <div className="td-empty-state">
-                  <CalendarDays aria-hidden="true" />
-                  <strong>
-                    {activeTab === 'today'
-                      ? '今天的安排，从这里开始'
-                      : '这个视图还没有任务'}
-                  </strong>
-                  <span>{emptyStateDescription(activeTab)}</span>
-                  {activeTab === 'today' && (
-                    <button
-                      type="button"
-                      className="td-secondary-action"
-                      onClick={() => setCaptureOpen(true)}
-                    >
-                      <Plus aria-hidden="true" />
-                      记录一个任务
-                    </button>
-                  )}
-                </div>
+              {selectedOccurrence ? (
+                <OccurrenceInspector
+                  key={selectedOccurrence.id}
+                  occurrence={selectedOccurrence}
+                  task={selectedTask}
+                  project={selectedProject}
+                  busy={busy}
+                  onClose={() =>
+                    updateSearchParams(
+                      { occurrence_id: null, task_id: null },
+                      true
+                    )
+                  }
+                  onStart={
+                    selectedTask
+                      ? () =>
+                          startOccurrence.mutateAsync(
+                            commandVariables(selectedTask, selectedOccurrence)
+                          )
+                      : undefined
+                  }
+                  onComplete={
+                    selectedTask
+                      ? () =>
+                          completeOccurrence.mutateAsync(
+                            commandVariables(selectedTask, selectedOccurrence)
+                          )
+                      : undefined
+                  }
+                  onReopen={
+                    selectedTask
+                      ? () =>
+                          reopenOccurrence.mutateAsync(
+                            commandVariables(selectedTask, selectedOccurrence)
+                          )
+                      : undefined
+                  }
+                  onBlock={
+                    selectedTask
+                      ? (reason, nextAction) =>
+                          blockOccurrence.mutateAsync({
+                            ...commandVariables(
+                              selectedTask,
+                              selectedOccurrence
+                            ),
+                            blockedReason: reason,
+                            nextAction,
+                          })
+                      : undefined
+                  }
+                  onUnblock={
+                    selectedTask
+                      ? () =>
+                          unblockOccurrence.mutateAsync(
+                            commandVariables(selectedTask, selectedOccurrence)
+                          )
+                      : undefined
+                  }
+                  onViewTask={
+                    selectedTask
+                      ? () =>
+                          navigate(
+                            `/tasks?task_id=${encodeURIComponent(selectedTask.id)}`
+                          )
+                      : undefined
+                  }
+                />
               ) : null}
             </div>
-
-            {selectedOccurrence ? (
-              <OccurrenceInspector
-                key={selectedOccurrence.id}
-                occurrence={selectedOccurrence}
-                task={selectedTask}
-                project={selectedProject}
-                busy={busy}
-                onClose={() =>
-                  updateSearchParams(
-                    { occurrence_id: null, task_id: null },
-                    true
-                  )
-                }
-                onStart={
-                  selectedTask
-                    ? () =>
-                        startOccurrence.mutateAsync(
-                          commandVariables(selectedTask, selectedOccurrence)
-                        )
-                    : undefined
-                }
-                onComplete={
-                  selectedTask
-                    ? () =>
-                        completeOccurrence.mutateAsync(
-                          commandVariables(selectedTask, selectedOccurrence)
-                        )
-                    : undefined
-                }
-                onReopen={
-                  selectedTask
-                    ? () =>
-                        reopenOccurrence.mutateAsync(
-                          commandVariables(selectedTask, selectedOccurrence)
-                        )
-                    : undefined
-                }
-                onBlock={
-                  selectedTask
-                    ? (reason, nextAction) =>
-                        blockOccurrence.mutateAsync({
-                          ...commandVariables(selectedTask, selectedOccurrence),
-                          blockedReason: reason,
-                          nextAction,
-                        })
-                    : undefined
-                }
-                onUnblock={
-                  selectedTask
-                    ? () =>
-                        unblockOccurrence.mutateAsync(
-                          commandVariables(selectedTask, selectedOccurrence)
-                        )
-                    : undefined
-                }
-                onViewTask={
-                  selectedTask
-                    ? () =>
-                        navigate(
-                          `/tasks?task_id=${encodeURIComponent(selectedTask.id)}`
-                        )
-                    : undefined
-                }
-              />
-            ) : null}
-          </div>
-        </div>
-        {!selectedOccurrence && (
-          <aside className="today-context" aria-label="工作区概览">
-            <section className="today-projects">
-              <header>
-                <h2>我的项目</h2>
-                <Link to="/projects" aria-label="查看全部项目">
-                  <ArrowUpRight aria-hidden="true" />
-                </Link>
-              </header>
-              <p>每个目标，都有下一步。</p>
-              {projectsQuery.isError || definitionsQuery.isError ? (
-                <p>项目暂时不可用，请稍后重试。</p>
-              ) : projectsQuery.isLoading || definitionsQuery.isLoading ? (
-                <p>正在加载项目…</p>
-              ) : (
-                (projectsQuery.data ?? [])
-                  .filter(
-                    (project) =>
-                      project.system_role !== 'inbox' &&
-                      project.status !== 'archived'
-                  )
-                  .slice(0, 5)
-                  .map((project) => {
-                    const tasks = (definitionsQuery.data ?? []).filter(
-                      (task) => task.project_id === project.id
+          </PlanningTabs>
+        </Card>
+        {!selectedOccurrence ? (
+          <aside
+            className="grid min-w-0 content-start gap-4"
+            aria-label="工作区概览"
+          >
+            <Card className="gap-0 py-0 shadow-none">
+              <CardHeader className="flex items-center justify-between gap-2 border-b border-border px-4 py-3 [.border-b]:pb-3">
+                <CardTitle>
+                  <h2 className="text-base font-semibold">我的项目</h2>
+                </CardTitle>
+                <Button asChild variant="ghost" size="icon-sm">
+                  <Link to="/projects" aria-label="查看全部项目">
+                    <ArrowUpRight aria-hidden="true" />
+                  </Link>
+                </Button>
+              </CardHeader>
+              <CardContent className="px-4">
+                {projectsQuery.isError || definitionsQuery.isError ? (
+                  <p className="py-4 text-sm text-muted-foreground">
+                    项目暂时不可用，请稍后重试。
+                  </p>
+                ) : projectsQuery.isLoading || definitionsQuery.isLoading ? (
+                  <PlanningLoading label="正在加载项目" />
+                ) : (
+                  (projectsQuery.data ?? [])
+                    .filter(
+                      (project) =>
+                        project.system_role !== 'inbox' &&
+                        project.status !== 'archived'
                     )
-                    const complete = tasks.filter(
-                      (task) => task.lifecycle_status === 'completed'
-                    ).length
-                    return (
-                      <Link
-                        key={project.id}
-                        className="today-project"
-                        to={`/projects/${encodeURIComponent(project.id)}`}
-                      >
-                        <span
-                          className={`today-project-icon ${project.kind === 'learning' ? 'is-learning' : ''}`}
+                    .slice(0, 5)
+                    .map((project) => {
+                      const tasks = (definitionsQuery.data ?? []).filter(
+                        (task) => task.project_id === project.id
+                      )
+                      const complete = tasks.filter(
+                        (task) => task.lifecycle_status === 'completed'
+                      ).length
+                      return (
+                        <Link
+                          key={project.id}
+                          className="planning-context-link"
+                          to={`/projects/${encodeURIComponent(project.id)}`}
                         >
                           <FolderOpen aria-hidden="true" />
-                        </span>
-                        <span>
-                          <strong>{project.name}</strong>
-                          <small>
+                          <span className="min-w-0 flex-1 truncate font-medium">
+                            {project.name}
+                          </span>
+                          <small className="shrink-0 text-xs text-muted-foreground tabular-nums">
                             {tasks.length
                               ? `${complete} / ${tasks.length} 个任务已完成`
                               : '还没有任务'}
                           </small>
-                        </span>
-                        <ArrowUpRight aria-hidden="true" />
-                      </Link>
-                    )
-                  })
-              )}
-              <Link className="today-projects-link" to="/projects">
-                管理项目 <ArrowUpRight aria-hidden="true" />
-              </Link>
-            </section>
-            <section className="today-shortcuts">
-              <header>
-                <h2>继续整理</h2>
-              </header>
-              <Link to="/tasks?view=unscheduled">
-                <span>
-                  还没安排的任务<small>为待办找到合适的时间</small>
-                </span>
-                <ArrowUpRight aria-hidden="true" />
-              </Link>
-              <Link to="/notes">
-                <span>
-                  打开笔记库<small>接着上一次的思考</small>
-                </span>
-                <ArrowUpRight aria-hidden="true" />
-              </Link>
-            </section>
+                        </Link>
+                      )
+                    })
+                )}
+              </CardContent>
+              <CardFooter className="px-4 py-2">
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-between"
+                >
+                  <Link to="/projects">
+                    管理项目{' '}
+                    <ArrowUpRight aria-hidden="true" data-icon="inline-end" />
+                  </Link>
+                </Button>
+              </CardFooter>
+            </Card>
+            <Card className="gap-0 py-0 shadow-none">
+              <CardHeader className="border-b border-border px-4 py-4 [.border-b]:pb-4">
+                <CardTitle>
+                  <h2 className="text-base font-semibold">继续整理</h2>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4">
+                <Link
+                  className="planning-context-link"
+                  to="/tasks?view=unscheduled"
+                >
+                  <CalendarClock aria-hidden="true" />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 font-medium">
+                    还没安排的任务
+                    <small className="text-xs font-normal text-muted-foreground">
+                      为待办找到合适的时间
+                    </small>
+                  </span>
+                  <ArrowUpRight aria-hidden="true" />
+                </Link>
+                <Link className="planning-context-link" to="/notes">
+                  <NotebookPen aria-hidden="true" />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 font-medium">
+                    打开笔记库
+                    <small className="text-xs font-normal text-muted-foreground">
+                      接着上一次的思考
+                    </small>
+                  </span>
+                  <ArrowUpRight aria-hidden="true" />
+                </Link>
+              </CardContent>
+            </Card>
           </aside>
-        )}
+        ) : null}
       </div>
 
       {scheduleCreateOpen ? (

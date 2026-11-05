@@ -16,18 +16,23 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "^1.5.0",
+    "@radix-ui/react-tabs": "^1.2.1",
     "@tanstack/react-query": "^5.100.14",
     "@tiptap/core": "^3.24.0",
     "@tiptap/extension-placeholder": "^3.24.0",
     "@tiptap/react": "^3.24.0",
     "@tiptap/starter-kit": "^3.24.0",
     "@xyflow/react": "^12.11.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "lucide-react": "^1.24.0",
     "markdown-it": "^14.2.0",
     "prosemirror-markdown": "^1.13.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.16.0",
+    "tailwind-merge": "^3.7.0",
     "tiptap-markdown": "^0.9.0",
     "zustand": "^5.0.14"
   },

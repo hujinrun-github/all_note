@@ -9,6 +9,7 @@ import './styles/task-domain-v2.css'
 import './styles/roadmap-plan.css'
 import './styles/workspace-responsive.css'
 import './styles/workspace-desktop.css'
+import './styles/planning-theme.css'
 
 installDeployRecovery()
 
