@@ -137,6 +137,17 @@ async function fixtureAPI(page: Page) {
             pagination: { page: 1, page_size: 100, total: 1 },
           },
         })
+      if (path === '/api/search')
+        return route.fulfill({
+          json: {
+            data: {
+              items: [
+                { id: task.id, type: 'task', title, updated_at: 0 },
+              ],
+            },
+            pagination: { page: 1, page_size: 20, total: 1 },
+          },
+        })
       if (path === '/api/summary')
         return route.fulfill({
           json: {
@@ -250,6 +261,8 @@ test('project list opens project details and primary controls show their panels'
     page.getByRole('heading', { name: '个人事务', exact: true })
   ).toBeVisible()
   await expect(page.getByText('Unexpected Application Error!')).toHaveCount(0)
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '个人事务', exact: true })).toBeVisible()
 
   await page.getByRole('tab', { name: /任务\s*1/ }).click()
   await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
@@ -301,14 +314,56 @@ test('desktop pages keep navigation and content usable at laptop and wide widths
         await expect(
           page.getByRole('heading', { name: '产品反馈记录' })
         ).toBeVisible()
-      if (path === '/calendar')
+      if (path === '/calendar') {
+        await expect(page.getByRole('combobox', { name: '显示时区' })).toBeVisible()
         await expect(page.getByText('正在更新…')).not.toBeVisible()
+      }
       await expectNoPageOverflow(page)
       await page.screenshot({
         path: info.outputPath(`desktop-${filename}-${width}.png`),
       })
     }
   }
+})
+
+test('search links to the right project and review controls stay usable on every device', async ({ page }, info) => {
+  await page.goto('/search')
+  const search = page.getByRole('searchbox', { name: '全局搜索' })
+  await expect(search).toBeFocused()
+  await search.fill('反馈')
+  await search.press('Enter')
+  await expect(page).toHaveURL(/q=/)
+  const tabs = page.getByRole('tablist', { name: '结果类型' })
+  await tabs.getByRole('tab', { name: '任务', exact: true }).click()
+  await expect(page.getByRole('button', { name: `打开任务${title}` })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开项目个人事务' })).toHaveCount(0)
+  await tabs.getByRole('tab', { name: '项目', exact: true }).click()
+  await search.fill('个人')
+  await search.press('Enter')
+  await expect(page.getByRole('button', { name: '打开项目个人事务' })).toBeVisible()
+  await expectNoPageOverflow(page)
+  await page.screenshot({ path: info.outputPath('workspace-search.png') })
+  await page.getByRole('button', { name: '打开项目个人事务' }).click()
+  await expect(page).toHaveURL(/\/projects\/personal$/)
+  await expect(page.locator('#project-detail-heading')).toHaveText('个人事务')
+
+  await page.goto('/inbox')
+  await expect(page.getByRole('heading', { name: '未整理', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /^进行中/ }).click()
+  await expect(page.getByRole('button', { name: /^进行中/ })).toHaveAttribute('aria-pressed', 'true')
+  await expectNoPageOverflow(page)
+
+  await page.goto('/summary')
+  await expect(page.getByRole('heading', { name: '每日总结', exact: true })).toBeVisible()
+  const month = page.getByRole('button', { name: '本月', exact: true })
+  await month.click()
+  await expect(month).toHaveAttribute('aria-pressed', 'true')
+  await expect(page).toHaveURL(/from=2026-10-01/)
+  await expect(page.getByRole('button', { name: /完成网页回归检查/ })).toBeVisible()
+  await expectNoPageOverflow(page)
+  await page.getByRole('button', { name: '查看笔记库' }).click()
+  await expect(page).toHaveURL(/\/notes$/)
+  await expect(page.getByRole('heading', { name: '笔记库' })).toBeVisible()
 })
 
 test('planning overview links, keyboard tabs and task filters stay in sync with the URL', async ({
@@ -513,7 +568,7 @@ test('small screens keep navigation and long forms reachable', async ({
   await expectNoPageOverflow(page)
   await page.screenshot({ path: info.outputPath('small-notes.png') })
   const topbar = await page.locator('.workspace-topbar').boundingBox()
-  const actions = await page.locator('.notes-page-actions').boundingBox()
+  const actions = await page.getByRole('button', { name: '新建笔记' }).boundingBox()
   expect(actions!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height)
   await expect(
     page.getByRole('button', { name: '筛选笔记 全部笔记' })

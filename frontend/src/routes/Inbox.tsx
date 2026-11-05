@@ -1,4 +1,12 @@
 import {
+  PlanningHeading,
+  PlanningLoading,
+} from '../components/planning/PlanningWorkspace'
+import { Button } from '../components/ui/button'
+import { Badge } from '../components/ui/badge'
+import { Card } from '../components/ui/card'
+import { NativeSelect } from '../components/ui/native-select'
+import {
   ArrowRight,
   Check,
   Circle,
@@ -136,25 +144,23 @@ export default function Inbox() {
   }
 
   return (
-    <div className="inbox-v2-page">
-      <header className="inbox-v2-hero">
-        <div>
-          <h1>未整理</h1>
-          <p>
-            快速捕获且尚未归入具体项目的任务都会来到这里。选定项目后，任务会离开收件箱并进入对应项目。
-          </p>
-        </div>
-        <button
-          type="button"
-          className="primary-action"
-          onClick={() => setCaptureOpen(true)}
-        >
+    <section className="planning-page" aria-labelledby="inbox-heading">
+      <PlanningHeading
+        id="inbox-heading"
+        title="未整理"
+        description="处理快速记录的任务，归入项目或直接完成。"
+      >
+        <Button type="button" onClick={() => setCaptureOpen(true)}>
           <Plus aria-hidden="true" />
           快速捕获
-        </button>
-      </header>
+        </Button>
+      </PlanningHeading>
 
-      <section className="inbox-v2-summary" aria-label="收件箱概览">
+      <Card
+        role="region"
+        className="inbox-v2-summary mb-4 shadow-none sm:flex-row"
+        aria-label="收件箱概览"
+      >
         <div className="inbox-v2-summary-main">
           <span className="inbox-v2-summary-icon">
             <InboxIcon aria-hidden="true" />
@@ -169,9 +175,9 @@ export default function Inbox() {
             ? '收件箱已经清空，新的快速捕获会直接出现在这里。'
             : '每次只做一个决定：放进项目、继续执行，或者直接完成。'}
         </p>
-      </section>
+      </Card>
 
-      <div className="inbox-v2-workspace">
+      <Card className="inbox-v2-workspace gap-0 py-0 shadow-none">
         <section className="inbox-v2-list-panel">
           <div className="inbox-v2-list-heading">
             <div>
@@ -180,10 +186,11 @@ export default function Inbox() {
             </div>
             <div className="inbox-v2-filters" aria-label="收件箱筛选">
               {filters.map((item) => (
-                <button
+                <Button
                   key={item.id}
                   type="button"
-                  className={filter === item.id ? 'is-active' : ''}
+                  variant={filter === item.id ? 'secondary' : 'ghost'}
+                  size="sm"
                   aria-pressed={filter === item.id}
                   onClick={() => {
                     setFilter(item.id)
@@ -191,19 +198,15 @@ export default function Inbox() {
                   }}
                 >
                   {item.label}
-                  <span>{filterCount(occurrences, item.id)}</span>
-                </button>
+                  <Badge variant="secondary">
+                    {filterCount(occurrences, item.id)}
+                  </Badge>
+                </Button>
               ))}
             </div>
           </div>
 
-          {isLoading ? (
-            <div className="inbox-v2-loading" aria-label="正在加载收件箱">
-              <span />
-              <span />
-              <span />
-            </div>
-          ) : null}
+          {isLoading ? <PlanningLoading label="正在加载收件箱" /> : null}
 
           {hasQueryError ? (
             <div className="inbox-v2-error" role="alert">
@@ -300,7 +303,7 @@ export default function Inbox() {
 
               <label className="inbox-v2-project-field">
                 <span>归入项目</span>
-                <select
+                <NativeSelect
                   aria-label="归入项目"
                   value={resolvedTargetProjectID}
                   disabled={organizeTargets.length === 0}
@@ -316,7 +319,7 @@ export default function Inbox() {
                       </option>
                     ))
                   )}
-                </select>
+                </NativeSelect>
                 <small>
                   {selectedTargetProject
                     ? `整理后进入「${selectedTargetProject.name}」`
@@ -331,9 +334,8 @@ export default function Inbox() {
               ) : null}
 
               <div className="inbox-v2-organizer-actions">
-                <button
+                <Button
                   type="button"
-                  className="primary-action"
                   disabled={
                     resolvedTargetProjectID === '' || updateTask.isPending
                   }
@@ -341,10 +343,10 @@ export default function Inbox() {
                 >
                   {updateTask.isPending ? '正在整理…' : '归入项目'}
                   <ArrowRight aria-hidden="true" />
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
-                  className="secondary-action"
+                  variant="outline"
                   disabled={
                     completeOccurrence.isPending ||
                     selectedCompletionProgress.remaining > 0
@@ -362,7 +364,7 @@ export default function Inbox() {
                   {selectedCompletionProgress.remaining > 0
                     ? '还差 ' + selectedCompletionProgress.remaining + ' 项必选'
                     : '直接完成'}
-                </button>
+                </Button>
               </div>
 
               <Link
@@ -381,8 +383,8 @@ export default function Inbox() {
             </div>
           )}
         </aside>
-      </div>
-    </div>
+      </Card>
+    </section>
   )
 }
 

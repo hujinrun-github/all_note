@@ -8,6 +8,13 @@ import { WorkspaceNotice } from './components/layout/WorkspaceNotice'
 import { QuickCapture } from './components/QuickCapture'
 import { useTaskDomainCapabilities } from './hooks/useTaskDomain'
 
+const workspacePageHeaders = new Set([
+  '/notes',
+  '/inbox',
+  '/search',
+  '/summary',
+])
+
 export function App() {
   const captureOpen = useUIStore((s) => s.captureOpen)
   const location = useLocation()
@@ -20,18 +27,13 @@ export function App() {
     location.pathname.startsWith('/calendar')
   const isV2TaskRoute =
     isTaskRoute && taskDomainCapability.data?.model_version === 'v2'
-  const isPlanningRoute =
-    isV2TaskRoute &&
-    (location.pathname === '/' ||
-      location.pathname === '/tasks' ||
-      location.pathname === '/tasks/')
   const isRoadmapCanvasRoute =
     location.pathname.includes('/roadmap/nodes/') &&
     location.pathname.endsWith('/mind-map')
 
   return (
     <div
-      className={`workspace-shell${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}${isPlanningRoute ? ' planning-theme' : ''}`}
+      className={`workspace-shell${sidebarCollapsed ? ' is-sidebar-collapsed' : ''} planning-theme`}
     >
       <Sidebar
         collapsed={sidebarCollapsed}
@@ -43,7 +45,12 @@ export function App() {
         }`}
       >
         {isRoadmapCanvasRoute ? null : (
-          <TopBar compact={isV2TaskRoute || location.pathname === '/notes'} />
+          <TopBar
+            compact={
+              isV2TaskRoute ||
+              workspacePageHeaders.has(location.pathname.replace(/\/$/, ''))
+            }
+          />
         )}
         <Suspense
           fallback={

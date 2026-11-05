@@ -1,8 +1,12 @@
+import { PlanningHeading } from '../components/planning/PlanningWorkspace'
+import { Button } from '../components/ui/button'
+import { Card } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { NativeSelect } from '../components/ui/native-select'
 import { type FormEvent, useState } from 'react'
 import {
   ArrowUpRight,
   CalendarRange,
-  ChevronDown,
   FolderKanban,
   GraduationCap,
   Inbox,
@@ -124,25 +128,24 @@ export default function Projects() {
 
   return (
     <section
-      className="domain-page projects-page"
+      className="domain-page projects-page planning-page"
       aria-labelledby="projects-heading"
     >
-      <header className="projects-page-heading">
-        <div>
-          <h2 id="projects-heading">项目</h2>
-          <p>项目承载目标，任务和每次执行都从这里获得清晰归属。</p>
-        </div>
-        <button
+      <PlanningHeading
+        id="projects-heading"
+        title="项目"
+        description="按目标、类型和周期组织任务，查看项目进展。"
+      >
+        <Button
           type="button"
-          className="projects-new-button"
           aria-expanded={creating}
           aria-controls="project-create-panel"
           onClick={() => setCreating(true)}
         >
-          <Plus size={16} strokeWidth={1.8} aria-hidden="true" />
+          <Plus aria-hidden="true" />
           新建项目
-        </button>
-      </header>
+        </Button>
+      </PlanningHeading>
 
       <section className="projects-commandbar" aria-label="项目筛选">
         <div className="projects-count">
@@ -158,47 +161,42 @@ export default function Projects() {
         <div className="projects-filters">
           <label className="projects-filter">
             <span>项目类型</span>
-            <span className="projects-select">
-              <select
-                aria-label="项目类型"
-                value={kind}
-                onChange={(event) =>
-                  setKind(event.target.value as ProjectKind | '')
-                }
-              >
-                <option value="">全部类型</option>
-                <option value="standard">标准项目</option>
-                <option value="learning">学习项目</option>
-              </select>
-              <ChevronDown size={13} aria-hidden="true" />
-            </span>
+            <NativeSelect
+              aria-label="项目类型"
+              value={kind}
+              onChange={(event) =>
+                setKind(event.target.value as ProjectKind | '')
+              }
+            >
+              <option value="">全部类型</option>
+              <option value="standard">标准项目</option>
+              <option value="learning">学习项目</option>
+            </NativeSelect>
           </label>
           <label className="projects-filter">
             <span>项目周期</span>
-            <span className="projects-select">
-              <select
-                aria-label="项目周期"
-                value={horizon}
-                onChange={(event) =>
-                  setHorizon(event.target.value as ProjectHorizon | '')
-                }
-              >
-                <option value="">全部周期</option>
-                <option value="short">短期</option>
-                <option value="long">长期</option>
-              </select>
-              <ChevronDown size={13} aria-hidden="true" />
-            </span>
+            <NativeSelect
+              aria-label="项目周期"
+              value={horizon}
+              onChange={(event) =>
+                setHorizon(event.target.value as ProjectHorizon | '')
+              }
+            >
+              <option value="">全部周期</option>
+              <option value="short">短期</option>
+              <option value="long">长期</option>
+            </NativeSelect>
           </label>
           {hasFilters ? (
-            <button
+            <Button
               type="button"
+              variant="ghost"
               className="projects-reset-button"
               onClick={clearFilters}
             >
               <RotateCcw size={13} aria-hidden="true" />
               重置
-            </button>
+            </Button>
           ) : null}
         </div>
       </section>
@@ -226,7 +224,7 @@ export default function Projects() {
           <div className="projects-create-fields">
             <label className="projects-create-name">
               <span>项目名称</span>
-              <input
+              <Input
                 aria-label="项目名称"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -236,47 +234,45 @@ export default function Projects() {
             </label>
             <label>
               <span>类型</span>
-              <span className="projects-select">
-                <select
-                  aria-label="新项目类型"
-                  value={newKind}
-                  onChange={(event) =>
-                    setNewKind(event.target.value as ProjectKind)
-                  }
-                >
-                  <option value="standard">标准项目</option>
-                  <option value="learning">学习项目</option>
-                </select>
-                <ChevronDown size={13} aria-hidden="true" />
-              </span>
+              <NativeSelect
+                aria-label="新项目类型"
+                value={newKind}
+                onChange={(event) =>
+                  setNewKind(event.target.value as ProjectKind)
+                }
+              >
+                <option value="standard">标准项目</option>
+                <option value="learning">学习项目</option>
+              </NativeSelect>
             </label>
             <label>
               <span>周期</span>
-              <span className="projects-select">
-                <select
-                  aria-label="新项目周期"
-                  value={newHorizon}
-                  onChange={(event) =>
-                    setNewHorizon(event.target.value as ProjectHorizon)
-                  }
-                >
-                  <option value="short">短期</option>
-                  <option value="long">长期</option>
-                </select>
-                <ChevronDown size={13} aria-hidden="true" />
-              </span>
+              <NativeSelect
+                aria-label="新项目周期"
+                value={newHorizon}
+                onChange={(event) =>
+                  setNewHorizon(event.target.value as ProjectHorizon)
+                }
+              >
+                <option value="short">短期</option>
+                <option value="long">长期</option>
+              </NativeSelect>
             </label>
             <div className="projects-create-actions">
-              <button type="button" onClick={() => setCreating(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreating(false)}
+              >
                 取消
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
                 className="projects-submit-button"
                 disabled={name.trim() === '' || createProject.isPending}
               >
                 创建项目
-              </button>
+              </Button>
             </div>
           </div>
         </form>
@@ -288,8 +284,9 @@ export default function Projects() {
         </div>
       ) : null}
 
-      <section
-        className="projects-collection"
+      <Card
+        role="region"
+        className="projects-collection gap-0 px-4 py-2 shadow-none sm:px-5"
         aria-labelledby="project-list-title"
       >
         <header className="projects-collection-heading">
@@ -417,7 +414,7 @@ export default function Projects() {
             })}
           </div>
         )}
-      </section>
+      </Card>
     </section>
   )
 }

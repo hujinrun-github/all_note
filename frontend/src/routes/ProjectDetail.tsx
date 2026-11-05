@@ -1,3 +1,6 @@
+import { PlanningTabs } from '../components/planning/PlanningWorkspace'
+import { Button } from '../components/ui/button'
+import { Card } from '../components/ui/card'
 import {
   Archive,
   ArrowRight,
@@ -514,7 +517,7 @@ export default function ProjectDetail() {
 
   return (
     <section
-      className="td-page td-project-page td-project-detail-v3"
+      className="td-page td-project-page td-project-detail-v3 planning-page"
       aria-labelledby="project-detail-heading"
     >
       <header className="td-page-header">
@@ -654,15 +657,14 @@ export default function ProjectDetail() {
               </div>
             ) : null}
           </div>
-          <button
+          <Button
             type="button"
-            className="td-primary-action"
             aria-label="打开添加任务"
             onClick={() => setCreating((current) => !current)}
           >
             <Plus aria-hidden="true" />
             添加任务
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -721,266 +723,281 @@ export default function ProjectDetail() {
         </div>
       ) : null}
 
-      <div className="td-tabs" role="tablist" aria-label="项目详情分区">
-        {visibleSections.map((section) => (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeSection === section.id}
-            className={activeSection === section.id ? 'is-active' : ''}
-            key={section.id}
-            onClick={() =>
-              updateSearchParams({
-                section: section.id === 'overview' ? null : section.id,
-                task_id: null,
-              })
-            }
+      <Card className="min-w-0 gap-0 py-0 shadow-none">
+        <PlanningTabs
+          label="项目详情分区"
+          value={activeSection}
+          tabs={visibleSections.map((section) => ({
+            ...section,
+            count:
+              section.id === 'tasks'
+                ? tasksByID.size
+                : section.id === 'schedule'
+                  ? openOccurrences.length
+                  : undefined,
+          }))}
+          onChange={(section) =>
+            updateSearchParams({
+              section: section === 'overview' ? null : section,
+              task_id: null,
+            })
+          }
+        >
+          <div
+            className={`td-workspace planning-workspace ${selectedTask ? 'has-inspector' : ''}`}
           >
-            {section.label}{' '}
-            {section.id === 'tasks' ? (
-              <span>{tasksByID.size}</span>
-            ) : section.id === 'schedule' ? (
-              <span>{openOccurrences.length}</span>
-            ) : null}
-          </button>
-        ))}
-      </div>
-
-      <div className={`td-workspace ${selectedTask ? 'has-inspector' : ''}`}>
-        <div className="td-project-content">
-          {activeSection === 'overview' || activeSection === 'tasks' ? (
-            <div className="td-project-overview">
-              <div className="td-project-main-column">
-                {activeSection === 'overview' && project.kind === 'learning' ? (
-                  <ProjectRoadmapOverview
-                    projectID={project.id}
-                    roadmap={roadmapQuery.data}
-                    loading={roadmapQuery.isLoading}
-                    onGenerate={() => setRoadmapDialogOpen(true)}
-                  />
-                ) : null}
-                <div
-                  className="td-project-task-list"
-                  role="list"
-                  aria-label="项目任务"
-                >
-                  <header className="td-section-heading">
-                    <strong>
-                      {activeSection === 'overview' ? '正在推进' : '任务定义'}
-                    </strong>
-                    <span>{tasksByID.size} 个任务定义</span>
-                  </header>
-                  {(tasksQuery.data ?? []).map((task) => {
-                    const occurrences = occurrencesByTask.get(task.id) ?? []
-                    return (
-                      <article
-                        className={`td-project-task ${
-                          selectedTaskID === task.id ? 'is-selected' : ''
-                        }`}
-                        role="listitem"
-                        tabIndex={0}
-                        key={task.id}
-                        onClick={() => updateSearchParams({ task_id: task.id })}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            updateSearchParams({ task_id: task.id })
-                          }
-                        }}
-                      >
-                        <div className="td-project-task-title">
-                          <h3>{task.title}</h3>
-                          <TaskLifecycleStatusLabel
-                            status={task.lifecycle_status}
-                          />
-                        </div>
-                        <div className="td-project-task-meta">
-                          <span>
-                            定义：{taskLifecycleText(task.lifecycle_status)}
-                          </span>
-                          <span>{priorityText(task.priority)}</span>
-                          <span>{occurrences.length} 个实例</span>
-                        </div>
-                        <div className="td-project-occurrences">
-                          {occurrences.slice(0, 3).map((occurrence) => (
-                            <span key={occurrence.id}>
-                              <time>
-                                {formatOccurrenceSchedule(occurrence)}
-                              </time>
-                              <span className="td-visually-hidden">执行：</span>
-                              <ExecutionStatusLabel
-                                status={occurrence.execution_status}
+            <div className="td-project-content">
+              {activeSection === 'overview' || activeSection === 'tasks' ? (
+                <div className="td-project-overview">
+                  <div className="td-project-main-column">
+                    {activeSection === 'overview' &&
+                    project.kind === 'learning' ? (
+                      <ProjectRoadmapOverview
+                        projectID={project.id}
+                        roadmap={roadmapQuery.data}
+                        loading={roadmapQuery.isLoading}
+                        onGenerate={() => setRoadmapDialogOpen(true)}
+                      />
+                    ) : null}
+                    <div
+                      className="td-project-task-list"
+                      role="list"
+                      aria-label="项目任务"
+                    >
+                      <header className="td-section-heading">
+                        <strong>
+                          {activeSection === 'overview'
+                            ? '正在推进'
+                            : '任务定义'}
+                        </strong>
+                        <span>{tasksByID.size} 个任务定义</span>
+                      </header>
+                      {(tasksQuery.data ?? []).map((task) => {
+                        const occurrences = occurrencesByTask.get(task.id) ?? []
+                        return (
+                          <article
+                            className={`td-project-task ${
+                              selectedTaskID === task.id ? 'is-selected' : ''
+                            }`}
+                            role="listitem"
+                            tabIndex={0}
+                            key={task.id}
+                            onClick={() =>
+                              updateSearchParams({ task_id: task.id })
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                updateSearchParams({ task_id: task.id })
+                              }
+                            }}
+                          >
+                            <div className="td-project-task-title">
+                              <h3>{task.title}</h3>
+                              <TaskLifecycleStatusLabel
+                                status={task.lifecycle_status}
                               />
-                            </span>
-                          ))}
+                            </div>
+                            <div className="td-project-task-meta">
+                              <span>
+                                定义：{taskLifecycleText(task.lifecycle_status)}
+                              </span>
+                              <span>{priorityText(task.priority)}</span>
+                              <span>{occurrences.length} 个实例</span>
+                            </div>
+                            <div className="td-project-occurrences">
+                              {occurrences.slice(0, 3).map((occurrence) => (
+                                <span key={occurrence.id}>
+                                  <time>
+                                    {formatOccurrenceSchedule(occurrence)}
+                                  </time>
+                                  <span className="td-visually-hidden">
+                                    执行：
+                                  </span>
+                                  <ExecutionStatusLabel
+                                    status={occurrence.execution_status}
+                                  />
+                                </span>
+                              ))}
+                            </div>
+                          </article>
+                        )
+                      })}
+                      {tasksByID.size === 0 ? (
+                        <div className="td-empty-state td-project-empty-state">
+                          <Plus aria-hidden="true" />
+                          <strong>项目还没有任务</strong>
+                          <span>先添加一个清晰、可以执行的行动。</span>
+                          <button
+                            type="button"
+                            onClick={() => setCreating(true)}
+                          >
+                            添加第一个任务
+                            <ArrowRight aria-hidden="true" />
+                          </button>
                         </div>
-                      </article>
-                    )
-                  })}
-                  {tasksByID.size === 0 ? (
-                    <div className="td-empty-state td-project-empty-state">
-                      <Plus aria-hidden="true" />
-                      <strong>项目还没有任务</strong>
-                      <span>先添加一个清晰、可以执行的行动。</span>
-                      <button type="button" onClick={() => setCreating(true)}>
-                        添加第一个任务
-                        <ArrowRight aria-hidden="true" />
-                      </button>
+                      ) : null}
                     </div>
+                  </div>
+                  {activeSection === 'overview' ? (
+                    <ProjectAgenda occurrences={occurrencesQuery.data ?? []} />
                   ) : null}
                 </div>
-              </div>
-              {activeSection === 'overview' ? (
-                <ProjectAgenda occurrences={occurrencesQuery.data ?? []} />
-              ) : null}
-            </div>
-          ) : activeSection === 'schedule' ? (
-            <ProjectSchedule occurrences={occurrencesQuery.data ?? []} />
-          ) : activeSection === 'roadmap' ? (
-            <ProjectRoadmapOverview
-              projectID={project.id}
-              roadmap={roadmapQuery.data}
-              loading={roadmapQuery.isLoading}
-              expanded
-              onGenerate={() => setRoadmapDialogOpen(true)}
-            />
-          ) : activeSection === 'notes' ? (
-            <div className="td-project-notes">
-              <header>
-                <div>
-                  <FileText aria-hidden="true" />
-                  <div>
-                    <strong>项目笔记</strong>
-                    <span>来自当前项目任务的关联笔记</span>
+              ) : activeSection === 'schedule' ? (
+                <ProjectSchedule occurrences={occurrencesQuery.data ?? []} />
+              ) : activeSection === 'roadmap' ? (
+                <ProjectRoadmapOverview
+                  projectID={project.id}
+                  roadmap={roadmapQuery.data}
+                  loading={roadmapQuery.isLoading}
+                  expanded
+                  onGenerate={() => setRoadmapDialogOpen(true)}
+                />
+              ) : activeSection === 'notes' ? (
+                <div className="td-project-notes">
+                  <header>
+                    <div>
+                      <FileText aria-hidden="true" />
+                      <div>
+                        <strong>项目笔记</strong>
+                        <span>来自当前项目任务的关联笔记</span>
+                      </div>
+                    </div>
+                    <em>{linkedNoteIDs.length}</em>
+                  </header>
+                  {linkedNoteQueries.some((query) => query.isLoading) ? (
+                    <div className="td-project-notes-state">
+                      正在加载关联笔记…
+                    </div>
+                  ) : null}
+                  {linkedNoteIDs.length === 0 ? (
+                    <div className="td-project-notes-state">
+                      <FileText aria-hidden="true" />
+                      <strong>还没有关联笔记</strong>
+                      <span>
+                        在笔记编辑器中选择本项目及其任务即可建立关联。
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="td-project-note-list">
+                    {linkedNoteQueries.map((query, index) =>
+                      query.data ? (
+                        <Link
+                          key={query.data.id}
+                          to={`/editor/${encodeURIComponent(query.data.id)}`}
+                        >
+                          <FileText aria-hidden="true" />
+                          <span>
+                            <strong>{query.data.title || '未命名笔记'}</strong>
+                            <small>
+                              {new Date(
+                                query.data.updated_at * 1000
+                              ).toLocaleDateString('zh-CN')}
+                            </small>
+                          </span>
+                          <ArrowRight aria-hidden="true" />
+                        </Link>
+                      ) : linkedNoteQueries[index]?.isError ? (
+                        <div
+                          className="td-project-note-error"
+                          key={linkedNoteIDs[index]}
+                        >
+                          一条关联笔记暂时无法加载
+                        </div>
+                      ) : null
+                    )}
                   </div>
                 </div>
-                <em>{linkedNoteIDs.length}</em>
-              </header>
-              {linkedNoteQueries.some((query) => query.isLoading) ? (
-                <div className="td-project-notes-state">正在加载关联笔记…</div>
-              ) : null}
-              {linkedNoteIDs.length === 0 ? (
-                <div className="td-project-notes-state">
-                  <FileText aria-hidden="true" />
-                  <strong>还没有关联笔记</strong>
-                  <span>在笔记编辑器中选择本项目及其任务即可建立关联。</span>
-                </div>
-              ) : null}
-              <div className="td-project-note-list">
-                {linkedNoteQueries.map((query, index) =>
-                  query.data ? (
-                    <Link
-                      key={query.data.id}
-                      to={`/editor/${encodeURIComponent(query.data.id)}`}
-                    >
-                      <FileText aria-hidden="true" />
-                      <span>
-                        <strong>{query.data.title || '未命名笔记'}</strong>
-                        <small>
-                          {new Date(
-                            query.data.updated_at * 1000
-                          ).toLocaleDateString('zh-CN')}
-                        </small>
-                      </span>
-                      <ArrowRight aria-hidden="true" />
-                    </Link>
-                  ) : linkedNoteQueries[index]?.isError ? (
-                    <div
-                      className="td-project-note-error"
-                      key={linkedNoteIDs[index]}
-                    >
-                      一条关联笔记暂时无法加载
-                    </div>
-                  ) : null
-                )}
-              </div>
+              ) : (
+                <ProjectHistory occurrences={occurrencesQuery.data ?? []} />
+              )}
             </div>
-          ) : (
-            <ProjectHistory occurrences={occurrencesQuery.data ?? []} />
-          )}
-        </div>
 
-        {selectedTask ? (
-          <TaskDefinitionInspector
-            commandError={error}
-            task={selectedTask}
-            project={project}
-            occurrences={selectedTaskOccurrences}
-            busy={commandBusy}
-            onClose={() => updateSearchParams({ task_id: null })}
-            onUpdate={(input) =>
-              updateTask.mutateAsync({
-                projectID,
-                taskID: selectedTask.id,
-                input: {
-                  ...input,
-                  expected_task_revision: selectedTask.revision,
-                  expected_schedule_revision: selectedTask.schedule_revision,
-                },
-              })
-            }
-            onScheduleUpdate={(input) => {
-              const { weekdays, ...schedule } = input
-              const effectiveFrom = scheduleChangeEffectiveFrom(
-                selectedTaskOccurrences,
-                input.starts_on
-              )
-              return rescheduleThisAndFollowing.mutateAsync({
-                projectID,
-                taskID: selectedTask.id,
-                input: {
-                  expected_task_revision: selectedTask.revision,
-                  expected_schedule_revision: selectedTask.schedule_revision,
-                  effective_from: effectiveFrom,
-                  generate_through_exclusive: addDays(effectiveFrom, 91),
-                  schedule: {
-                    ...schedule,
-                    rule: recurrenceRule(
-                      input.recurrence_type,
-                      input.starts_on,
-                      weekdays
-                    ),
-                  },
-                },
-              })
-            }}
-            onPublish={() =>
-              handleTaskCommand(() =>
-                publishTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onPause={() =>
-              handleTaskCommand(() =>
-                pauseTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onResume={() =>
-              handleTaskCommand(() =>
-                resumeTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onCancel={() =>
-              handleTaskCommand(() =>
-                cancelTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onRestore={() =>
-              handleTaskCommand(() =>
-                restoreTask.mutateAsync(taskCommandVariables(selectedTask))
-              )
-            }
-            onArchive={() =>
-              archiveTask
-                .mutateAsync(taskCommandVariables(selectedTask))
-                .then(() => updateSearchParams({ task_id: null }))
-            }
-            onDelete={() =>
-              deleteTask
-                .mutateAsync(taskCommandVariables(selectedTask))
-                .then(() => updateSearchParams({ task_id: null }))
-            }
-          />
-        ) : null}
-      </div>
+            {selectedTask ? (
+              <TaskDefinitionInspector
+                commandError={error}
+                task={selectedTask}
+                project={project}
+                occurrences={selectedTaskOccurrences}
+                busy={commandBusy}
+                onClose={() => updateSearchParams({ task_id: null })}
+                onUpdate={(input) =>
+                  updateTask.mutateAsync({
+                    projectID,
+                    taskID: selectedTask.id,
+                    input: {
+                      ...input,
+                      expected_task_revision: selectedTask.revision,
+                      expected_schedule_revision:
+                        selectedTask.schedule_revision,
+                    },
+                  })
+                }
+                onScheduleUpdate={(input) => {
+                  const { weekdays, ...schedule } = input
+                  const effectiveFrom = scheduleChangeEffectiveFrom(
+                    selectedTaskOccurrences,
+                    input.starts_on
+                  )
+                  return rescheduleThisAndFollowing.mutateAsync({
+                    projectID,
+                    taskID: selectedTask.id,
+                    input: {
+                      expected_task_revision: selectedTask.revision,
+                      expected_schedule_revision:
+                        selectedTask.schedule_revision,
+                      effective_from: effectiveFrom,
+                      generate_through_exclusive: addDays(effectiveFrom, 91),
+                      schedule: {
+                        ...schedule,
+                        rule: recurrenceRule(
+                          input.recurrence_type,
+                          input.starts_on,
+                          weekdays
+                        ),
+                      },
+                    },
+                  })
+                }}
+                onPublish={() =>
+                  handleTaskCommand(() =>
+                    publishTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onPause={() =>
+                  handleTaskCommand(() =>
+                    pauseTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onResume={() =>
+                  handleTaskCommand(() =>
+                    resumeTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onCancel={() =>
+                  handleTaskCommand(() =>
+                    cancelTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onRestore={() =>
+                  handleTaskCommand(() =>
+                    restoreTask.mutateAsync(taskCommandVariables(selectedTask))
+                  )
+                }
+                onArchive={() =>
+                  archiveTask
+                    .mutateAsync(taskCommandVariables(selectedTask))
+                    .then(() => updateSearchParams({ task_id: null }))
+                }
+                onDelete={() =>
+                  deleteTask
+                    .mutateAsync(taskCommandVariables(selectedTask))
+                    .then(() => updateSearchParams({ task_id: null }))
+                }
+              />
+            ) : null}
+          </div>
+        </PlanningTabs>
+      </Card>
 
       {projectActionDialog === 'edit' ? (
         <div

@@ -1,3 +1,7 @@
+import { PlanningHeading } from '../components/planning/PlanningWorkspace'
+import { Button } from '../components/ui/button'
+import { Card } from '../components/ui/card'
+import { NativeSelect } from '../components/ui/native-select'
 import { useMemo, useState, type CSSProperties, type DragEvent } from 'react'
 import {
   Check,
@@ -780,15 +784,15 @@ export default function CalendarV2({
   }
 
   return (
-    <section className="td-page td-calendar-page calendar-v2-page">
-      <header className="td-page-header calendar-v2-heading">
-        <div>
-          <span className="workspace-eyebrow">掌握节奏</span>
-          <div className="td-title-line">
-            <h1>日历</h1>
-          </div>
-          <p>为重要的事留出时间。</p>
-        </div>
+    <section
+      className="td-page td-calendar-page calendar-v2-page planning-page"
+      aria-labelledby="calendar-heading"
+    >
+      <PlanningHeading
+        id="calendar-heading"
+        title="日历"
+        description="查看时间安排，创建日程或调整已有任务。"
+      >
         <aside className="calendar-v2-controls" aria-label="日历显示设置">
           <div className="calendar-v2-view-setting">
             <span className="calendar-v2-control-label">
@@ -796,7 +800,7 @@ export default function CalendarV2({
               <small>切换时间尺度</small>
             </span>
             <div
-              className="calendar-v2-view-switch"
+              className="workspace-choice calendar-v2-view-switch"
               role="group"
               aria-label="日历视图"
             >
@@ -808,24 +812,24 @@ export default function CalendarV2({
                   ['year', '年'],
                 ] as const
               ).map(([view, label]) => (
-                <button
+                <Button
+                  variant="ghost"
                   key={view}
                   type="button"
-                  className={calendarView === view ? 'is-active' : undefined}
                   aria-pressed={calendarView === view}
                   onClick={() => changeCalendarView(view)}
                 >
                   {label}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
           <label className="calendar-v2-timezone">
-            <span>
+            <span className="calendar-v2-timezone-label">
               <Globe2 size={14} aria-hidden="true" />
               显示时区
             </span>
-            <select
+            <NativeSelect
               value={timezone}
               onChange={(event) => setTimezone(event.target.value)}
               aria-label="显示时区"
@@ -835,18 +839,21 @@ export default function CalendarV2({
                   {option}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
         </aside>
-      </header>
+      </PlanningHeading>
 
       <div
         className={`calendar-v2-workspace ${selectedEntry ? 'has-editor' : ''}`}
       >
-        <section className={`calendar-v2-shell is-${calendarView}-view`}>
+        <Card
+          className={`calendar-v2-shell is-${calendarView}-view gap-0 py-0 shadow-none`}
+        >
           <div className="calendar-v2-toolbar">
             <div className="calendar-v2-navigation">
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 className="is-icon"
                 onClick={() => navigatePeriod(-1)}
@@ -854,15 +861,17 @@ export default function CalendarV2({
                 title={`上一${periodName}`}
               >
                 <ChevronLeft size={16} aria-hidden="true" />
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 className="calendar-v2-today"
                 onClick={() => setAnchorDate(todayValue)}
               >
                 今天
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 className="is-icon"
                 onClick={() => navigatePeriod(1)}
@@ -870,15 +879,15 @@ export default function CalendarV2({
                 title={`下一${periodName}`}
               >
                 <ChevronRight size={16} aria-hidden="true" />
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 className="calendar-v2-create"
                 onClick={() => openCreateSchedule({ startsOn: anchorDate })}
               >
                 <Plus size={15} aria-hidden="true" />
                 新增日程
-              </button>
+              </Button>
             </div>
             <strong aria-live="polite">{periodTitle}</strong>
             {entriesQuery.isFetching ? (
@@ -1296,7 +1305,7 @@ export default function CalendarV2({
               ))}
             </section>
           )}
-        </section>
+        </Card>
 
         {selectedEntry && draft ? (
           <DetailPanel

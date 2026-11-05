@@ -1935,7 +1935,7 @@
   padding-top: 9px;
 }
 
-.calendar-v2-timezone > span {
+.calendar-v2-timezone-label {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1945,7 +1945,7 @@
   white-space: nowrap;
 }
 
-.calendar-v2-timezone > span svg {
+.calendar-v2-timezone-label svg {
   color: var(--td-copper);
 }
 
@@ -5011,7 +5011,7 @@
 }
 
 .calendar-v2-control-label small,
-.calendar-v2-timezone > span,
+.calendar-v2-timezone-label,
 .calendar-v2-period-status {
   font-size: 12px;
 }

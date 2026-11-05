@@ -14,7 +14,7 @@ export function PlanningHeading({
   title: string
   date?: string
   description: string
-  children: ReactNode
+  children?: ReactNode
 }) {
   return (
     <header className="flex flex-col gap-4 pb-6 pt-2 min-[821px]:flex-row min-[821px]:items-center min-[821px]:justify-between min-[821px]:pb-7 min-[821px]:pt-8">
@@ -34,9 +34,11 @@ export function PlanningHeading({
           {description}
         </p>
       </div>
-      <div className="flex shrink-0 flex-wrap gap-2 [&>[data-slot=button]]:min-h-11">
-        {children}
-      </div>
+      {children ? (
+        <div className="flex shrink-0 flex-wrap gap-2 [&>[data-slot=button]]:min-h-11">
+          {children}
+        </div>
+      ) : null}
     </header>
   )
 }
@@ -50,7 +52,12 @@ export function PlanningTabs<T extends string>({
 }: {
   label: string
   value: T
-  tabs: ReadonlyArray<{ id: T; label: string; count: number }>
+  tabs: ReadonlyArray<{
+    id: T
+    label: string
+    count?: number
+    accessibleLabel?: string
+  }>
   onChange: (value: T) => void
   children: ReactNode
 }) {
@@ -87,13 +94,17 @@ export function PlanningTabs<T extends string>({
         className="planning-tab-scroll min-w-0 overflow-x-auto border-b border-border px-3 py-2 sm:px-4"
       >
         <TabsList aria-label={label} className="planning-tabs">
-          {tabs.map(({ id, label, count }) => (
+          {tabs.map(({ id, label, count, accessibleLabel }) => (
             <TabsTrigger
               key={id}
               value={id}
+              aria-label={accessibleLabel}
               ref={id === value ? selectedTabRef : undefined}
             >
-              {label} <Badge variant="secondary">{count}</Badge>
+              {label}{' '}
+              {count === undefined ? null : (
+                <Badge variant="secondary">{count}</Badge>
+              )}
             </TabsTrigger>
           ))}
         </TabsList>

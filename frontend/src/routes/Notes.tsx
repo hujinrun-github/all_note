@@ -1,3 +1,7 @@
+import { PlanningHeading } from '../components/planning/PlanningWorkspace'
+import { Button } from '../components/ui/button'
+import { Card } from '../components/ui/card'
+import { Input } from '../components/ui/input'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -130,47 +134,50 @@ export default function Notes() {
   }
 
   return (
-    <div className="notes-page">
-      <header className="td-page-header notes-page-header">
-        <div>
-          <span className="workspace-eyebrow">知识空间</span>
-          <div className="td-title-line">
-            <h1>笔记库</h1>
-          </div>
-          <p>收集想法，连接知识。让每一次记录都有迹可循。</p>
-        </div>
-        <div className="page-local-actions notes-page-actions">
-          {createError ? <p role="alert">{createError}</p> : null}
-          <button
-            type="button"
-            onClick={handleOpenSyncSettings}
-            className="secondary-action"
-          >
-            <SyncIcon />
-            同步设置
-          </button>
-          <button
-            type="button"
-            onClick={() => setPodcastImportOpen(true)}
-            className="secondary-action"
-          >
-            <PodcastImportIcon />
-            导入播客
-          </button>
-          <button
-            onClick={handleCreateNote}
-            disabled={createNote.isPending}
-            className="primary-action"
-          >
-            <PlusIcon />
-            {createNote.isPending ? '创建中' : '新建笔记'}
-          </button>
-        </div>
-      </header>
+    <section
+      className="notes-page planning-page"
+      aria-labelledby="notes-heading"
+    >
+      <PlanningHeading
+        id="notes-heading"
+        title="笔记库"
+        description="查找、整理和记录笔记，按项目和标签管理资料。"
+      >
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleOpenSyncSettings}
+        >
+          <SyncIcon />
+          同步设置
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setPodcastImportOpen(true)}
+        >
+          <PodcastImportIcon />
+          导入播客
+        </Button>
+        <Button
+          type="button"
+          onClick={handleCreateNote}
+          disabled={createNote.isPending}
+        >
+          <PlusIcon />
+          {createNote.isPending ? '创建中' : '新建笔记'}
+        </Button>
+      </PlanningHeading>
+      {createError ? (
+        <p className="mb-3 text-sm text-destructive" role="alert">
+          {createError}
+        </p>
+      ) : null}
 
       {mobile && (
-        <button
+        <Button
           type="button"
+          variant="outline"
           className="notes-filter-toggle"
           aria-expanded={filtersOpen}
           aria-controls="note-filters"
@@ -178,10 +185,10 @@ export default function Notes() {
         >
           <span>{filtersOpen ? '收起筛选' : '筛选笔记'}</span>
           <small>{scopeTitle}</small>
-        </button>
+        </Button>
       )}
 
-      <div className="notes-workspace">
+      <Card className="notes-workspace gap-0 py-0 shadow-none">
         {(!mobile || filtersOpen) && (
           <aside className="surface-panel note-filter-panel" id="note-filters">
             <div className="note-filter-heading">
@@ -273,25 +280,35 @@ export default function Notes() {
               <span>{scopeTitle}</span>
               <strong>{filteredNotes.length} 篇</strong>
             </div>
-            <div className="segmented-tabs note-tabs" aria-label="笔记排序">
-              <button
-                className={sort === 'recent' ? 'is-active' : ''}
+            <div
+              className="workspace-choice note-tabs"
+              role="group"
+              aria-label="笔记排序"
+            >
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-pressed={sort === 'recent'}
                 onClick={() => setSort('recent')}
               >
                 最近更新
-              </button>
-              <button
-                className={sort === 'az' ? 'is-active' : ''}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-pressed={sort === 'az'}
                 onClick={() => setSort('az')}
               >
                 标题排序
-              </button>
+              </Button>
             </div>
           </header>
 
-          <label className="notes-search">
+          <div className="notes-search">
             <SearchIcon />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索标题或正文"
@@ -306,7 +323,7 @@ export default function Notes() {
                 <CloseIcon />
               </button>
             )}
-          </label>
+          </div>
 
           <div className="note-card-list">
             {filteredNotes.map((note) => {
@@ -451,7 +468,7 @@ export default function Notes() {
             )}
           </DetailPanel>
         )}
-      </div>
+      </Card>
       {syncMounted && (
         <SyncSettingsPanel open={syncOpen} onClose={() => setSyncOpen(false)} />
       )}
@@ -469,7 +486,7 @@ export default function Notes() {
         onOpen={() => setContentImportTrayOpen(true)}
         onClose={() => setContentImportTrayOpen(false)}
       />
-    </div>
+    </section>
   )
 }
 

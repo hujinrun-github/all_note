@@ -98,10 +98,14 @@ export function useTaskDomainCapabilities() {
   })
 }
 
-export function useProjects(params: ProjectListParams = {}) {
+export function useProjects(
+  params: ProjectListParams = {},
+  options: { enabled?: boolean } = {}
+) {
   return useQuery({
     queryKey: taskDomainQueryKeys.projectList(params),
     queryFn: () => taskDomainAPI.listProjects(params),
+    enabled: options.enabled ?? true,
   })
 }
 

@@ -848,7 +848,7 @@
     padding: 0;
     border: 0;
   }
-  .workspace-shell .calendar-v2-timezone > span {
+  .workspace-shell .calendar-v2-timezone-label {
     display: none;
   }
   .workspace-shell .calendar-v2-timezone select {

@@ -8,8 +8,8 @@ function NativeSelect({
   ...props
 }: Omit<React.ComponentProps<'select'>, 'size'> & { size?: 'sm' | 'default' }) {
   return (
-    <div
-      className="group/native-select relative w-fit has-[select:disabled]:opacity-50"
+    <span
+      className="group/native-select relative block w-fit has-[select:disabled]:opacity-50"
       data-slot="native-select-wrapper"
     >
       <select
@@ -28,7 +28,7 @@ function NativeSelect({
         aria-hidden="true"
         data-slot="native-select-icon"
       />
-    </div>
+    </span>
   )
 }
 

@@ -1,4 +1,4 @@
-/* shadcn/ui tokens used by the v2 planning pages. */
+/* shadcn/ui tokens shared by workspace pages. */
 :root {
   --background: #f8f9f6;
   --foreground: #1d2822;
@@ -47,7 +47,7 @@
   --td-green-soft: var(--accent);
 }
 
-.workspace-shell.planning-theme .workspace-main.is-task-route {
+.workspace-shell.planning-theme .workspace-main {
   background: var(--background);
 }
 
@@ -453,5 +453,272 @@
   .planning-page :is(button, select, [data-slot='skeleton']) {
     animation: none;
     transition: none;
+  }
+}
+
+/* Keep the existing calendar grid, notes panes, and task organizer on the same palette. */
+.workspace-choice {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.workspace-shell.planning-theme .workspace-choice button[aria-pressed='true'],
+.workspace-shell.planning-theme .inbox-v2-filters button[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  box-shadow: none;
+}
+
+.workspace-shell.planning-theme
+  :is(
+    .calendar-v2-shell,
+    .notes-workspace,
+    .inbox-v2-workspace,
+    .inbox-v2-summary
+  ) {
+  border-color: var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  box-shadow: none;
+}
+
+.workspace-shell.planning-theme .calendar-v2-page {
+  gap: 0;
+}
+
+.workspace-shell.planning-theme .calendar-v2-view-switch {
+  background: var(--muted);
+}
+
+.workspace-shell.planning-theme .calendar-v2-toolbar {
+  border-color: var(--border);
+  background: var(--card);
+}
+
+.workspace-shell.planning-theme
+  .calendar-v2-toolbar
+  button[data-variant='default'] {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.workspace-shell.planning-theme
+  .calendar-v2-toolbar
+  button[data-variant='outline'] {
+  border-color: var(--input);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.workspace-shell.planning-theme .calendar-v2-toolbar button:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.workspace-shell.planning-theme
+  .calendar-v2-timezone
+  [data-slot='native-select-wrapper'],
+.workspace-shell.planning-theme
+  .inbox-v2-project-field
+  [data-slot='native-select-wrapper'],
+.projects-create-fields [data-slot='native-select-wrapper'] {
+  width: 100%;
+}
+
+.workspace-shell.planning-theme .calendar-v2-timezone select {
+  border-color: var(--input);
+  padding-right: 34px;
+  color: var(--foreground);
+}
+
+.workspace-shell.planning-theme
+  :is(
+    .calendar-v2-week-head,
+    .calendar-v2-month-weekdays,
+    .calendar-v2-lane-label,
+    .calendar-v2-hour-axis
+  ) {
+  border-color: var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+.workspace-shell.planning-theme
+  :is(.calendar-v2-week-head, .calendar-v2-month-grid)
+  .is-today {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.workspace-shell.planning-theme .calendar-v2-month-day.is-outside {
+  background: var(--background);
+}
+
+.workspace-shell.planning-theme .calendar-v2-entry:not(.is-done),
+.workspace-shell.planning-theme .calendar-agenda-entry:not(.is-done) {
+  border-color: var(--border);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.workspace-shell.planning-theme .notes-search {
+  border-color: var(--input);
+  background: var(--card);
+}
+
+.workspace-shell.planning-theme .notes-search:focus-within {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.workspace-shell.planning-theme .notes-search input {
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-shell.planning-theme .note-library-card.is-selected,
+.workspace-shell.planning-theme .note-filter-panel button.is-active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.workspace-shell.planning-theme .notes-page {
+  margin-inline: auto;
+}
+
+.workspace-shell.planning-theme .projects-page {
+  padding-top: 0;
+}
+
+.workspace-shell.planning-theme .projects-commandbar {
+  flex-wrap: wrap;
+  padding-block: 10px;
+}
+
+.workspace-shell.planning-theme .projects-create-panel {
+  border-color: var(--border);
+  background: var(--card);
+}
+
+.workspace-shell.planning-theme .projects-list-head {
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.workspace-shell.planning-theme .td-project-detail-v3 > header {
+  padding-block: 26px 20px;
+}
+
+.workspace-shell.planning-theme .td-project-detail-v3 .td-title-line h1 {
+  font-size: clamp(26px, 4vw, 32px);
+}
+
+.workspace-shell.planning-theme .td-roadmap-action {
+  border-color: var(--input);
+  background: var(--card);
+  color: var(--primary);
+}
+
+.workspace-shell.planning-theme .inbox-v2-organizer {
+  border-color: var(--border);
+  background: var(--background);
+}
+
+.workspace-shell.planning-theme
+  :is(
+    .inbox-v2-task-row,
+    .inbox-v2-list-heading,
+    .inbox-v2-task-details,
+    .inbox-v2-task-details div
+  ) {
+  border-color: var(--border);
+}
+
+.workspace-shell.planning-theme .inbox-v2-task-row:hover {
+  background: var(--muted);
+}
+
+.workspace-shell.planning-theme .inbox-v2-task-row.is-selected {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.workspace-shell.planning-theme .inbox-v2-task-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.workspace-shell.planning-theme
+  :is(
+    .inbox-v2-summary-icon,
+    .inbox-v2-empty > span,
+    .inbox-v2-organizer-empty > svg
+  ) {
+  border-color: var(--border);
+  background: var(--accent);
+  color: var(--primary);
+}
+
+.workspace-shell.planning-theme
+  :is(
+    .inbox-v2-summary strong,
+    .inbox-v2-list-heading h2,
+    .inbox-v2-task-copy strong,
+    .inbox-v2-organizer h2,
+    .inbox-v2-task-details dd,
+    .inbox-v2-project-field select
+  ) {
+  color: var(--foreground);
+}
+
+.workspace-shell.planning-theme
+  :is(
+    .inbox-v2-summary p,
+    .inbox-v2-summary-main div > span,
+    .inbox-v2-task-copy p,
+    .inbox-v2-task-details dt,
+    .inbox-v2-project-field small,
+    .inbox-v2-empty,
+    .inbox-v2-organizer-empty
+  ) {
+  color: var(--muted-foreground);
+}
+
+.workspace-shell.planning-theme
+  :is(.inbox-v2-task-check, .inbox-v2-workbench-link) {
+  color: var(--primary);
+}
+
+.workspace-shell.planning-theme .inbox-v2-project-field select {
+  border-color: var(--input);
+}
+
+.workspace-shell.planning-theme .inbox-v2-project-field select:focus-visible {
+  border-color: var(--ring);
+  outline: 2px solid var(--ring);
+}
+
+@media (max-width: 820px) {
+  .workspace-shell.planning-theme
+    :is(.workspace-choice, .inbox-v2-filters)
+    button {
+    min-height: 44px;
+  }
+
+  .workspace-shell.planning-theme .calendar-v2-controls {
+    max-width: 100%;
+  }
+
+  .workspace-shell.planning-theme .inbox-v2-summary p {
+    text-align: start;
   }
 }

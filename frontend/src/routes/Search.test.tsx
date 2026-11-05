@@ -3,9 +3,14 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useSearch } from '../hooks/useSearch'
+import { useProjects, useTaskDomainCapabilities } from '../hooks/useTaskDomain'
 import Search from './Search'
 
 vi.mock('../hooks/useSearch', () => ({ useSearch: vi.fn() }))
+vi.mock('../hooks/useTaskDomain', () => ({
+  useProjects: vi.fn(),
+  useTaskDomainCapabilities: vi.fn(),
+}))
 
 function renderSearch(initialEntry = '/search?q=计划') {
   return render(
@@ -18,11 +23,28 @@ function renderSearch(initialEntry = '/search?q=计划') {
 describe('Search workspace', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    vi.mocked(useProjects).mockReturnValue({} as ReturnType<typeof useProjects>)
+    vi.mocked(useTaskDomainCapabilities).mockReturnValue(
+      {} as ReturnType<typeof useTaskDomainCapabilities>
+    )
     vi.mocked(useSearch).mockReturnValue({
       data: {
         items: [
-          { type: 'note', id: 'note-1', title: '计划笔记', highlight: '', updated_at: 100 },
-          { type: 'task', id: 'task-1', title: '计划任务', highlight: '', updated_at: 100, done: 0 },
+          {
+            type: 'note',
+            id: 'note-1',
+            title: '计划笔记',
+            highlight: '',
+            updated_at: 100,
+          },
+          {
+            type: 'task',
+            id: 'task-1',
+            title: '计划任务',
+            highlight: '',
+            updated_at: 100,
+            done: 0,
+          },
         ],
         pagination: { page: 1, page_size: 20, total: 2 },
       },
@@ -40,18 +62,25 @@ describe('Search workspace', () => {
 
     await user.click(screen.getByRole('tab', { name: '任务' }))
 
-    expect(screen.queryByRole('button', { name: /计划笔记/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /计划笔记/ })
+    ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /计划任务/ })).toBeVisible()
   })
 
   it('clears stored recent searches', async () => {
-    window.localStorage.setItem('flowspace.recent-searches', JSON.stringify(['kapathy', 'N2 语法']))
+    window.localStorage.setItem(
+      'flowspace.recent-searches',
+      JSON.stringify(['kapathy', 'N2 语法'])
+    )
     const user = userEvent.setup()
     renderSearch('/search')
 
     expect(screen.getByRole('button', { name: 'kapathy' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: '清除历史' }))
 
-    expect(screen.queryByRole('button', { name: 'kapathy' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'kapathy' })
+    ).not.toBeInTheDocument()
   })
 })
