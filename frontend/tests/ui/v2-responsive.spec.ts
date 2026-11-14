@@ -76,7 +76,7 @@ const weeklyMeeting = {
   recurring: true,
 }
 
-async function fixtureAPI(page: Page) {
+async function fixtureAPI(page: Page, calendarPlanning = false) {
   let plannedTask: Omit<typeof pendingTask, 'planned_date'> & {
     planned_date?: string
     planned_start_at?: string
@@ -123,6 +123,7 @@ async function fixtureAPI(page: Page) {
       if (path === '/api/task-occurrences/occurrence-1')
         return data({ occurrence })
       if (
+        calendarPlanning &&
         path === '/api/task-occurrences' &&
         url.searchParams.get('scope') === 'unscheduled'
       )
@@ -176,7 +177,7 @@ async function fixtureAPI(page: Page) {
               recurring: false,
               all_day_end_date: '2026-10-03',
             },
-            ...[planningDate, '2026-10-07']
+            ...(calendarPlanning ? [planningDate, '2026-10-07'] : [])
               .filter(
                 (date) =>
                   date >= (url.searchParams.get('from') ?? '') &&
@@ -286,7 +287,9 @@ async function expectNoPageOverflow(page: Page) {
   expect(overflow.main).toBeLessThanOrEqual(1)
 }
 
-test.beforeEach(async ({ page }) => fixtureAPI(page))
+test.beforeEach(async ({ page }, info) =>
+  fixtureAPI(page, info.title.startsWith('changes the weekly meeting time'))
+)
 
 test('desktop sidebar and account controls open the expected destinations', async ({
   page,
