@@ -508,7 +508,7 @@ test('planning overview links, keyboard tabs and task filters stay in sync with 
   const project = page.getByRole('combobox', { name: '按项目筛选' })
   const priority = page.getByRole('combobox', { name: '按优先级筛选' })
   await project.selectOption('learning')
-  await expect(page).toHaveURL(/project=learning/)
+  await expect(page.getByText('没有符合筛选条件的任务')).toBeVisible()
   await priority.selectOption('2')
   await expect(page).toHaveURL(/project=learning&priority=2/)
   await expect(page.getByText('没有符合筛选条件的任务')).toBeVisible()
