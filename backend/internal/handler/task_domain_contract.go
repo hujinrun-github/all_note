@@ -111,12 +111,19 @@ type RescheduleOccurrenceV2Request struct {
 // RescheduleThisAndFutureV2Request installs a new immutable schedule version
 // from EffectiveFrom onward.
 type RescheduleThisAndFutureV2Request struct {
-	ExpectedTaskRevision     int64           `json:"expected_task_revision"`
-	ExpectedScheduleRevision int64           `json:"expected_schedule_revision"`
-	EffectiveFrom            string          `json:"effective_from"`
-	GenerateThroughExclusive string          `json:"generate_through_exclusive"`
-	Schedule                 ScheduleV2Input `json:"schedule"`
-	SelectedOffsets          map[string]int  `json:"selected_offsets,omitempty"`
+	ExpectedTaskRevision     int64                `json:"expected_task_revision"`
+	ExpectedScheduleRevision int64                `json:"expected_schedule_revision"`
+	EffectiveFrom            string               `json:"effective_from"`
+	GenerateThroughExclusive string               `json:"generate_through_exclusive,omitempty"`
+	Schedule                 *ScheduleV2Input     `json:"schedule,omitempty"`
+	Timing                   *SeriesTimingV2Input `json:"timing,omitempty"`
+	SelectedOffsets          map[string]int       `json:"selected_offsets,omitempty"`
+}
+
+type SeriesTimingV2Input struct {
+	TimingType      taskdomain.TimingType `json:"timing_type"`
+	LocalStartTime  string                `json:"local_start_time,omitempty"`
+	DurationMinutes int                   `json:"duration_minutes,omitempty"`
 }
 
 var ErrInvalidTaskDomainRequest = errors.New("invalid task-domain request")
@@ -265,11 +272,26 @@ func (request *RescheduleThisAndFutureV2Request) validateTaskDomainRequest() err
 	if request == nil || request.ExpectedTaskRevision < 1 || request.ExpectedScheduleRevision < 1 {
 		return errors.New("reschedule revisions must be positive")
 	}
-	if !validTaskDomainDate(request.EffectiveFrom) || !validTaskDomainDate(request.GenerateThroughExclusive) || request.GenerateThroughExclusive <= request.EffectiveFrom {
+	if !validTaskDomainDate(request.EffectiveFrom) {
 		return errors.New("invalid schedule generation range")
 	}
 	if err := validateSelectedOffsets(request.SelectedOffsets); err != nil {
 		return err
+	}
+	if request.Timing != nil {
+		if request.Schedule != nil || request.GenerateThroughExclusive != "" ||
+			(request.Timing.TimingType != taskdomain.TimingDate && request.Timing.TimingType != taskdomain.TimingTimeBlock) {
+			return errors.New("invalid series timing change")
+		}
+		_, err := taskdomain.NormalizeSchedule(taskdomain.ScheduleInput{
+			RecurrenceType: taskdomain.RecurrenceNone, TimingType: request.Timing.TimingType,
+			Timezone: "UTC", StartsOn: request.EffectiveFrom,
+			LocalStartTime: request.Timing.LocalStartTime, DurationMinutes: request.Timing.DurationMinutes,
+		})
+		return err
+	}
+	if request.Schedule == nil || !validTaskDomainDate(request.GenerateThroughExclusive) || request.GenerateThroughExclusive <= request.EffectiveFrom {
+		return errors.New("invalid schedule generation range")
 	}
 	schedule, err := request.Schedule.domainInput()
 	if err != nil {

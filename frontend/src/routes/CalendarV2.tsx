@@ -4,6 +4,7 @@ import { Card } from '../components/ui/card'
 import { NativeSelect } from '../components/ui/native-select'
 import { useMemo, useState, type CSSProperties, type DragEvent } from 'react'
 import {
+  CalendarClock,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -15,22 +16,19 @@ import {
 import {
   TaskDomainAPIError,
   type CalendarEntryV2,
-  type RecurrenceType,
+  type OccurrenceV2,
   type TimingType,
 } from '../api/taskDomain'
 import {
   useCalendarEntries,
   useCompleteOccurrenceMutation,
+  useOccurrences,
   useProjects,
   useReopenOccurrenceMutation,
   useRescheduleOccurrenceMutation,
   useRescheduleThisAndFollowingMutation,
 } from '../hooks/useTaskDomain'
 import { ScheduleCreateDialog } from '../components/taskDomain/ScheduleCreateDialog'
-import {
-  recurrenceRule,
-  WeekdayPicker,
-} from '../components/taskDomain/TaskScheduleFields'
 import { DetailPanel } from '../components/ui/DetailPanel'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 
@@ -50,12 +48,13 @@ interface ScheduleDraft {
   allDayEndDate: string
   localStartTime: string
   durationMinutes: number
-  recurrenceType: Exclude<RecurrenceType, 'none'>
-  weeklyDays?: number[]
-  effectiveFrom: string
-  generateThroughExclusive: string
-  selectedOffsetSeconds?: number
 }
+
+type EditableEntry = Omit<
+  CalendarEntryV2,
+  'project_revision' | 'generated_schedule_revision'
+>
+type DropTarget = { date: string; minute?: number; allDay?: boolean }
 
 interface CalendarCreateScheduleDefaults {
   startsOn: string
@@ -63,14 +62,11 @@ interface CalendarCreateScheduleDefaults {
   endTime?: string
 }
 
-const weekHours = Array.from({ length: 15 }, (_, index) => index + 7)
-const weekStartMinute = 7 * 60
-const weekEndMinute = 22 * 60
+const dayMinutes = 24 * 60
+const workStart = 7 * 60
+const workEnd = 22 * 60
 const defaultScheduleDuration = 30
-const weekTimeSlots = Array.from(
-  { length: (weekEndMinute - weekStartMinute) / defaultScheduleDuration },
-  (_, index) => weekStartMinute + index * defaultScheduleDuration
-)
+const occurrenceDragType = 'text/task-occurrence-id'
 const calendarWeekdays = [
   '周一',
   '周二',
@@ -119,13 +115,15 @@ export function createCalendarSlotDefaults(
     Math.round(requestedMinuteOfDay / defaultScheduleDuration) *
     defaultScheduleDuration
   const startMinute = Math.max(
-    weekStartMinute,
-    Math.min(weekEndMinute - defaultScheduleDuration, snappedMinute)
+    0,
+    Math.min(dayMinutes - defaultScheduleDuration, snappedMinute)
   )
   return {
     startsOn,
     startTime: timeInputValue(startMinute),
-    endTime: timeInputValue(startMinute + defaultScheduleDuration),
+    endTime: timeInputValue(
+      Math.min(dayMinutes - 1, startMinute + defaultScheduleDuration)
+    ),
   }
 }
 
@@ -289,22 +287,23 @@ function timezoneOffsetLabel(timezone: string, dateValue: string) {
   }
 }
 
-function minuteOfDay(value: string, timezone: string) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
+function dateInTimezone(value: Date | string, timezone: string) {
+  return new Intl.DateTimeFormat('sv-SE', {
     timeZone: timezone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(value))
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0)
-  const minute = Number(
-    parts.find((part) => part.type === 'minute')?.value ?? 0
-  )
-  return hour * 60 + minute
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(value))
 }
 
-function durationInMinutes(entry: CalendarEntryV2) {
-  if (!entry.planned_start_at || !entry.planned_end_at) return 60
+function minuteOfDay(time: string) {
+  const [hours, minutes] = time.split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+function durationInMinutes(entry: EditableEntry) {
+  if (!entry.planned_start_at || !entry.planned_end_at)
+    return defaultScheduleDuration
   return Math.max(
     1,
     Math.round(
@@ -388,72 +387,127 @@ function offsetLabel(offsetSeconds: number) {
   return `UTC${sign}${hours}:${minutes}`
 }
 
-function draftForEntry(entry: CalendarEntryV2): ScheduleDraft {
-  const plannedDate = entry.planned_date ?? localDateValue()
+function draftForEntry(
+  entry: EditableEntry,
+  timezone: string,
+  fallbackDate: string,
+  target?: DropTarget
+): ScheduleDraft {
+  const entryDate = entry.planned_start_at
+    ? dateInTimezone(entry.planned_start_at, timezone)
+    : (entry.planned_date ?? fallbackDate)
+  const plannedDate = target?.date ?? entryDate
+  const allDayLength =
+    entry.planned_date && entry.all_day_end_date
+      ? Math.max(1, daysBetween(entry.planned_date, entry.all_day_end_date))
+      : 1
   return {
     scope: 'only-this',
-    timingType: entry.timing_type === 'time_block' ? 'time_block' : 'date',
+    timingType: target?.allDay
+      ? 'date'
+      : target?.minute !== undefined || entry.timing_type !== 'date'
+        ? 'time_block'
+        : 'date',
     plannedDate,
-    allDayEndDate: entry.all_day_end_date || addDays(plannedDate, 1),
-    localStartTime: entry.planned_start_at
-      ? formatTime(entry.planned_start_at, entry.timezone)
-      : '09:00',
+    allDayEndDate: addDays(plannedDate, allDayLength),
+    localStartTime:
+      target?.minute !== undefined
+        ? timeInputValue(target.minute)
+        : entry.planned_start_at
+          ? formatTime(entry.planned_start_at, timezone)
+          : '09:00',
     durationMinutes: durationInMinutes(entry),
-    recurrenceType: 'daily',
-    weeklyDays: undefined,
-    effectiveFrom: plannedDate,
-    generateThroughExclusive: addDays(plannedDate, 31),
   }
 }
 
-function calendarRecurrenceSelection(draft: ScheduleDraft) {
-  if (draft.recurrenceType !== 'weekly') return draft.recurrenceType
-  if (sameCalendarDays(draft.weeklyDays, [1, 2, 3, 4, 5])) return 'weekdays'
-  if (sameCalendarDays(draft.weeklyDays, [0, 6])) return 'weekends'
-  if (draft.weeklyDays?.length) return 'custom'
-  return 'weekly'
+function movable(entry: EditableEntry) {
+  return (
+    entry.execution_status !== 'done' &&
+    entry.execution_status !== 'skipped' &&
+    entry.execution_status !== 'cancelled'
+  )
 }
 
-function sameCalendarDays(left: number[] | undefined, right: number[]) {
-  if (!left || left.length !== right.length) return false
-  const normalized = [...new Set(left)].sort((a, b) => a - b)
-  return normalized.every((day, index) => day === right[index])
+function canEditSeries(entry: EditableEntry) {
+  return entry.recurring && /^\d{4}-\d{2}-\d{2}$/.test(entry.occurrence_key)
 }
 
-function weekdayFromCalendarDate(value: string) {
-  const date = parseLocalDate(value)
-  return Number.isNaN(date.getTime()) ? new Date().getDay() : date.getDay()
+function pendingEntry(item: OccurrenceV2): EditableEntry | null {
+  if (!item.project_id || !item.task_revision || !item.schedule_revision)
+    return null
+  return {
+    ...item,
+    project_id: item.project_id,
+    task_revision: item.task_revision,
+    schedule_revision: item.schedule_revision,
+    occurrence_id: item.id,
+    task_title: item.title ?? '未命名任务',
+    occurrence_revision: item.revision,
+    timing_type: item.timing_type ?? 'unscheduled',
+    timezone: item.timezone ?? defaultTimezone(),
+    recurring: item.recurring ?? false,
+  }
 }
 
 export default function CalendarV2({
-  initialDate = localDateValue(),
+  initialDate,
   initialTimezone = defaultTimezone(),
   initialView,
 }: CalendarV2Props) {
   const mobile = useMediaQuery('(max-width: 820px)')
-  const [anchorDate, setAnchorDate] = useState(initialDate)
+  const [anchorDate, setAnchorDate] = useState(
+    () => initialDate ?? dateInTimezone(new Date(), initialTimezone)
+  )
   const [calendarView, setCalendarView] = useState<CalendarView>(
     initialView ?? (mobile ? 'agenda' : 'week')
   )
   const [timezone, setTimezone] = useState(initialTimezone)
-  const [selectedEntry, setSelectedEntry] = useState<CalendarEntryV2 | null>(
-    null
-  )
+  const [selectedEntry, setSelectedEntry] = useState<EditableEntry | null>(null)
   const [draft, setDraft] = useState<ScheduleDraft | null>(null)
   const [offsetCandidates, setOffsetCandidates] = useState<
     Array<{ offset_seconds: number; utc: string }>
   >([])
+  const [selectedOffsets, setSelectedOffsets] = useState<
+    Record<string, number>
+  >({})
   const [editorError, setEditorError] = useState('')
   const [completionError, setCompletionError] = useState('')
+  const [pendingOpen, setPendingOpen] = useState(false)
+  const [showEarly, setShowEarly] = useState(false)
+  const [showLate, setShowLate] = useState(false)
+  const [dropPreview, setDropPreview] = useState<{
+    date: string
+    minute: number
+  } | null>(null)
   const [createScheduleDefaults, setCreateScheduleDefaults] =
     useState<CalendarCreateScheduleDefaults | null>(null)
 
   const projectsQuery = useProjects()
+  const showPending = calendarView === 'week' && pendingOpen && !selectedEntry
+  const unscheduledQuery = useOccurrences(
+    { scope: 'unscheduled' },
+    { enabled: calendarView === 'week' && pendingOpen }
+  )
+  const overdueQuery = useOccurrences(
+    { scope: 'overdue', timezone },
+    { enabled: calendarView === 'week' && pendingOpen }
+  )
+  const pendingEntries = useMemo(() => {
+    const byID = new Map<string, EditableEntry>()
+    for (const item of [
+      ...(unscheduledQuery.data ?? []),
+      ...(overdueQuery.data ?? []),
+    ]) {
+      const entry = pendingEntry(item)
+      if (entry && movable(entry)) byID.set(entry.occurrence_id, entry)
+    }
+    return [...byID.values()]
+  }, [unscheduledQuery.data, overdueQuery.data])
   const onlyThis = useRescheduleOccurrenceMutation()
   const thisAndFollowing = useRescheduleThisAndFollowingMutation()
   const complete = useCompleteOccurrenceMutation()
   const reopen = useReopenOccurrenceMutation()
-  const todayValue = localDateValue()
+  const todayValue = dateInTimezone(new Date(), timezone)
   const weekStart = mondayOf(anchorDate)
   const weekEnd = addDays(weekStart, 7)
   const weekDates = useMemo(
@@ -518,17 +572,49 @@ export default function CalendarV2({
       ),
     [visibleEntries]
   )
-  const timeEntries = useMemo(
-    () =>
-      visibleEntries.filter(
-        (entry) =>
-          entry.timing_type === 'time_block' &&
-          entry.planned_date &&
-          entry.planned_start_at &&
-          entry.planned_end_at
-      ),
-    [visibleEntries]
+  const timedByDate = useMemo(() => {
+    const byDate = new Map<
+      string,
+      Array<{ entry: CalendarEntryV2; start: number; end: number }>
+    >()
+    for (const entry of visibleEntries) {
+      if (
+        entry.timing_type !== 'time_block' ||
+        !entry.planned_start_at ||
+        !entry.planned_end_at
+      )
+        continue
+      const firstDate = dateInTimezone(entry.planned_start_at, timezone)
+      const lastDate = dateInTimezone(entry.planned_end_at, timezone)
+      const firstMinute = minuteOfDay(
+        formatTime(entry.planned_start_at, timezone)
+      )
+      const lastMinute = minuteOfDay(formatTime(entry.planned_end_at, timezone))
+      for (const date of weekDates) {
+        if (
+          date < firstDate ||
+          date > lastDate ||
+          (date === lastDate && date !== firstDate && lastMinute === 0)
+        )
+          continue
+        const start = date === firstDate ? firstMinute : 0
+        const end =
+          date === lastDate ? Math.max(start + 1, lastMinute) : dayMinutes
+        const blocks = byDate.get(date) ?? []
+        blocks.push({ entry, start, end })
+        byDate.set(date, blocks)
+      }
+    }
+    return byDate
+  }, [visibleEntries, timezone, weekDates])
+  const hasEarly = [...timedByDate.values()].some((blocks) =>
+    blocks.some((block) => block.start < workStart)
   )
+  const hasLate = [...timedByDate.values()].some((blocks) =>
+    blocks.some((block) => block.end > workEnd)
+  )
+  const timelineStart = hasEarly || showEarly ? 0 : workStart
+  const timelineEnd = hasLate || showLate ? dayMinutes : workEnd
   const allDayLayout = useMemo(
     () => layoutAllDayEntries(dateEntries, weekStart, weekDates.length),
     [dateEntries, weekStart, weekDates.length]
@@ -589,16 +675,20 @@ export default function CalendarV2({
   const timezoneOptions = commonTimezones.includes(timezone)
     ? commonTimezones
     : [timezone, ...commonTimezones]
+  const seriesEdit = draft?.scope === 'this-and-following'
+  const editorTimezone =
+    seriesEdit && selectedEntry ? selectedEntry.timezone : timezone
+  const offsetDates = new Set(
+    offsetCandidates.map((candidate) =>
+      dateInTimezone(candidate.utc, editorTimezone)
+    )
+  )
 
-  function openEditor(entry: CalendarEntryV2, plannedDate?: string) {
-    const nextDraft = draftForEntry(entry)
-    if (plannedDate) {
-      nextDraft.plannedDate = plannedDate
-      nextDraft.effectiveFrom = plannedDate
-    }
+  function openEditor(entry: EditableEntry, target?: DropTarget) {
     setSelectedEntry(entry)
-    setDraft(nextDraft)
+    setDraft(draftForEntry(entry, timezone, anchorDate, target))
     setOffsetCandidates([])
+    setSelectedOffsets({})
     setEditorError('')
   }
 
@@ -606,6 +696,7 @@ export default function CalendarV2({
     setSelectedEntry(null)
     setDraft(null)
     setOffsetCandidates([])
+    setSelectedOffsets({})
     setEditorError('')
   }
 
@@ -616,65 +707,91 @@ export default function CalendarV2({
 
   function updateDraft(update: Partial<ScheduleDraft>) {
     setDraft((current) => (current ? { ...current, ...update } : current))
+    setOffsetCandidates([])
+    setSelectedOffsets({})
+    setEditorError('')
+  }
+
+  function changeScope(scope: ScheduleScope) {
+    if (!selectedEntry || !draft) return
+    if (selectedEntry.timezone !== timezone && selectedEntry.planned_start_at) {
+      const zone = scope === 'only-this' ? timezone : selectedEntry.timezone
+      updateDraft({
+        scope,
+        localStartTime: formatTime(selectedEntry.planned_start_at, zone),
+      })
+      return
+    }
+    updateDraft({ scope })
   }
 
   function handleDragStart(
     event: DragEvent<HTMLButtonElement>,
-    entry: CalendarEntryV2
+    entry: EditableEntry
   ) {
-    if (entry.execution_status === 'done') {
-      event.preventDefault()
-      openEditor(entry)
-      return
-    }
-    event.dataTransfer.setData('text/task-occurrence-id', entry.occurrence_id)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData(occurrenceDragType, entry.occurrence_id)
   }
 
-  function handleDrop(event: DragEvent<HTMLDivElement>, plannedDate: string) {
+  function allowDrop(event: DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes(occurrenceDragType)) return false
     event.preventDefault()
-    const occurrenceID = event.dataTransfer.getData('text/task-occurrence-id')
-    const entry = visibleEntries.find(
-      (candidate) => candidate.occurrence_id === occurrenceID
+    event.dataTransfer.dropEffect = 'move'
+    return true
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>, target: DropTarget) {
+    if (!allowDrop(event)) return
+    setDropPreview(null)
+    const id = event.dataTransfer.getData(occurrenceDragType)
+    const entry =
+      visibleEntries.find((item) => item.occurrence_id === id) ??
+      pendingEntries.find((item) => item.occurrence_id === id)
+    if (entry && movable(entry)) openEditor(entry, target)
+  }
+
+  function minuteAtPointer(
+    event: DragEvent<HTMLDivElement>,
+    start: number,
+    end: number
+  ) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const fraction = (event.clientY - rect.top) / rect.height
+    const slot =
+      Math.floor((fraction * (end - start)) / defaultScheduleDuration) *
+      defaultScheduleDuration
+    return Math.max(
+      start,
+      Math.min(end - defaultScheduleDuration, start + slot)
     )
-    if (entry) openEditor(entry, plannedDate)
   }
 
   async function submitSchedule() {
-    if (!selectedEntry || !draft || selectedEntry.execution_status === 'done')
-      return
+    if (!selectedEntry || !draft || !movable(selectedEntry)) return
     setEditorError('')
-    const selectedOffsets =
-      draft.selectedOffsetSeconds === undefined
-        ? undefined
-        : { [draft.plannedDate]: draft.selectedOffsetSeconds }
+    const series = draft.scope === 'this-and-following'
+    const offsets = Object.keys(selectedOffsets).length
+      ? { selected_offsets: selectedOffsets }
+      : {}
     try {
-      if (draft.scope === 'this-and-following' && selectedEntry.recurring) {
+      if (series && selectedEntry.recurring) {
         await thisAndFollowing.mutateAsync({
           projectID: selectedEntry.project_id,
           taskID: selectedEntry.task_id,
           input: {
             expected_task_revision: selectedEntry.task_revision,
             expected_schedule_revision: selectedEntry.schedule_revision,
-            effective_from: draft.effectiveFrom,
-            generate_through_exclusive: draft.generateThroughExclusive,
-            schedule: {
-              recurrence_type: draft.recurrenceType,
+            effective_from: selectedEntry.occurrence_key,
+            timing: {
               timing_type: draft.timingType,
-              timezone,
-              starts_on: draft.effectiveFrom,
               ...(draft.timingType === 'time_block'
                 ? {
                     local_start_time: draft.localStartTime,
                     duration_minutes: draft.durationMinutes,
                   }
                 : {}),
-              rule: recurrenceRule(
-                draft.recurrenceType,
-                draft.effectiveFrom,
-                draft.weeklyDays
-              ),
             },
-            ...(selectedOffsets ? { selected_offsets: selectedOffsets } : {}),
+            ...offsets,
           },
         })
       } else {
@@ -697,7 +814,7 @@ export default function CalendarV2({
                     duration_minutes: draft.durationMinutes,
                   }),
             },
-            ...(selectedOffsets ? { selected_offsets: selectedOffsets } : {}),
+            ...offsets,
           },
         })
       }
@@ -831,7 +948,10 @@ export default function CalendarV2({
             </span>
             <NativeSelect
               value={timezone}
-              onChange={(event) => setTimezone(event.target.value)}
+              onChange={(event) => {
+                closeEditor()
+                setTimezone(event.target.value)
+              }}
               aria-label="显示时区"
             >
               {timezoneOptions.map((option) => (
@@ -845,7 +965,8 @@ export default function CalendarV2({
       </PlanningHeading>
 
       <div
-        className={`calendar-v2-workspace ${selectedEntry ? 'has-editor' : ''}`}
+        className={`calendar-v2-workspace ${selectedEntry ? 'has-editor' : showPending ? 'has-pending' : ''}`}
+        onDragEnd={() => setDropPreview(null)}
       >
         <Card
           className={`calendar-v2-shell is-${calendarView}-view gap-0 py-0 shadow-none`}
@@ -866,7 +987,10 @@ export default function CalendarV2({
                 variant="outline"
                 type="button"
                 className="calendar-v2-today"
-                onClick={() => setAnchorDate(todayValue)}
+                onClick={() => {
+                  closeEditor()
+                  setAnchorDate(todayValue)
+                }}
               >
                 今天
               </Button>
@@ -888,6 +1012,23 @@ export default function CalendarV2({
                 <Plus size={15} aria-hidden="true" />
                 新增日程
               </Button>
+              {calendarView === 'week' ? (
+                <Button
+                  variant="outline"
+                  type="button"
+                  aria-expanded={showPending}
+                  aria-controls={
+                    showPending ? 'calendar-pending-tasks' : undefined
+                  }
+                  onClick={() => {
+                    closeEditor()
+                    setPendingOpen(!showPending)
+                  }}
+                >
+                  <CalendarClock data-icon="inline-start" aria-hidden="true" />
+                  待安排
+                </Button>
+              ) : null}
             </div>
             <strong aria-live="polite">{periodTitle}</strong>
             {entriesQuery.isFetching ? (
@@ -1015,8 +1156,10 @@ export default function CalendarV2({
                     <div
                       key={date}
                       className="calendar-v2-drop-day"
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={(event) => handleDrop(event, date)}
+                      onDragOver={allowDrop}
+                      onDrop={(event) =>
+                        handleDrop(event, { date, allDay: true })
+                      }
                       aria-hidden="true"
                     />
                   ))}
@@ -1043,7 +1186,7 @@ export default function CalendarV2({
                             title={entry.task_title}
                             data-exclusive-end={exclusiveEnd}
                             data-calendar-row={row}
-                            draggable={entry.execution_status !== 'done'}
+                            draggable={movable(entry)}
                             onDragStart={(event) =>
                               handleDragStart(event, entry)
                             }
@@ -1073,85 +1216,135 @@ export default function CalendarV2({
                 role="region"
                 aria-label="时间安排"
               >
-                <div className="calendar-v2-time-grid">
+                {!hasEarly ? (
+                  <Button
+                    variant="ghost"
+                    className="calendar-v2-fold"
+                    type="button"
+                    aria-expanded={showEarly}
+                    aria-controls="calendar-week-time-grid"
+                    onClick={() => setShowEarly((current) => !current)}
+                  >
+                    <ChevronRight data-icon="inline-start" aria-hidden="true" />
+                    凌晨 00:00–07:00
+                  </Button>
+                ) : null}
+                <div
+                  id="calendar-week-time-grid"
+                  className="calendar-v2-time-grid"
+                  style={
+                    {
+                      '--calendar-range-minutes': timelineEnd - timelineStart,
+                    } as CSSProperties
+                  }
+                >
                   <div className="calendar-v2-hour-axis" aria-hidden="true">
-                    {weekHours.map((hour) => (
-                      <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
-                    ))}
+                    {Array.from(
+                      { length: (timelineEnd - timelineStart) / 60 },
+                      (_, index) => (
+                        <span key={index}>
+                          {timeInputValue(timelineStart + index * 60)}
+                        </span>
+                      )
+                    )}
                   </div>
                   {weekDates.map((date) => (
                     <div
                       key={date}
-                      className={`calendar-v2-time-column ${
-                        date === todayValue ? 'is-today' : ''
-                      }`}
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={(event) => handleDrop(event, date)}
-                    >
-                      {weekHours.map((hour) => (
-                        <i key={hour} aria-hidden="true" />
-                      ))}
-                      {weekTimeSlots.map((minute) => {
-                        const time = timeInputValue(minute)
-                        return (
-                          <button
-                            key={minute}
-                            type="button"
-                            className="calendar-v2-create-slot"
-                            style={
-                              {
-                                '--calendar-slot-minute':
-                                  minute - weekStartMinute,
-                              } as CSSProperties
-                            }
-                            aria-label={`新增日程：${formatDate(date)} ${time}`}
-                            title={`${time} 新增日程`}
-                            onClick={() =>
-                              openCreateSchedule(
-                                createCalendarSlotDefaults(date, minute)
-                              )
-                            }
-                          >
-                            <span aria-hidden="true">＋ 新增</span>
-                          </button>
+                      className={`calendar-v2-time-column ${date === todayValue ? 'is-today' : ''}`}
+                      onDragOver={(event) => {
+                        if (!allowDrop(event)) return
+                        const minute = minuteAtPointer(
+                          event,
+                          timelineStart,
+                          timelineEnd
                         )
-                      })}
-                      {timeEntries
-                        .filter((entry) => entry.planned_date === date)
-                        .map((entry) => (
+                        setDropPreview((current) =>
+                          current?.date === date && current.minute === minute
+                            ? current
+                            : { date, minute }
+                        )
+                      }}
+                      onDragLeave={(event) => {
+                        if (
+                          !(event.relatedTarget instanceof Node) ||
+                          !event.currentTarget.contains(event.relatedTarget)
+                        ) {
+                          setDropPreview(null)
+                        }
+                      }}
+                      onDrop={(event) =>
+                        handleDrop(event, {
+                          date,
+                          minute: minuteAtPointer(
+                            event,
+                            timelineStart,
+                            timelineEnd
+                          ),
+                        })
+                      }
+                    >
+                      {Array.from(
+                        {
+                          length:
+                            (timelineEnd - timelineStart) /
+                            defaultScheduleDuration,
+                        },
+                        (_, index) => {
+                          const minute =
+                            timelineStart + index * defaultScheduleDuration
+                          const time = timeInputValue(minute)
+                          return (
+                            <button
+                              key={minute}
+                              type="button"
+                              className="calendar-v2-create-slot"
+                              style={
+                                {
+                                  '--calendar-slot-minute':
+                                    minute - timelineStart,
+                                } as CSSProperties
+                              }
+                              aria-label={`新增日程：${formatDate(date)} ${time}`}
+                              title={`${time} 新增日程`}
+                              onClick={() =>
+                                openCreateSchedule(
+                                  createCalendarSlotDefaults(date, minute)
+                                )
+                              }
+                            >
+                              <span aria-hidden="true">＋ 新增</span>
+                            </button>
+                          )
+                        }
+                      )}
+                      {timedByDate.get(date)?.map(({ entry, start, end }) => {
+                        return (
                           <div
                             key={entry.occurrence_id}
                             className="calendar-v2-entry-frame is-time-block"
                             style={
                               {
-                                '--calendar-start-minute': Math.max(
-                                  0,
-                                  minuteOfDay(
-                                    entry.planned_start_at!,
-                                    timezone
-                                  ) -
-                                    7 * 60
-                                ),
-                                '--calendar-duration-minute': Math.max(
-                                  30,
-                                  durationInMinutes(entry)
-                                ),
+                                '--calendar-start-minute':
+                                  start - timelineStart,
+                                '--calendar-duration-minute': end - start,
                               } as CSSProperties
                             }
                           >
                             <button
+                              title={entry.task_title}
                               type="button"
                               className={`calendar-v2-entry is-time-block is-${entry.execution_status}`}
-                              draggable={entry.execution_status !== 'done'}
+                              draggable={movable(entry)}
                               onDragStart={(event) =>
                                 handleDragStart(event, entry)
                               }
+                              onDragEnd={() => setDropPreview(null)}
                               onClick={() => openEditor(entry)}
-                              aria-label={`编辑日程：${entry.task_title}`}
+                              aria-label={`编辑日程：${entry.task_title}，${formatDate(date)} ${timeInputValue(start)}`}
                             >
                               <time>
-                                {formatTime(entry.planned_start_at!, timezone)}–
-                                {formatTime(entry.planned_end_at!, timezone)}
+                                {timeInputValue(start)}–{timeInputValue(end)}
                               </time>
                               <strong>{entry.task_title}</strong>
                             </button>
@@ -1161,10 +1354,40 @@ export default function CalendarV2({
                               onComplete={() => void completeEntry(entry)}
                             />
                           </div>
-                        ))}
+                        )
+                      })}
+                      {dropPreview?.date === date &&
+                      dropPreview.minute >= timelineStart &&
+                      dropPreview.minute < timelineEnd ? (
+                        <div
+                          aria-hidden="true"
+                          className="calendar-v2-drop-preview"
+                          style={
+                            {
+                              '--calendar-slot-minute':
+                                dropPreview.minute - timelineStart,
+                            } as CSSProperties
+                          }
+                        >
+                          {timeInputValue(dropPreview.minute)}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
+                {!hasLate ? (
+                  <Button
+                    variant="ghost"
+                    className="calendar-v2-fold"
+                    type="button"
+                    aria-expanded={showLate}
+                    aria-controls="calendar-week-time-grid"
+                    onClick={() => setShowLate((current) => !current)}
+                  >
+                    <ChevronRight data-icon="inline-start" aria-hidden="true" />
+                    深夜 22:00–24:00
+                  </Button>
+                ) : null}
               </section>
             </>
           ) : calendarView === 'month' ? (
@@ -1193,8 +1416,8 @@ export default function CalendarV2({
                         isCurrentMonth ? '' : 'is-outside'
                       } ${isToday ? 'is-today' : ''}`}
                       role="gridcell"
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={(event) => handleDrop(event, date)}
+                      onDragOver={allowDrop}
+                      onDrop={(event) => handleDrop(event, { date })}
                     >
                       <header>
                         <time dateTime={date}>{dayNumber(date)}</time>
@@ -1211,7 +1434,7 @@ export default function CalendarV2({
                             <button
                               type="button"
                               className={`calendar-v2-month-entry is-${entry.timing_type} is-${entry.execution_status}`}
-                              draggable={entry.execution_status !== 'done'}
+                              draggable={movable(entry)}
                               onDragStart={(event) =>
                                 handleDragStart(event, entry)
                               }
@@ -1307,6 +1530,70 @@ export default function CalendarV2({
           )}
         </Card>
 
+        {showPending && !selectedEntry ? (
+          <aside
+            id="calendar-pending-tasks"
+            className="calendar-v2-pending"
+            aria-labelledby="calendar-pending-heading"
+          >
+            <h2 id="calendar-pending-heading">待安排</h2>
+            <p>拖到周历，或点击「安排到」选择时间。</p>
+            {unscheduledQuery.isError || overdueQuery.isError ? (
+              <p role="alert">
+                部分任务加载失败。
+                <button
+                  type="button"
+                  onClick={() => {
+                    void unscheduledQuery.refetch()
+                    void overdueQuery.refetch()
+                  }}
+                >
+                  重试
+                </button>
+              </p>
+            ) : null}
+            {unscheduledQuery.isLoading || overdueQuery.isLoading ? (
+              <p role="status">正在加载任务…</p>
+            ) : null}
+            {pendingEntries.length === 0 &&
+            !unscheduledQuery.isLoading &&
+            !overdueQuery.isLoading &&
+            !unscheduledQuery.isError &&
+            !overdueQuery.isError ? (
+              <p>没有无日期或逾期的任务。</p>
+            ) : null}
+            <ul>
+              {pendingEntries.map((entry) => {
+                const project = projectsQuery.data?.find(
+                  (item) => item.id === entry.project_id
+                )
+                return (
+                  <li key={entry.occurrence_id}>
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={(event) => handleDragStart(event, entry)}
+                      onClick={() =>
+                        openEditor(entry, { date: anchorDate, minute: 9 * 60 })
+                      }
+                      aria-label={`安排到：${entry.task_title}`}
+                    >
+                      <strong>{entry.task_title}</strong>
+                      <small>
+                        {entry.timing_type === 'unscheduled'
+                          ? '无日期'
+                          : '逾期'}
+                        {project ? ` · ${project.name}` : ''}
+                      </small>
+                      <span>安排到</span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </aside>
+        ) : null}
+
         {selectedEntry && draft ? (
           <DetailPanel
             className="calendar-v2-editor"
@@ -1316,7 +1603,7 @@ export default function CalendarV2({
           >
             <header>
               <div>
-                <span>安排本次执行</span>
+                <span>{seriesEdit ? '调整后续时间' : '安排本次执行'}</span>
                 <h2>{selectedEntry.task_title}</h2>
               </div>
               <button
@@ -1328,44 +1615,51 @@ export default function CalendarV2({
               </button>
             </header>
 
-            {selectedEntry.execution_status === 'done' ? (
+            {!movable(selectedEntry) ? (
               <div className="calendar-v2-done-notice" role="alert">
-                <p>已完成的任务不能移动，请先重新打开。</p>
-                <button
-                  type="button"
-                  onClick={() => void reopenSelectedEntry()}
-                  disabled={reopen.isPending}
-                >
-                  重新打开任务
-                </button>
+                {selectedEntry.execution_status === 'done' ? (
+                  <>
+                    <p>已完成的任务不能移动，请先重新打开。</p>
+                    <button
+                      type="button"
+                      onClick={() => void reopenSelectedEntry()}
+                      disabled={reopen.isPending}
+                    >
+                      重新打开任务
+                    </button>
+                  </>
+                ) : (
+                  <p>此任务已跳过或取消，无法调整时间。</p>
+                )}
               </div>
             ) : null}
 
-            <fieldset className="calendar-v2-scope">
-              <legend>修改范围</legend>
-              <label>
-                <input
-                  type="radio"
-                  name="schedule-scope"
-                  checked={draft.scope === 'only-this'}
-                  onChange={() => updateDraft({ scope: 'only-this' })}
-                />
-                仅本次
-              </label>
-              {selectedEntry.recurring ? (
+            {canEditSeries(selectedEntry) ||
+            selectedEntry.timing_type !== 'unscheduled' ? (
+              <fieldset className="calendar-v2-scope">
+                <legend>修改范围</legend>
                 <label>
                   <input
                     type="radio"
                     name="schedule-scope"
-                    checked={draft.scope === 'this-and-following'}
-                    onChange={() =>
-                      updateDraft({ scope: 'this-and-following' })
-                    }
+                    checked={draft.scope === 'only-this'}
+                    onChange={() => changeScope('only-this')}
                   />
-                  本次及以后
+                  仅本次
                 </label>
-              ) : null}
-            </fieldset>
+                {canEditSeries(selectedEntry) ? (
+                  <label>
+                    <input
+                      type="radio"
+                      name="schedule-scope"
+                      checked={draft.scope === 'this-and-following'}
+                      onChange={() => changeScope('this-and-following')}
+                    />
+                    本次及以后
+                  </label>
+                ) : null}
+              </fieldset>
+            ) : null}
 
             <div className="calendar-v2-editor-grid">
               <label>
@@ -1384,34 +1678,46 @@ export default function CalendarV2({
                   <option value="time_block">时间块</option>
                 </select>
               </label>
-              <label>
-                <span>计划日期</span>
-                <input
-                  type="date"
-                  aria-label="计划日期"
-                  value={draft.plannedDate}
-                  onChange={(event) =>
-                    updateDraft({ plannedDate: event.target.value })
-                  }
-                />
-              </label>
-              {draft.timingType === 'date' ? (
+              {seriesEdit ? null : (
                 <label>
-                  <span>结束日期（不含）</span>
+                  <span>计划日期</span>
                   <input
                     type="date"
-                    aria-label="结束日期（不含）"
-                    min={addDays(draft.plannedDate, 1)}
-                    value={draft.allDayEndDate}
-                    onChange={(event) =>
-                      updateDraft({ allDayEndDate: event.target.value })
-                    }
+                    aria-label="计划日期"
+                    value={draft.plannedDate}
+                    onChange={(event) => {
+                      const plannedDate = event.target.value
+                      updateDraft({
+                        plannedDate,
+                        ...(plannedDate && plannedDate >= draft.allDayEndDate
+                          ? { allDayEndDate: addDays(plannedDate, 1) }
+                          : {}),
+                      })
+                    }}
                   />
                 </label>
+              )}
+              {draft.timingType === 'date' ? (
+                seriesEdit ? null : (
+                  <label>
+                    <span>结束日期（不含）</span>
+                    <input
+                      type="date"
+                      aria-label="结束日期（不含）"
+                      min={addDays(draft.plannedDate, 1)}
+                      value={draft.allDayEndDate}
+                      onChange={(event) =>
+                        updateDraft({ allDayEndDate: event.target.value })
+                      }
+                    />
+                  </label>
+                )
               ) : (
                 <>
                   <label>
-                    <span>开始时间</span>
+                    <span>
+                      开始时间 <small>{editorTimezone}</small>
+                    </span>
                     <input
                       type="time"
                       aria-label="开始时间"
@@ -1439,114 +1745,44 @@ export default function CalendarV2({
               )}
             </div>
 
-            {draft.scope === 'this-and-following' && selectedEntry.recurring ? (
+            {seriesEdit && selectedEntry.recurring ? (
               <div className="calendar-v2-following-fields">
-                <label>
-                  <span>重复规则</span>
-                  <select
-                    aria-label="重复规则"
-                    value={calendarRecurrenceSelection(draft)}
-                    onChange={(event) => {
-                      const selection = event.target.value as
-                        | ScheduleDraft['recurrenceType']
-                        | 'weekdays'
-                        | 'weekends'
-                        | 'custom'
-                      updateDraft({
-                        recurrenceType:
-                          selection === 'weekdays' ||
-                          selection === 'weekends' ||
-                          selection === 'custom'
-                            ? 'weekly'
-                            : selection,
-                        weeklyDays:
-                          selection === 'weekdays'
-                            ? [1, 2, 3, 4, 5]
-                            : selection === 'weekends'
-                              ? [0, 6]
-                              : selection === 'custom'
-                                ? draft.weeklyDays?.length
-                                  ? draft.weeklyDays
-                                  : [
-                                      weekdayFromCalendarDate(
-                                        draft.effectiveFrom
-                                      ),
-                                    ]
-                                : undefined,
-                      })
-                    }}
-                  >
-                    <option value="daily">每天</option>
-                    <option value="weekdays">工作日</option>
-                    <option value="weekends">周末</option>
-                    <option value="weekly">每周</option>
-                    <option value="custom">自定义</option>
-                    <option value="monthly">每月</option>
-                  </select>
-                </label>
-                {calendarRecurrenceSelection(draft) === 'custom' ? (
-                  <WeekdayPicker
-                    days={
-                      draft.weeklyDays ?? [
-                        weekdayFromCalendarDate(draft.effectiveFrom),
-                      ]
-                    }
-                    onChange={(weeklyDays) => updateDraft({ weeklyDays })}
-                    labelPrefix="日程"
-                  />
-                ) : null}
-                <label>
-                  <span>生效日期</span>
-                  <input
-                    type="date"
-                    aria-label="生效日期"
-                    value={draft.effectiveFrom}
-                    onChange={(event) =>
-                      updateDraft({ effectiveFrom: event.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>生成至（不含）</span>
-                  <input
-                    type="date"
-                    aria-label="生成至（不含）"
-                    value={draft.generateThroughExclusive}
-                    onChange={(event) =>
-                      updateDraft({
-                        generateThroughExclusive: event.target.value,
-                      })
-                    }
-                  />
-                </label>
+                从 {formatDate(selectedEntry.occurrence_key)}{' '}
+                这次起调整时间，保留原重复规则。
               </div>
             ) : null}
 
             {offsetCandidates.length > 0 ? (
               <fieldset className="calendar-v2-offsets">
                 <legend>这个本地时间出现了两次，请选择准确偏移</legend>
-                {offsetCandidates.map((candidate) => (
-                  <label key={candidate.utc}>
-                    <input
-                      type="radio"
-                      name="selected-offset"
-                      checked={
-                        draft.selectedOffsetSeconds === candidate.offset_seconds
-                      }
-                      onChange={() =>
-                        updateDraft({
-                          selectedOffsetSeconds: candidate.offset_seconds,
-                        })
-                      }
-                    />
-                    {offsetLabel(candidate.offset_seconds)} · {candidate.utc}
-                  </label>
-                ))}
+                {offsetCandidates.map((candidate) => {
+                  const date = dateInTimezone(candidate.utc, editorTimezone)
+                  return (
+                    <label key={candidate.utc}>
+                      <input
+                        type="radio"
+                        name={`selected-offset-${date}`}
+                        checked={
+                          selectedOffsets[date] === candidate.offset_seconds
+                        }
+                        onChange={() =>
+                          setSelectedOffsets((current) => ({
+                            ...current,
+                            [date]: candidate.offset_seconds,
+                          }))
+                        }
+                      />
+                      {offsetLabel(candidate.offset_seconds)} · {candidate.utc}
+                    </label>
+                  )
+                })}
               </fieldset>
             ) : null}
 
             {editorError ? (
-              <p className="calendar-v2-error">{editorError}</p>
+              <p className="calendar-v2-error" role="alert">
+                {editorError}
+              </p>
             ) : null}
             <footer>
               <button type="button" onClick={closeEditor}>
@@ -1557,11 +1793,20 @@ export default function CalendarV2({
                 className="primary-action"
                 onClick={() => void submitSchedule()}
                 disabled={
-                  selectedEntry.execution_status === 'done' ||
+                  !movable(selectedEntry) ||
                   onlyThis.isPending ||
                   thisAndFollowing.isPending ||
-                  (offsetCandidates.length > 0 &&
-                    draft.selectedOffsetSeconds === undefined)
+                  (!seriesEdit &&
+                    (!draft.plannedDate ||
+                      (draft.timingType === 'date' &&
+                        draft.allDayEndDate <= draft.plannedDate))) ||
+                  (draft.timingType === 'time_block' &&
+                    (!draft.localStartTime ||
+                      !Number.isInteger(draft.durationMinutes) ||
+                      draft.durationMinutes < 1)) ||
+                  [...offsetDates].some(
+                    (date) => selectedOffsets[date] === undefined
+                  )
                 }
               >
                 保存日程

@@ -91,8 +91,17 @@ type RescheduleThisAndFutureRequest struct {
 	EffectiveFrom            string
 	GenerateThroughExclusive string
 	Schedule                 ScheduleInput
+	Timing                   *SeriesTimingPatch
 	// SelectedOffsets resolves fall-back overlaps by local occurrence date.
 	SelectedOffsets map[string]int
+}
+
+// SeriesTimingPatch changes the timing while keeping the current recurrence
+// rule, its original anchor and end date, and its timezone.
+type SeriesTimingPatch struct {
+	TimingType      TimingType
+	LocalStartTime  string
+	DurationMinutes int
 }
 
 type OccurrenceRescheduleWrite struct {
@@ -218,17 +227,8 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 		request.ExpectedScheduleRevision < 1 {
 		return ScheduleCommandResult{}, ErrInvalidScheduleCommand
 	}
-	normalized, err := NormalizeSchedule(request.Schedule)
+	effectiveFrom, err := requiredGeneratorDate(request.EffectiveFrom, "effective from")
 	if err != nil {
-		return ScheduleCommandResult{}, err
-	}
-	requestedEffectiveFrom, err := requiredGeneratorDate(request.EffectiveFrom, "effective from")
-	if err != nil {
-		return ScheduleCommandResult{}, err
-	}
-	if _, err := CalculateOccurrenceKeys(normalized,
-		ScheduleEffectiveRange{From: request.EffectiveFrom},
-		OccurrenceWindow{From: request.EffectiveFrom, To: request.GenerateThroughExclusive}); err != nil {
 		return ScheduleCommandResult{}, err
 	}
 
@@ -259,9 +259,26 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 			if err != nil {
 				return ErrInvalidScheduleCommand
 			}
-			if requestedEffectiveFrom.Before(currentEffectiveFrom) {
+			if effectiveFrom.Before(currentEffectiveFrom) {
 				return invalidSchedule("effective_from precedes the current schedule version")
 			}
+		}
+		if request.Timing != nil {
+			if current.RecurrenceType == RecurrenceNone ||
+				(current.EndsOn != "" && request.EffectiveFrom > current.EndsOn) {
+				return ErrInvalidScheduleCommand
+			}
+			request.Schedule = ScheduleInput{
+				RecurrenceType: current.RecurrenceType, Timezone: current.Timezone,
+				StartsOn: current.StartsOn, EndsOn: current.EndsOn, Rule: json.RawMessage(current.RecurrenceRule),
+				TimingType: request.Timing.TimingType, LocalStartTime: request.Timing.LocalStartTime,
+				DurationMinutes: request.Timing.DurationMinutes,
+			}
+			request.GenerateThroughExclusive = seriesTimingGenerationEnd(effectiveFrom, state.Occurrences)
+		}
+		normalized, err := NormalizeSchedule(request.Schedule)
+		if err != nil {
+			return err
 		}
 		newScheduleRevision := nextScheduleVersion(state.Versions)
 		newVersion, err := persistenceScheduleVersion(request.WorkspaceID, request.TaskID, newScheduleRevision, request.EffectiveFrom, normalized)
@@ -270,7 +287,6 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 		}
 		closed := current
 		if closed.EffectiveFrom == "" {
-			effectiveFrom, _ := parseLocalDate(request.EffectiveFrom)
 			closed.EffectiveFrom = formatLocalDate(effectiveFrom.AddDate(0, 0, -1))
 		}
 		closed.EffectiveTo = request.EffectiveFrom
@@ -295,6 +311,22 @@ func (service *ScheduleService) RescheduleThisAndFuture(ctx context.Context, req
 		return ScheduleCommandResult{}, err
 	}
 	return result, nil
+}
+
+func seriesTimingGenerationEnd(from time.Time, occurrences []ScheduleOccurrenceSnapshot) string {
+	end := formatLocalDate(from.AddDate(0, 0, 31))
+	for _, occurrence := range occurrences {
+		// Include the last materialized recurrence so shifting its time does
+		// not remove entries that have already been generated past this month.
+		key := occurrence.Record.OccurrenceKey
+		if key < end {
+			continue
+		}
+		if date, err := parseLocalDate(key); err == nil {
+			end = formatLocalDate(date.AddDate(0, 0, 1))
+		}
+	}
+	return end
 }
 
 func rescheduleOccurrenceAfterImage(current ScheduleOccurrenceSnapshot, input OccurrenceTimingInput) (ScheduleOccurrenceSnapshot, []OffsetCandidate, error) {

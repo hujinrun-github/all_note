@@ -839,6 +839,7 @@ type RescheduleThisAndFollowingRequest struct {
 	EffectiveFrom            string
 	GenerateThroughExclusive string
 	Schedule                 taskdomain.ScheduleInput
+	Timing                   *taskdomain.SeriesTimingPatch
 	SelectedOffsets          map[string]int
 }
 
@@ -858,7 +859,7 @@ func (facade *Facade) RescheduleThisAndFollowing(ctx context.Context, request Re
 		WorkspaceID: request.WorkspaceID, TaskID: request.TaskID, ExpectedRuntimeEpoch: runtime.Epoch,
 		ExpectedTaskRevision: request.ExpectedTaskRevision, ExpectedScheduleRevision: request.ExpectedScheduleRevision,
 		EffectiveFrom: request.EffectiveFrom, GenerateThroughExclusive: request.GenerateThroughExclusive,
-		Schedule: request.Schedule, SelectedOffsets: cloneOffsets(request.SelectedOffsets),
+		Schedule: request.Schedule, Timing: request.Timing, SelectedOffsets: cloneOffsets(request.SelectedOffsets),
 	}, metadata)
 	return scheduleFacadeOutcome(outcome, metadata.CommandID, err)
 }

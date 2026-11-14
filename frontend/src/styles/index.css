@@ -286,7 +286,7 @@
 
 .calendar-v2-hour-axis {
   display: grid;
-  grid-template-rows: repeat(15, 60px);
+  grid-auto-rows: 60px;
   color: #9a8065;
   font-size: 10px;
   text-align: right;
@@ -299,7 +299,7 @@
 
 .calendar-v2-time-column {
   position: relative;
-  min-height: 900px;
+  height: calc(var(--calendar-range-minutes) * 1px);
   border-left: 1px solid #eee0cf;
   background-image: repeating-linear-gradient(
     to bottom,
@@ -310,17 +310,12 @@
   );
 }
 
-.calendar-v2-time-column > i {
-  display: none;
-}
-
 .calendar-v2-entry.is-time-block {
   position: absolute;
   z-index: 1;
   top: calc(var(--calendar-start-minute) * 1px);
   right: 5px;
   left: 5px;
-  min-height: 38px;
   height: calc(var(--calendar-duration-minute) * 1px);
   overflow: hidden;
   padding: 7px 8px;

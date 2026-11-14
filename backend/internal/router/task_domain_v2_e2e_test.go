@@ -312,6 +312,8 @@ func TestTaskDomainV2HTTPSQLiteSmoke(t *testing.T) {
 		}
 	})
 
+	exerciseCalendarPlanning(t, client, server.URL, primaryCookie, standard.ID, inboxTask.Occurrences[0])
+
 	planning := taskDomainV2SmokeCreateProjectWithStatus(t, client, server.URL, primaryCookie, "待启动项目", "standard", "short", "planning")
 	planningTask := taskDomainV2SmokeCreateTask(t, client, server.URL, primaryCookie, map[string]any{
 		"project_id": planning.ID, "title": "首次更新前", "priority": 1,
@@ -430,6 +432,80 @@ func taskDomainV2SmokeSnapshot(workspaceID string) tenantruntime.Snapshot {
 
 func taskDomainV2SmokeRejectPostgres(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("isolated SQLite smoke attempted a PostgreSQL connection")
+}
+
+// Exercise both calendar writes through the HTTP router, tenant SQLite storage
+// and the calendar read projection using stable dates.
+func exerciseCalendarPlanning(t *testing.T, client *http.Client, baseURL string, cookie *http.Cookie, projectID string, unscheduled handler.OccurrenceV2DTO) {
+	t.Helper()
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Now().In(location)
+	monday := now.AddDate(0, 0, 7-(int(now.Weekday())+6)%7)
+	date := func(days int) string { return monday.AddDate(0, 0, days).Format("2006-01-02") }
+	for _, series := range []struct {
+		name     string
+		interval int
+	}{
+		{"每周例会", 1},
+		{"隔周例会", 2},
+	} {
+		meeting := taskDomainV2SmokeCreateTask(t, client, baseURL, cookie, map[string]any{
+			"project_id": projectID, "title": series.name, "priority": 1,
+			"schedule": map[string]any{
+				"recurrence_type": "weekly", "timing_type": "time_block", "timezone": "Asia/Shanghai",
+				"starts_on": date(0), "ends_on": date(16),
+				"local_start_time": "09:00", "duration_minutes": 60,
+				"rule": map[string]any{"interval": series.interval, "weekdays": []int{1, 3}},
+			},
+		})
+		taskDomainV2SmokeRequest[map[string]any](t, client, baseURL, cookie, http.MethodPost,
+			"/api/tasks/"+meeting.Task.ID+"/schedule/this-and-following", map[string]any{
+				"expected_task_revision":     meeting.Task.Revision,
+				"expected_schedule_revision": meeting.Task.ScheduleRevision,
+				"effective_from":             date(2),
+				"timing":                     map[string]any{"timing_type": "time_block", "local_start_time": "10:00", "duration_minutes": 60},
+			}, http.StatusOK)
+	}
+	taskDomainV2SmokeRequest[map[string]any](t, client, baseURL, cookie, http.MethodPatch,
+		"/api/task-occurrences/"+unscheduled.ID+"/schedule/only-this", map[string]any{
+			"expected_task_revision":       unscheduled.TaskRevision,
+			"expected_schedule_revision":   unscheduled.ScheduleRevision,
+			"expected_occurrence_revision": unscheduled.Revision,
+			"timing": map[string]any{"timing_type": "time_block", "timezone": "Asia/Shanghai",
+				"planned_date": date(2), "local_start_time": "14:30", "duration_minutes": 30},
+		}, http.StatusOK)
+
+	calendar := taskDomainV2SmokeRequest[struct {
+		Entries []handler.CalendarEntryV2DTO `json:"entries"`
+	}](t, client, baseURL, cookie, http.MethodGet, "/api/calendar/entries?from="+date(0)+"&to="+date(42)+"&timezone=Asia%2FShanghai", nil, http.StatusOK)
+	slots := map[string][]string{}
+	for _, entry := range calendar.Entries {
+		if entry.PlannedStartAt != nil {
+			slots[entry.TaskTitle] = append(slots[entry.TaskTitle], entry.PlannedStartAt.In(location).Format("2006-01-02 15:04"))
+		}
+	}
+	for _, want := range []struct {
+		title string
+		slots []string
+	}{
+		{"每周例会", []string{date(0) + " 09:00", date(2) + " 10:00", date(7) + " 10:00", date(9) + " 10:00", date(14) + " 10:00", date(16) + " 10:00"}},
+		{"隔周例会", []string{date(0) + " 09:00", date(2) + " 10:00", date(14) + " 10:00", date(16) + " 10:00"}},
+		{"整理收件箱", []string{date(2) + " 14:30"}},
+	} {
+		got := slots[want.title]
+		sort.Strings(got)
+		if fmt.Sprint(got) != fmt.Sprint(want.slots) {
+			t.Errorf("%s slots = %v, want %v", want.title, got, want.slots)
+		}
+	}
+	pending := taskDomainV2SmokeRequest[struct {
+		Occurrences []handler.OccurrenceV2DTO `json:"occurrences"`
+	}](t, client, baseURL, cookie, http.MethodGet, "/api/task-occurrences?scope=unscheduled", nil, http.StatusOK)
+	for _, occurrence := range pending.Occurrences {
+		if occurrence.ID == unscheduled.ID {
+			t.Errorf("scheduled task %s remained in the unscheduled list", unscheduled.ID)
+		}
+	}
 }
 
 func seedTaskDomainV2SmokeTenant(t *testing.T, path string, workspaceIDs ...string) {

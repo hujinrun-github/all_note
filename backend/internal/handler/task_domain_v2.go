@@ -529,17 +529,26 @@ func (handler taskDomainV2Handler) rescheduleThisAndFollowing(c *gin.Context) {
 	if !decodeTaskDomainRequest(c, &request) {
 		return
 	}
-	schedule, err := request.Schedule.domainInput()
-	if err != nil {
-		writeTaskDomainError(c, ErrInvalidTaskDomainRequest)
-		return
-	}
-	outcome, err := handler.application.RescheduleThisAndFollowing(c.Request.Context(), taskapp.RescheduleThisAndFollowingRequest{
+	command := taskapp.RescheduleThisAndFollowingRequest{
 		WorkspaceID: identity.workspaceID, ActorID: identity.actorID, TaskID: c.Param("taskID"),
 		ExpectedTaskRevision: request.ExpectedTaskRevision, ExpectedScheduleRevision: request.ExpectedScheduleRevision,
 		EffectiveFrom: request.EffectiveFrom, GenerateThroughExclusive: request.GenerateThroughExclusive,
-		Schedule: schedule, SelectedOffsets: request.SelectedOffsets,
-	})
+		SelectedOffsets: request.SelectedOffsets,
+	}
+	if request.Timing != nil {
+		command.Timing = &taskdomain.SeriesTimingPatch{
+			TimingType: request.Timing.TimingType, LocalStartTime: request.Timing.LocalStartTime,
+			DurationMinutes: request.Timing.DurationMinutes,
+		}
+	} else {
+		schedule, err := request.Schedule.domainInput()
+		if err != nil {
+			writeTaskDomainError(c, ErrInvalidTaskDomainRequest)
+			return
+		}
+		command.Schedule = schedule
+	}
+	outcome, err := handler.application.RescheduleThisAndFollowing(c.Request.Context(), command)
 	if err != nil {
 		writeTaskDomainError(c, scheduleOutcomeError(err, outcome.Candidates))
 		return

@@ -8,6 +8,7 @@ import {
   useCalendarEntries,
   useCompleteOccurrenceMutation,
   useCreateTaskMutation,
+  useOccurrences,
   useProjects,
   useReopenOccurrenceMutation,
   useRescheduleOccurrenceMutation,
@@ -19,6 +20,7 @@ vi.mock('../hooks/useTaskDomain', () => ({
   useCalendarEntries: vi.fn(),
   useCompleteOccurrenceMutation: vi.fn(),
   useCreateTaskMutation: vi.fn(),
+  useOccurrences: vi.fn(),
   useProjects: vi.fn(),
   useReopenOccurrenceMutation: vi.fn(),
   useRescheduleOccurrenceMutation: vi.fn(),
@@ -167,6 +169,9 @@ describe('CalendarV2', () => {
       occurrence_revisions: { 'occurrence-all-day': 12 },
     })
     createTaskMock.mockResolvedValue({})
+    vi.mocked(useOccurrences).mockReturnValue({
+      data: [],
+    } as unknown as ReturnType<typeof useOccurrences>)
     vi.mocked(useProjects).mockReturnValue({
       data: [
         {
@@ -333,18 +338,15 @@ describe('CalendarV2', () => {
     expect(onlyThisMock).not.toHaveBeenCalled()
   })
 
-  it('changes a recurring schedule only after choosing this-and-following explicitly', async () => {
+  it('updates only the timing of this and following occurrences', async () => {
     const user = userEvent.setup()
     renderCalendar()
 
     await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
     await user.click(screen.getByRole('radio', { name: '本次及以后' }))
-    await user.selectOptions(screen.getByLabelText('重复规则'), 'daily')
-    fireEvent.change(screen.getByLabelText('生效日期'), {
-      target: { value: '2026-07-24' },
-    })
-    fireEvent.change(screen.getByLabelText('生成至（不含）'), {
-      target: { value: '2026-08-24' },
+    expect(screen.getByText(/保留原重复规则/)).toBeVisible()
+    fireEvent.change(screen.getByLabelText('开始时间'), {
+      target: { value: '10:00' },
     })
     await user.click(screen.getByRole('button', { name: '保存日程' }))
 
@@ -352,69 +354,48 @@ describe('CalendarV2', () => {
     expect(followingMock).toHaveBeenCalledWith({
       projectID: 'project-1',
       taskID: 'task-time',
-      input: expect.objectContaining({
+      input: {
         expected_task_revision: 8,
         expected_schedule_revision: 6,
-        effective_from: '2026-07-24',
-        generate_through_exclusive: '2026-08-24',
-        schedule: expect.objectContaining({
-          recurrence_type: 'daily',
+        effective_from: '2026-07-23',
+        timing: {
           timing_type: 'time_block',
-          timezone: 'Asia/Shanghai',
-          starts_on: '2026-07-24',
-          local_start_time: '09:30',
+          local_start_time: '10:00',
           duration_minutes: 60,
-          rule: { interval: 1 },
-        }),
-      }),
+        },
+      },
     })
   })
 
-  it('supports workday and weekend rules for a recurring calendar schedule', async () => {
+  it('shows pre-work and cross-midnight blocks on their dates in the display timezone', async () => {
     const user = userEvent.setup()
+    vi.mocked(useCalendarEntries).mockReturnValue({
+      data: [
+        {
+          ...entries.find((entry) => entry.task_id === 'task-time')!,
+          timezone: 'Asia/Shanghai',
+          planned_date: '2026-07-23',
+          planned_start_at: '2026-07-22T23:30:00+08:00',
+          planned_end_at: '2026-07-23T00:15:00+08:00',
+        },
+      ],
+      isFetching: false,
+    } as ReturnType<typeof useCalendarEntries>)
     renderCalendar()
 
-    await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
-    await user.click(screen.getByRole('radio', { name: '本次及以后' }))
-    await user.selectOptions(screen.getByLabelText('重复规则'), 'weekdays')
-    await user.click(screen.getByRole('button', { name: '保存日程' }))
-
-    expect(followingMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        input: expect.objectContaining({
-          schedule: expect.objectContaining({
-            recurrence_type: 'weekly',
-            rule: { interval: 1, weekdays: [1, 2, 3, 4, 5] },
-          }),
-        }),
-      })
-    )
-  })
-
-  it('allows choosing individual weekdays for a recurring calendar schedule', async () => {
-    const user = userEvent.setup()
-    renderCalendar()
-
-    await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
-    await user.click(screen.getByRole('radio', { name: '本次及以后' }))
-    const recurrence = screen.getByLabelText('重复规则')
-    await user.selectOptions(recurrence, 'weekly')
-    fireEvent.change(screen.getByLabelText('生效日期'), {
-      target: { value: '2026-08-03' },
-    })
-    await user.selectOptions(recurrence, 'custom')
-    await user.click(screen.getByRole('button', { name: '日程重复星期五' }))
-    await user.click(screen.getByRole('button', { name: '保存日程' }))
-
-    expect(followingMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        input: expect.objectContaining({
-          schedule: expect.objectContaining({
-            recurrence_type: 'weekly',
-            rule: { interval: 1, weekdays: [1, 5] },
-          }),
-        }),
-      })
+    expect(
+      screen.getByRole('button', { name: /编辑日程：.*7月22日 23:30$/ })
+    ).toHaveTextContent('23:30–24:00')
+    expect(
+      screen.getByRole('button', { name: /编辑日程：.*7月23日 00:00$/ })
+    ).toHaveTextContent('00:00–00:15')
+    await user.selectOptions(screen.getByLabelText('显示时区'), 'UTC')
+    expect(
+      screen.getByRole('button', { name: /编辑日程：.*7月22日 15:30$/ })
+    ).toHaveTextContent('15:30–16:15')
+    expect(screen.getByRole('button', { name: /凌晨/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
     )
   })
 
@@ -470,6 +451,10 @@ describe('CalendarV2', () => {
       })
     renderCalendar()
 
+    await user.selectOptions(
+      screen.getByLabelText('显示时区'),
+      'America/New_York'
+    )
     await user.click(screen.getByRole('button', { name: /编辑日程：设计评审/ }))
     fireEvent.change(screen.getByLabelText('计划日期'), {
       target: { value: '2026-11-01' },

@@ -55,7 +55,34 @@ const occurrence = {
   timezone: 'Asia/Shanghai',
 }
 
+const planningDate = '2026-09-30'
+const meetingID = 'weekly-meeting'
+const pendingTask = {
+  ...occurrence,
+  id: 'unplanned-task',
+  task_id: 'unplanned-definition',
+  title: '准备评审材料',
+  planned_date: undefined,
+  timing_type: 'unscheduled',
+}
+const weeklyMeeting = {
+  ...occurrence,
+  id: 'meeting-occurrence',
+  task_id: meetingID,
+  title: '每周例会',
+  planned_date: planningDate,
+  occurrence_key: planningDate,
+  timing_type: 'time_block',
+  recurring: true,
+}
+
 async function fixtureAPI(page: Page) {
+  let plannedTask: Omit<typeof pendingTask, 'planned_date'> & {
+    planned_date?: string
+    planned_start_at?: string
+    planned_end_at?: string
+  } = pendingTask
+  let meetingHour = 9
   await page.clock.setFixedTime(new Date('2026-10-02T10:00:00+08:00'))
   await page.route(
     (url) => url.pathname.startsWith('/api/'),
@@ -95,6 +122,39 @@ async function fixtureAPI(page: Page) {
       if (path === '/api/tasks/task-1') return data({ task })
       if (path === '/api/task-occurrences/occurrence-1')
         return data({ occurrence })
+      if (
+        path === '/api/task-occurrences' &&
+        url.searchParams.get('scope') === 'unscheduled'
+      )
+        return data({
+          occurrences: plannedTask.planned_date ? [] : [plannedTask],
+        })
+      if (
+        path === `/api/task-occurrences/${pendingTask.id}/schedule/only-this`
+      ) {
+        const { timing } = route.request().postDataJSON()
+        plannedTask = {
+          ...pendingTask,
+          timing_type: timing.timing_type,
+          planned_date: timing.planned_date,
+          planned_start_at: `${timing.planned_date}T${timing.local_start_time}:00+08:00`,
+          planned_end_at: `${timing.planned_date}T15:00:00+08:00`,
+        }
+        return data({
+          task_revision: 1,
+          schedule_revision: 1,
+          occurrence_revision: 2,
+        })
+      }
+      if (path === `/api/tasks/${meetingID}/schedule/this-and-following`) {
+        const { timing } = route.request().postDataJSON()
+        meetingHour = Number(timing.local_start_time.split(':')[0])
+        return data({
+          task_revision: 1,
+          schedule_revision: 2,
+          schedule_version: 2,
+        })
+      }
       if (path === '/api/task-occurrences')
         return data({
           occurrences:
@@ -116,6 +176,35 @@ async function fixtureAPI(page: Page) {
               recurring: false,
               all_day_end_date: '2026-10-03',
             },
+            ...[planningDate, '2026-10-07']
+              .filter(
+                (date) =>
+                  date >= (url.searchParams.get('from') ?? '') &&
+                  date < (url.searchParams.get('to') ?? '')
+              )
+              .map((date) => ({
+                ...weeklyMeeting,
+                project_revision: 1,
+                task_title: weeklyMeeting.title,
+                occurrence_id: `meeting-${date}`,
+                occurrence_key: date,
+                occurrence_revision: 1,
+                planned_date: date,
+                planned_start_at: `${date}T${String(meetingHour).padStart(2, '0')}:00:00+08:00`,
+                planned_end_at: `${date}T${String(meetingHour + 1).padStart(2, '0')}:00:00+08:00`,
+              })),
+            ...(plannedTask.planned_date
+              ? [
+                  {
+                    ...plannedTask,
+                    project_revision: 1,
+                    task_title: plannedTask.title,
+                    occurrence_id: plannedTask.id,
+                    occurrence_revision: 2,
+                    recurring: false,
+                  },
+                ]
+              : []),
           ],
         })
       if (path === '/api/notes')
@@ -141,9 +230,7 @@ async function fixtureAPI(page: Page) {
         return route.fulfill({
           json: {
             data: {
-              items: [
-                { id: task.id, type: 'task', title, updated_at: 0 },
-              ],
+              items: [{ id: task.id, type: 'task', title, updated_at: 0 }],
             },
             pagination: { page: 1, page_size: 20, total: 1 },
           },
@@ -262,7 +349,9 @@ test('project list opens project details and primary controls show their panels'
   ).toBeVisible()
   await expect(page.getByText('Unexpected Application Error!')).toHaveCount(0)
   await page.reload()
-  await expect(page.getByRole('heading', { name: '个人事务', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: '个人事务', exact: true })
+  ).toBeVisible()
 
   await page.getByRole('tab', { name: /任务\s*1/ }).click()
   await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
@@ -315,7 +404,9 @@ test('desktop pages keep navigation and content usable at laptop and wide widths
           page.getByRole('heading', { name: '产品反馈记录' })
         ).toBeVisible()
       if (path === '/calendar') {
-        await expect(page.getByRole('combobox', { name: '显示时区' })).toBeVisible()
+        await expect(
+          page.getByRole('combobox', { name: '显示时区' })
+        ).toBeVisible()
         await expect(page.getByText('正在更新…')).not.toBeVisible()
       }
       await expectNoPageOverflow(page)
@@ -326,7 +417,9 @@ test('desktop pages keep navigation and content usable at laptop and wide widths
   }
 })
 
-test('search links to the right project and review controls stay usable on every device', async ({ page }, info) => {
+test('search links to the right project and review controls stay usable on every device', async ({
+  page,
+}, info) => {
   await page.goto('/search')
   const search = page.getByRole('searchbox', { name: '全局搜索' })
   await expect(search).toBeFocused()
@@ -335,12 +428,18 @@ test('search links to the right project and review controls stay usable on every
   await expect(page).toHaveURL(/q=/)
   const tabs = page.getByRole('tablist', { name: '结果类型' })
   await tabs.getByRole('tab', { name: '任务', exact: true }).click()
-  await expect(page.getByRole('button', { name: `打开任务${title}` })).toBeVisible()
-  await expect(page.getByRole('button', { name: '打开项目个人事务' })).toHaveCount(0)
+  await expect(
+    page.getByRole('button', { name: `打开任务${title}` })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: '打开项目个人事务' })
+  ).toHaveCount(0)
   await tabs.getByRole('tab', { name: '项目', exact: true }).click()
   await search.fill('个人')
   await search.press('Enter')
-  await expect(page.getByRole('button', { name: '打开项目个人事务' })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: '打开项目个人事务' })
+  ).toBeVisible()
   await expectNoPageOverflow(page)
   await page.screenshot({ path: info.outputPath('workspace-search.png') })
   await page.getByRole('button', { name: '打开项目个人事务' }).click()
@@ -348,18 +447,27 @@ test('search links to the right project and review controls stay usable on every
   await expect(page.locator('#project-detail-heading')).toHaveText('个人事务')
 
   await page.goto('/inbox')
-  await expect(page.getByRole('heading', { name: '未整理', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: '未整理', exact: true })
+  ).toBeVisible()
   await page.getByRole('button', { name: /^进行中/ }).click()
-  await expect(page.getByRole('button', { name: /^进行中/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: /^进行中/ })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  )
   await expectNoPageOverflow(page)
 
   await page.goto('/summary')
-  await expect(page.getByRole('heading', { name: '每日总结', exact: true })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: '每日总结', exact: true })
+  ).toBeVisible()
   const month = page.getByRole('button', { name: '本月', exact: true })
   await month.click()
   await expect(month).toHaveAttribute('aria-pressed', 'true')
   await expect(page).toHaveURL(/from=2026-10-01/)
-  await expect(page.getByRole('button', { name: /完成网页回归检查/ })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /完成网页回归检查/ })
+  ).toBeVisible()
   await expectNoPageOverflow(page)
   await page.getByRole('button', { name: '查看笔记库' }).click()
   await expect(page).toHaveURL(/\/notes$/)
@@ -400,7 +508,9 @@ test('planning overview links, keyboard tabs and task filters stay in sync with 
   await priority.selectOption('2')
   await expect(page).toHaveURL(/project=learning&priority=2/)
   await expect(page.getByText('没有符合筛选条件的任务')).toBeVisible()
-  await expect(page.getByRole('status').filter({ hasText: '0 个结果' })).toBeVisible()
+  await expect(
+    page.getByRole('status').filter({ hasText: '0 个结果' })
+  ).toBeVisible()
   await page.reload()
   await expect(project).toHaveValue('learning')
   await expect(priority).toHaveValue('2')
@@ -410,7 +520,9 @@ test('planning overview links, keyboard tabs and task filters stay in sync with 
   await expect(project).toBeFocused()
   await expect(project).toHaveValue('')
   await expect(priority).toHaveValue('')
-  await expect(page.getByRole('listitem').filter({ hasText: title })).toBeVisible()
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toBeVisible()
   await expectNoPageOverflow(page)
   await page.screenshot({ path: info.outputPath('tasks.png') })
 })
@@ -568,7 +680,9 @@ test('small screens keep navigation and long forms reachable', async ({
   await expectNoPageOverflow(page)
   await page.screenshot({ path: info.outputPath('small-notes.png') })
   const topbar = await page.locator('.workspace-topbar').boundingBox()
-  const actions = await page.getByRole('button', { name: '新建笔记' }).boundingBox()
+  const actions = await page
+    .getByRole('button', { name: '新建笔记' })
+    .boundingBox()
   expect(actions!.y).toBeGreaterThanOrEqual(topbar!.y + topbar!.height)
   await expect(
     page.getByRole('button', { name: '筛选笔记 全部笔记' })
@@ -578,4 +692,80 @@ test('small screens keep navigation and long forms reachable', async ({
   await expect(preview).toBeVisible()
   await preview.getByRole('button', { name: '关闭笔记预览' }).click()
   await expect(preview).not.toBeVisible()
+})
+
+test('changes the weekly meeting time and schedules an existing undated task on Wednesday', async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto('/calendar')
+  const week = page.getByRole('button', { name: '周', exact: true })
+  await week.click()
+  const meeting = page.getByRole('button', {
+    name: /编辑日程：每周例会.*09:00/,
+  })
+  await meeting.click()
+  const editor = page.getByRole('dialog', { name: '编辑日程：每周例会' })
+  await editor.getByRole('radio', { name: '本次及以后' }).check()
+  await expect(editor.getByText(/保留原重复规则/)).toBeVisible()
+  await editor.getByLabel('开始时间').fill('10:00')
+  const seriesRequest = page.waitForRequest((request) =>
+    request.url().includes('/schedule/this-and-following')
+  )
+  await editor.getByRole('button', { name: '保存日程' }).click()
+  expect((await seriesRequest).postDataJSON()).toEqual({
+    expected_task_revision: 1,
+    expected_schedule_revision: 1,
+    effective_from: planningDate,
+    timing: {
+      timing_type: 'time_block',
+      local_start_time: '10:00',
+      duration_minutes: 60,
+    },
+  })
+  await expect(
+    page.getByRole('button', { name: /编辑日程：每周例会.*10:00/ })
+  ).toBeVisible()
+  await page.getByRole('button', { name: '下一周' }).click()
+  await expect(
+    page.getByRole('button', { name: /编辑日程：每周例会.*10月7日 10:00/ })
+  ).toBeVisible()
+  await page.getByRole('button', { name: '上一周' }).click()
+
+  await page.getByRole('button', { name: '待安排', exact: true }).click()
+  const pending = page.getByRole('button', { name: '安排到：准备评审材料' })
+  await expect(pending).toBeVisible()
+  const slot = page.getByRole('button', { name: '新增日程：9月30日 14:30' })
+  if (isMobile) {
+    await pending.click()
+  } else {
+    await pending.dragTo(slot)
+  }
+  const taskEditor = page.getByRole('dialog', {
+    name: '编辑日程：准备评审材料',
+  })
+  if (isMobile) {
+    await taskEditor.getByLabel('计划日期').fill(planningDate)
+    await taskEditor.getByLabel('开始时间').fill('14:30')
+  }
+  await expect(taskEditor.getByLabel('计划日期')).toHaveValue(planningDate)
+  await expect(taskEditor.getByLabel('开始时间')).toHaveValue('14:30')
+  const occurrenceRequest = page.waitForRequest((request) =>
+    request.url().includes('/schedule/only-this')
+  )
+  await taskEditor.getByRole('button', { name: '保存日程' }).click()
+  expect((await occurrenceRequest).postDataJSON().timing).toEqual({
+    timing_type: 'time_block',
+    timezone: 'Asia/Shanghai',
+    planned_date: planningDate,
+    local_start_time: '14:30',
+    duration_minutes: 30,
+  })
+  const scheduled = page.getByRole('button', {
+    name: /编辑日程：准备评审材料.*9月30日 14:30/,
+  })
+  await expect(scheduled).toBeVisible()
+  await expect(pending).toHaveCount(0)
+  await scheduled.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: info.outputPath('calendar-p1.png') })
 })

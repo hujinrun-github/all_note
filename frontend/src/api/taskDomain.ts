@@ -265,14 +265,20 @@ export interface RescheduleOccurrenceInput {
   selected_offsets?: Record<string, number>
 }
 
-export interface RescheduleThisAndFollowingInput {
+export type RescheduleThisAndFollowingInput = {
   expected_task_revision: number
   expected_schedule_revision: number
   effective_from: string
-  generate_through_exclusive: string
-  schedule: ScheduleV2Input
   selected_offsets?: Record<string, number>
-}
+} & (
+  | { generate_through_exclusive: string; schedule: ScheduleV2Input }
+  | {
+      timing: Pick<
+        OccurrenceTimingInput,
+        'timing_type' | 'local_start_time' | 'duration_minutes'
+      >
+    }
+)
 
 export interface ScheduleCommandResponse {
   task_revision: number
