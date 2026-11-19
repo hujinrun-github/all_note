@@ -9,6 +9,8 @@ endpoint allowlist is documented in [Runtime settings deployment](docs/runtime-s
 
 网页端语音输入、文字校对和计划生成的使用流程、运行依赖及升级步骤见[语音计划指南](docs/web-voice-planning.md)。
 
+日语项目完成学习任务后自动完成 FlowSpace 当天实例的配对、配置和排错流程见[日语学习联动指南](docs/japanese-learning-integration.md)。
+
 ## 技术栈
 
 | 层 | 技术 |

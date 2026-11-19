@@ -811,6 +811,12 @@ export function TaskDefinitionInspector({
           ) : null}
         </dl>
         <TaskCompletionGate task={task} />
+        <Link
+          className="td-linked-note-link"
+          to={`/settings?integration_task=${encodeURIComponent(task.id)}#japanese`}
+        >
+          设置日语任务自动完成
+        </Link>
         <div className="td-task-attachments">
           <div className="td-task-attachments-heading">
             <span>附件</span>

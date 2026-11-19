@@ -164,6 +164,13 @@ func main() {
 	if taskDomainRuntime != nil {
 		routerConfig.TaskDomainV2Runtime = taskDomainRuntime.application
 		routerConfig.TaskDomainModelSelector = taskDomainRuntime.models
+		routerConfig.JapaneseIntegration, err = newJapaneseIntegrationService(controlStore, storagepkg.Driver(runtimeConfig.Control.Driver), taskDomainRuntime.application)
+		if err != nil {
+			log.Fatalf("japanese integration service: %v", err)
+		}
+		integrationCtx, stopIntegration := context.WithCancel(context.Background())
+		defer stopIntegration()
+		go routerConfig.JapaneseIntegration.Run(integrationCtx)
 		routerConfig.WebPlanning, err = newWebPlanningService(taskDomainRuntime.application, runtimeObjects, runtimeTranscriber, aiChat)
 		if err != nil {
 			log.Fatalf("web planning service: %v", err)

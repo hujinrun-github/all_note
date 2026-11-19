@@ -29,8 +29,15 @@ import {
 } from '../api/settings'
 import { resetOwnPassword } from '../api/auth'
 import { APIError } from '../api/client'
+import JapaneseIntegrationSettings from '../components/JapaneseIntegrationSettings'
 
-type SettingsTab = 'profile' | 'security' | 'database' | 'objects' | 'ai'
+type SettingsTab =
+  | 'profile'
+  | 'security'
+  | 'database'
+  | 'objects'
+  | 'ai'
+  | 'japanese'
 type TranscriptionProvider =
   | 'openai_compatible'
   | 'sensevoice'
@@ -43,10 +50,13 @@ const tabs = [
   { id: 'database', label: '数据库', icon: Database },
   { id: 'objects', label: '对象存储', icon: HardDrive },
   { id: 'ai', label: 'AI 服务', icon: Sparkles },
+  { id: 'japanese', label: '日语联动', icon: ExternalLink },
 ]
 
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('profile')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() =>
+    window.location.hash === '#japanese' ? 'japanese' : 'profile'
+  )
   const profile = useQuery({
     queryKey: ['settings', 'profile'],
     queryFn: getUserProfile,
@@ -92,6 +102,7 @@ export default function Settings() {
           />
         ) : null}
         {activeTab === 'security' ? <SecuritySettings /> : null}
+        {activeTab === 'japanese' ? <JapaneseIntegrationSettings /> : null}
         {activeTab === 'database' ? (
           <ServiceSettingsCard
             kind="data_store"
