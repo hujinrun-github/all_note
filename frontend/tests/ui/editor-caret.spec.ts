@@ -8,7 +8,9 @@ const quote = [
 ]
 
 async function clickFirstCharacter(page: Page, paragraphIndex: number) {
-  const paragraph = page.locator('.tiptap.ProseMirror blockquote p').nth(paragraphIndex)
+  const paragraph = page
+    .locator('.tiptap.ProseMirror blockquote p')
+    .nth(paragraphIndex)
   await paragraph.scrollIntoViewIfNeeded()
   const point = await paragraph.evaluate((element) => {
     const range = document.createRange()
@@ -42,36 +44,62 @@ test.beforeEach(async ({ page }) => {
     created_at: 1790906400,
     updated_at: 1790906400,
   }
-  await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
-    const path = new URL(route.request().url()).pathname
-    const data = (value: unknown) => route.fulfill({ json: { data: value } })
-    if (path === '/api/auth/me')
-      return data({
-        user: {
-          id: 'caret-user',
-          display_name: '测试用户',
-          email: 'caret@example.test',
-          role: 'user',
-          status: 'active',
-        },
-        workspace: { id: 'caret-workspace', name: '测试工作区' },
-        must_change_password: false,
-      })
-    if (path === '/api/task-domain/capabilities')
-      return route.fulfill({ json: { model_version: 'v2', available: true } })
-    if (path === '/api/notes/caret-note') {
-      if (route.request().method() === 'PATCH')
-        note = { ...note, ...route.request().postDataJSON() }
-      return data({ note })
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname
+      const data = (value: unknown) => route.fulfill({ json: { data: value } })
+      if (path === '/api/auth/me')
+        return data({
+          user: {
+            id: 'caret-user',
+            display_name: '测试用户',
+            email: 'caret@example.test',
+            role: 'user',
+            status: 'active',
+          },
+          workspace: { id: 'caret-workspace', name: '测试工作区' },
+          must_change_password: false,
+        })
+      if (path === '/api/task-domain/capabilities')
+        return route.fulfill({ json: { model_version: 'v2', available: true } })
+      if (path === '/api/task-workbench/facets')
+        return data({
+          workspace_id: 'caret-workspace',
+          task_model_version: 2,
+          runtime_epoch: 1,
+          date: '2026-10-02',
+          timezone: 'Asia/Shanghai',
+          generated_at: '2026-10-02T02:00:00Z',
+          read_consistency: 'planning_snapshot',
+          facets: {
+            today: 0,
+            week: 0,
+            month: 0,
+            overdue: 0,
+            unscheduled: 0,
+            inbox: 0,
+            completed_today: 0,
+            completed_week: 0,
+            completed_total: 0,
+            draft: 0,
+            recurring: 0,
+          },
+        })
+      if (path === '/api/notes/caret-note') {
+        if (route.request().method() === 'PATCH')
+          note = { ...note, ...route.request().postDataJSON() }
+        return data({ note })
+      }
+      if (path === '/api/projects') return data({ projects: [] })
+      if (path === '/api/tasks') return data({ tasks: [] })
+      if (path === '/api/sync/targets') return data({ targets: [] })
+      if (path.endsWith('/sync-binding')) return data({ binding: null })
+      if (path.endsWith('/attachments')) return data({ attachments: [] })
+      if (path.endsWith('/content-import')) return data({ import: null })
+      return data({})
     }
-    if (path === '/api/projects') return data({ projects: [] })
-    if (path === '/api/tasks') return data({ tasks: [] })
-    if (path === '/api/sync/targets') return data({ targets: [] })
-    if (path.endsWith('/sync-binding')) return data({ binding: null })
-    if (path.endsWith('/attachments')) return data({ attachments: [] })
-    if (path.endsWith('/content-import')) return data({ import: null })
-    return data({})
-  })
+  )
 })
 
 test('clicking quote text keeps the caret at the clicked line after scrolling and fullscreen', async ({
@@ -88,7 +116,9 @@ test('clicking quote text keeps the caret at the clicked line after scrolling an
   }
 })
 
-test('long quote keeps click and insertion positions aligned after autosave', async ({ page }, testInfo) => {
+test('long quote keeps click and insertion positions aligned after autosave', async ({
+  page,
+}, testInfo) => {
   test.skip(
     testInfo.project.name !== 'desktop',
     'This regression covers desktop Chrome mouse coordinates after long text input.'
@@ -99,11 +129,15 @@ test('long quote keeps click and insertion positions aligned after autosave', as
   await expect(editor.locator('blockquote p')).toHaveCount(quote.length)
   await clickFirstCharacter(page, quote.length - 1)
   for (let index = 0; index < 35; index += 1) {
-    await page.keyboard.insertText(`长文第${index + 1}段。${'通过鼠标点击正文，检查中文长段落的光标位置和输入位置是否一致。'.repeat(22)}`)
+    await page.keyboard.insertText(
+      `长文第${index + 1}段。${'通过鼠标点击正文，检查中文长段落的光标位置和输入位置是否一致。'.repeat(22)}`
+    )
     await page.keyboard.press('Enter')
   }
-  await page.waitForResponse((response) =>
-    response.url().endsWith('/api/notes/caret-note') && response.request().method() === 'PATCH'
+  await page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/notes/caret-note') &&
+      response.request().method() === 'PATCH'
   )
   await expect(editor).toContainText('长文第35段')
   for (const index of [0, 18, 34]) {
@@ -111,6 +145,9 @@ test('long quote keeps click and insertion positions aligned after autosave', as
     const paragraph = editor.locator('blockquote p').nth(index)
     await page.keyboard.insertText('定位标记')
     await expect(paragraph).toContainText('定位标记')
-    await page.screenshot({ path: testInfo.outputPath(`caret-${index}.png`), caret: 'initial' })
+    await page.screenshot({
+      path: testInfo.outputPath(`caret-${index}.png`),
+      caret: 'initial',
+    })
   }
 })

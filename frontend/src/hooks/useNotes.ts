@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as notesApi from '../api/notes'
+import { workspaceQueryKeys } from './useWorkspace'
 
 export function useNotesList(params: {
   folder_id?: string
@@ -24,7 +25,11 @@ export function useCreateNote() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: notesApi.createNote,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notes'] }),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ['notes'] }),
+        qc.invalidateQueries({ queryKey: workspaceQueryKeys.all }),
+      ]),
   })
 }
 
@@ -42,7 +47,11 @@ export function useUpdateNote() {
       tags?: string
       project_ids?: string[]
     }) => notesApi.updateNote(id, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notes'] }),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ['notes'] }),
+        qc.invalidateQueries({ queryKey: workspaceQueryKeys.all }),
+      ]),
   })
 }
 
@@ -50,7 +59,11 @@ export function useDeleteNote() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: notesApi.deleteNote,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['notes'] }),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ['notes'] }),
+        qc.invalidateQueries({ queryKey: workspaceQueryKeys.all }),
+      ]),
   })
 }
 
@@ -99,6 +112,7 @@ export function useTranscribeVoiceNote(noteID: string) {
     },
     onSettled: async () => {
       await Promise.all([
+        qc.invalidateQueries({ queryKey: workspaceQueryKeys.all }),
         qc.invalidateQueries({ queryKey: ['notes'] }),
         qc.invalidateQueries({
           queryKey: ['notes', noteID, 'attachments'],

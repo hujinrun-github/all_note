@@ -87,3 +87,20 @@ func (t *RuntimeTranscriber) Transcribe(ctx context.Context, input Input) (strin
 }
 
 var _ Transcriber = (*RuntimeTranscriber)(nil)
+
+// CheckAvailable resolves the same workspace binding used by Transcribe without
+// sending audio to the provider. Connectivity is still verified by the job.
+func (t *RuntimeTranscriber) CheckAvailable(ctx context.Context, workspaceID string) error {
+	resolved, err := t.resolver.ResolveTranscription(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	defer clear(resolved.Secret)
+	var config struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if !resolved.Enabled || json.Unmarshal([]byte(resolved.ConfigJSON), &config) != nil || strings.TrimSpace(config.Endpoint) == "" {
+		return ErrUnavailable
+	}
+	return nil
+}

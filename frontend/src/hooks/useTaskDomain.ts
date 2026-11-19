@@ -8,6 +8,7 @@ import {
 import { useMemo } from 'react'
 
 import * as taskDomainAPI from '../api/taskDomain'
+import { workspaceQueryKeys } from './useWorkspace'
 
 export interface ProjectListParams {
   kind?: taskDomainAPI.ProjectKind
@@ -117,10 +118,14 @@ export function useProject(projectID: string) {
   })
 }
 
-export function useTaskDefinitions(params: TaskListParams = {}) {
+export function useTaskDefinitions(
+  params: TaskListParams = {},
+  options: { enabled?: boolean } = {}
+) {
   return useQuery({
     queryKey: taskDomainQueryKeys.taskList(params),
     queryFn: () => taskDomainAPI.listTaskDefinitions(params),
+    enabled: options.enabled ?? true,
   })
 }
 
@@ -297,6 +302,7 @@ export function useCreateTaskMutation() {
       taskDomainAPI.createTaskDefinition(input),
     onSuccess: async (_response, input) => {
       const queryKeys: ReadonlyArray<readonly unknown[]> = [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project(input.project_id),
         taskDomainQueryKeys.taskLists(),
         taskDomainQueryKeys.occurrenceLists(),
@@ -345,6 +351,7 @@ export function useRescheduleThisAndFollowingMutation() {
     variables: RescheduleThisAndFollowingVariables
   ) => {
     const queryKeys: ReadonlyArray<readonly unknown[]> = [
+      workspaceQueryKeys.all,
       taskDomainQueryKeys.project(variables.projectID),
       taskDomainQueryKeys.task(variables.taskID),
       taskDomainQueryKeys.taskLists(),
@@ -476,6 +483,7 @@ export function useDeleteTaskMutation() {
         queryKey: taskDomainQueryKeys.task(variables.taskID),
       })
       const queryKeys: ReadonlyArray<readonly unknown[]> = [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project(variables.projectID),
         taskDomainQueryKeys.taskLists(),
         taskDomainQueryKeys.occurrenceLists(),
@@ -547,6 +555,7 @@ async function invalidateAffectedTaskDomain(
   if ('occurrenceID' in variables) occurrenceIDs.add(variables.occurrenceID)
 
   const queryKeys: ReadonlyArray<readonly unknown[]> = [
+    workspaceQueryKeys.all,
     taskDomainQueryKeys.project(variables.projectID),
     taskDomainQueryKeys.task(variables.taskID),
     taskDomainQueryKeys.taskLists(),
@@ -804,6 +813,7 @@ async function invalidateUpdatedTaskDefinition(
     projectIDs.add(variables.input.project_id)
   }
   const queryKeys: ReadonlyArray<readonly unknown[]> = [
+    workspaceQueryKeys.all,
     taskDomainQueryKeys.task(variables.taskID),
     taskDomainQueryKeys.taskLists(),
     ...Array.from(projectIDs).map((projectID) =>
@@ -822,6 +832,7 @@ async function invalidateCreatedProject(
   projectID: string
 ) {
   await Promise.all([
+    queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.all }),
     queryClient.invalidateQueries({
       queryKey: taskDomainQueryKeys.project(projectID),
     }),
@@ -836,6 +847,7 @@ async function invalidateAffectedProjectDomain(
   projectID: string
 ) {
   const queryKeys: ReadonlyArray<readonly unknown[]> = [
+    workspaceQueryKeys.all,
     taskDomainQueryKeys.project(projectID),
     taskDomainQueryKeys.projectLists(),
     taskDomainQueryKeys.taskLists(),

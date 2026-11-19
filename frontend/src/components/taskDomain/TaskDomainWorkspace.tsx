@@ -53,6 +53,7 @@ export interface OccurrenceRowProps {
   occurrence: OccurrenceV2
   task?: TaskV2
   project?: ProjectV2
+  projectName?: string
   selected?: boolean
   onSelect: () => void
   onComplete?: () => Promise<unknown> | void
@@ -64,6 +65,7 @@ export function OccurrenceRow({
   occurrence,
   task,
   project,
+  projectName,
   selected = false,
   onSelect,
   onComplete,
@@ -140,7 +142,7 @@ export function OccurrenceRow({
         <div className="td-occurrence-meta">
           <span>
             <Folder aria-hidden="true" />
-            {project?.name ?? '未命名项目'}
+            {project?.name ?? projectName ?? '未命名项目'}
           </span>
           {occurrence.recurring ? (
             <span>
@@ -188,6 +190,7 @@ export interface OccurrenceInspectorProps {
   occurrence: OccurrenceV2
   task?: TaskV2
   project?: ProjectV2
+  projectName?: string
   onClose: () => void
   onStart?: () => Promise<unknown> | void
   onComplete?: () => Promise<unknown> | void
@@ -206,6 +209,7 @@ export function OccurrenceInspector({
   occurrence,
   task,
   project,
+  projectName,
   onClose,
   onStart,
   onComplete,
@@ -396,7 +400,7 @@ export function OccurrenceInspector({
           </div>
           <div>
             <dt>所属项目</dt>
-            <dd>{project?.name ?? '未命名项目'}</dd>
+            <dd>{project?.name ?? projectName ?? '未命名项目'}</dd>
           </div>
           <div>
             <dt>任务定义</dt>

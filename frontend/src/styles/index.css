@@ -1231,7 +1231,10 @@
   font-size: 12px;
   font-weight: 720;
   cursor: pointer;
-  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
 }
 
 .task-weekday-picker button.is-active {
@@ -16441,5 +16444,204 @@ select {
 
   .inbox-v2-organizer-actions {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Voice/text planning shares the workspace theme and native modal focus boundary. */
+body:has(.workspace-shell.planning-theme)
+  > .workspace-modal.plan-capture-dialog {
+  width: min(1120px, calc(100vw - 40px));
+  max-width: 1120px;
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  border-radius: var(--radius-lg);
+}
+.plan-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  min-width: 0;
+  background: var(--background);
+  color: var(--foreground);
+}
+.plan-capture-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.plan-capture-header h2 {
+  font-size: 20px;
+  font-weight: 650;
+  margin-bottom: 5px;
+}
+.plan-capture-header p,
+.plan-recording > p {
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.plan-capture-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 20px;
+  align-items: start;
+}
+.plan-capture-columns > *,
+.plan-fields > *,
+.plan-field {
+  min-width: 0;
+}
+.plan-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.plan-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 14px;
+}
+.plan-field > [data-slot='native-select-wrapper'] {
+  width: 100%;
+}
+.plan-capture textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--input);
+  background: transparent;
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 16px;
+  line-height: 1.7;
+}
+.plan-capture textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.plan-recording {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--muted);
+}
+.plan-recording audio {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+}
+.plan-save-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 20px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.plan-save-status svg {
+  width: 16px;
+  height: 16px;
+}
+.plan-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plan-item {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+.plan-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  line-height: 1.6;
+}
+.plan-check input {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.plan-schedule-extra {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.plan-capture .task-schedule-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.plan-capture .task-schedule-fields > * {
+  min-width: 0;
+  flex: 1 1 150px;
+}
+.plan-capture .task-schedule-fields input,
+.plan-capture .task-schedule-fields select {
+  max-width: 100%;
+}
+.plan-job {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plan-confirm {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+.plan-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+.plan-confirm-actions .plan-field {
+  flex: 1 1 190px;
+}
+.plan-capture ul {
+  padding-left: 18px;
+  list-style: disc;
+}
+.plan-capture [data-slot='alert-description'] {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 820px) {
+  body:has(.workspace-shell.planning-theme)
+    > .workspace-modal.plan-capture-dialog {
+    margin: 0;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+  .plan-capture {
+    padding: max(18px, env(safe-area-inset-top)) 16px
+      max(24px, env(safe-area-inset-bottom));
+  }
+  .plan-capture-columns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .plan-capture [data-slot='card-header'],
+  .plan-capture [data-slot='card-content'] {
+    padding-inline: 16px;
+  }
+  .plan-capture-header h2 {
+    font-size: 18px;
+  }
+  .plan-confirm-actions > button {
+    flex: 1 1 140px;
+  }
+  .plan-schedule-extra {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

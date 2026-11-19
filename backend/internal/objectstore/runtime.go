@@ -62,6 +62,11 @@ func (s *RuntimeStore) Remove(ctx context.Context, key string) error {
 	return store.Remove(ctx, key)
 }
 
+func (s *RuntimeStore) CheckAvailable(ctx context.Context) error {
+	_, err := s.resolve(ctx)
+	return err
+}
+
 func (s *RuntimeStore) resolve(ctx context.Context) (Store, error) {
 	workspaceID, err := auth.WorkspaceIDFromContext(ctx)
 	if err != nil {

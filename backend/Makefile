@@ -90,6 +90,27 @@ FORMAT_PATHS := \
 	internal/storage/postgres/testdb_test.go \
 	internal/migration/sqlite_to_pg_test.go
 
+FORMAT_PATHS += \
+	internal/auth/workspace_context.go \
+	internal/auth/workspace_context_test.go \
+	internal/handler/task_domain_v2.go \
+	internal/handler/workspace_queries.go \
+	internal/router/task_domain_v2_routes.go \
+	internal/router/task_domain_v2_routes_test.go \
+	internal/router/workspace_query_routes.go \
+	internal/router/workspace_query_routes_test.go \
+	internal/taskruntime/resolver.go \
+	internal/taskruntime/workspace_query.go \
+	internal/taskruntime/workspace_resolution_test.go \
+	internal/storage/workspacequerydb \
+	internal/storage/sqlite/workspace_query.go \
+	internal/storage/sqlite/workspace_query_test.go \
+	internal/storage/postgres/workspace_query.go \
+	internal/storage/postgres/workspace_query_test.go \
+	internal/storage/contracttest/workspace_query_contract_tests.go \
+	internal/workspacequery \
+	internal/workspacecompat
+
 .PHONY: dev dev-test dev-prod build test lint seed format-check test-unit test-race test-race-other test-race-handler-a-c test-race-handler-d-g test-race-handler-h-o test-race-handler-p-r test-race-handler-s-z test-race-handler-other test-contract-postgres test-object-minio test-openapi test-phase0
 
 dev: dev-test
@@ -144,7 +165,7 @@ test-object-minio:
 	FLOWSPACE_REQUIRE_MINIO_TESTS=true go test ./internal/objectstore -run '^TestMinIOAdapterRoundTripAndDeleteIdempotently$$' -count=1
 
 test-openapi:
-	go test ./internal/mobilecontract -count=1
+	go test ./internal/mobilecontract ./internal/mobilev2contract -count=1
 
 test-phase0: format-check lint test-openapi test-unit test-race test-contract-postgres test-object-minio
 

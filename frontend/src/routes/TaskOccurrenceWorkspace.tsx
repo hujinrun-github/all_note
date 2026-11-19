@@ -7,9 +7,19 @@ import {
 } from 'lucide-react'
 import { type FormEvent, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { useQueries } from '@tanstack/react-query'
 
 import type { OccurrenceV2, TaskV2, TimingType } from '../api/taskDomain'
-import { TaskDomainRevisionConflictError } from '../api/taskDomain'
+import {
+  getTaskDefinition,
+  TaskDomainRevisionConflictError,
+} from '../api/taskDomain'
+import { createWorkspaceQueryParams } from '../api/workspace'
+import { useTaskWorkbenchFacets } from '../hooks/useWorkspace'
+import {
+  createWorkspaceOccurrenceParams,
+  matchesWorkspaceDateFilter,
+} from '../utils/workspaceDates'
 import {
   PlanningHeading,
   PlanningLoading,
@@ -41,6 +51,8 @@ import {
   useCancelTaskMutation,
   useCompleteOccurrenceMutation,
   useDeleteTaskMutation,
+  taskDomainQueryKeys,
+  useOccurrence,
   useOccurrences,
   usePauseTaskMutation,
   useProjects,
@@ -50,6 +62,7 @@ import {
   useRestoreTaskMutation,
   useResumeTaskMutation,
   useStartOccurrenceMutation,
+  useTaskDefinition,
   useTaskDefinitions,
   useUnblockOccurrenceMutation,
   useUpdateTaskDefinitionMutation,
@@ -60,6 +73,7 @@ type TaskTab =
   | 'inbox'
   | 'today'
   | 'upcoming'
+  | 'month'
   | 'overdue'
   | 'unscheduled'
   | 'recurring'
@@ -68,10 +82,13 @@ type TaskTab =
 
 type DateFilter = 'current' | 'today' | 'next-7-days' | 'unscheduled'
 
+const emptyOccurrences: OccurrenceV2[] = []
+
 const tabDefinitions: Array<{ id: TaskTab; label: string }> = [
   { id: 'inbox', label: '任务收件箱' },
   { id: 'today', label: '今天' },
-  { id: 'upcoming', label: '接下来' },
+  { id: 'upcoming', label: '本周' },
+  { id: 'month', label: '本月' },
   { id: 'overdue', label: '已逾期' },
   { id: 'unscheduled', label: '无日期' },
   { id: 'recurring', label: '重复' },
@@ -82,7 +99,10 @@ const tabDefinitions: Array<{ id: TaskTab; label: string }> = [
 export default function TaskOccurrenceWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams()
   const setCaptureOpen = useUIStore((state) => state.setCaptureOpen)
-  const requestedTab = searchParams.get('view') as TaskTab | null
+  const requestedView = searchParams.get('view')
+  const requestedTab = (
+    requestedView === 'week' ? 'upcoming' : requestedView
+  ) as TaskTab | null
   const activeTab = tabDefinitions.some((tab) => tab.id === requestedTab)
     ? requestedTab!
     : 'upcoming'
@@ -91,7 +111,14 @@ export default function TaskOccurrenceWorkspace() {
   const projectFilter = searchParams.get('project') ?? ''
   const priorityFilter = searchParams.get('priority') ?? ''
   const statusFilter = searchParams.get('status') ?? ''
-  const dateFilter = (searchParams.get('date') ?? 'current') as DateFilter
+  const requestedDateFilter = searchParams.get('date')
+  const dateFilter: DateFilter =
+    requestedDateFilter === 'today' ||
+    requestedDateFilter === 'next-7-days' ||
+    requestedDateFilter === 'unscheduled'
+      ? requestedDateFilter
+      : 'current'
+  const queryParams = createWorkspaceQueryParams()
 
   const projectFilterRef = useRef<HTMLSelectElement>(null)
 
@@ -113,18 +140,78 @@ export default function TaskOccurrenceWorkspace() {
   const inboxProject = (projectsQuery.data ?? []).find(
     (project) => project.system_role === 'inbox'
   )
-  const definitionsQuery = useTaskDefinitions()
-  const draftsQuery = useTaskDefinitions({ lifecycle_status: 'draft' })
-  const inboxQuery = useOccurrences({
-    scope: 'all',
-    project_id: inboxProject?.id ?? '__missing_system_inbox__',
+  const facetsQuery = useTaskWorkbenchFacets({
+    ...queryParams,
+    project_id: projectFilter || undefined,
   })
-  const todayQuery = useOccurrences({ scope: 'today' })
-  const upcomingQuery = useOccurrences({ scope: 'upcoming' })
-  const overdueQuery = useOccurrences({ scope: 'overdue' })
-  const unscheduledQuery = useOccurrences({ scope: 'unscheduled' })
-  const recurringQuery = useOccurrences({ scope: 'all', recurring: true })
-  const completedQuery = useOccurrences({ scope: 'completed' })
+  const facets = facetsQuery.isError ? undefined : facetsQuery.data?.facets
+  const viewCounts = {
+    inbox: facets?.inbox,
+    today: facets?.today,
+    upcoming: facets?.week,
+    month: facets?.month,
+    overdue: facets?.overdue,
+    unscheduled: facets?.unscheduled,
+    recurring: facets?.recurring,
+    completed: facets?.completed_total,
+    draft: facets?.draft,
+  }
+  const inboxMatchesProject =
+    !projectFilter || projectFilter === inboxProject?.id
+  const inboxReady = activeTab !== 'inbox' || Boolean(inboxProject)
+  const occurrenceQuery = useOccurrences(
+    createWorkspaceOccurrenceParams(
+      activeTab === 'upcoming' || activeTab === 'draft' ? 'week' : activeTab,
+      queryParams,
+      activeTab === 'inbox'
+        ? (inboxProject?.id ?? '__missing_system_inbox__')
+        : projectFilter || undefined
+    ),
+    {
+      enabled:
+        activeTab !== 'draft' &&
+        inboxReady &&
+        (activeTab !== 'inbox' || inboxMatchesProject),
+    }
+  )
+  const draftsQuery = useTaskDefinitions(
+    { lifecycle_status: 'draft', project_id: projectFilter || undefined },
+    { enabled: activeTab === 'draft' }
+  )
+  const occurrenceSource =
+    activeTab === 'draft' ||
+    occurrenceQuery.isError ||
+    (activeTab === 'inbox' && !inboxMatchesProject)
+      ? emptyOccurrences
+      : (occurrenceQuery.data ?? emptyOccurrences)
+  const visibleTaskIDs = [
+    ...new Set(
+      occurrenceSource
+        .filter((item) =>
+          activeTab === 'completed'
+            ? item.execution_status === 'done'
+            : ['open', 'active', 'blocked'].includes(item.execution_status)
+        )
+        .map((item) => item.task_id)
+    ),
+  ]
+  // Read metadata for the current collection only. Other view counts do not
+  // need task definitions or occurrence collections.
+  const taskMetadataQueries = useQueries({
+    queries: visibleTaskIDs.map((taskID) => ({
+      queryKey: taskDomainQueryKeys.task(taskID),
+      queryFn: () => getTaskDefinition(taskID),
+    })),
+  })
+  const definitionsByID = new Map(
+    taskMetadataQueries.flatMap((query) =>
+      !query.isError && query.data ? [[query.data.id, query.data] as const] : []
+    )
+  )
+  const metadataLoading = taskMetadataQueries.some(
+    (query) => query.isPending || query.isLoading
+  )
+  const metadataError = taskMetadataQueries.some((query) => query.isError)
 
   const completeOccurrence = useCompleteOccurrenceMutation()
   const startOccurrence = useStartOccurrenceMutation()
@@ -141,25 +228,6 @@ export default function TaskOccurrenceWorkspace() {
   const deleteTask = useDeleteTaskMutation()
   const updateTask = useUpdateTaskDefinitionMutation()
 
-  const occurrenceQueries = {
-    inbox: inboxQuery,
-    today: todayQuery,
-    upcoming: upcomingQuery,
-    overdue: overdueQuery,
-    unscheduled: unscheduledQuery,
-    recurring: recurringQuery,
-    completed: completedQuery,
-  }
-  const definitionsByID = useMemo(
-    () =>
-      new Map(
-        (definitionsQuery.data ?? []).map((definition) => [
-          definition.id,
-          definition,
-        ])
-      ),
-    [definitionsQuery.data]
-  )
   const projectsByID = useMemo(
     () =>
       new Map(
@@ -167,45 +235,52 @@ export default function TaskOccurrenceWorkspace() {
       ),
     [projectsQuery.data]
   )
-  const activeQuery =
-    activeTab === 'draft' ? null : occurrenceQueries[activeTab]
-  const activeOccurrences = useMemo(() => {
-    const occurrences = activeQuery?.data ?? []
-    return occurrences.filter((occurrence) => {
-      const task = definitionsByID.get(occurrence.task_id)
-      const projectID = occurrence.project_id ?? task?.project_id
-      if (projectFilter && projectID !== projectFilter) return false
-      if (priorityFilter && task?.priority !== Number(priorityFilter))
-        return false
-      if (statusFilter && occurrence.execution_status !== statusFilter)
-        return false
-      return matchesDateFilter(occurrence, dateFilter)
-    })
-  }, [
-    activeQuery?.data,
-    dateFilter,
-    definitionsByID,
-    priorityFilter,
-    projectFilter,
-    statusFilter,
-  ])
-  const activeDrafts = useMemo(
-    () =>
-      (draftsQuery.data ?? []).filter(
-        (task) =>
-          (!projectFilter || task.project_id === projectFilter) &&
-          (!priorityFilter || task.priority === Number(priorityFilter))
-      ),
-    [draftsQuery.data, priorityFilter, projectFilter]
-  )
-  const selectedOccurrence = activeOccurrences.find(
-    (occurrence) => occurrence.id === selectedOccurrenceID
+  const activeQuery = activeTab === 'draft' ? null : occurrenceQuery
+  const activeOccurrences = occurrenceSource.filter((occurrence) => {
+    const task = definitionsByID.get(occurrence.task_id)
+    const projectID = occurrence.project_id ?? task?.project_id
+    const project = projectID ? projectsByID.get(projectID) : undefined
+    if (!task) return false
+    if (activeTab === 'completed') {
+      if (occurrence.execution_status !== 'done') return false
+    } else if (
+      !['open', 'active', 'blocked'].includes(occurrence.execution_status) ||
+      !['active', 'paused'].includes(task.lifecycle_status) ||
+      !project ||
+      !['planning', 'active', 'paused'].includes(project.status)
+    )
+      return false
+    if (projectFilter && projectID !== projectFilter) return false
+    if (priorityFilter && task.priority !== Number(priorityFilter)) return false
+    if (statusFilter && occurrence.execution_status !== statusFilter)
+      return false
+    return matchesWorkspaceDateFilter(occurrence, dateFilter, queryParams)
+  })
+  const activeDrafts =
+    draftsQuery.isError || activeTab !== 'draft'
+      ? []
+      : (draftsQuery.data ?? []).filter(
+          (task) =>
+            task.lifecycle_status === 'draft' &&
+            (!projectFilter || task.project_id === projectFilter) &&
+            (!priorityFilter || task.priority === Number(priorityFilter))
+        )
+  const selectedOccurrenceQuery = useOccurrence(selectedOccurrenceID)
+  const selectedOccurrence = selectedOccurrenceID
+    ? (selectedOccurrenceQuery.data ??
+      occurrenceSource.find((item) => item.id === selectedOccurrenceID))
+    : undefined
+  const selectedTaskQuery = useTaskDefinition(
+    selectedOccurrence?.task_id ?? selectedTaskID
   )
   const selectedTask =
-    (selectedOccurrence
-      ? definitionsByID.get(selectedOccurrence.task_id)
-      : undefined) ??
-    (definitionsQuery.data ?? []).find((task) => task.id === selectedTaskID)
+    selectedTaskQuery.data ??
+    definitionsByID.get(selectedOccurrence?.task_id ?? selectedTaskID) ??
+    activeDrafts.find((task) => task.id === selectedTaskID)
+  const selectedReadError = Boolean(
+    (selectedOccurrenceID && selectedOccurrenceQuery.isError) ||
+    selectedTaskQuery.isError
+  )
   const selectedTaskOccurrencesQuery = useOccurrences(
     {
       scope: 'all',
@@ -216,17 +291,41 @@ export default function TaskOccurrenceWorkspace() {
   const selectedProject = selectedTask
     ? projectsByID.get(selectedTask.project_id)
     : undefined
-  const selectedTaskOccurrences = selectedTask
-    ? (selectedTaskOccurrencesQuery.data ??
-      activeOccurrences.filter(
-        (occurrence) => occurrence.task_id === selectedTask.id
-      ))
-    : []
-  const editingOccurrence = activeOccurrences.find(
-    (occurrence) => occurrence.id === editingOccurrenceID
-  )
+  const taskCommandsReady =
+    selectedTaskOccurrencesQuery.data !== undefined &&
+    !selectedTaskOccurrencesQuery.isError &&
+    !selectedTaskOccurrencesQuery.isLoading
+  const selectedTaskOccurrences = taskCommandsReady
+    ? (selectedTaskOccurrencesQuery.data ?? emptyOccurrences)
+    : emptyOccurrences
+  const archiveSelectedTask =
+    selectedTask && taskCommandsReady
+      ? () =>
+          archiveTask
+            .mutateAsync(taskCommandVariables(selectedTask))
+            .then(() =>
+              updateSearchParams({ occurrence_id: null, task_id: null })
+            )
+      : undefined
+  const deleteSelectedTask =
+    selectedTask && taskCommandsReady
+      ? () =>
+          deleteTask
+            .mutateAsync(taskCommandVariables(selectedTask))
+            .then(() =>
+              updateSearchParams({ occurrence_id: null, task_id: null })
+            )
+      : undefined
+  const editingOccurrence =
+    selectedOccurrence?.id === editingOccurrenceID
+      ? selectedOccurrence
+      : occurrenceSource.find(
+          (occurrence) => occurrence.id === editingOccurrenceID
+        )
   const editingDefinition = editingOccurrence
-    ? definitionsByID.get(editingOccurrence.task_id)
+    ? selectedTask?.id === editingOccurrence.task_id
+      ? selectedTask
+      : definitionsByID.get(editingOccurrence.task_id)
     : undefined
   const commandBusy = [
     updateTask,
@@ -270,6 +369,8 @@ export default function TaskOccurrenceWorkspace() {
   }
 
   function taskCommandVariables(task: TaskV2) {
+    if (!taskCommandsReady)
+      throw new Error('Task execution history is unavailable')
     return {
       projectID: task.project_id,
       taskID: task.id,
@@ -372,8 +473,16 @@ export default function TaskOccurrenceWorkspace() {
 
   const activeCount =
     activeTab === 'draft' ? activeDrafts.length : activeOccurrences.length
-
   const listQuery = activeQuery ?? draftsQuery
+  const listLoading =
+    listQuery.isLoading ||
+    (activeTab !== 'draft' && (metadataLoading || projectsQuery.isLoading))
+  const inboxUnavailable =
+    activeTab === 'inbox' && !projectsQuery.isLoading && !inboxProject
+  const listError =
+    listQuery.isError ||
+    (activeTab !== 'draft' &&
+      (metadataError || projectsQuery.isError || inboxUnavailable))
   const hasFilters = Boolean(
     projectFilter || priorityFilter || statusFilter || dateFilter !== 'current'
   )
@@ -397,10 +506,7 @@ export default function TaskOccurrenceWorkspace() {
           value={activeTab}
           tabs={tabDefinitions.map((tab) => ({
             ...tab,
-            count:
-              tab.id === 'draft'
-                ? (draftsQuery.data?.length ?? 0)
-                : (occurrenceQueries[tab.id].data?.length ?? 0),
+            count: viewCounts[tab.id],
           }))}
           onChange={(tab) =>
             updateSearchParams({
@@ -508,7 +614,9 @@ export default function TaskOccurrenceWorkspace() {
               </NativeSelect>
             </label>
             <div className="planning-filter-summary">
-              <span role="status">{activeCount} 个结果</span>
+              <span role="status">
+                当前显示 {listLoading || listError ? '—' : activeCount} 项
+              </span>
               {hasFilters ? (
                 <Button
                   type="button"
@@ -532,6 +640,35 @@ export default function TaskOccurrenceWorkspace() {
             </div>
           </div>
 
+          <p className="px-4 pb-3 text-xs text-muted-foreground">
+            视图数量按所选项目统计，其他筛选仅影响下方列表。
+          </p>
+          {facetsQuery.isError ? (
+            <Alert variant="destructive">
+              <CircleAlert aria-hidden="true" />
+              <AlertTitle>视图计数暂时不可用，请稍后重试。</AlertTitle>
+            </Alert>
+          ) : null}
+          {(selectedOccurrenceID &&
+            selectedOccurrenceQuery.isLoading &&
+            !selectedOccurrence) ||
+          ((selectedTaskID || selectedOccurrenceID) &&
+            selectedTaskQuery.isLoading &&
+            !selectedTask) ? (
+            <PlanningLoading label="正在加载任务详情" />
+          ) : null}
+          {(selectedOccurrenceID && selectedOccurrenceQuery.isError) ||
+          ((selectedTaskID || selectedOccurrenceID) &&
+            selectedTaskQuery.isError) ? (
+            <Alert variant="destructive">
+              <AlertTitle>任务详情暂时不可用，请稍后重试。</AlertTitle>
+            </Alert>
+          ) : null}
+          {selectedTask && selectedTaskOccurrencesQuery.isError ? (
+            <Alert variant="destructive">
+              <AlertTitle>任务执行历史暂时不可用，请稍后重试。</AlertTitle>
+            </Alert>
+          ) : null}
           <div
             className={`td-workspace planning-workspace ${
               selectedOccurrence || selectedTask ? 'has-inspector' : ''
@@ -652,10 +789,8 @@ export default function TaskOccurrenceWorkspace() {
                 </>
               )}
 
-              {listQuery.isLoading && activeCount === 0 ? (
-                <PlanningLoading label="正在加载任务" />
-              ) : null}
-              {listQuery.isError ? (
+              {listLoading ? <PlanningLoading label="正在加载任务" /> : null}
+              {listError ? (
                 <Alert variant="destructive">
                   <CircleAlert aria-hidden="true" />
                   <AlertTitle>
@@ -671,9 +806,7 @@ export default function TaskOccurrenceWorkspace() {
                   <AlertTitle>{taskCommandError}</AlertTitle>
                 </Alert>
               ) : null}
-              {activeCount === 0 &&
-              !listQuery.isLoading &&
-              !listQuery.isError ? (
+              {activeCount === 0 && !listLoading && !listError ? (
                 <Empty className="planning-empty">
                   <EmptyHeader>
                     <EmptyMedia variant="icon">
@@ -700,7 +833,7 @@ export default function TaskOccurrenceWorkspace() {
                 occurrence={selectedOccurrence}
                 task={selectedTask}
                 project={selectedProject}
-                busy={commandBusy}
+                busy={commandBusy || selectedReadError}
                 onClose={() => {
                   updateSearchParams({ occurrence_id: null, task_id: null })
                   setEditingOccurrenceID('')
@@ -742,20 +875,8 @@ export default function TaskOccurrenceWorkspace() {
                     occurrence_id: null,
                   })
                 }
-                onArchive={() =>
-                  archiveTask
-                    .mutateAsync(taskCommandVariables(selectedTask))
-                    .then(() =>
-                      updateSearchParams({ occurrence_id: null, task_id: null })
-                    )
-                }
-                onDelete={() =>
-                  deleteTask
-                    .mutateAsync(taskCommandVariables(selectedTask))
-                    .then(() =>
-                      updateSearchParams({ occurrence_id: null, task_id: null })
-                    )
-                }
+                onArchive={archiveSelectedTask}
+                onDelete={deleteSelectedTask}
               >
                 {editingOccurrence?.id === selectedOccurrence.id ? (
                   <form
@@ -851,7 +972,8 @@ export default function TaskOccurrenceWorkspace() {
                               rescheduleTimeRange.start,
                               rescheduleTimeRange.end
                             ) <= 0) ||
-                          rescheduleOccurrence.isPending
+                          rescheduleOccurrence.isPending ||
+                          selectedReadError
                         }
                       >
                         保存改期
@@ -872,9 +994,22 @@ export default function TaskOccurrenceWorkspace() {
                         <div className="td-form-actions">
                           <button
                             type="button"
-                            onClick={() => {
+                            onClick={async () => {
+                              setRescheduleError('')
+                              const results = await Promise.all([
+                                activeQuery?.refetch(),
+                                selectedOccurrenceQuery.refetch(),
+                                selectedTaskQuery.refetch(),
+                                selectedTaskOccurrencesQuery.refetch(),
+                                facetsQuery.refetch(),
+                              ])
+                              if (results.some((result) => result?.isError)) {
+                                setRescheduleError(
+                                  '刷新服务器版本失败，请稍后重试。'
+                                )
+                                return
+                              }
                               setRescheduleConflict(null)
-                              void activeQuery?.refetch()
                             }}
                           >
                             刷新服务器版本
@@ -921,7 +1056,7 @@ export default function TaskOccurrenceWorkspace() {
                 task={selectedTask}
                 project={selectedProject}
                 occurrences={selectedTaskOccurrences}
-                busy={commandBusy}
+                busy={commandBusy || !taskCommandsReady || selectedReadError}
                 onClose={() =>
                   updateSearchParams({ occurrence_id: null, task_id: null })
                 }
@@ -962,20 +1097,8 @@ export default function TaskOccurrenceWorkspace() {
                     restoreTask.mutateAsync(taskCommandVariables(selectedTask))
                   )
                 }
-                onArchive={() =>
-                  archiveTask
-                    .mutateAsync(taskCommandVariables(selectedTask))
-                    .then(() =>
-                      updateSearchParams({ occurrence_id: null, task_id: null })
-                    )
-                }
-                onDelete={() =>
-                  deleteTask
-                    .mutateAsync(taskCommandVariables(selectedTask))
-                    .then(() =>
-                      updateSearchParams({ occurrence_id: null, task_id: null })
-                    )
-                }
+                onArchive={archiveSelectedTask}
+                onDelete={deleteSelectedTask}
               />
             ) : null}
           </div>
@@ -983,28 +1106,6 @@ export default function TaskOccurrenceWorkspace() {
       </Card>
     </section>
   )
-}
-
-function matchesDateFilter(occurrence: OccurrenceV2, dateFilter: DateFilter) {
-  if (dateFilter === 'current') return true
-  const plannedDate =
-    occurrence.planned_date ?? occurrence.planned_start_at?.slice(0, 10)
-  if (dateFilter === 'unscheduled') return !plannedDate
-  if (!plannedDate) return false
-
-  const today = localISODate(new Date())
-  if (dateFilter === 'today') return plannedDate === today
-
-  const end = new Date()
-  end.setDate(end.getDate() + 6)
-  return plannedDate >= today && plannedDate <= localISODate(end)
-}
-
-function localISODate(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
 }
 
 function timeRangeForOccurrence(occurrence: OccurrenceV2) {

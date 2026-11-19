@@ -4,6 +4,7 @@ import type { PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as taskDomainAPI from '../api/taskDomain'
+import { workspaceQueryKeys } from './useWorkspace'
 import {
   taskDomainQueryKeys,
   useActivateProjectMutation,
@@ -207,11 +208,69 @@ describe('task-domain query hooks', () => {
     })
     expect(taskDomainAPI.getTaskDomainCapabilities).toHaveBeenCalledTimes(1)
   })
+
+  it('defers project and task lists until a detail action needs them', async () => {
+    const { wrapper } = createQueryWrapper()
+    const { result, rerender } = renderHook(
+      ({ enabled }) => ({
+        tasks: useTaskDefinitions({ project_id: 'project-1' }, { enabled }),
+        projects: useProjects({}, { enabled }),
+      }),
+      { wrapper, initialProps: { enabled: false } }
+    )
+    expect(result.current.tasks.fetchStatus).toBe('idle')
+    expect(result.current.projects.fetchStatus).toBe('idle')
+    expect(taskDomainAPI.listTaskDefinitions).not.toHaveBeenCalled()
+    expect(taskDomainAPI.listProjects).not.toHaveBeenCalled()
+    rerender({ enabled: true })
+    await waitFor(() => expect(result.current.tasks.isSuccess).toBe(true))
+    await waitFor(() => expect(result.current.projects.isSuccess).toBe(true))
+    expect(taskDomainAPI.listTaskDefinitions).toHaveBeenCalledExactlyOnceWith({
+      project_id: 'project-1',
+    })
+  })
 })
 
 describe('task-domain mutation hooks', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('expires every aggregate cache after completing an occurrence without expiring unrelated reads', async () => {
+    vi.mocked(taskDomainAPI.completeOccurrence).mockResolvedValue({
+      task_revision: 8,
+      schedule_revision: 5,
+      occurrence_revisions: { 'occurrence-1': 12 },
+    })
+    const { client, wrapper } = createQueryWrapper()
+    const params = { date: '2026-11-19', timezone: 'Asia/Shanghai' }
+    const keys = [
+      workspaceQueryKeys.overview(params),
+      workspaceQueryKeys.facets(params),
+      workspaceQueryKeys.projectSummaries(params),
+      workspaceQueryKeys.projectOverview('project-1', params),
+    ]
+    keys.forEach((key) =>
+      client.setQueryData(key, { stale: 'server snapshot' })
+    )
+    client.setQueryData(['notes'], { notes: [] })
+    const { result } = renderHook(() => useCompleteOccurrenceMutation(), {
+      wrapper,
+    })
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectID: 'project-1',
+        taskID: 'task-1',
+        occurrenceID: 'occurrence-1',
+        expectedRevisions: revisionsFixture(),
+      })
+    })
+
+    keys.forEach((key) =>
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+    )
+    expect(client.getQueryState(['notes'])?.isInvalidated).toBe(false)
   })
 
   it('applies a paused lifecycle immediately without waiting for background refetches', async () => {
@@ -311,6 +370,7 @@ describe('task-domain mutation hooks', () => {
     )
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project('project-1'),
         taskDomainQueryKeys.task('task-1'),
         taskDomainQueryKeys.taskLists(),
@@ -436,6 +496,7 @@ describe('task-domain mutation hooks', () => {
     ).toBeUndefined()
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project('project-1'),
         taskDomainQueryKeys.taskLists(),
         taskDomainQueryKeys.occurrenceLists(),
@@ -481,6 +542,7 @@ describe('task-domain mutation hooks', () => {
     )
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.task('task-1'),
         taskDomainQueryKeys.taskLists(),
         taskDomainQueryKeys.project('project-1'),
@@ -546,6 +608,7 @@ describe('task-domain mutation hooks', () => {
     expect(taskDomainAPI.createTaskDefinition).toHaveBeenCalledWith(input)
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project('project-1'),
         taskDomainQueryKeys.taskLists(),
         taskDomainQueryKeys.occurrenceLists(),
@@ -641,6 +704,7 @@ describe('task-domain mutation hooks', () => {
     )
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project('project-1'),
         taskDomainQueryKeys.task('task-1'),
         taskDomainQueryKeys.taskLists(),
@@ -697,6 +761,7 @@ describe('task-domain mutation hooks', () => {
     expect(thrown).toBe(conflict)
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project('project-1'),
         taskDomainQueryKeys.task('task-1'),
         taskDomainQueryKeys.taskLists(),
@@ -900,6 +965,7 @@ describe('task-domain mutation hooks', () => {
 
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
       [
+        workspaceQueryKeys.all,
         taskDomainQueryKeys.project('project-1'),
         taskDomainQueryKeys.projectLists(),
         taskDomainQueryKeys.taskLists(),

@@ -7,6 +7,8 @@ endpoint allowlist is documented in [Runtime settings deployment](docs/runtime-s
 
 用户使用与服务配置说明见[用户设置指南](docs/user-settings.md)，其中包含 FunASR / SenseVoice 语音转写配置示例。
 
+网页端语音输入、文字校对和计划生成的使用流程、运行依赖及升级步骤见[语音计划指南](docs/web-voice-planning.md)。
+
 ## 技术栈
 
 | 层 | 技术 |

@@ -6,21 +6,25 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Sidebar } from './Sidebar'
 import { getCurrentUser } from '../../api/auth'
+import * as workspaceHooks from '../../hooks/useWorkspace'
+import * as taskHooks from '../../hooks/useTaskDomain'
 
 vi.mock('../../hooks/useTaskInbox', () => ({
-  useTaskInbox: () => ({ occurrencesQuery: { data: [] } }),
+  useTaskInbox: vi.fn(() => ({ occurrencesQuery: { data: [] } })),
 }))
+
+vi.mock('../../hooks/useWorkspace')
 
 vi.mock('../../api/auth', () => ({
   getCurrentUser: vi.fn(),
 }))
 
 vi.mock('../../hooks/useTaskDomain', () => ({
-  useTaskDomainCapabilities: () => ({
+  useTaskDomainCapabilities: vi.fn(() => ({
     data: { model_version: 'legacy', available: true },
     isLoading: false,
     isError: false,
-  }),
+  })),
 }))
 
 function renderSidebar(
@@ -39,6 +43,12 @@ function renderSidebar(
 
 describe('Sidebar navigation refresh', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(workspaceHooks.useTaskWorkbenchFacets).mockReturnValue({
+      data: { facets: { inbox: 0 } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof workspaceHooks.useTaskWorkbenchFacets>)
     vi.mocked(getCurrentUser).mockResolvedValue({
       user: {
         id: 'user-1',
@@ -74,7 +84,7 @@ describe('Sidebar navigation refresh', () => {
     renderSidebar(queryClient)
     expect(queryClient.getQueryState(['today'])?.isInvalidated).toBe(false)
 
-    await userEvent.click(screen.getByRole('link', { name: '今日' }))
+    await userEvent.click(screen.getByRole('link', { name: '工作台' }))
 
     await waitFor(() =>
       expect(queryClient.getQueryState(['today'])?.isInvalidated).toBe(true)
@@ -126,7 +136,7 @@ describe('Sidebar navigation refresh', () => {
 
     renderSidebar(queryClient)
 
-    expect(await screen.findByRole('link', { name: '今日' })).toBeVisible()
+    expect(await screen.findByRole('link', { name: '工作台' })).toBeVisible()
     expect(screen.queryByText('系统')).not.toBeInTheDocument()
     expect(
       screen.queryByRole('link', { name: '账号管理' })
@@ -163,5 +173,47 @@ describe('Sidebar navigation refresh', () => {
 
     expect(await screen.findByRole('link', { name: '账号管理' })).toBeVisible()
     expect(screen.getByText('系统')).toBeVisible()
+  })
+
+  it('uses the server inbox facet when the workspace supports v2', () => {
+    vi.mocked(taskHooks.useTaskDomainCapabilities).mockReturnValue({
+      data: { model_version: 'v2', available: true },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof taskHooks.useTaskDomainCapabilities>)
+    vi.mocked(workspaceHooks.useTaskWorkbenchFacets).mockReturnValue({
+      data: { facets: { inbox: 120 } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof workspaceHooks.useTaskWorkbenchFacets>)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    renderSidebar(queryClient)
+
+    expect(screen.getByLabelText('120 条未整理')).toHaveTextContent('99+')
+    expect(workspaceHooks.useTaskWorkbenchFacets).toHaveBeenCalledWith(
+      {
+        date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        timezone: expect.any(String),
+      },
+      { enabled: true }
+    )
+  })
+
+  it('hides the inbox badge when the aggregate read fails', () => {
+    vi.mocked(workspaceHooks.useTaskWorkbenchFacets).mockReturnValue({
+      data: { facets: { inbox: 120 } },
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof workspaceHooks.useTaskWorkbenchFacets>)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    renderSidebar(queryClient)
+
+    expect(screen.queryByLabelText('120 条未整理')).not.toBeInTheDocument()
   })
 })

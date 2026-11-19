@@ -139,5 +139,6 @@ func unavailable(action string, cause error) error {
 
 func validFeatureFallback(feature, fallback string) bool {
 	return (feature == "roadmap_generation" && (fallback == "error" || fallback == "template")) ||
+		(feature == "plan_generation" && fallback == "error") ||
 		(feature == "japanese_furigana" && (fallback == "error" || fallback == "local"))
 }

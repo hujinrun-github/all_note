@@ -15,6 +15,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/storage"
 	"github.com/hujinrun/flowspace/internal/taskapp"
 	"github.com/hujinrun/flowspace/internal/transcription"
+	"github.com/hujinrun/flowspace/internal/webplanning"
 )
 
 type Config struct {
@@ -37,6 +38,8 @@ type Config struct {
 	CodexSubscription        handler.CodexSubscriptionService
 	AIChat                   handler.WorkspaceChatService
 	ContentImports           *contentimport.Service
+	WorkspaceQueries         handler.WorkspaceQueryApplication
+	WebPlanning              *webplanning.Service
 	// Task-domain model-aware routing is intentionally opt-in. With both values
 	// nil the existing legacy Web routes remain unchanged. Once configured, the
 	// selector must prove legacy or v2 from durable workspace state on every
@@ -47,6 +50,7 @@ type Config struct {
 }
 
 func Setup(cfg Config) *gin.Engine {
+	cfg.WorkspaceQueries = workspaceQueryApplication(cfg)
 	repository.SetStore(cfg.Store)
 	identityStore := cfg.ControlStore
 	if identityStore == nil {
@@ -201,6 +205,8 @@ func Setup(cfg Config) *gin.Engine {
 		protected.POST("/sync/notion/deletions/:note_id/restore", handler.RestoreNotionDeletion(cfg.Store))
 
 		registerTaskDomainRoutes(protected, cfg)
+		registerWorkspaceQueryRoutes(protected, cfg.WorkspaceQueries)
+		handler.RegisterWebPlanningRoutes(protected, cfg.WebPlanning)
 
 		protected.GET("/inbox", handler.GetInbox(cfg.Store))
 		protected.POST("/inbox", handler.CreateInboxItem(cfg.Store))

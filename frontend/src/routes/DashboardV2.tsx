@@ -7,15 +7,30 @@ import {
   ArrowUpRight,
   CheckCheck,
   CircleDot,
-  FolderOpen,
   CalendarClock,
   NotebookPen,
   CircleAlert,
+  ListTodo,
 } from 'lucide-react'
 import { type ReactNode, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 
-import type { OccurrenceV2, TaskV2 } from '../api/taskDomain'
+import {
+  getTaskDefinition,
+  type OccurrenceV2,
+  type TaskV2,
+} from '../api/taskDomain'
+import {
+  createWorkspaceQueryParams,
+  type WorkspaceOccurrence,
+} from '../api/workspace'
+import {
+  createWorkspaceDateWindows,
+  createWorkspaceOccurrenceParams,
+} from '../utils/workspaceDates'
+import { useWorkspaceOverview } from '../hooks/useWorkspace'
+import { taskCompletionProgress } from '../components/taskDomain/TaskCompletionGate'
 import {
   PlanningHeading,
   PlanningLoading,
@@ -23,13 +38,12 @@ import {
 } from '../components/planning/PlanningWorkspace'
 import { Alert, AlertTitle } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
+import { Card, CardHeader, CardTitle } from '../components/ui/card'
 import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '../components/ui/card'
+  RecentNotes,
+  WorkspaceProjects,
+  WorkspaceShortcuts,
+} from '../components/personalWorkspace/WorkspaceOverview'
 import {
   Empty,
   EmptyContent,
@@ -46,11 +60,14 @@ import { ScheduleCreateDialog } from '../components/taskDomain/ScheduleCreateDia
 import {
   useBlockOccurrenceMutation,
   useCompleteOccurrenceMutation,
+  taskDomainQueryKeys,
+  useOccurrence,
   useOccurrences,
+  useProject,
   useProjects,
   useReopenOccurrenceMutation,
   useStartOccurrenceMutation,
-  useTaskDefinitions,
+  useTaskDefinition,
   useUnblockOccurrenceMutation,
 } from '../hooks/useTaskDomain'
 import { useUIStore } from '../stores/ui'
@@ -79,8 +96,11 @@ export default function DashboardV2() {
     () => new Set()
   )
   const navigate = useNavigate()
+  const openPlanCapture = useUIStore((state) => state.openPlanCapture)
   const setCaptureOpen = useUIStore((state) => state.setCaptureOpen)
-  const [dateRanges] = useState(createDashboardDateRanges)
+  const queryClient = useQueryClient()
+  const queryParams = createWorkspaceQueryParams()
+  const [completionNotice, setCompletionNotice] = useState('')
   const requestedTab = searchParams.get('view')
   const activeTab: TodayTab =
     requestedTab === 'week' ||
@@ -91,51 +111,51 @@ export default function DashboardV2() {
       : 'today'
   const selectedOccurrenceID = searchParams.get('occurrence_id') ?? ''
 
-  const todayQuery = useOccurrences({ scope: 'today' })
-  const weekQuery = useOccurrences({
-    scope: 'upcoming',
-    ...dateRanges.week,
+  const overviewQuery = useWorkspaceOverview(queryParams)
+  const overview = overviewQuery.isError ? undefined : overviewQuery.data
+  const facets = overview?.facets
+  // Only the selected non-preview view needs an occurrence collection. Counters
+  // always come from the aggregate, independently of the number of visible rows.
+  const viewParams = createWorkspaceOccurrenceParams(
+    activeTab === 'done' ? 'completed' : activeTab,
+    queryParams
+  )
+  const occurrencesQuery = useOccurrences(viewParams, {
+    enabled: activeTab !== 'today',
   })
-  const monthQuery = useOccurrences({
-    scope: 'upcoming',
-    ...dateRanges.month,
-  })
-  const overdueQuery = useOccurrences({ scope: 'overdue' })
-  const completedQuery = useOccurrences({ scope: 'completed' })
-  const definitionsQuery = useTaskDefinitions()
-  const projectsQuery = useProjects()
+  // A catalog is needed for the selected view's names or the creation form,
+  // never for computing homepage statistics.
+  const projectsQuery = useProjects(
+    {},
+    {
+      enabled: activeTab !== 'today' || scheduleCreateOpen,
+    }
+  )
   const completeOccurrence = useCompleteOccurrenceMutation()
   const startOccurrence = useStartOccurrenceMutation()
   const blockOccurrence = useBlockOccurrenceMutation()
   const unblockOccurrence = useUnblockOccurrenceMutation()
   const reopenOccurrence = useReopenOccurrenceMutation()
-
-  const definitions = useMemo(
-    () =>
-      new Map(
-        (definitionsQuery.data ?? []).map((definition) => [
-          definition.id,
-          definition,
-        ])
-      ),
-    [definitionsQuery.data]
+  const projects = new Map(
+    (projectsQuery.data ?? []).map((project) => [project.id, project])
   )
-  const projects = useMemo(
-    () =>
-      new Map(
-        (projectsQuery.data ?? []).map((project) => [project.id, project])
-      ),
-    [projectsQuery.data]
-  )
-  const queries = {
-    today: todayQuery,
-    week: weekQuery,
-    month: monthQuery,
-    overdue: overdueQuery,
-    done: completedQuery,
+  const activeOccurrences =
+    activeTab === 'today'
+      ? (overview?.today ?? emptyOccurrences)
+      : occurrencesQuery.isError
+        ? emptyOccurrences
+        : (occurrencesQuery.data ?? emptyOccurrences)
+  const listLoading =
+    activeTab === 'today' ? overviewQuery.isLoading : occurrencesQuery.isLoading
+  const listError =
+    activeTab === 'today' ? overviewQuery.isError : occurrencesQuery.isError
+  const tabCounts = {
+    today: facets?.today,
+    week: facets?.week,
+    month: facets?.month,
+    overdue: facets?.overdue,
+    done: facets?.completed_total,
   }
-  const activeQuery = queries[activeTab]
-  const activeOccurrences = activeQuery.data ?? emptyOccurrences
   const groupByTask = activeTab === 'week' || activeTab === 'month'
   const occurrenceSections = useMemo(() => {
     const timed: OccurrenceV2[] = []
@@ -151,15 +171,17 @@ export default function DashboardV2() {
       flexibleCollections: collectOccurrencesByTask(flexible, groupByTask),
     }
   }, [activeOccurrences, groupByTask])
-  const selectedOccurrence = activeOccurrences.find(
-    (occurrence) => occurrence.id === selectedOccurrenceID
-  )
-  const selectedTask = selectedOccurrence
-    ? definitions.get(selectedOccurrence.task_id)
+  const selectedOccurrenceQuery = useOccurrence(selectedOccurrenceID)
+  const selectedOccurrence = selectedOccurrenceID
+    ? (selectedOccurrenceQuery.data ??
+      activeOccurrences.find(
+        (occurrence) => occurrence.id === selectedOccurrenceID
+      ))
     : undefined
-  const selectedProject = selectedTask
-    ? projects.get(selectedTask.project_id)
-    : undefined
+  const selectedTaskQuery = useTaskDefinition(selectedOccurrence?.task_id ?? '')
+  const selectedTask = selectedTaskQuery.data
+  const selectedProjectQuery = useProject(selectedOccurrence?.project_id ?? '')
+  const selectedProject = selectedProjectQuery.data
   const busy =
     completeOccurrence.isPending ||
     startOccurrence.isPending ||
@@ -199,27 +221,47 @@ export default function DashboardV2() {
     }
   }
 
+  function projectName(occurrence: OccurrenceV2) {
+    return (
+      (occurrence as Partial<WorkspaceOccurrence>).project_name ??
+      (occurrence.project_id
+        ? projects.get(occurrence.project_id)?.name
+        : undefined)
+    )
+  }
+
+  async function completeRow(occurrence: OccurrenceV2) {
+    // Completion requirements are command preconditions. Read the single task
+    // at interaction time instead of downloading every task on page load.
+    const task = await queryClient.fetchQuery({
+      queryKey: taskDomainQueryKeys.task(occurrence.task_id),
+      queryFn: () => getTaskDefinition(occurrence.task_id),
+      staleTime: 0,
+    })
+    if (taskCompletionProgress(task).remaining > 0) {
+      setCompletionNotice('请先完成必选项。')
+      updateSearchParams({ occurrence_id: occurrence.id, task_id: null })
+      return
+    }
+    setCompletionNotice('')
+    await completeOccurrence.mutateAsync(commandVariables(task, occurrence))
+  }
+
   function renderOccurrence(occurrence: OccurrenceV2) {
-    const task = definitions.get(occurrence.task_id)
-    const project = task ? projects.get(task.project_id) : undefined
+    const task =
+      selectedTask?.id === occurrence.task_id ? selectedTask : undefined
     return (
       <OccurrenceRow
         key={occurrence.id}
         occurrence={occurrence}
         task={task}
-        project={project}
+        projectName={projectName(occurrence)}
         selected={occurrence.id === selectedOccurrenceID}
-        onSelect={() =>
+        onSelect={() => {
+          setCompletionNotice('')
           updateSearchParams({ occurrence_id: occurrence.id, task_id: null })
-        }
-        onComplete={
-          task
-            ? () =>
-                completeOccurrence.mutateAsync(
-                  commandVariables(task, occurrence)
-                )
-            : undefined
-        }
+        }}
+        onComplete={() => completeRow(occurrence)}
       />
     )
   }
@@ -232,8 +274,8 @@ export default function DashboardV2() {
       return renderOccurrence(collection.occurrences[0])
     }
 
-    const task = definitions.get(collection.taskID)
-    const project = task ? projects.get(task.project_id) : undefined
+    const task =
+      selectedTask?.id === collection.taskID ? selectedTask : undefined
     const containsSelection = collection.occurrences.some(
       (occurrence) => occurrence.id === selectedOccurrenceID
     )
@@ -242,7 +284,7 @@ export default function DashboardV2() {
       <OccurrenceCollection
         key={collection.taskID}
         task={task}
-        projectName={project?.name}
+        projectName={projectName(collection.occurrences[0])}
         occurrences={collection.occurrences}
         expanded={expanded}
         onToggle={() => {
@@ -263,6 +305,7 @@ export default function DashboardV2() {
   }
 
   function selectTab(tab: TodayTab) {
+    setCompletionNotice('')
     updateSearchParams({
       view: tab === 'today' ? null : tab,
       occurrence_id: null,
@@ -271,12 +314,15 @@ export default function DashboardV2() {
   }
 
   return (
-    <section className="planning-page" aria-labelledby="today-heading">
+    <section
+      className="planning-page personal-workspace-page"
+      aria-labelledby="today-heading"
+    >
       <PlanningHeading
         id="today-heading"
-        title="今天"
+        title="我的工作台"
         date={formatToday()}
-        description="查看今日安排，推进手头的任务。"
+        description="把想法、计划与行动，放在一个空间。"
       >
         <Button
           type="button"
@@ -286,14 +332,23 @@ export default function DashboardV2() {
           <CalendarPlus aria-hidden="true" data-icon="inline-start" />
           新增日程
         </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => openPlanCapture()}
+        >
+          语音计划
+        </Button>
         <Button type="button" onClick={() => setCaptureOpen(true)}>
           <Plus aria-hidden="true" data-icon="inline-start" />
           添加任务
         </Button>
       </PlanningHeading>
 
+      <WorkspaceShortcuts />
+
       <div
-        className="mb-5 grid grid-cols-3 gap-2.5 sm:gap-4"
+        className="workspace-metrics mb-5 grid grid-cols-3 gap-2.5 sm:gap-4"
         role="group"
         aria-label="任务概览"
       >
@@ -302,23 +357,23 @@ export default function DashboardV2() {
             {
               tab: 'today',
               label: '今日待办',
-              query: todayQuery,
+              count: facets?.today,
               icon: CircleDot,
             },
             {
               tab: 'week',
               label: '本周安排',
-              query: weekQuery,
+              count: facets?.week,
               icon: CalendarDays,
             },
             {
               tab: 'done',
-              label: '近期完成',
-              query: completedQuery,
+              label: '累计完成',
+              count: facets?.completed_total,
               icon: CheckCheck,
             },
           ] as const
-        ).map(({ tab, label, query, icon: Icon }) => (
+        ).map(({ tab, label, count, icon: Icon }) => (
           <Card key={tab} className="relative min-w-0 gap-0 py-0 shadow-none">
             <Button
               type="button"
@@ -333,16 +388,7 @@ export default function DashboardV2() {
               <span className="flex min-w-0 flex-col gap-1 text-left">
                 <span className="text-xs font-medium sm:text-sm">{label}</span>
                 <strong className="text-2xl font-semibold leading-none tracking-tight tabular-nums sm:text-[1.8rem]">
-                  {query.isLoading || query.isError
-                    ? '—'
-                    : tab === 'today'
-                      ? (query.data ?? []).filter(
-                          (item) =>
-                            !['done', 'skipped', 'cancelled'].includes(
-                              item.execution_status
-                            )
-                        ).length
-                      : (query.data?.length ?? 0)}
+                  {count ?? '—'}
                   <small className="ml-1 text-xs font-normal text-muted-foreground">
                     项
                   </small>
@@ -359,12 +405,26 @@ export default function DashboardV2() {
 
       <div className={selectedOccurrence ? 'min-w-0' : 'planning-dashboard'}>
         <Card className="planning-agenda min-w-0 gap-0 py-0 shadow-none">
+          <CardHeader className="workspace-panel-header">
+            <CardTitle>
+              <h2>
+                <ListTodo aria-hidden="true" />
+                行动清单
+              </h2>
+            </CardTitle>
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/tasks" aria-label="查看全部任务">
+                查看全部
+                <ArrowUpRight aria-hidden="true" data-icon="inline-end" />
+              </Link>
+            </Button>
+          </CardHeader>
           <PlanningTabs
             label="今日任务筛选"
             value={activeTab}
             tabs={todayTabs.map((tab) => ({
               ...tab,
-              count: queries[tab.id].data?.length ?? 0,
+              count: tabCounts[tab.id],
             }))}
             onChange={selectTab}
           >
@@ -372,16 +432,40 @@ export default function DashboardV2() {
               className={`td-workspace planning-workspace ${selectedOccurrence ? 'has-inspector' : ''}`}
             >
               <div className="td-list-canvas">
-                {activeQuery.isLoading || definitionsQuery.isLoading ? (
+                {listLoading ? (
                   <PlanningLoading label="正在加载今日执行" />
                 ) : null}
-                {activeQuery.isError ? (
+                {listError ? (
                   <Alert variant="destructive">
                     <CircleAlert aria-hidden="true" />
-                    <AlertTitle>今日执行暂时不可用，请刷新后重试。</AlertTitle>
+                    <AlertTitle>
+                      {activeTab === 'today'
+                        ? '工作台暂时不可用，请刷新后重试。'
+                        : '执行清单暂时不可用，请刷新后重试。'}
+                    </AlertTitle>
                   </Alert>
                 ) : null}
 
+                {activeTab === 'today' &&
+                facets &&
+                facets.today > activeOccurrences.length ? (
+                  <p className="px-4 py-2 text-sm text-muted-foreground">
+                    显示前 {activeOccurrences.length} 项，共 {facets.today} 项。{' '}
+                    <Link className="underline" to="/tasks?view=today">
+                      查看全部今日任务
+                    </Link>
+                  </p>
+                ) : null}
+                {selectedOccurrenceID &&
+                selectedOccurrenceQuery.isLoading &&
+                !selectedOccurrence ? (
+                  <PlanningLoading label="正在加载执行详情" />
+                ) : null}
+                {selectedOccurrenceID && selectedOccurrenceQuery.isError ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>执行详情暂时不可用，请稍后重试。</AlertTitle>
+                  </Alert>
+                ) : null}
                 {occurrenceSections.timedCount > 0 ? (
                   <>
                     <SectionHeading
@@ -400,7 +484,7 @@ export default function DashboardV2() {
                   </>
                 ) : null}
 
-                {activeOccurrences.length > 0 ? (
+                {occurrenceSections.flexibleCount > 0 ? (
                   <>
                     <SectionHeading
                       title={occurrenceSectionTitle(activeTab)}
@@ -419,9 +503,8 @@ export default function DashboardV2() {
                 ) : null}
 
                 {activeOccurrences.length === 0 &&
-                !activeQuery.isLoading &&
-                !definitionsQuery.isLoading &&
-                !activeQuery.isError ? (
+                !listLoading &&
+                !listError ? (
                   <Empty className="planning-empty">
                     <EmptyHeader>
                       <EmptyMedia variant="icon">
@@ -458,6 +541,7 @@ export default function DashboardV2() {
                   occurrence={selectedOccurrence}
                   task={selectedTask}
                   project={selectedProject}
+                  projectName={projectName(selectedOccurrence)}
                   busy={busy}
                   onClose={() =>
                     updateSearchParams(
@@ -518,118 +602,52 @@ export default function DashboardV2() {
                           )
                       : undefined
                   }
-                />
+                >
+                  {selectedTaskQuery.isLoading ? (
+                    <PlanningLoading label="正在加载任务详情" />
+                  ) : null}
+                  {selectedTaskQuery.isError ? (
+                    <Alert variant="destructive">
+                      <AlertTitle>任务详情暂时不可用，请稍后重试。</AlertTitle>
+                    </Alert>
+                  ) : null}
+                  {completionNotice ? (
+                    <p role="status">{completionNotice}</p>
+                  ) : null}
+                </OccurrenceInspector>
               ) : null}
             </div>
           </PlanningTabs>
         </Card>
         {!selectedOccurrence ? (
-          <aside
-            className="grid min-w-0 content-start gap-4"
-            aria-label="工作区概览"
-          >
-            <Card className="gap-0 py-0 shadow-none">
-              <CardHeader className="flex items-center justify-between gap-2 border-b border-border px-4 py-3 [.border-b]:pb-3">
-                <CardTitle>
-                  <h2 className="text-base font-semibold">我的项目</h2>
-                </CardTitle>
-                <Button asChild variant="ghost" size="icon-sm">
-                  <Link to="/projects" aria-label="查看全部项目">
-                    <ArrowUpRight aria-hidden="true" />
-                  </Link>
-                </Button>
-              </CardHeader>
-              <CardContent className="px-4">
-                {projectsQuery.isError || definitionsQuery.isError ? (
-                  <p className="py-4 text-sm text-muted-foreground">
-                    项目暂时不可用，请稍后重试。
-                  </p>
-                ) : projectsQuery.isLoading || definitionsQuery.isLoading ? (
-                  <PlanningLoading label="正在加载项目" />
-                ) : (
-                  (projectsQuery.data ?? [])
-                    .filter(
-                      (project) =>
-                        project.system_role !== 'inbox' &&
-                        project.status !== 'archived'
-                    )
-                    .slice(0, 5)
-                    .map((project) => {
-                      const tasks = (definitionsQuery.data ?? []).filter(
-                        (task) => task.project_id === project.id
-                      )
-                      const complete = tasks.filter(
-                        (task) => task.lifecycle_status === 'completed'
-                      ).length
-                      return (
-                        <Link
-                          key={project.id}
-                          className="planning-context-link"
-                          to={`/projects/${encodeURIComponent(project.id)}`}
-                        >
-                          <FolderOpen aria-hidden="true" />
-                          <span className="min-w-0 flex-1 truncate font-medium">
-                            {project.name}
-                          </span>
-                          <small className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                            {tasks.length
-                              ? `${complete} / ${tasks.length} 个任务已完成`
-                              : '还没有任务'}
-                          </small>
-                        </Link>
-                      )
-                    })
-                )}
-              </CardContent>
-              <CardFooter className="px-4 py-2">
-                <Button
-                  asChild
-                  variant="ghost"
-                  size="sm"
-                  className="w-full justify-between"
-                >
-                  <Link to="/projects">
-                    管理项目{' '}
-                    <ArrowUpRight aria-hidden="true" data-icon="inline-end" />
-                  </Link>
-                </Button>
-              </CardFooter>
-            </Card>
-            <Card className="gap-0 py-0 shadow-none">
-              <CardHeader className="border-b border-border px-4 py-4 [.border-b]:pb-4">
-                <CardTitle>
-                  <h2 className="text-base font-semibold">继续整理</h2>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-4">
-                <Link
-                  className="planning-context-link"
-                  to="/tasks?view=unscheduled"
-                >
-                  <CalendarClock aria-hidden="true" />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 font-medium">
-                    还没安排的任务
-                    <small className="text-xs font-normal text-muted-foreground">
-                      为待办找到合适的时间
-                    </small>
-                  </span>
-                  <ArrowUpRight aria-hidden="true" />
-                </Link>
-                <Link className="planning-context-link" to="/notes">
-                  <NotebookPen aria-hidden="true" />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 font-medium">
-                    打开笔记库
-                    <small className="text-xs font-normal text-muted-foreground">
-                      接着上一次的思考
-                    </small>
-                  </span>
-                  <ArrowUpRight aria-hidden="true" />
-                </Link>
-              </CardContent>
-            </Card>
+          <aside className="workspace-overview" aria-label="工作区概览">
+            <WorkspaceProjects
+              projects={overview?.projects ?? []}
+              loading={overviewQuery.isLoading}
+              error={overviewQuery.isError}
+            />
+            <RecentNotes
+              section={overview?.notes}
+              loading={overviewQuery.isLoading}
+              error={overviewQuery.isError}
+            />
           </aside>
         ) : null}
       </div>
+
+      <footer className="workspace-home-footer">
+        <span>留一点空间，专注重要的事。</span>
+        <div>
+          <Link to="/tasks?view=unscheduled">
+            <CalendarClock aria-hidden="true" />
+            还没安排的任务
+          </Link>
+          <Link to="/notes">
+            <NotebookPen aria-hidden="true" />
+            打开笔记库
+          </Link>
+        </div>
+      </footer>
 
       {scheduleCreateOpen ? (
         <ScheduleCreateDialog
@@ -804,31 +822,10 @@ export function createDashboardDateRanges(
   reference = new Date(),
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 ): { week: DashboardDateRange; month: DashboardDateRange } {
-  const startOfWeek = new Date(reference)
-  startOfWeek.setHours(0, 0, 0, 0)
-  const daysSinceMonday = (startOfWeek.getDay() + 6) % 7
-  startOfWeek.setDate(startOfWeek.getDate() - daysSinceMonday)
-  const startOfNextWeek = new Date(startOfWeek)
-  startOfNextWeek.setDate(startOfNextWeek.getDate() + 7)
-
-  const startOfMonth = new Date(reference)
-  startOfMonth.setHours(0, 0, 0, 0)
-  startOfMonth.setDate(1)
-  const startOfNextMonth = new Date(startOfMonth)
-  startOfNextMonth.setMonth(startOfNextMonth.getMonth() + 1)
-
-  return {
-    week: {
-      from: startOfWeek.toISOString(),
-      to: startOfNextWeek.toISOString(),
-      timezone,
-    },
-    month: {
-      from: startOfMonth.toISOString(),
-      to: startOfNextMonth.toISOString(),
-      timezone,
-    },
-  }
+  const { week, month } = createWorkspaceDateWindows(
+    createWorkspaceQueryParams(reference, timezone)
+  )
+  return { week, month }
 }
 
 function todayTabLabel(tab: TodayTab) {

@@ -92,7 +92,7 @@ func TestMigrateControlCreatesVersionedControlSchema(t *testing.T) {
 			t.Errorf("expected table %s", table)
 		}
 	}
-	assertRowCount(t, db, `SELECT COUNT(*) FROM control_schema_migrations`, 4)
+	assertRowCount(t, db, `SELECT COUNT(*) FROM control_schema_migrations`, 5)
 }
 
 func TestOpenControlRejectsIncompleteOrTamperedMigrationHistory(t *testing.T) {

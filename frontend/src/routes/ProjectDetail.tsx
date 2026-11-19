@@ -1,4 +1,5 @@
 import { PlanningTabs } from '../components/planning/PlanningWorkspace'
+import { useUIStore } from '../stores/ui'
 import { Button } from '../components/ui/button'
 import { Card } from '../components/ui/card'
 import {
@@ -22,7 +23,11 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { getNote } from '../api/notes'
 import type { RoadmapV2 } from '../api/roadmapV2'
 import type { OccurrenceV2, TaskV2 } from '../api/taskDomain'
-import { TaskDomainRevisionConflictError } from '../api/taskDomain'
+import {
+  TaskDomainAPIError,
+  TaskDomainRevisionConflictError,
+} from '../api/taskDomain'
+import { createWorkspaceQueryParams } from '../api/workspace'
 import {
   ExecutionStatusLabel,
   TaskDefinitionInspector,
@@ -37,6 +42,7 @@ import {
   taskScheduleValidationError,
 } from '../components/taskDomain/TaskScheduleFields'
 import { useGenerateRoadmapMutation, useRoadmapV2 } from '../hooks/useRoadmapV2'
+import { useProjectOverview } from '../hooks/useWorkspace'
 import {
   useActivateProjectMutation,
   useArchiveProjectMutation,
@@ -48,7 +54,6 @@ import {
   useDeleteTaskMutation,
   useOccurrences,
   usePauseTaskMutation,
-  useProject,
   useProjects,
   usePublishTaskMutation,
   useRestoreTaskMutation,
@@ -89,19 +94,64 @@ const projectSections: Array<{ id: ProjectSection; label: string }> = [
 ]
 
 export default function ProjectDetail() {
+  const openPlanCapture = useUIStore((state) => state.openPlanCapture)
   const { projectID = '' } = useParams()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedSection = searchParams.get('section') as ProjectSection | null
   const selectedTaskID = searchParams.get('task_id') ?? ''
+  const [completionDecisionOpen, setCompletionDecisionOpen] = useState(false)
+  const [completionDecision, setCompletionDecision] = useState<
+    'choose' | 'move'
+  >('choose')
 
-  const projectQuery = useProject(projectID)
-  const learningProject = projectQuery.data?.kind === 'learning'
+  const projectQuery = useProjectOverview(
+    projectID,
+    createWorkspaceQueryParams()
+  )
+  const learningProject = projectQuery.data?.project.kind === 'learning'
+  const visibleSections = useMemo(
+    () =>
+      projectSections.filter(
+        (section) => section.id !== 'roadmap' || learningProject
+      ),
+    [learningProject]
+  )
+  const activeSection = visibleSections.some(
+    (section) => section.id === requestedSection
+  )
+    ? requestedSection!
+    : 'overview'
+  const hasProject = Boolean(projectQuery.data?.project)
+  const needsTasks =
+    activeSection === 'overview' ||
+    activeSection === 'tasks' ||
+    activeSection === 'notes' ||
+    selectedTaskID !== '' ||
+    completionDecisionOpen
+  const needsOccurrences =
+    activeSection === 'overview' ||
+    activeSection === 'tasks' ||
+    activeSection === 'schedule' ||
+    activeSection === 'history' ||
+    selectedTaskID !== '' ||
+    completionDecisionOpen
   const roadmapQuery = useRoadmapV2(projectID, learningProject)
   const generateRoadmap = useGenerateRoadmapMutation(projectID)
-  const projectsQuery = useProjects()
-  const tasksQuery = useTaskDefinitions({ project_id: projectID })
-  const occurrencesQuery = useOccurrences({ project_id: projectID })
+  const projectsQuery = useProjects(
+    {},
+    {
+      enabled: completionDecisionOpen && completionDecision === 'move',
+    }
+  )
+  const tasksQuery = useTaskDefinitions(
+    { project_id: projectID },
+    { enabled: hasProject && needsTasks }
+  )
+  const occurrencesQuery = useOccurrences(
+    { project_id: projectID },
+    { enabled: hasProject && needsOccurrences }
+  )
   const createTask = useCreateTaskMutation()
   const activateProject = useActivateProjectMutation()
   const completeProject = useCompleteProjectMutation()
@@ -122,11 +172,7 @@ export default function ProjectDetail() {
   const [createSchedule, setCreateSchedule] = useState(createTaskScheduleDraft)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
-  const [completionDecisionOpen, setCompletionDecisionOpen] = useState(false)
   const [completingProject, setCompletingProject] = useState(false)
-  const [completionDecision, setCompletionDecision] = useState<
-    'choose' | 'move'
-  >('choose')
   const [targetProjectID, setTargetProjectID] = useState('')
   const [roadmapDialogOpen, setRoadmapDialogOpen] = useState(false)
   const [roadmapPrompt, setRoadmapPrompt] = useState('')
@@ -162,19 +208,6 @@ export default function ProjectDetail() {
     }
   }, [projectActionsOpen])
 
-  const visibleSections = useMemo(
-    () =>
-      projectSections.filter(
-        (section) => section.id !== 'roadmap' || learningProject
-      ),
-    [learningProject]
-  )
-  const activeSection = visibleSections.some(
-    (section) => section.id === requestedSection
-  )
-    ? requestedSection!
-    : 'overview'
-
   const tasksByID = useMemo(
     () => new Map((tasksQuery.data ?? []).map((task) => [task.id, task])),
     [tasksQuery.data]
@@ -193,6 +226,7 @@ export default function ProjectDetail() {
     queries: linkedNoteIDs.map((noteID) => ({
       queryKey: ['notes', noteID],
       queryFn: () => getNote(noteID),
+      enabled: activeSection === 'notes',
     })),
   })
   const occurrencesByTask = useMemo(() => {
@@ -211,17 +245,13 @@ export default function ProjectDetail() {
   const selectedTaskOccurrences = selectedTask
     ? (occurrencesByTask.get(selectedTask.id) ?? [])
     : []
-  const actionableTasks = (tasksQuery.data ?? []).filter(
-    (task) =>
-      task.lifecycle_status !== 'cancelled' &&
-      task.lifecycle_status !== 'archived'
-  )
-  const completedTasks = actionableTasks.filter(
-    (task) => task.lifecycle_status === 'completed'
-  )
-  const progress = actionableTasks.length
-    ? Math.round((completedTasks.length / actionableTasks.length) * 100)
-    : 0
+  const completionDataUnavailable =
+    tasksQuery.data === undefined ||
+    occurrencesQuery.data === undefined ||
+    tasksQuery.isLoading ||
+    tasksQuery.isError ||
+    occurrencesQuery.isLoading ||
+    occurrencesQuery.isError
   const commandBusy = [
     updateTask,
     publishTask,
@@ -287,7 +317,7 @@ export default function ProjectDetail() {
   }
 
   function openProjectAction(action: 'edit' | 'archive' | 'delete') {
-    const project = projectQuery.data
+    const project = projectQuery.data?.project
     if (!project) return
     setProjectActionsOpen(false)
     setProjectActionDialog(action)
@@ -300,7 +330,7 @@ export default function ProjectDetail() {
 
   async function handleUpdateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const project = projectQuery.data
+    const project = projectQuery.data?.project
     if (!project || projectName.trim() === '') return
     setError('')
     try {
@@ -323,7 +353,7 @@ export default function ProjectDetail() {
   }
 
   async function confirmProjectAction() {
-    const project = projectQuery.data
+    const project = projectQuery.data?.project
     if (
       !project ||
       (projectActionDialog !== 'archive' && projectActionDialog !== 'delete')
@@ -356,10 +386,10 @@ export default function ProjectDetail() {
   }
 
   async function requestCompletion() {
-    const project = projectQuery.data
+    const project = projectQuery.data?.project
     if (!project || completingProject) return
     setError('')
-    if (openOccurrences.length > 0) {
+    if (project.summary.open_occurrence_count > 0) {
       setCompletionDecisionOpen(true)
       return
     }
@@ -370,6 +400,13 @@ export default function ProjectDetail() {
         expectedRevision: { expected_project_revision: project.revision },
       })
     } catch (caught) {
+      if (
+        caught instanceof TaskDomainAPIError &&
+        caught.code === 'project_has_open_occurrences'
+      ) {
+        setCompletionDecisionOpen(true)
+        return
+      }
       setError(
         caught instanceof TaskDomainRevisionConflictError
           ? '项目已在其他窗口更新，请刷新后再完成。'
@@ -381,7 +418,7 @@ export default function ProjectDetail() {
   }
 
   async function startProject() {
-    const project = projectQuery.data
+    const project = projectQuery.data?.project
     if (!project) return
     setError('')
     try {
@@ -437,8 +474,8 @@ export default function ProjectDetail() {
   }
 
   async function completeAfterCancelling() {
-    const project = projectQuery.data
-    if (!project || completingProject) return
+    const project = projectQuery.data?.project
+    if (!project || completingProject || completionDataUnavailable) return
     setError('')
     setCompletingProject(true)
     try {
@@ -471,8 +508,14 @@ export default function ProjectDetail() {
   }
 
   async function completeAfterMoving() {
-    const project = projectQuery.data
-    if (!project || targetProjectID === '' || completingProject) return
+    const project = projectQuery.data?.project
+    if (
+      !project ||
+      targetProjectID === '' ||
+      completingProject ||
+      completionDataUnavailable
+    )
+      return
     setError('')
     setCompletingProject(true)
     try {
@@ -510,10 +553,16 @@ export default function ProjectDetail() {
 
   if (projectQuery.isLoading)
     return <div className="td-route-loading">正在加载项目…</div>
-  if (projectQuery.isError || !projectQuery.data)
+  if (projectQuery.isError || !projectQuery.data?.project)
     return <div className="td-route-error">项目暂时不可用，请刷新后重试。</div>
 
-  const project = projectQuery.data
+  const project = projectQuery.data?.project
+  const progressStatus =
+    project.summary.completion_percent === null
+      ? project.summary.has_open_ended_recurrence
+        ? '持续推进'
+        : '暂无可计算进度'
+      : ''
 
   return (
     <section
@@ -535,13 +584,19 @@ export default function ProjectDetail() {
           <p>在一个目标下查看任务定义、每次执行和近期日程。</p>
           <div
             className="td-project-progress"
-            aria-label={`项目进度 ${completedTasks.length}/${actionableTasks.length}`}
+            aria-label={`项目进度 ${project.summary.completed_task_count}/${project.summary.total_actionable_task_count}${progressStatus ? `，${progressStatus}` : ''}`}
           >
-            <span>
-              <i style={{ width: `${progress}%` }} />
-            </span>
+            {project.summary.completion_percent !== null ? (
+              <span>
+                <i
+                  style={{ width: `${project.summary.completion_percent}%` }}
+                />
+              </span>
+            ) : null}
             <small>
-              已完成 {completedTasks.length} / {actionableTasks.length}
+              已完成 {project.summary.completed_task_count} /{' '}
+              {project.summary.total_actionable_task_count}
+              {progressStatus ? ` · ${progressStatus}` : null}
             </small>
           </div>
         </div>
@@ -582,13 +637,7 @@ export default function ProjectDetail() {
             <button
               type="button"
               className="td-secondary-action"
-              disabled={
-                completingProject ||
-                tasksQuery.isLoading ||
-                tasksQuery.isError ||
-                occurrencesQuery.isLoading ||
-                occurrencesQuery.isError
-              }
+              disabled={completingProject || projectQuery.isFetching}
               onClick={() => void requestCompletion()}
             >
               {completingProject ? '正在完成…' : '完成项目'}
@@ -657,6 +706,16 @@ export default function ProjectDetail() {
               </div>
             ) : null}
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={
+              project.status !== 'active' && project.status !== 'planning'
+            }
+            onClick={() => openPlanCapture(project.id)}
+          >
+            生成计划
+          </Button>
           <Button
             type="button"
             aria-label="打开添加任务"
@@ -730,11 +789,9 @@ export default function ProjectDetail() {
           tabs={visibleSections.map((section) => ({
             ...section,
             count:
-              section.id === 'tasks'
-                ? tasksByID.size
-                : section.id === 'schedule'
-                  ? openOccurrences.length
-                  : undefined,
+              section.id === 'schedule'
+                ? project.summary.open_occurrence_count
+                : undefined,
           }))}
           onChange={(section) =>
             updateSearchParams({
@@ -770,7 +827,7 @@ export default function ProjectDetail() {
                             ? '正在推进'
                             : '任务定义'}
                         </strong>
-                        <span>{tasksByID.size} 个任务定义</span>
+                        <span>当前项目的任务定义</span>
                       </header>
                       {(tasksQuery.data ?? []).map((task) => {
                         const occurrences = occurrencesByTask.get(task.id) ?? []
@@ -1191,10 +1248,21 @@ export default function ProjectDetail() {
             <header>
               <div>
                 <span>完成项目前</span>
-                <h2>还有 {openOccurrences.length} 个未完成执行实例</h2>
+                <h2>
+                  {project.summary.open_occurrence_count > 0
+                    ? `还有 ${project.summary.open_occurrence_count} 个待执行实例`
+                    : '项目仍有未完成执行实例'}
+                </h2>
               </div>
             </header>
-            <p>请明确取消这些实例，或把对应任务迁移到其他项目。</p>
+            <p>
+              请取消未完成实例，或把对应任务迁移到其他项目。草稿任务中的实例也需要处理。
+            </p>
+            {tasksQuery.isLoading || occurrencesQuery.isLoading ? (
+              <p role="status">正在加载未完成实例…</p>
+            ) : tasksQuery.isError || occurrencesQuery.isError ? (
+              <p role="alert">未完成实例暂时无法加载，请刷新后重试。</p>
+            ) : null}
             {error ? (
               <div className="td-inline-error" role="alert">
                 {error}
@@ -1212,7 +1280,7 @@ export default function ProjectDetail() {
                 <button
                   type="button"
                   className="is-primary"
-                  disabled={completingProject}
+                  disabled={completingProject || completionDataUnavailable}
                   onClick={() => void completeAfterCancelling()}
                 >
                   {completingProject ? '正在完成…' : '取消未完成实例并完成'}
@@ -1253,7 +1321,13 @@ export default function ProjectDetail() {
                   <button
                     type="button"
                     className="is-primary"
-                    disabled={targetProjectID === '' || completingProject}
+                    disabled={
+                      targetProjectID === '' ||
+                      completingProject ||
+                      completionDataUnavailable ||
+                      projectsQuery.isLoading ||
+                      projectsQuery.isError
+                    }
                     onClick={() => void completeAfterMoving()}
                   >
                     {completingProject ? '正在完成…' : '迁移任务并完成'}
@@ -1434,7 +1508,7 @@ function ProjectSchedule({ occurrences }: { occurrences: OccurrenceV2[] }) {
     <div className="td-section-surface">
       <header className="td-section-heading">
         <strong>项目日程</strong>
-        <span>{occurrences.length} 个执行实例</span>
+        <span>当前项目的执行安排</span>
       </header>
       {occurrences.map((occurrence) => (
         <div className="td-schedule-row" key={occurrence.id}>
@@ -1456,7 +1530,7 @@ function ProjectHistory({ occurrences }: { occurrences: OccurrenceV2[] }) {
     <div className="td-section-surface">
       <header className="td-section-heading">
         <strong>完成历史</strong>
-        <span>{history.length} 个实例</span>
+        <span>已结束的执行实例</span>
       </header>
       {history.map((occurrence) => (
         <div className="td-schedule-row" key={occurrence.id}>

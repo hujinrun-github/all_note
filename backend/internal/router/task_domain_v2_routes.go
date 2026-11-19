@@ -29,6 +29,9 @@ type taskDomainRouteDispatcher struct {
 func registerTaskDomainRoutes(routes *gin.RouterGroup, cfg Config) {
 	if cfg.TaskDomainModelSelector == nil && cfg.TaskDomainV2Runtime == nil {
 		registerLegacyTaskDomainRoutes(routes, cfg)
+		routes.GET("/projects", projectListWithSummary(cfg.WorkspaceQueries, func(c *gin.Context) {
+			c.Status(http.StatusNotFound)
+		}))
 		routes.GET("/task-domain/capabilities", taskDomainLegacyCapabilities)
 		return
 	}
@@ -40,7 +43,7 @@ func registerTaskDomainRoutes(routes *gin.RouterGroup, cfg Config) {
 		v2:       taskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime), cfg.AIChat),
 	}
 	dispatcher.compat = legacyWebTaskDomainV2Delegate(newTaskDomainV2Application(cfg.TaskDomainV2Runtime), cfg.Store)
-	registerModelAwareTaskDomainRoutes(routes, dispatcher)
+	registerModelAwareTaskDomainRoutesWithQueries(routes, dispatcher, cfg.WorkspaceQueries)
 	routes.GET("/task-domain/capabilities", dispatcher.capabilities)
 }
 
@@ -101,6 +104,10 @@ func legacyWebTaskDomainV2Delegate(application handler.LegacyWebTaskDomainApplic
 }
 
 func registerModelAwareTaskDomainRoutes(routes *gin.RouterGroup, dispatcher taskDomainRouteDispatcher) {
+	registerModelAwareTaskDomainRoutesWithQueries(routes, dispatcher, nil)
+}
+
+func registerModelAwareTaskDomainRoutesWithQueries(routes *gin.RouterGroup, dispatcher taskDomainRouteDispatcher, queries handler.WorkspaceQueryApplication) {
 	shared := dispatcher.handler(true, true)
 	legacyOnly := dispatcher.handler(true, false)
 	v2Only := dispatcher.handler(false, true)
@@ -138,7 +145,7 @@ func registerModelAwareTaskDomainRoutes(routes *gin.RouterGroup, dispatcher task
 	routes.GET("/today", dispatcher.handlerWithV2(true, dispatcher.compat))
 	routes.GET("/summary", dispatcher.handlerWithV2(true, dispatcher.compat))
 
-	routes.GET("/projects", v2Only)
+	routes.GET("/projects", projectListWithSummary(queries, v2Only))
 	routes.POST("/projects", v2Only)
 	routes.GET("/projects/:projectID", v2Only)
 	routes.PATCH("/projects/:projectID", v2Only)

@@ -5,9 +5,27 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as taskHooks from '../hooks/useTaskDomain'
+import * as workspaceHooks from '../hooks/useWorkspace'
+import * as taskAPI from '../api/taskDomain'
+import * as notesHooks from '../hooks/useNotes'
+import type { WorkspaceOverview } from '../api/workspace'
 import DashboardV2, { createDashboardDateRanges } from './DashboardV2'
 
 vi.mock('../hooks/useTaskDomain')
+vi.mock('../hooks/useWorkspace')
+vi.mock('../api/taskDomain', async () => ({
+  ...(await vi.importActual<typeof import('../api/taskDomain')>(
+    '../api/taskDomain'
+  )),
+  getTaskDefinition: vi.fn(),
+}))
+vi.mock('../hooks/useNotes', () => ({
+  useNotesList: vi.fn(() => ({
+    data: { notes: [], pagination: { page: 1, page_size: 20, total: 0 } },
+    isLoading: false,
+    isError: false,
+  })),
+}))
 
 describe('Dashboard v2 today projection', () => {
   const createTaskMock = vi.fn()
@@ -15,10 +33,27 @@ describe('Dashboard v2 today projection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     createTaskMock.mockResolvedValue({})
-    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
-      data: [task('today', '今天处理'), task('overdue', '补交周报')],
-      isLoading: false,
-    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    definitions = [task('today', '今天处理'), task('overdue', '补交周报')]
+    vi.mocked(workspaceHooks.useWorkspaceOverview).mockReturnValue(
+      queryResult(workspaceOverview())
+    )
+    vi.mocked(taskAPI.getTaskDefinition).mockImplementation(
+      async (id) => definitions.find((item) => item.id === id)!
+    )
+    vi.mocked(taskHooks.useTaskDefinition).mockImplementation(
+      (id) =>
+        queryResult(definitions.find((item) => item.id === id)) as ReturnType<
+          typeof taskHooks.useTaskDefinition
+        >
+    )
+    vi.mocked(taskHooks.useOccurrence).mockReturnValue(
+      queryResult(undefined) as unknown as ReturnType<
+        typeof taskHooks.useOccurrence
+      >
+    )
+    vi.mocked(taskHooks.useProject).mockReturnValue(
+      queryResult(personalProject)
+    )
     vi.mocked(taskHooks.useProjects).mockReturnValue({
       data: [
         {
@@ -90,22 +125,116 @@ describe('Dashboard v2 today projection', () => {
     expect(screen.getByText('补交周报')).toBeVisible()
   })
 
+  it('renders server totals independently of the bounded preview and defers other list reads', () => {
+    vi.mocked(workspaceHooks.useWorkspaceOverview).mockReturnValue(
+      queryResult(
+        workspaceOverview({ today: 55, week: 89, completed_total: 400 })
+      )
+    )
+    renderDashboard()
+
+    expect(screen.getByRole('tab', { name: '今天 55' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '本周 89' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /累计完成\s*400/ })).toBeVisible()
+    expect(screen.getByText('今天处理')).toBeVisible()
+    expect(taskHooks.useTaskDefinitions).not.toHaveBeenCalled()
+    expect(notesHooks.useNotesList).not.toHaveBeenCalled()
+    expect(taskHooks.useOccurrences).toHaveBeenCalled()
+    for (const [, options] of vi.mocked(taskHooks.useOccurrences).mock.calls) {
+      expect(options?.enabled).toBe(false)
+    }
+  })
+
+  it('omits the empty flexible section when the bounded preview contains only timed items', () => {
+    const overview = workspaceOverview()
+    overview.today = [
+      {
+        ...overview.today[0],
+        planned_start_at: '2026-11-19T04:00:00Z',
+        planned_end_at: '2026-11-19T05:00:00Z',
+      },
+    ]
+    vi.mocked(workspaceHooks.useWorkspaceOverview).mockReturnValue(
+      queryResult(overview)
+    )
+    renderDashboard()
+
+    expect(screen.getByText('固定时间')).toBeVisible()
+    expect(screen.queryByText('今天要做')).not.toBeInTheDocument()
+    expect(screen.queryByText('0 个行动')).not.toBeInTheDocument()
+  })
+
+  it('shows an aggregate error without loading complete lists to recover counts', () => {
+    vi.mocked(workspaceHooks.useWorkspaceOverview).mockReturnValue({
+      ...queryResult(undefined),
+      isError: true,
+      error: new Error('offline'),
+    } as unknown as ReturnType<typeof workspaceHooks.useWorkspaceOverview>)
+    renderDashboard()
+
+    expect(screen.getByText('工作台暂时不可用，请刷新后重试。')).toBeVisible()
+    expect(taskHooks.useTaskDefinitions).not.toHaveBeenCalled()
+    expect(notesHooks.useNotesList).not.toHaveBeenCalled()
+  })
+
+  it('loads completed content only after selection and requests the full completed scope', async () => {
+    renderDashboard()
+    await userEvent.click(screen.getByRole('tab', { name: '已完成 10' }))
+
+    expect(taskHooks.useOccurrences).toHaveBeenLastCalledWith(
+      expect.objectContaining({ scope: 'all', execution_status: 'done' }),
+      { enabled: true }
+    )
+  })
+
+  it('opens a deep-linked occurrence through individual reads outside the bounded preview', () => {
+    definitions.push(task('outside-preview', '完整详情任务'))
+    const selected = occurrence('outside-occurrence', 'outside-preview')
+    vi.mocked(taskHooks.useOccurrence).mockReturnValue(queryResult(selected))
+    renderDashboard('/?occurrence_id=outside-occurrence')
+
+    expect(
+      screen.getByRole('complementary', { name: '执行详情：完整详情任务' })
+    ).toBeVisible()
+    expect(taskHooks.useOccurrence).toHaveBeenCalledWith('outside-occurrence')
+    expect(taskHooks.useTaskDefinition).toHaveBeenCalledWith('outside-preview')
+    expect(taskHooks.useTaskDefinitions).not.toHaveBeenCalled()
+  })
+
+  it('reads the single task before quick completion and preserves command revisions', async () => {
+    const complete = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
+      mutateAsync: complete,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useCompleteOccurrenceMutation>)
+    renderDashboard()
+
+    await userEvent.click(screen.getByRole('button', { name: '完成今天处理' }))
+
+    expect(taskAPI.getTaskDefinition).toHaveBeenCalledExactlyOnceWith('today')
+    expect(complete).toHaveBeenCalledWith({
+      projectID: 'personal',
+      taskID: 'today',
+      occurrenceID: 'today-occ',
+      expectedRevisions: {
+        expected_task_revision: 2,
+        expected_schedule_revision: 1,
+        expected_occurrence_revisions: { 'today-occ': 3 },
+      },
+    })
+  })
+
   it('shows open task occurrences for the current week and month', async () => {
-    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
-      data: [
-        task('today', '今天处理'),
-        task('week', '本周复习'),
-        task('month', '本月复盘'),
-      ],
-      isLoading: false,
-    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    definitions = [
+      task('today', '今天处理'),
+      task('week', '本周复习'),
+      task('month', '本月复盘'),
+    ]
     vi.mocked(taskHooks.useOccurrences).mockImplementation((params) => {
       if (params?.scope !== 'upcoming' || !params.from || !params.to) {
         return {
           data:
-            params?.scope === 'today'
-              ? [occurrence('today-occ', 'today')]
-              : [],
+            params?.scope === 'today' ? [occurrence('today-occ', 'today')] : [],
           isLoading: false,
           isError: false,
         } as ReturnType<typeof taskHooks.useOccurrences>
@@ -130,18 +259,17 @@ describe('Dashboard v2 today projection', () => {
     const month = screen.getByRole('tab', { name: '本月 1' })
     await user.click(week)
     expect(screen.getByText('本周复习')).toBeVisible()
-    expect(screen.getByText('本周要做')).toBeVisible()
+    expect(screen.getByText('固定时间')).toBeVisible()
+    expect(screen.queryByText('0 个行动')).not.toBeInTheDocument()
 
     await user.click(month)
     expect(screen.getByText('本月复盘')).toBeVisible()
-    expect(screen.getByText('本月要做')).toBeVisible()
+    expect(screen.getByText('固定时间')).toBeVisible()
+    expect(screen.queryByText('0 个行动')).not.toBeInTheDocument()
   })
 
   it('keeps a recurring weekly task in a collection even with one execution', async () => {
-    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
-      data: [task('study', '每周学习'), task('once', '一次性任务')],
-      isLoading: false,
-    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    definitions = [task('study', '每周学习'), task('once', '一次性任务')]
     const weeklyOccurrences = [
       {
         ...occurrence('study-2', 'study', '2026-08-02T03:00:00.000Z'),
@@ -166,6 +294,9 @@ describe('Dashboard v2 today projection', () => {
         isError: false,
       } as ReturnType<typeof taskHooks.useOccurrences>
     })
+    vi.mocked(workspaceHooks.useWorkspaceOverview).mockReturnValue(
+      queryResult(workspaceOverview({ week: 2 }))
+    )
     const user = userEvent.setup()
     renderDashboard()
 
@@ -185,10 +316,7 @@ describe('Dashboard v2 today projection', () => {
   })
 
   it('groups different execution times of the same task into an expandable collection', async () => {
-    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
-      data: [task('study', '单词学习')],
-      isLoading: false,
-    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    definitions = [task('study', '单词学习')]
     const monthlyOccurrences = [2, 3, 31].map((day) => ({
       ...occurrence(
         `study-${day}`,
@@ -214,6 +342,9 @@ describe('Dashboard v2 today projection', () => {
         isError: false,
       } as ReturnType<typeof taskHooks.useOccurrences>
     })
+    vi.mocked(workspaceHooks.useWorkspaceOverview).mockReturnValue(
+      queryResult(workspaceOverview({ month: 3 }))
+    )
     const user = userEvent.setup()
     renderDashboard()
 
@@ -254,30 +385,24 @@ describe('Dashboard v2 today projection', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('builds Monday-based week and calendar-month query ranges', () => {
+  it('builds Monday-based week and calendar-month ranges in the requested timezone', () => {
     const ranges = createDashboardDateRanges(
-      new Date(2026, 7, 5, 12),
-      'Test/Timezone'
+      new Date('2026-08-05T12:00:00Z'),
+      'Asia/Shanghai'
     )
 
-    const weekStart = new Date(ranges.week.from)
-    const weekEnd = new Date(ranges.week.to)
-    const monthStart = new Date(ranges.month.from)
-    const monthEnd = new Date(ranges.month.to)
-    expect([
-      weekStart.getDay(),
-      weekStart.getHours(),
-      weekEnd.getDay(),
-      weekEnd.getHours(),
-    ]).toEqual([1, 0, 1, 0])
-    expect([
-      monthStart.getDate(),
-      monthStart.getHours(),
-      monthEnd.getDate(),
-      monthEnd.getHours(),
-    ]).toEqual([1, 0, 1, 0])
-    expect(ranges.week.timezone).toBe('Test/Timezone')
-    expect(ranges.month.timezone).toBe('Test/Timezone')
+    expect(ranges).toEqual({
+      week: {
+        from: '2026-08-02T16:00:00.000Z',
+        to: '2026-08-09T16:00:00.000Z',
+        timezone: 'Asia/Shanghai',
+      },
+      month: {
+        from: '2026-07-31T16:00:00.000Z',
+        to: '2026-08-31T16:00:00.000Z',
+        timezone: 'Asia/Shanghai',
+      },
+    })
   })
 
   it('creates a timed schedule in the Personal project', async () => {
@@ -357,25 +482,22 @@ describe('Dashboard v2 today projection', () => {
     )
   })
 
-  it('locks quick completion when a normal task still has required items', () => {
+  it('loads the task gate before quick completion and opens required items without mutating', async () => {
     const complete = vi.fn()
-    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
-      data: [
-        {
-          ...task('today', '今天处理'),
-          completion_requirements: [
-            {
-              id: 'article-1',
-              kind: 'article',
-              title: '读完方案',
-              completed: false,
-            },
-          ],
-        },
-        task('overdue', '补交周报'),
-      ],
-      isLoading: false,
-    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    definitions = [
+      {
+        ...task('today', '今天处理'),
+        completion_requirements: [
+          {
+            id: 'article-1',
+            kind: 'article',
+            title: '读完方案',
+            completed: false,
+          },
+        ],
+      },
+      task('overdue', '补交周报'),
+    ]
     vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
       mutateAsync: complete,
       isPending: false,
@@ -383,18 +505,22 @@ describe('Dashboard v2 today projection', () => {
 
     renderDashboard()
 
-    expect(screen.getByRole('button', { name: '完成今天处理' })).toBeDisabled()
-    expect(screen.getByText('完成门槛 0/1')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: '完成今天处理' }))
+    expect(taskAPI.getTaskDefinition).toHaveBeenCalledWith('today')
+    expect(await screen.findByText('请先完成必选项。')).toBeVisible()
+    expect(
+      screen.getByRole('complementary', { name: '执行详情：今天处理' })
+    ).toBeVisible()
     expect(complete).not.toHaveBeenCalled()
   })
 })
 
-function renderDashboard() {
+function renderDashboard(initialPath = '/') {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialPath]}>
       <QueryClientProvider client={client}>
         <DashboardV2 />
       </QueryClientProvider>
@@ -424,9 +550,11 @@ function occurrence(
   taskID: string,
   plannedStartAt?: string
 ): import('../api/taskDomain').OccurrenceV2 {
-  return {
+  const result: taskAPI.OccurrenceV2 = {
     id,
     task_id: taskID,
+    title: definitions.find((item) => item.id === taskID)?.title,
+    project_id: 'personal',
     occurrence_key: 'once',
     execution_status: 'open',
     revision: 3,
@@ -436,4 +564,63 @@ function occurrence(
       ? new Date(new Date(plannedStartAt).getTime() + 30 * 60_000).toISOString()
       : undefined,
   }
+  return result
+}
+
+let definitions: taskAPI.TaskV2[] = []
+const personalProject: taskAPI.ProjectV2 = {
+  id: 'personal',
+  name: '个人事务',
+  kind: 'standard',
+  horizon: 'short',
+  status: 'active',
+  system_role: 'personal',
+  revision: 1,
+}
+
+function workspaceOverview(
+  facets: Partial<WorkspaceOverview['facets']> = {}
+): WorkspaceOverview {
+  return {
+    workspace_id: 'workspace-1',
+    task_model_version: 2,
+    runtime_epoch: 3,
+    date: '2026-11-19',
+    timezone: 'Asia/Shanghai',
+    generated_at: '2026-11-19T01:00:00Z',
+    read_consistency: 'planning_snapshot',
+    facets: {
+      today: 1,
+      week: 1,
+      month: 1,
+      overdue: 1,
+      completed_today: 0,
+      completed_week: 1,
+      completed_total: 10,
+      unscheduled: 0,
+      inbox: 0,
+      recurring: 0,
+      draft: 0,
+      ...facets,
+    },
+    today: [{ ...occurrence('today-occ', 'today'), project_name: '个人事务' }],
+    projects: [],
+    notes: {
+      state: 'available',
+      authority: 'platform_compatibility',
+      as_of: '2026-11-19T01:00:00Z',
+      items: [],
+    },
+    partial: false,
+  }
+}
+
+function queryResult<T>(data: T) {
+  return {
+    data,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  } as unknown as import('@tanstack/react-query').UseQueryResult<T, Error>
 }

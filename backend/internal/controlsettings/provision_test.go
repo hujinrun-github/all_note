@@ -78,7 +78,7 @@ func TestProvisionWorkspaceIdentityIsIdempotentAndCreatesConcreteDefaults(t *tes
 	if err := db.QueryRow(`SELECT COUNT(*) FROM workspace_ai_feature_settings WHERE workspace_id='w1'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
-		t.Fatalf("AI feature settings = %d, want 2", count)
+	if count != 3 {
+		t.Fatalf("AI feature settings = %d, want 3", count)
 	}
 }

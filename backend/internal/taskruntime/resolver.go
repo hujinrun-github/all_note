@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/hujinrun/flowspace/internal/auth"
 
 	"github.com/hujinrun/flowspace/internal/taskapp"
 	"github.com/hujinrun/flowspace/internal/taskdomain"
@@ -134,80 +137,94 @@ func newResolver(tenants tenantRuntimeResolver) (*Resolver, error) {
 }
 
 func (r *Resolver) Resolve(ctx context.Context, workspaceID string) (taskapp.RuntimeSnapshot, error) {
-	if r == nil || r.tenants == nil || workspaceID == "" {
-		return taskapp.RuntimeSnapshot{}, taskapp.ErrInvalidRuntime
-	}
-	runtime, err := r.tenants.Resolve(ctx, workspaceID)
-	if err != nil {
-		return taskapp.RuntimeSnapshot{}, err
-	}
-	resource, ok := runtime.Resource.(interface {
-		ApplicationSnapshot(context.Context) (taskapp.RuntimeSnapshot, error)
-	})
-	if !ok {
-		r.tenants.Invalidate(workspaceID)
-		return taskapp.RuntimeSnapshot{}, fmt.Errorf("%w: task model does not expose v2 application", tenantruntime.ErrRuntimeUnavailable)
-	}
-	application, err := resource.ApplicationSnapshot(ctx)
-	if err == nil {
+	return resolveWorkspaceSnapshot(r, ctx, workspaceID, func(ctx context.Context, runtime tenantruntime.Runtime) (taskapp.RuntimeSnapshot, error) {
+		resource, ok := runtime.Resource.(interface {
+			ApplicationSnapshot(context.Context) (taskapp.RuntimeSnapshot, error)
+		})
+		if !ok {
+			return taskapp.RuntimeSnapshot{}, fmt.Errorf("%w: task model does not expose v2 application", tenantruntime.ErrRuntimeUnavailable)
+		}
+		application, err := resource.ApplicationSnapshot(ctx)
+		if err != nil {
+			return taskapp.RuntimeSnapshot{}, err
+		}
 		return validateApplicationSnapshot(workspaceID, application)
-	}
-	r.tenants.Invalidate(workspaceID)
-	if !errors.Is(err, ErrTaskRuntimeEpochChanged) {
-		return taskapp.RuntimeSnapshot{}, err
-	}
-
-	// Re-resolve once after the durable epoch changed. The generic resolver's
-	// per-workspace gate ensures concurrent requests converge on one rebuild.
-	runtime, err = r.tenants.Resolve(ctx, workspaceID)
-	if err != nil {
-		return taskapp.RuntimeSnapshot{}, err
-	}
-	resource, ok = runtime.Resource.(interface {
-		ApplicationSnapshot(context.Context) (taskapp.RuntimeSnapshot, error)
 	})
-	if !ok {
-		r.tenants.Invalidate(workspaceID)
-		return taskapp.RuntimeSnapshot{}, fmt.Errorf("%w: task model does not expose v2 application", tenantruntime.ErrRuntimeUnavailable)
-	}
-	application, err = resource.ApplicationSnapshot(ctx)
-	if err != nil {
-		r.tenants.Invalidate(workspaceID)
-		return taskapp.RuntimeSnapshot{}, err
-	}
-	return validateApplicationSnapshot(workspaceID, application)
 }
 
 func (r *Resolver) ResolveMobileRuntime(ctx context.Context, workspaceID string) (MobileRuntimeSnapshot, error) {
-	if r == nil || r.tenants == nil || workspaceID == "" {
-		return MobileRuntimeSnapshot{}, taskapp.ErrInvalidRuntime
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		runtime, err := r.tenants.Resolve(ctx, workspaceID)
-		if err != nil {
-			return MobileRuntimeSnapshot{}, err
-		}
+	return resolveWorkspaceSnapshot(r, ctx, workspaceID, func(ctx context.Context, runtime tenantruntime.Runtime) (MobileRuntimeSnapshot, error) {
 		resource, ok := runtime.Resource.(interface {
 			MobileRuntimeSnapshot(context.Context) (MobileRuntimeSnapshot, error)
 		})
 		if !ok {
-			r.tenants.Invalidate(workspaceID)
 			return MobileRuntimeSnapshot{}, fmt.Errorf("%w: task model does not expose mobile-v2 runtime", tenantruntime.ErrRuntimeUnavailable)
 		}
 		snapshot, err := resource.MobileRuntimeSnapshot(ctx)
+		if err != nil {
+			return MobileRuntimeSnapshot{}, err
+		}
+		if snapshot.WorkspaceID != workspaceID || snapshot.Epoch < 1 || snapshot.DB == nil || snapshot.Writer == nil ||
+			snapshot.Application.WorkspaceID != workspaceID || snapshot.Application.Epoch != snapshot.Epoch {
+			return MobileRuntimeSnapshot{}, fmt.Errorf("%w: incomplete mobile-v2 runtime", ErrTaskRuntimeType)
+		}
+		return snapshot, nil
+	})
+}
+
+// resolveWorkspaceSnapshot is the shared request/mobile resolution boundary.
+// The tenant resolver checks the durable control version on every call and
+// the resource projection verifies the tenant's v2 model and epoch. A stale
+// epoch closes the cached resource and gets exactly one rebuilding retry.
+func resolveWorkspaceSnapshot[T any](r *Resolver, ctx context.Context, workspaceID string, project func(context.Context, tenantruntime.Runtime) (T, error)) (T, error) {
+	var zero T
+	if r == nil || r.tenants == nil || ctx == nil || strings.TrimSpace(workspaceID) == "" {
+		return zero, taskapp.ErrInvalidRuntime
+	}
+	if err := validateRuntimeWorkspaceScope(ctx, workspaceID); err != nil {
+		return zero, fmt.Errorf("%w: %w", taskapp.ErrInvalidRuntime, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		runtime, err := r.tenants.Resolve(ctx, workspaceID)
+		if err != nil {
+			return zero, err
+		}
+		snapshot, err := project(ctx, runtime)
 		if err == nil {
-			if snapshot.WorkspaceID != workspaceID || snapshot.Epoch < 1 || snapshot.DB == nil || snapshot.Writer == nil ||
-				snapshot.Application.WorkspaceID != workspaceID || snapshot.Application.Epoch != snapshot.Epoch {
-				return MobileRuntimeSnapshot{}, fmt.Errorf("%w: incomplete mobile-v2 runtime", ErrTaskRuntimeType)
-			}
 			return snapshot, nil
 		}
 		r.tenants.Invalidate(workspaceID)
 		if attempt == 1 || !errors.Is(err, ErrTaskRuntimeEpochChanged) {
-			return MobileRuntimeSnapshot{}, err
+			return zero, err
 		}
 	}
-	return MobileRuntimeSnapshot{}, ErrTaskRuntimeType
+	return zero, ErrTaskRuntimeType
+}
+
+// Request adapters supply both identity and scope; internal jobs may supply
+// only an explicit scope. Older internal callers with neither remain valid,
+// but any supplied authorization boundary must match the requested runtime.
+func validateRuntimeWorkspaceScope(ctx context.Context, workspaceID string) error {
+	if scope, ok := auth.WorkspaceScopeFromContext(ctx); ok {
+		if strings.TrimSpace(scope.WorkspaceID) == "" {
+			return auth.ErrMissingWorkspace
+		}
+		if scope.WorkspaceID != workspaceID {
+			return auth.ErrWorkspaceScopeMismatch
+		}
+	}
+	if identity, ok := auth.IdentityFromContext(ctx); ok {
+		if strings.TrimSpace(identity.UserID) == "" {
+			return auth.ErrMissingIdentity
+		}
+		if strings.TrimSpace(identity.WorkspaceID) == "" {
+			return auth.ErrMissingWorkspace
+		}
+		if identity.WorkspaceID != workspaceID {
+			return auth.ErrWorkspaceScopeMismatch
+		}
+	}
+	return nil
 }
 
 func validateApplicationSnapshot(workspaceID string, snapshot taskapp.RuntimeSnapshot) (taskapp.RuntimeSnapshot, error) {

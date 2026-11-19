@@ -1,4 +1,5 @@
 import { type FormEvent, useRef, useState } from 'react'
+import { Button } from './ui/button'
 import { Modal } from './ui/Modal'
 
 import {
@@ -16,6 +17,7 @@ import {
 
 export function QuickCaptureV2() {
   const setCaptureOpen = useUIStore((state) => state.setCaptureOpen)
+  const openPlanCapture = useUIStore((state) => state.openPlanCapture)
   const showNotice = useUIStore((state) => state.showNotice)
   const projectsQuery = useProjects()
   const createTask = useCreateTaskMutation()
@@ -102,6 +104,13 @@ export function QuickCaptureV2() {
             ×
           </button>
         </header>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => openPlanCapture(selectedProject?.id)}
+        >
+          语音 / 文字生成计划
+        </Button>
         <textarea
           aria-label="快速捕获任务标题"
           className="quick-capture-textarea"

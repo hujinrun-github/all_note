@@ -14,7 +14,7 @@ import { Sidebar } from './Sidebar'
 import { Modal } from '../ui/Modal'
 
 const tabs = [
-  { to: '/', label: '今日', icon: House },
+  { to: '/', label: '工作台', icon: House },
   { to: '/tasks', label: '任务', icon: CheckCheck },
   { to: '/calendar', label: '日历', icon: CalendarDays },
   { to: '/notes', label: '笔记', icon: NotebookPen },

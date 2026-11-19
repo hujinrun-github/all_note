@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as syncApi from '../api/sync'
+import { workspaceQueryKeys } from './useWorkspace'
 import {
   useBidirectionalTarget,
   useConfirmNotionDeletion,
@@ -162,6 +163,7 @@ describe('notion sync hooks', () => {
       await restore.result.current.mutateAsync('note-1')
     })
 
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKeys.all })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notes'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['note'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['note-sync-state'] })

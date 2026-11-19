@@ -363,7 +363,8 @@ func TestTaskDomainCapabilitiesReportAuthenticatedWorkspaceModelWithoutEndpointD
 func TestDefaultRouterKeepsLegacyTaskRoutesUntilV2RuntimeIsExplicitlyWired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	env := setupRouterAuthEnv(t, false)
-	routes := registeredRoutes(Setup(env.config))
+	engine := Setup(env.config)
+	routes := registeredRoutes(engine)
 
 	for _, route := range []string{
 		"GET /api/tasks",
@@ -376,7 +377,7 @@ func TestDefaultRouterKeepsLegacyTaskRoutesUntilV2RuntimeIsExplicitlyWired(t *te
 		}
 	}
 	for _, v2OnlyRoute := range []string{
-		"GET /api/projects",
+		"POST /api/projects",
 		"GET /api/tasks/:taskID",
 		"GET /api/task-occurrences/:occurrenceID",
 		"GET /api/calendar/entries",
@@ -384,6 +385,17 @@ func TestDefaultRouterKeepsLegacyTaskRoutesUntilV2RuntimeIsExplicitlyWired(t *te
 		if routes[v2OnlyRoute] {
 			t.Fatalf("default router must not switch production to v2 route %s", v2OnlyRoute)
 		}
+	}
+	// GET /projects is now also the explicitly negotiated summary adapter.
+	// Registering that adapter must not enable the ordinary v2 catalog when
+	// v2 routing has not been wired.
+	createRouterSession(t, env, "legacy-catalog-guard")
+	request := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	request.AddCookie(&http.Cookie{Name: env.auth.Cookie.Name, Value: "legacy-catalog-guard"})
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("default router enabled v2 catalog: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

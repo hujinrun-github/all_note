@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const title = '整理本周产品反馈，确认下一步改进计划'
+const outsidePreviewTitle = '检查不在首页预览中的任务'
 const projects = [
   {
     id: 'inbox',
@@ -54,6 +55,83 @@ const occurrence = {
   timing_type: 'date',
   timezone: 'Asia/Shanghai',
 }
+const note = {
+  id: 'note-1',
+  title: '产品反馈记录',
+  body: '整理本周的用户反馈和行动项。',
+  folder_id: '',
+  tags: '["工作"]',
+  projects: [],
+  created_at: 1790906400,
+  updated_at: 1790906400,
+}
+
+const aggregateMetadata = {
+  workspace_id: 'workspace-web-regression',
+  task_model_version: 2,
+  runtime_epoch: 1,
+  date: '2026-10-02',
+  timezone: 'Asia/Shanghai',
+  generated_at: '2026-10-02T02:00:00Z',
+  read_consistency: 'planning_snapshot',
+}
+
+function workspaceSnapshot(completed = false) {
+  const projectSummary = {
+    completed_task_count: completed ? 3 : 2,
+    total_actionable_task_count: 8,
+    open_occurrence_count: completed ? 8 : 9,
+    blocked_occurrence_count: 1,
+    has_open_ended_recurrence: false,
+    next_occurrence: completed
+      ? null
+      : { ...occurrence, project_name: '个人事务' },
+    completion_percent: completed ? 38 : 25,
+  }
+  return {
+    ...aggregateMetadata,
+    facets: {
+      today: completed ? 8 : 9,
+      week: completed ? 11 : 12,
+      month: completed ? 19 : 20,
+      overdue: 2,
+      unscheduled: 3,
+      inbox: 0,
+      completed_today: completed ? 2 : 1,
+      completed_week: completed ? 5 : 4,
+      completed_total: completed ? 8 : 7,
+      draft: 2,
+      recurring: 4,
+    },
+    // Counts deliberately exceed the bounded preview; the UI must trust facets.
+    today: completed ? [] : [{ ...occurrence, project_name: '个人事务' }],
+    projects: projects
+      .filter((project) => project.system_role !== 'inbox')
+      .map((project) => ({
+        ...project,
+        summary:
+          project.id === 'personal'
+            ? projectSummary
+            : {
+                ...projectSummary,
+                completed_task_count: 1,
+                total_actionable_task_count: 5,
+                open_occurrence_count: 3,
+                blocked_occurrence_count: 0,
+                has_open_ended_recurrence: true,
+                next_occurrence: null,
+                completion_percent: null,
+              },
+      })),
+    notes: {
+      state: 'available',
+      authority: 'platform_compatibility',
+      as_of: aggregateMetadata.generated_at,
+      items: [{ id: note.id, title: note.title, updated_at: note.updated_at }],
+    },
+    partial: false,
+  }
+}
 
 const planningDate = '2026-09-30'
 const meetingID = 'weekly-meeting'
@@ -84,12 +162,20 @@ async function fixtureAPI(page: Page, calendarPlanning = false) {
   } = pendingTask
   let meetingHour = 9
   await page.clock.setFixedTime(new Date('2026-10-02T10:00:00+08:00'))
+  let completed = false
   await page.route(
     (url) => url.pathname.startsWith('/api/'),
     async (route) => {
       const url = new URL(route.request().url())
       const path = url.pathname
       const data = (value: unknown) => route.fulfill({ json: { data: value } })
+      const snapshot = workspaceSnapshot(completed)
+      const currentOccurrence = completed
+        ? { ...occurrence, execution_status: 'done', revision: 2 }
+        : occurrence
+      const currentTask = completed
+        ? { ...task, lifecycle_status: 'completed', revision: 2 }
+        : task
       if (path === '/api/task-domain/capabilities')
         return route.fulfill({ json: { model_version: 'v2', available: true } })
       if (path === '/api/auth/me')
@@ -107,21 +193,96 @@ async function fixtureAPI(page: Page, calendarPlanning = false) {
           },
           must_change_password: false,
         })
+      if (path === '/api/workspace/overview') return data(snapshot)
+      if (path === '/api/task-workbench/facets') {
+        const projectID = url.searchParams.get('project_id')
+        const facets =
+          projectID === 'personal'
+            ? {
+                ...snapshot.facets,
+                today: completed ? 2 : 3,
+                week: completed ? 3 : 4,
+                month: completed ? 6 : 7,
+                completed_total: completed ? 3 : 2,
+              }
+            : projectID === 'learning'
+              ? Object.fromEntries(
+                  Object.keys(snapshot.facets).map((key) => [key, 0])
+                )
+              : snapshot.facets
+        return data({ ...aggregateMetadata, facets })
+      }
+      if (path === '/api/projects/personal/overview')
+        return data({
+          ...aggregateMetadata,
+          project: snapshot.projects.find(
+            (project) => project.id === 'personal'
+          ),
+        })
       if (path === '/api/projects/personal')
         return data({
           project: projects.find((project) => project.id === 'personal'),
         })
-      if (path === '/api/projects') return data({ projects })
+      if (path === '/api/projects')
+        return data(
+          url.searchParams.get('include') === 'summary'
+            ? { ...aggregateMetadata, projects: snapshot.projects }
+            : { projects }
+        )
       if (path === '/api/tasks' && route.request().method() === 'POST')
         return data({ task, occurrences: [occurrence] })
       if (path === '/api/tasks')
         return data({
           tasks:
-            url.searchParams.get('lifecycle_status') === 'draft' ? [] : [task],
+            url.searchParams.get('lifecycle_status') === 'draft'
+              ? url.searchParams.get('project_id') === 'learning'
+                ? []
+                : [
+                    {
+                      ...task,
+                      id: 'task-draft',
+                      title: '起草下周计划',
+                      lifecycle_status: 'draft',
+                    },
+                  ]
+              : [currentTask],
         })
-      if (path === '/api/tasks/task-1') return data({ task })
+      if (path === '/api/tasks/task-1') return data({ task: currentTask })
+      if (path === '/api/tasks/task-draft')
+        return data({
+          task: {
+            ...task,
+            id: 'task-draft',
+            title: '起草下周计划',
+            lifecycle_status: 'draft',
+          },
+        })
+      if (path === '/api/tasks/task-outside-preview')
+        return data({
+          task: {
+            ...task,
+            id: 'task-outside-preview',
+            title: outsidePreviewTitle,
+          },
+        })
+      if (path === '/api/task-occurrences/occurrence-1/complete') {
+        completed = true
+        return data({
+          task_revision: 2,
+          occurrence_revisions: { [occurrence.id]: 2 },
+        })
+      }
       if (path === '/api/task-occurrences/occurrence-1')
-        return data({ occurrence })
+        return data({ occurrence: currentOccurrence })
+      if (path === '/api/task-occurrences/occurrence-outside-preview')
+        return data({
+          occurrence: {
+            ...occurrence,
+            id: 'occurrence-outside-preview',
+            task_id: 'task-outside-preview',
+            title: outsidePreviewTitle,
+          },
+        })
       if (
         calendarPlanning &&
         path === '/api/task-occurrences' &&
@@ -156,15 +317,37 @@ async function fixtureAPI(page: Page, calendarPlanning = false) {
           schedule_version: 2,
         })
       }
-      if (path === '/api/task-occurrences')
+      if (path === '/api/task-occurrences') {
+        const doneOnly =
+          url.searchParams.get('execution_status') === 'done' ||
+          url.searchParams.get('scope') === 'completed'
         return data({
-          occurrences:
-            ['overdue', 'completed'].includes(
-              url.searchParams.get('scope') ?? ''
-            ) || url.searchParams.get('project_id') === 'inbox'
+          occurrences: doneOnly
+            ? completed
+              ? [currentOccurrence]
+              : []
+            : url.searchParams.get('scope') === 'overdue' ||
+                ['inbox', 'learning'].includes(
+                  url.searchParams.get('project_id') ?? ''
+                )
               ? []
-              : [occurrence],
+              : [
+                  url.searchParams.get('scope') === 'unscheduled'
+                    ? {
+                        ...currentOccurrence,
+                        planned_date: undefined,
+                        timing_type: 'unscheduled',
+                      }
+                    : url.searchParams.get('recurring') === 'true'
+                      ? {
+                          ...currentOccurrence,
+                          recurring: true,
+                          recurrence_type: 'daily',
+                        }
+                      : currentOccurrence,
+                ],
         })
+      }
       if (path === '/api/calendar/entries')
         return data({
           entries: [
@@ -212,21 +395,19 @@ async function fixtureAPI(page: Page, calendarPlanning = false) {
         return route.fulfill({
           json: {
             data: {
-              notes: [
-                {
-                  id: 'note-1',
-                  title: '产品反馈记录',
-                  body: '整理本周的用户反馈和行动项。',
-                  tags: '["工作"]',
-                  projects: [],
-                  created_at: 1790906400,
-                  updated_at: 1790906400,
-                },
-              ],
+              notes: [note],
             },
             pagination: { page: 1, page_size: 100, total: 1 },
           },
         })
+      if (path === '/api/notes/note-1') return data({ note })
+      if (path === '/api/notes/note-1/attachments')
+        return data({ attachments: [] })
+      if (path === '/api/notes/note-1/sync-binding')
+        return data({ binding: null, candidates: [] })
+      if (path === '/api/notes/note-1/content-import')
+        return data({ import: null })
+      if (path === '/api/sync/targets') return data({ targets: [] })
       if (path === '/api/search')
         return route.fulfill({
           json: {
@@ -291,6 +472,580 @@ test.beforeEach(async ({ page }, info) =>
   fixtureAPI(page, info.title.startsWith('changes the weekly meeting time'))
 )
 
+test('task workbench trusts facets and loads only the active calendar-week content', async ({
+  page,
+}, info) => {
+  const requests: URL[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'GET') requests.push(new URL(request.url()))
+  })
+  await page.goto('/tasks')
+  await expect(
+    page.getByRole('tab', { name: '本周 12', exact: true })
+  ).toHaveAttribute('aria-selected', 'true')
+  await expect(
+    page.getByRole('tab', { name: '本月 20', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('tab', { name: '今天 9', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('tab', { name: '已完成 7', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('status').filter({ hasText: '当前显示 1 项' })
+  ).toBeVisible()
+
+  const collections = requests.filter(
+    (url) => url.pathname === '/api/task-occurrences'
+  )
+  expect(collections).toHaveLength(1)
+  expect(Object.fromEntries(collections[0].searchParams)).toMatchObject({
+    scope: 'upcoming',
+    from: '2026-09-27T16:00:00.000Z',
+    to: '2026-10-04T16:00:00.000Z',
+    timezone: 'Asia/Shanghai',
+  })
+  expect(requests.filter((url) => url.pathname === '/api/tasks')).toEqual([])
+  expect(requests.some((url) => url.pathname === '/api/tasks/task-1')).toBe(
+    true
+  )
+  const facets = requests.find(
+    (url) => url.pathname === '/api/task-workbench/facets'
+  )!
+  expect(Object.fromEntries(facets.searchParams)).toMatchObject({
+    date: '2026-10-02',
+    timezone: 'Asia/Shanghai',
+  })
+  await expectNoPageOverflow(page)
+  await page.screenshot({
+    path: `/tmp/flowspace-task-facets-qa/${info.project.name}.png`,
+    fullPage: true,
+  })
+})
+
+test('task project facets and active month or overdue scopes share the local date', async ({
+  page,
+}) => {
+  const requests: URL[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'GET') requests.push(new URL(request.url()))
+  })
+  await page.goto('/tasks')
+  await expect(
+    page.getByRole('tab', { name: '本周 12', exact: true })
+  ).toBeVisible()
+  await page
+    .getByRole('combobox', { name: '按项目筛选' })
+    .selectOption('personal')
+  await expect(
+    page.getByRole('tab', { name: '本周 4', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('tab', { name: '本月 7', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('status').filter({ hasText: '当前显示 1 项' })
+  ).toBeVisible()
+  const projectFacet = requests.find(
+    (url) =>
+      url.pathname === '/api/task-workbench/facets' &&
+      url.searchParams.get('project_id') === 'personal'
+  )!
+  expect(Object.fromEntries(projectFacet.searchParams)).toEqual({
+    date: '2026-10-02',
+    timezone: 'Asia/Shanghai',
+    project_id: 'personal',
+  })
+
+  await page.getByRole('tab', { name: '本月 7', exact: true }).click()
+  await expect(page).toHaveURL(/view=month/)
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toBeVisible()
+  await expect
+    .poll(() =>
+      requests
+        .filter((url) => url.pathname === '/api/task-occurrences')
+        .at(-1)
+        ?.searchParams.get('to')
+    )
+    .toBe('2026-10-31T16:00:00.000Z')
+  const month = requests
+    .filter((url) => url.pathname === '/api/task-occurrences')
+    .at(-1)!
+  expect(Object.fromEntries(month.searchParams)).toMatchObject({
+    scope: 'upcoming',
+    project_id: 'personal',
+    from: '2026-09-30T16:00:00.000Z',
+    to: '2026-10-31T16:00:00.000Z',
+    timezone: 'Asia/Shanghai',
+  })
+
+  await page.getByRole('tab', { name: /^已逾期/ }).click()
+  await expect
+    .poll(() =>
+      requests
+        .filter((url) => url.pathname === '/api/task-occurrences')
+        .at(-1)
+        ?.searchParams.get('scope')
+    )
+    .toBe('overdue')
+  const overdue = requests
+    .filter((url) => url.pathname === '/api/task-occurrences')
+    .at(-1)!
+  expect(Object.fromEntries(overdue.searchParams)).toMatchObject({
+    scope: 'overdue',
+    project_id: 'personal',
+    from: '2026-10-01T16:00:00.000Z',
+    timezone: 'Asia/Shanghai',
+  })
+  expect(requests.filter((url) => url.pathname === '/api/tasks')).toEqual([])
+})
+
+test('completed task view retains historical done facts and draft view loads only drafts', async ({
+  page,
+}) => {
+  const requests: URL[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'GET') requests.push(new URL(request.url()))
+  })
+  await page.route('**/api/task-occurrences?**', (route) => {
+    const url = new URL(route.request().url())
+    if (url.searchParams.get('execution_status') === 'done')
+      return route.fulfill({
+        json: {
+          data: {
+            occurrences: [
+              {
+                ...occurrence,
+                id: 'historical-done',
+                execution_status: 'done',
+                planned_date: '2020-01-02',
+              },
+            ],
+          },
+        },
+      })
+    return route.fallback()
+  })
+  await page.goto('/tasks?view=completed')
+  await expect(
+    page.getByRole('tab', { name: '已完成 7', exact: true })
+  ).toHaveAttribute('aria-selected', 'true')
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toBeVisible()
+  await expect(page.getByLabel(`${title}执行状态`)).toHaveText('已完成')
+  const completed = requests.find(
+    (url) => url.pathname === '/api/task-occurrences'
+  )!
+  expect(Object.fromEntries(completed.searchParams)).toMatchObject({
+    scope: 'all',
+    execution_status: 'done',
+  })
+  expect(completed.searchParams.has('from')).toBe(false)
+  expect(completed.searchParams.has('to')).toBe(false)
+
+  requests.length = 0
+  await page.getByRole('tab', { name: '草稿 2', exact: true }).click()
+  await expect(
+    page.getByRole('list', { name: '任务草稿' }).getByText('起草下周计划')
+  ).toBeVisible()
+  expect(
+    requests.filter((url) => url.pathname === '/api/task-occurrences')
+  ).toEqual([])
+  const drafts = requests.filter((url) => url.pathname === '/api/tasks')
+  expect(drafts).toHaveLength(1)
+  expect(drafts[0].searchParams.get('lifecycle_status')).toBe('draft')
+})
+
+test('task facet failure preserves content while keeping badge totals unknown', async ({
+  page,
+}) => {
+  await page.route('**/api/task-workbench/facets?**', (route) =>
+    route.fulfill({
+      status: 503,
+      json: { error: { code: 'workspace_unavailable', message: 'offline' } },
+    })
+  )
+  await page.goto('/tasks')
+  await expect(
+    page
+      .getByRole('alert')
+      .filter({ hasText: '视图计数暂时不可用，请稍后重试。' })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('tab', { name: '本周', exact: true })
+  ).toHaveAttribute('aria-selected', 'true')
+  await expect(
+    page.getByRole('tab', { name: '本周 0', exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('status').filter({ hasText: '当前显示 1 项' })
+  ).toBeVisible()
+  await page.getByRole('tab', { name: '本月', exact: true }).click()
+  await expect(page).toHaveURL(/view=month/)
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toBeVisible()
+})
+
+test('task completion refreshes authoritative facet counters', async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto('/tasks')
+  await expect(
+    page.getByRole('tab', { name: '本周 12', exact: true })
+  ).toBeVisible()
+  await page.getByRole('listitem').filter({ hasText: title }).click()
+  const panel = page.getByRole(isMobile ? 'dialog' : 'complementary', {
+    name: `执行详情：${title}`,
+  })
+  const refreshedFacets = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/task-workbench/facets'
+  )
+  await panel.getByRole('button', { name: '完成', exact: true }).click()
+  await refreshedFacets
+  if (await panel.isVisible()) {
+    if (isMobile) await page.keyboard.press('Escape')
+    else await panel.getByRole('button', { name: '关闭执行详情' }).click()
+  }
+  await expect(
+    page.getByRole('tab', { name: '本周 11', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('tab', { name: '已完成 8', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toHaveCount(0)
+})
+
+test('home trusts aggregate counts and fetches only the selected occurrence scope', async ({
+  page,
+}) => {
+  const requests: URL[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'GET') requests.push(new URL(request.url()))
+  })
+  await page.goto('/')
+  await expect(
+    page.getByRole('button', { name: /今日待办\s*9\s*项/ })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /本周安排\s*12\s*项/ })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('progressbar', { name: '个人事务完成进度' })
+  ).toHaveAttribute('value', '25')
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toHaveCount(1)
+  await expect(page.getByText(/显示前 1 项，共 9 项。/)).toBeVisible()
+  await expect(
+    page.getByRole('link', { name: '查看全部今日任务' })
+  ).toHaveAttribute('href', '/tasks?view=today')
+  await expect(
+    page.getByRole('progressbar', { name: '日语学习完成进度' })
+  ).toHaveCount(0)
+
+  expect(
+    requests.filter((url) =>
+      ['/api/tasks', '/api/task-occurrences', '/api/notes'].includes(
+        url.pathname
+      )
+    )
+  ).toEqual([])
+  expect(requests.filter((url) => url.pathname === '/api/projects')).toEqual([])
+  expect(
+    requests.filter((url) => url.pathname === '/api/tasks/task-1')
+  ).toEqual([])
+  const overview = requests.find(
+    (url) => url.pathname === '/api/workspace/overview'
+  )!
+  expect(overview.searchParams.get('date')).toBe('2026-10-02')
+  expect(overview.searchParams.get('timezone')).toBe('Asia/Shanghai')
+
+  const weekRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url())
+    return url.pathname === '/api/task-occurrences'
+  })
+  await page.getByRole('button', { name: /本周安排/ }).click()
+  await weekRequest
+  await expect(page.getByRole('tab', { name: /^本周/ })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title })
+  ).toHaveCount(1)
+  expect(
+    requests.filter((url) => url.pathname === '/api/task-occurrences')
+  ).toHaveLength(1)
+  expect(requests.filter((url) => url.pathname === '/api/tasks')).toEqual([])
+
+  const definition = page.waitForRequest('**/api/tasks/task-1')
+  await page.getByRole('listitem').filter({ hasText: title }).first().click()
+  await definition
+})
+
+test('aggregate failure keeps unknown statistics separate from empty results', async ({
+  page,
+}) => {
+  await page.route('**/api/workspace/overview?*', (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        error: {
+          code: 'workspace_unavailable',
+          message: 'offline',
+          retryable: true,
+        },
+      },
+    })
+  )
+  await page.goto('/')
+  await expect(
+    page.getByRole('heading', { name: '我的工作台', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('alert').filter({ hasText: /工作台/ })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /今日待办\s*0\s*项/ })
+  ).toHaveCount(0)
+  await expect(page.getByText('今天没有待办任务', { exact: true })).toHaveCount(
+    0
+  )
+  await page
+    .getByRole('navigation', { name: '工作台快捷入口' })
+    .getByRole('link', { name: '项目中心', exact: true })
+    .click()
+  await expect(page).toHaveURL(/\/projects$/)
+})
+
+test('project cards use summaries without loading task or occurrence collections', async ({
+  page,
+}) => {
+  const requests: URL[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'GET') requests.push(new URL(request.url()))
+  })
+  await page.goto('/projects')
+  await expect(page.getByRole('link', { name: '打开个人事务' })).toBeVisible()
+  await expect(
+    page.getByText('已完成 25% · 9 个待执行', { exact: true })
+  ).toBeVisible()
+  await expect(page.getByLabel('日语学习进度', { exact: true })).toHaveText(
+    '持续推进 · 3 个待执行'
+  )
+  expect(
+    requests.filter((url) =>
+      ['/api/tasks', '/api/task-occurrences'].includes(url.pathname)
+    )
+  ).toEqual([])
+  const summaries = requests.filter((url) => url.pathname === '/api/projects')
+  expect(summaries).toHaveLength(1)
+  expect(summaries[0].searchParams.get('include')).toBe('summary')
+  expect(summaries[0].searchParams.get('date')).toBe('2026-10-02')
+  expect(summaries[0].searchParams.get('timezone')).toBe('Asia/Shanghai')
+})
+
+test('a task outside the bounded home preview opens from a deep link and reloads', async ({
+  page,
+  isMobile,
+}) => {
+  const requests: string[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'GET')
+      requests.push(new URL(request.url()).pathname)
+  })
+  await page.goto('/?occurrence_id=occurrence-outside-preview')
+  const panel = page.getByRole(isMobile ? 'dialog' : 'complementary', {
+    name: `执行详情：${outsidePreviewTitle}`,
+  })
+  await expect(panel).toBeVisible()
+  expect(requests).toContain('/api/task-occurrences/occurrence-outside-preview')
+  expect(requests).toContain('/api/tasks/task-outside-preview')
+  expect(requests).not.toContain('/api/tasks')
+  expect(requests).not.toContain('/api/task-occurrences')
+  await page.reload()
+  await expect(panel).toBeVisible()
+  await expect(page).toHaveURL(/occurrence_id=occurrence-outside-preview/)
+})
+
+test('completing an occurrence refreshes home counters and cached project summaries', async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto('/projects')
+  await expect(
+    page.getByText('已完成 25% · 9 个待执行', { exact: true })
+  ).toBeVisible()
+  await page.getByRole('link', { name: '打开个人事务' }).click()
+  await expect(page.getByLabel('项目进度 2/8', { exact: true })).toBeVisible()
+  await page
+    .getByRole('navigation', {
+      name: isMobile ? '手机主导航' : '主导航',
+      exact: true,
+    })
+    .getByRole('link', { name: '工作台', exact: true })
+    .click()
+  await expect(
+    page.getByRole('button', { name: /今日待办\s*9\s*项/ })
+  ).toBeVisible()
+  await page.getByRole('listitem').filter({ hasText: title }).first().click()
+  const panel = page.getByRole(isMobile ? 'dialog' : 'complementary', {
+    name: `执行详情：${title}`,
+  })
+  await expect(panel).toBeVisible()
+  const refreshedOverview = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/api/workspace/overview'
+  )
+  await panel.getByRole('button', { name: '完成', exact: true }).click()
+  await refreshedOverview
+  await expect(
+    page.getByRole('button', { name: /今日待办\s*8\s*项/ })
+  ).toBeVisible()
+  if (await panel.isVisible()) {
+    if (isMobile) await page.keyboard.press('Escape')
+    else await panel.getByRole('button', { name: '关闭执行详情' }).click()
+  }
+  const refreshedSummaries = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return (
+      url.pathname === '/api/projects' &&
+      url.searchParams.get('include') === 'summary'
+    )
+  })
+  await page
+    .getByRole('navigation', { name: '工作台快捷入口' })
+    .getByRole('link', { name: '项目中心', exact: true })
+    .click()
+  await refreshedSummaries
+  await expect(
+    page.getByText('已完成 38% · 8 个待执行', { exact: true })
+  ).toBeVisible()
+  await page.getByRole('link', { name: '打开个人事务' }).click()
+  await expect(page.getByLabel('项目进度 3/8', { exact: true })).toBeVisible()
+})
+
+test('personal workspace shortcuts and recent notes open their existing pages', async ({
+  page,
+}, info) => {
+  await page.goto('/')
+  await expect(
+    page.getByRole('heading', { name: '我的工作台', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: '行动清单', exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole('progressbar', { name: '个人事务完成进度' })
+  ).toHaveAttribute('value', '25')
+
+  for (const [label, path, heading] of [
+    ['任务工作台', '/tasks', '任务'],
+    ['项目中心', '/projects', '项目'],
+    ['笔记库', '/notes', '笔记库'],
+    ['日历安排', '/calendar', '日历'],
+  ]) {
+    const shortcuts = page.getByRole('navigation', { name: '工作台快捷入口' })
+    await shortcuts.getByRole('link', { name: label, exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`${path}$`))
+    await expect(
+      page.getByRole('heading', { name: heading, exact: true })
+    ).toBeVisible()
+    await page.goto('/')
+  }
+
+  const recent = page.getByRole('region', { name: '最近笔记' })
+  const openNote = recent.getByRole('link', { name: `打开笔记${note.title}` })
+  await openNote.scrollIntoViewIfNeeded()
+  await expect(openNote).toBeInViewport()
+  await expectNoPageOverflow(page)
+  await page.screenshot({ path: info.outputPath('personal-workspace.png') })
+  await openNote.click()
+  await expect(page).toHaveURL(/\/editor\/note-1$/)
+  await expect(page.getByPlaceholder('无标题', { exact: true })).toHaveValue(
+    note.title
+  )
+  await page.reload()
+  await expect(page.getByPlaceholder('无标题', { exact: true })).toHaveValue(
+    note.title
+  )
+})
+
+test('recent notes failure leaves workspace tasks and navigation available', async ({
+  page,
+}) => {
+  await page.route('**/api/workspace/overview?*', (route) => {
+    const snapshot = workspaceSnapshot()
+    return route.fulfill({
+      json: {
+        data: {
+          ...snapshot,
+          partial: true,
+          notes: {
+            ...snapshot.notes,
+            state: 'unavailable',
+            items: null,
+            error: { code: 'notes_unavailable', message: 'offline' },
+          },
+        },
+      },
+    })
+  })
+  await page.goto('/')
+
+  const recent = page.getByRole('region', { name: '最近笔记' })
+  await expect(recent.getByRole('alert')).toContainText(
+    '最近笔记暂时不可用，请稍后重试。'
+  )
+  await expect(
+    page.getByRole('listitem').filter({ hasText: title }).first()
+  ).toBeVisible()
+  await page
+    .getByRole('navigation', { name: '工作台快捷入口' })
+    .getByRole('link', { name: '任务工作台', exact: true })
+    .click()
+  await expect(page).toHaveURL(/\/tasks$/)
+})
+
+test('tablet desktop layout keeps shortcuts reachable with either sidebar width', async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, 'Desktop sidebar at a tablet-sized viewport')
+  await page.setViewportSize({ width: 880, height: 1000 })
+  await page.goto('/')
+
+  const shortcuts = page.getByRole('navigation', { name: '工作台快捷入口' })
+  async function expectUsableShortcuts() {
+    for (const name of ['任务工作台', '项目中心', '笔记库', '日历安排']) {
+      const link = shortcuts.getByRole('link', { name, exact: true })
+      await expect(link).toBeVisible()
+      await expect(link).toBeInViewport()
+    }
+    await expectNoPageOverflow(page)
+  }
+
+  await expectUsableShortcuts()
+  await page.getByRole('button', { name: '收起侧边栏' }).click()
+  await expectUsableShortcuts()
+  await page.getByRole('button', { name: '展开侧边栏' }).click()
+  await expectUsableShortcuts()
+})
+
 test('desktop sidebar and account controls open the expected destinations', async ({
   page,
   isMobile,
@@ -303,11 +1058,11 @@ test('desktop sidebar and account controls open the expected destinations', asyn
     exact: true,
   })
   const destinations = [
-    ['今日', '/', '今天'],
+    ['工作台', '/', '我的工作台'],
     ['任务', '/tasks', '任务'],
     ['项目', '/projects', '项目'],
     ['日历', '/calendar', '日历'],
-    ['未整理', '/inbox', '未整理'],
+    ['收件箱', '/inbox', '未整理'],
     ['笔记', '/notes', '笔记库'],
     ['搜索', '/search', '全局搜索'],
     ['每日总结', '/summary', '每日总结'],
@@ -356,7 +1111,7 @@ test('project list opens project details and primary controls show their panels'
     page.getByRole('heading', { name: '个人事务', exact: true })
   ).toBeVisible()
 
-  await page.getByRole('tab', { name: /任务\s*1/ }).click()
+  await page.getByRole('tab', { name: /^任务/ }).click()
   await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '打开添加任务' }).click()
@@ -387,7 +1142,7 @@ test('desktop pages keep navigation and content usable at laptop and wide widths
   for (const width of [1280, 1440]) {
     await page.setViewportSize({ width, height: 900 })
     for (const [path, heading, filename] of [
-      ['/', '今天', 'today'],
+      ['/', '我的工作台', 'today'],
       ['/tasks', '任务', 'tasks'],
       ['/notes', '笔记库', 'notes'],
       ['/calendar', '日历', 'calendar'],
@@ -398,9 +1153,11 @@ test('desktop pages keep navigation and content usable at laptop and wide widths
       ).toBeVisible()
       if (path === '/') {
         await expect(
-          page.getByRole('button', { name: /今日待办\s*1\s*项/ })
+          page.getByRole('button', { name: /今日待办\s*9\s*项/ })
         ).toBeVisible()
-        await expect(page.getByRole('link', { name: '管理项目' })).toBeVisible()
+        await expect(
+          page.getByRole('link', { name: '查看全部项目' })
+        ).toBeVisible()
       }
       if (path === '/notes')
         await expect(
@@ -513,7 +1270,7 @@ test('planning overview links, keyboard tabs and task filters stay in sync with 
   await expect(page).toHaveURL(/project=learning&priority=2/)
   await expect(page.getByText('没有符合筛选条件的任务')).toBeVisible()
   await expect(
-    page.getByRole('status').filter({ hasText: '0 个结果' })
+    page.getByRole('status').filter({ hasText: '当前显示 0 项' })
   ).toBeVisible()
   await page.reload()
   await expect(project).toHaveValue('learning')
@@ -655,7 +1412,7 @@ test('small screens keep navigation and long forms reachable', async ({
   await page.setViewportSize({ width: 320, height: 568 })
   await page.goto('/')
   await expect(
-    page.getByRole('heading', { name: '今天', exact: true })
+    page.getByRole('heading', { name: '我的工作台', exact: true })
   ).toBeVisible()
   await expectNoPageOverflow(page)
   await page.getByRole('button', { name: '快速捕获', exact: true }).click()

@@ -66,6 +66,21 @@ func (g *Generator) ResolveFeature(ctx context.Context, workspaceID, feature str
 	return setting.Enabled, setting.FallbackMode, nil
 }
 
+func (g *Generator) CheckAvailable(ctx context.Context, workspaceID string) error {
+	resolved, err := g.resolver.ResolveChat(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	defer clear(resolved.Secret)
+	var config struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if !resolved.Enabled || json.Unmarshal([]byte(resolved.ConfigJSON), &config) != nil || strings.TrimSpace(config.Endpoint) == "" {
+		return ErrConfigurationUnavailable
+	}
+	return nil
+}
+
 func (g *Generator) Generate(ctx context.Context, workspaceID, systemPrompt, userPrompt string) (string, error) {
 	resolved, err := g.resolver.ResolveChat(ctx, workspaceID)
 	if err != nil {

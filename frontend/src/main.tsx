@@ -10,6 +10,8 @@ import './styles/roadmap-plan.css'
 import './styles/workspace-responsive.css'
 import './styles/workspace-desktop.css'
 import './styles/planning-theme.css'
+import './styles/personal-workspace-shell.css'
+import './styles/personal-workspace-home.css'
 
 installDeployRecovery()
 

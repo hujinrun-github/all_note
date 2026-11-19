@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { getCurrentUser, logout } from '../../api/auth'
 import { useUIStore } from '../../stores/ui'
+import { House, Search, Zap } from 'lucide-react'
 
 const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/settings': {
@@ -10,7 +11,7 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
     subtitle: '管理个人资料，以及当前工作空间使用的存储和 AI 服务',
   },
   '/': {
-    title: '今日',
+    title: '工作台',
     subtitle: `${formatToday()} · 把任务、日程和笔记收束到一个可执行视图`,
   },
   '/notes': {
@@ -176,7 +177,8 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
               FlowSpace
             </Link>
             <div className="workspace-breadcrumb" aria-label="当前位置">
-              <span>FlowSpace</span>
+              <House aria-hidden="true" />
+              <span>个人空间</span>
               <i aria-hidden="true">/</i>
               <strong>{meta.title}</strong>
             </div>
@@ -194,7 +196,7 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
           role="search"
           onSubmit={handleSearchSubmit}
         >
-          <SearchIcon />
+          <Search aria-hidden="true" />
           <input
             ref={searchInputRef}
             value={searchValue}
@@ -216,10 +218,10 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
           aria-label="打开搜索"
           onClick={() => navigate('/search')}
         >
-          <SearchIcon />
+          <Search aria-hidden="true" />
         </button>
         <button onClick={() => setCaptureOpen(true)} className="primary-action">
-          <PlusIcon />
+          <Zap aria-hidden="true" />
           快速捕获
         </button>
         <div className="account-menu-wrap" ref={accountMenuRef}>
@@ -288,22 +290,5 @@ export function TopBar({ compact = false }: { compact?: boolean }) {
         </div>
       </div>
     </div>
-  )
-}
-
-function SearchIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="11" cy="11" r="7" />
-      <path d="m16.5 16.5 4 4" />
-    </svg>
-  )
-}
-
-function PlusIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
   )
 }

@@ -622,13 +622,12 @@ func taskDomainAuthenticatedIdentity(c *gin.Context) (taskDomainIdentity, bool) 
 	if c == nil {
 		return taskDomainIdentity{}, false
 	}
-	identity, identityOK := auth.IdentityFromContext(c.Request.Context())
-	workspaceID, workspaceErr := auth.WorkspaceIDFromContext(c.Request.Context())
-	if !identityOK || strings.TrimSpace(identity.UserID) == "" || workspaceErr != nil || strings.TrimSpace(workspaceID) == "" {
+	identity, err := auth.ResolveWorkspaceContext(c.Request.Context())
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, TaskDomainErrorResponse{Error: TaskDomainAPIError{Code: "unauthorized", Message: "authentication is required", Retryable: false}})
 		return taskDomainIdentity{}, false
 	}
-	return taskDomainIdentity{workspaceID: workspaceID, actorID: identity.UserID}, true
+	return taskDomainIdentity{workspaceID: identity.WorkspaceID, actorID: identity.ActorID}, true
 }
 
 func decodeTaskDomainRequest(c *gin.Context, destination any) bool {

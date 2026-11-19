@@ -64,6 +64,7 @@ func ProvisionWorkspaceIdentity(ctx context.Context, db *sql.DB, postgres bool, 
 		{`INSERT INTO workspace_runtime_state(workspace_id,mode,epoch,binding_revision,updated_by) VALUES(?,'active',1,1,?) ON CONFLICT(workspace_id) DO NOTHING`, []any{user.DefaultWorkspaceID, user.ID}},
 		{`INSERT INTO workspace_ai_feature_settings(workspace_id,feature,enabled,fallback_mode,updated_by) VALUES(?,'roadmap_generation',?,'template',?) ON CONFLICT(workspace_id,feature) DO NOTHING`, []any{user.DefaultWorkspaceID, true, user.ID}},
 		{`INSERT INTO workspace_ai_feature_settings(workspace_id,feature,enabled,fallback_mode,updated_by) VALUES(?,'japanese_furigana',?,'local',?) ON CONFLICT(workspace_id,feature) DO NOTHING`, []any{user.DefaultWorkspaceID, true, user.ID}},
+		{`INSERT INTO workspace_ai_feature_settings(workspace_id,feature,enabled,fallback_mode,updated_by) VALUES(?,'plan_generation',?,'error',?) ON CONFLICT(workspace_id,feature) DO NOTHING`, []any{user.DefaultWorkspaceID, true, user.ID}},
 	}
 	for _, item := range defaults {
 		queries = append(queries, struct {

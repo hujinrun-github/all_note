@@ -1,3 +1,4 @@
+import { workspaceQueryKeys } from './useWorkspace'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as syncApi from '../api/sync'
 
@@ -114,6 +115,7 @@ export function useSyncObsidianPull() {
   return useMutation({
     mutationFn: syncApi.syncObsidianPull,
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -127,6 +129,7 @@ export function useSyncObsidianBidirectional() {
   return useMutation({
     mutationFn: syncApi.syncObsidianBidirectional,
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -144,6 +147,7 @@ export function useSyncNotionPull() {
   return useMutation({
     mutationFn: () => syncApi.syncNotionPull(),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -157,6 +161,7 @@ export function useSyncNotionBidirectional() {
   return useMutation({
     mutationFn: () => syncApi.syncNotionBidirectional(),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -181,6 +186,7 @@ export function usePullTarget() {
   return useMutation({
     mutationFn: (targetID: string) => syncApi.pullTarget(targetID),
     onSuccess: (_result, targetID) => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -195,6 +201,7 @@ export function useBidirectionalTarget() {
   return useMutation({
     mutationFn: (targetID: string) => syncApi.bidirectionalTarget(targetID),
     onSuccess: (_result, targetID) => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['note'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -217,6 +224,7 @@ export function useConfirmTargetDeletion() {
   return useMutation({
     mutationFn: ({ targetID, noteID }: { targetID: string; noteID: string }) => syncApi.confirmTargetDeletion(targetID, noteID),
     onSuccess: (_result, variables) => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['target-deletions', variables.targetID] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -250,6 +258,7 @@ export function useConfirmObsidianDeletion() {
   return useMutation({
     mutationFn: syncApi.confirmObsidianDeletion,
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['obsidian-deletions'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })
@@ -262,6 +271,7 @@ export function useConfirmNotionDeletion() {
   return useMutation({
     mutationFn: (noteID: string) => syncApi.confirmNotionDeletion(noteID),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workspaceQueryKeys.all })
       qc.invalidateQueries({ queryKey: ['notes'] })
       qc.invalidateQueries({ queryKey: ['notion-deletions'] })
       qc.invalidateQueries({ queryKey: ['note-sync-state'] })

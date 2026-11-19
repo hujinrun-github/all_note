@@ -5,15 +5,18 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  TaskDomainAPIError,
   TaskDomainRevisionConflictError,
-  type ProjectV2,
 } from '../api/taskDomain'
 import * as notesApi from '../api/notes'
 import * as roadmapHooks from '../hooks/useRoadmapV2'
 import * as taskHooks from '../hooks/useTaskDomain'
+import * as workspaceHooks from '../hooks/useWorkspace'
+import type { ProjectSummary, ProjectWithSummary } from '../api/workspace'
 import ProjectDetail from './ProjectDetail'
 
 vi.mock('../hooks/useTaskDomain')
+vi.mock('../hooks/useWorkspace')
 vi.mock('../hooks/useRoadmapV2')
 vi.mock('../api/notes')
 
@@ -32,12 +35,12 @@ const rescheduleThisAndFollowing = vi.fn()
 describe('Project detail v2', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(taskHooks.useProject).mockReturnValue({
-      data: project,
+    vi.mocked(workspaceHooks.useProjectOverview).mockReturnValue({
+      data: { project },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
-    } as unknown as ReturnType<typeof taskHooks.useProject>)
+    } as unknown as ReturnType<typeof workspaceHooks.useProjectOverview>)
     vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
       data: [taskDefinition],
       isLoading: false,
@@ -86,7 +89,7 @@ describe('Project detail v2', () => {
         { ...project, id: 'project-2', name: '后续项目', kind: 'standard' },
       ],
       isLoading: false,
-    } as ReturnType<typeof taskHooks.useProjects>)
+    } as unknown as ReturnType<typeof taskHooks.useProjects>)
     vi.mocked(taskHooks.usePublishTaskMutation).mockReturnValue({
       mutateAsync: publishTask,
       isPending: false,
@@ -141,6 +144,192 @@ describe('Project detail v2', () => {
     )
   })
 
+  it('uses the overview summary for progress and badges independently of visible tasks', () => {
+    mockProjectSummary({ open_occurrence_count: 9 })
+    renderDetail()
+
+    const progress = screen.getByLabelText('项目进度 2/8')
+    expect(progress).toHaveTextContent('已完成 2 / 8')
+    expect(progress.querySelector('i')).toHaveStyle({ width: '25%' })
+    expect(screen.getByRole('tab', { name: '日程 9' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '任务' })).toBeVisible()
+    expect(taskHooks.useProject).not.toHaveBeenCalled()
+    expect(workspaceHooks.useProjectOverview).toHaveBeenCalledWith(
+      'project-1',
+      {
+        date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        timezone: expect.any(String),
+      }
+    )
+    expect(taskHooks.useTaskDefinitions).toHaveBeenCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+    expect(taskHooks.useOccurrences).toHaveBeenCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+    expect(taskHooks.useProjects).toHaveBeenCalledWith({}, { enabled: false })
+  })
+
+  it('shows indefinite progress without manufacturing a completion percentage', () => {
+    mockProjectSummary({
+      completion_percent: null,
+      has_open_ended_recurrence: true,
+    })
+    renderDetail()
+
+    const progress = screen.getByLabelText('项目进度 2/8，持续推进')
+    expect(progress).toHaveTextContent('已完成 2 / 8 · 持续推进')
+    expect(progress.querySelector('i')).toBeNull()
+  })
+
+  it('loads only the scoped lists needed by the selected content', async () => {
+    renderDetail('/projects/project-1?section=roadmap')
+    const user = userEvent.setup()
+
+    expect(taskHooks.useTaskDefinitions).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: false }
+    )
+    expect(taskHooks.useOccurrences).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: false }
+    )
+    await user.click(screen.getByRole('tab', { name: '日程 1' }))
+    expect(taskHooks.useTaskDefinitions).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: false }
+    )
+    expect(taskHooks.useOccurrences).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+  })
+
+  it('checks server open count before completion even when no execution rows are loaded', async () => {
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useOccurrences>)
+    renderDetail('/projects/project-1?section=roadmap')
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '完成项目' }))
+    const dialog = screen.getByRole('dialog', { name: '处理未完成执行实例' })
+    expect(within(dialog).getByText('还有 1 个待执行实例')).toBeVisible()
+    expect(
+      within(dialog).getByRole('button', { name: '取消未完成实例并完成' })
+    ).toBeDisabled()
+    expect(completeProject).not.toHaveBeenCalled()
+    expect(taskHooks.useTaskDefinitions).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+    expect(taskHooks.useOccurrences).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+  })
+
+  it('can complete from a summary with no open occurrences without loading task content', async () => {
+    mockProjectSummary({ open_occurrence_count: 0 })
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    vi.mocked(taskHooks.useOccurrences).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useOccurrences>)
+    renderDetail('/projects/project-1?section=roadmap')
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '完成项目' }))
+
+    expect(completeProject).toHaveBeenCalledWith({
+      projectID: project.id,
+      expectedRevision: { expected_project_revision: project.revision },
+    })
+    expect(
+      screen.queryByRole('dialog', { name: '处理未完成执行实例' })
+    ).not.toBeInTheDocument()
+    expect(taskHooks.useTaskDefinitions).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: false }
+    )
+    expect(taskHooks.useOccurrences).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: false }
+    )
+  })
+
+  it('loads command data after the server rejects completion for draft execution instances', async () => {
+    mockProjectSummary({ open_occurrence_count: 0 })
+    vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
+      data: [{ ...taskDefinition, lifecycle_status: 'draft' }],
+      isLoading: false,
+    } as ReturnType<typeof taskHooks.useTaskDefinitions>)
+    completeProject
+      .mockRejectedValueOnce(
+        new TaskDomainAPIError(
+          409,
+          'project_has_open_occurrences',
+          'project has open occurrences',
+          false
+        )
+      )
+      .mockResolvedValueOnce({})
+    renderDetail('/projects/project-1?section=roadmap')
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '完成项目' }))
+    const dialog = await screen.findByRole('dialog', {
+      name: '处理未完成执行实例',
+    })
+    expect(within(dialog).getByText('项目仍有未完成执行实例')).toBeVisible()
+    expect(within(dialog).queryByText(/还有 0 个/)).not.toBeInTheDocument()
+    expect(taskHooks.useTaskDefinitions).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+    expect(taskHooks.useOccurrences).toHaveBeenLastCalledWith(
+      { project_id: 'project-1' },
+      { enabled: true }
+    )
+    await user.click(
+      within(dialog).getByRole('button', { name: '取消未完成实例并完成' })
+    )
+
+    expect(cancelTask).toHaveBeenCalledWith(
+      expect.objectContaining({ taskID: 'task-1' })
+    )
+    await waitFor(() => expect(completeProject).toHaveBeenCalledTimes(2))
+    expect(
+      screen.queryByRole('dialog', { name: '处理未完成执行实例' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows an overview failure without deriving a fallback project from list queries', () => {
+    vi.mocked(workspaceHooks.useProjectOverview).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as ReturnType<typeof workspaceHooks.useProjectOverview>)
+    renderDetail()
+
+    expect(screen.getByText('项目暂时不可用，请刷新后重试。')).toBeVisible()
+    expect(taskHooks.useProject).not.toHaveBeenCalled()
+    expect(taskHooks.useTaskDefinitions).toHaveBeenCalledWith(
+      { project_id: 'project-1' },
+      { enabled: false }
+    )
+  })
+
   it('creates a recurring task from the project page', async () => {
     renderDetail()
     const user = userEvent.setup()
@@ -191,12 +380,12 @@ describe('Project detail v2', () => {
   })
 
   it('starts a planning project through the lifecycle command', async () => {
-    vi.mocked(taskHooks.useProject).mockReturnValue({
-      data: { ...project, status: 'planning' },
+    vi.mocked(workspaceHooks.useProjectOverview).mockReturnValue({
+      data: { project: { ...project, status: 'planning' } },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
-    } as unknown as ReturnType<typeof taskHooks.useProject>)
+    } as unknown as ReturnType<typeof workspaceHooks.useProjectOverview>)
     activateProject.mockResolvedValue({
       project_id: project.id,
       project_revision: project.revision + 1,
@@ -466,10 +655,10 @@ describe('Project detail v2', () => {
     expect(completeProject).toHaveBeenCalled()
   })
 
-  it('cancels every draft task before completing and keeps the whole operation busy', async () => {
+  it('cancels actionable and draft task instances before completing and keeps the whole operation busy', async () => {
     vi.mocked(taskHooks.useTaskDefinitions).mockReturnValue({
       data: [
-        { ...taskDefinition, lifecycle_status: 'draft' },
+        taskDefinition,
         {
           ...taskDefinition,
           id: 'task-2',
@@ -541,6 +730,7 @@ describe('Project detail v2', () => {
   })
 
   it('handles direct project completion failure when there are no open occurrences', async () => {
+    mockProjectSummary({ open_occurrence_count: 0 })
     vi.mocked(taskHooks.useOccurrences).mockReturnValue({
       data: [],
       isLoading: false,
@@ -802,6 +992,7 @@ describe('Project detail v2', () => {
     renderDetail()
     const user = userEvent.setup()
 
+    expect(notesApi.getNote).not.toHaveBeenCalled()
     await user.click(screen.getByRole('tab', { name: '笔记' }))
 
     expect(await screen.findByText('N2 复习记录')).toBeVisible()
@@ -812,12 +1003,12 @@ describe('Project detail v2', () => {
   })
 })
 
-function renderDetail() {
+function renderDetail(path = '/projects/project-1') {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
-    <MemoryRouter initialEntries={['/projects/project-1']}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
         <Routes>
           <Route path="/projects/:projectID" element={<ProjectDetail />} />
@@ -831,13 +1022,22 @@ function idleMutation() {
   return { mutateAsync: vi.fn(), isPending: false } as unknown
 }
 
-const project: ProjectV2 = {
+const project: ProjectWithSummary = {
   id: 'project-1',
   name: '日语学习',
   kind: 'learning',
   horizon: 'long',
   status: 'active',
   revision: 3,
+  summary: {
+    completed_task_count: 2,
+    total_actionable_task_count: 8,
+    open_occurrence_count: 1,
+    blocked_occurrence_count: 0,
+    has_open_ended_recurrence: false,
+    next_occurrence: null,
+    completion_percent: 25,
+  },
 }
 
 const taskDefinition: import('../api/taskDomain').TaskV2 = {
@@ -858,4 +1058,14 @@ const openOccurrence: import('../api/taskDomain').OccurrenceV2 = {
   execution_status: 'open',
   revision: 5,
   generated_schedule_revision: 2,
+}
+
+function mockProjectSummary(summary: Partial<ProjectSummary>) {
+  vi.mocked(workspaceHooks.useProjectOverview).mockReturnValue({
+    data: {
+      project: { ...project, summary: { ...project.summary, ...summary } },
+    },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof workspaceHooks.useProjectOverview>)
 }

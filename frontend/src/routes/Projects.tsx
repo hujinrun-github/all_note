@@ -26,11 +26,12 @@ import {
   type ProjectV2,
   TaskDomainRevisionConflictError,
 } from '../api/taskDomain'
+import { createWorkspaceQueryParams } from '../api/workspace'
+import { useProjectSummaries } from '../hooks/useWorkspace'
 import {
   useActivateProjectMutation,
   useCreateProjectMutation,
   useDeleteProjectMutation,
-  useProjects,
 } from '../hooks/useTaskDomain'
 
 const kindLabels: Record<ProjectKind, string> = {
@@ -71,14 +72,19 @@ export default function Projects() {
   const [newKind, setNewKind] = useState<ProjectKind>('standard')
   const [newHorizon, setNewHorizon] = useState<ProjectHorizon>('short')
   const [error, setError] = useState('')
-  const projectsQuery = useProjects({
+  const projectsQuery = useProjectSummaries({
+    ...createWorkspaceQueryParams(),
     kind: kind || undefined,
     horizon: horizon || undefined,
   })
   const createProject = useCreateProjectMutation()
   const activateProject = useActivateProjectMutation()
   const deleteProject = useDeleteProjectMutation()
-  const projects = projectsQuery.data ?? []
+  const projects = projectsQuery.isError
+    ? []
+    : (projectsQuery.data?.projects ?? [])
+  const projectCount =
+    projectsQuery.isLoading || projectsQuery.isError ? '—' : projects.length
   const hasFilters = kind !== '' || horizon !== ''
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
@@ -153,7 +159,7 @@ export default function Projects() {
             <FolderKanban size={17} strokeWidth={1.7} />
           </span>
           <div>
-            <strong>{projects.length} 个项目</strong>
+            <strong>{projectCount} 个项目</strong>
             <small>{hasFilters ? '符合当前筛选' : '全部可用项目'}</small>
           </div>
         </div>
@@ -291,7 +297,7 @@ export default function Projects() {
       >
         <header className="projects-collection-heading">
           <h3 id="project-list-title">项目列表</h3>
-          <span>{projects.length} 项</span>
+          <span>{projectCount} 项</span>
         </header>
 
         <div className="projects-list-head" aria-hidden="true">
@@ -336,6 +342,15 @@ export default function Projects() {
                     <span className="projects-row-copy">
                       <strong>{project.name}</strong>
                       <small>{systemRoleLabel(project)}</small>
+                      <small aria-label={`${project.name}进度`}>
+                        {project.summary.completion_percent === null
+                          ? project.summary.has_open_ended_recurrence
+                            ? '持续推进'
+                            : '暂无可计算进度'
+                          : `已完成 ${project.summary.completion_percent}%`}
+                        {' · '}
+                        {project.summary.open_occurrence_count} 个待执行
+                      </small>
                     </span>
                   </Link>
 

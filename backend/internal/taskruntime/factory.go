@@ -16,7 +16,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/tenantruntime"
 )
 
-const ExpectedTenantSchemaVersion = "0012_mobile_v2_content_retention.sql"
+const ExpectedTenantSchemaVersion = "0016_web_planning.sql"
 
 var (
 	ErrTaskDomainNotServingV2  = errors.New("workspace task domain is not serving v2")

@@ -71,6 +71,20 @@ func TestResolveExplicitAIModes(t *testing.T) {
 	}
 }
 
+func TestPlanGenerationFeatureRequiresExplicitErrorFallback(t *testing.T) {
+	source := keyedSource{&fakeSource{features: map[string]FeatureSetting{
+		"plan_generation": {Feature: "plan_generation", Enabled: true, FallbackMode: "error"},
+	}}}
+	resolver, _ := NewResolver(source)
+	if feature, err := resolver.ResolveFeature(context.Background(), "w1", "plan_generation"); err != nil || !feature.Enabled {
+		t.Fatalf("plan feature = %+v, %v", feature, err)
+	}
+	source.features["plan_generation"] = FeatureSetting{Feature: "plan_generation", Enabled: true, FallbackMode: "template"}
+	if _, err := resolver.ResolveFeature(context.Background(), "w1", "plan_generation"); !errors.Is(err, ErrConfigurationUnavailable) {
+		t.Fatalf("unexpected silent fallback: %v", err)
+	}
+}
+
 func TestDisabledAndUnavailableAIFailClosedWithoutSecretLeak(t *testing.T) {
 	source := keyedSource{&fakeSource{bindings: map[string]Binding{"llm_chat": {Kind: "llm_chat", Mode: "disabled"}}, profiles: map[string]EndpointProfile{}, features: map[string]FeatureSetting{}}}
 	resolver, _ := NewResolver(source)

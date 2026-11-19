@@ -164,6 +164,16 @@ func main() {
 	if taskDomainRuntime != nil {
 		routerConfig.TaskDomainV2Runtime = taskDomainRuntime.application
 		routerConfig.TaskDomainModelSelector = taskDomainRuntime.models
+		routerConfig.WebPlanning, err = newWebPlanningService(taskDomainRuntime.application, runtimeObjects, runtimeTranscriber, aiChat)
+		if err != nil {
+			log.Fatalf("web planning service: %v", err)
+		}
+		planningCtx, stopPlanning := context.WithCancel(context.Background())
+		defer stopPlanning()
+		go routerConfig.WebPlanning.Run(planningCtx, v2PlanningWorkspaces{source: taskDomainRuntime.workspaces, models: taskDomainRuntime.models}, time.Second, func(err error) {
+			log.Printf("web planning worker: %v", err)
+		})
+		log.Printf("web voice planning initialized (audio_decoder=%t)", transcription.WebAudioDecoderAvailable())
 		log.Printf("task-domain model-aware routing initialized")
 	}
 	if nativeCfg.MobileSyncV2Enabled && taskDomainRuntime != nil {
