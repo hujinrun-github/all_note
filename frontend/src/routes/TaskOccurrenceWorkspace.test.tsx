@@ -10,7 +10,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as taskHooks from '../hooks/useTaskDomain'
 import * as workspaceHooks from '../hooks/useWorkspace'
-import type { WorkspaceFacetsResponse } from '../api/workspace'
+import {
+  createWorkspaceQueryParams,
+  type WorkspaceFacetsResponse,
+} from '../api/workspace'
+import type { OccurrenceV2 } from '../api/taskDomain'
 import TaskOccurrenceWorkspace from './TaskOccurrenceWorkspace'
 
 vi.mock('../hooks/useTaskDomain')
@@ -869,6 +873,168 @@ describe('Task occurrence workspace', () => {
     )
   })
 
+  it('collapses repeated executions by task identity without merging equal titles or hiding single rows', async () => {
+    definitions.push({
+      ...task('other-recurring', '每日复盘'),
+      project_id: 'work-project',
+    })
+    const rows = [
+      recurringOccurrence('review-3', '2026-08-03', 'blocked'),
+      {
+        ...recurringOccurrence('other-1', '2026-08-01'),
+        task_id: 'other-recurring',
+      },
+      recurringOccurrence('review-1', '2026-08-01'),
+      occurrence('single', 'open-task', 'open'),
+      recurringOccurrence('review-2', '2026-08-02', 'active'),
+      {
+        ...recurringOccurrence('other-2', '2026-08-02'),
+        task_id: 'other-recurring',
+      },
+    ]
+    mockOccurrenceRows(rows)
+    renderWorkspace('/tasks?view=upcoming')
+    const user = userEvent.setup()
+    const first = screen.getByRole('button', { name: '展开每日复盘，3 次执行' })
+    expect(first).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      screen.getByRole('button', { name: '展开每日复盘，2 次执行' })
+    ).toHaveAttribute('aria-expanded', 'false')
+    expect(within(first).getByText('8月1日 – 8月3日')).toBeVisible()
+    expect(
+      within(first).getByText('收件箱 · 1 待执行 · 1 进行中 · 1 阻塞')
+    ).toBeVisible()
+    expect(screen.queryByText('每日复盘 · 8月1日')).not.toBeInTheDocument()
+    expect(screen.getByText('准备评审')).toBeVisible()
+    expect(screen.getByText('当前显示 3 个任务 · 6 次执行')).toBeVisible()
+    expect(screen.getByRole('tab', { name: '本周 60' })).toBeVisible()
+    expect(
+      within(screen.getByRole('list', { name: '任务执行实例' })).getAllByRole(
+        'listitem'
+      )
+    ).toHaveLength(3)
+
+    await user.click(first)
+    const instances = screen.getByRole('list', { name: '每日复盘执行实例' })
+    expect(within(instances).getAllByRole('listitem')).toHaveLength(3)
+    expect(within(instances).getByText('每日复盘 · 8月1日')).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: '展开每日复盘，2 次执行' })
+    ).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('groups only the executions left after status and local-date filters', async () => {
+    const today = createWorkspaceQueryParams().date
+    const tomorrow = new Date(`${today}T12:00:00Z`)
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
+    mockOccurrenceRows([
+      recurringOccurrence('review-today', today),
+      recurringOccurrence('review-blocked', today, 'blocked'),
+      recurringOccurrence('review-later', tomorrow.toISOString().slice(0, 10)),
+    ])
+    renderWorkspace()
+    const user = userEvent.setup()
+    expect(
+      screen.getByRole('button', { name: '展开每日复盘，3 次执行' })
+    ).toBeVisible()
+    await user.selectOptions(screen.getByLabelText('按状态筛选'), 'blocked')
+    expect(
+      screen.queryByRole('button', { name: /展开每日复盘/ })
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('当前显示 1 项')).toBeVisible()
+    expect(screen.getByRole('button', { name: /^改期每日复盘/ })).toBeVisible()
+    await user.selectOptions(screen.getByLabelText('按状态筛选'), '')
+    await user.selectOptions(screen.getByLabelText('按日期范围筛选'), 'today')
+    expect(
+      screen.getByRole('button', { name: '展开每日复盘，2 次执行' })
+    ).toBeVisible()
+    expect(screen.getByText('当前显示 1 个任务 · 2 次执行')).toBeVisible()
+    expect(screen.getByRole('tab', { name: '本周 60' })).toBeVisible()
+  })
+
+  it('expands the collection for a deep-linked occurrence and closes that inspector when explicitly collapsed', async () => {
+    mockOccurrenceRows([
+      recurringOccurrence('review-1', '2026-08-01'),
+      recurringOccurrence('review-2', '2026-08-02'),
+    ])
+    renderWorkspace('/tasks?view=upcoming&occurrence_id=review-2')
+    const panel = screen.getByRole('complementary', {
+      name: '执行详情：每日复盘 · 8月2日',
+    })
+    expect(panel).toBeVisible()
+    const toggle = screen.getByRole('button', {
+      name: '收起每日复盘，2 次执行',
+    })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(toggle)
+    expect(
+      screen.queryByRole('complementary', {
+        name: '执行详情：每日复盘 · 8月2日',
+      })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: '展开每日复盘，2 次执行' })
+    ).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      screen.queryByRole('list', { name: '每日复盘执行实例' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps completion and rescheduling commands bound to each expanded execution', async () => {
+    const complete = vi.fn().mockResolvedValue({})
+    const reschedule = vi.fn().mockResolvedValue({})
+    vi.mocked(taskHooks.useCompleteOccurrenceMutation).mockReturnValue({
+      mutateAsync: complete,
+      isPending: false,
+    } as unknown as ReturnType<typeof taskHooks.useCompleteOccurrenceMutation>)
+    vi.mocked(taskHooks.useRescheduleOccurrenceMutation).mockReturnValue({
+      mutateAsync: reschedule,
+      isPending: false,
+    } as unknown as ReturnType<
+      typeof taskHooks.useRescheduleOccurrenceMutation
+    >)
+    mockOccurrenceRows([
+      recurringOccurrence('review-1', '2026-08-01'),
+      recurringOccurrence('review-2', '2026-08-02'),
+    ])
+    renderWorkspace()
+    const user = userEvent.setup()
+    await user.click(
+      screen.getByRole('button', { name: '展开每日复盘，2 次执行' })
+    )
+    await user.click(
+      screen.getByRole('button', { name: '完成每日复盘 · 8月1日' })
+    )
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskID: 'recurring-task',
+        occurrenceID: 'review-1',
+        expectedRevisions: expect.objectContaining({
+          expected_occurrence_revisions: { 'review-1': 3 },
+        }),
+      })
+    )
+    await user.click(
+      screen.getByRole('button', { name: '改期每日复盘 · 8月2日' })
+    )
+    await user.clear(screen.getByLabelText('新的执行日期'))
+    await user.type(screen.getByLabelText('新的执行日期'), '2026-08-05')
+    await user.click(screen.getByRole('button', { name: '保存改期' }))
+    expect(reschedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskID: 'recurring-task',
+        occurrenceID: 'review-2',
+        input: expect.objectContaining({
+          expected_occurrence_revision: 3,
+          timing: expect.objectContaining({ planned_date: '2026-08-05' }),
+        }),
+      })
+    )
+    expect(
+      screen.getByRole('button', { name: '收起每日复盘，2 次执行' })
+    ).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('recognizes an existing time block even when timing_type is omitted', async () => {
     vi.mocked(taskHooks.useOccurrences).mockImplementation(
       (params) =>
@@ -1039,4 +1205,31 @@ function metadataQueries(options: MetadataQueryOptions) {
   return options.queries.map((query) =>
     queryResult(definitions.find((item) => item.id === query.queryKey.at(-1)))
   ) as never
+}
+
+function recurringOccurrence(
+  id: string,
+  date: string,
+  status: OccurrenceV2['execution_status'] = 'open'
+): OccurrenceV2 {
+  return {
+    ...occurrence(id, 'recurring-task', status),
+    occurrence_key: date,
+    recurring: true,
+    planned_date: date,
+  }
+}
+
+function mockOccurrenceRows(rows: OccurrenceV2[]) {
+  vi.mocked(taskHooks.useOccurrences).mockImplementation((params) =>
+    queryResult(
+      params?.task_id
+        ? rows.filter((item) => item.task_id === params.task_id)
+        : params?.execution_status
+          ? rows.filter(
+              (item) => item.execution_status === params.execution_status
+            )
+          : rows
+    )
+  )
 }

@@ -1,8 +1,6 @@
 import {
   CalendarDays,
   CalendarPlus,
-  ChevronDown,
-  Layers3,
   Plus,
   ArrowUpRight,
   CheckCheck,
@@ -12,7 +10,7 @@ import {
   CircleAlert,
   ListTodo,
 } from 'lucide-react'
-import { type ReactNode, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -56,6 +54,11 @@ import {
   OccurrenceInspector,
   OccurrenceRow,
 } from '../components/taskDomain/TaskDomainWorkspace'
+import { OccurrenceCollection } from '../components/taskDomain/OccurrenceCollection'
+import {
+  collectOccurrencesByTask,
+  type OccurrenceCollectionData,
+} from '../utils/occurrenceCollections'
 import { ScheduleCreateDialog } from '../components/taskDomain/ScheduleCreateDialog'
 import {
   useBlockOccurrenceMutation,
@@ -83,11 +86,6 @@ const todayTabs: Array<{ id: TodayTab; label: string }> = [
 ]
 
 const emptyOccurrences: OccurrenceV2[] = []
-
-interface OccurrenceCollectionData {
-  taskID: string
-  occurrences: OccurrenceV2[]
-}
 
 export default function DashboardV2() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -666,141 +664,6 @@ function SectionHeading({ title, count }: { title: string; count: string }) {
       <span>{count}</span>
     </header>
   )
-}
-
-function OccurrenceCollection({
-  task,
-  projectName,
-  occurrences,
-  expanded,
-  onToggle,
-  children,
-}: {
-  task?: TaskV2
-  projectName?: string
-  occurrences: OccurrenceV2[]
-  expanded: boolean
-  onToggle: () => void
-  children: ReactNode
-}) {
-  const title = task?.title ?? occurrences[0]?.title ?? '未命名任务'
-  const collectionID = `occurrence-collection-${occurrences[0]?.id}`
-  return (
-    <section
-      className={`td-occurrence-collection ${expanded ? 'is-expanded' : ''}`}
-      role="listitem"
-    >
-      <button
-        type="button"
-        className="td-occurrence-collection-toggle"
-        aria-expanded={expanded}
-        aria-controls={collectionID}
-        aria-label={`${expanded ? '收起' : '展开'}${title}，${occurrences.length} 次执行`}
-        onClick={onToggle}
-      >
-        <span className="td-occurrence-collection-icon" aria-hidden="true">
-          <Layers3 />
-        </span>
-        <span className="td-occurrence-collection-copy">
-          <strong>{title}</strong>
-          <span>
-            {projectName ?? '未命名项目'} ·{' '}
-            {collectionStatusSummary(occurrences)}
-          </span>
-        </span>
-        <span className="td-occurrence-collection-range">
-          {collectionScheduleRange(occurrences)}
-        </span>
-        <span className="td-occurrence-collection-count">
-          {occurrences.length} 次执行
-        </span>
-        <ChevronDown
-          className="td-occurrence-collection-chevron"
-          aria-hidden="true"
-        />
-      </button>
-      {expanded ? (
-        <div
-          id={collectionID}
-          className="td-occurrence-collection-items"
-          role="list"
-          aria-label={`${title}执行实例`}
-        >
-          {children}
-        </div>
-      ) : null}
-    </section>
-  )
-}
-
-function collectOccurrencesByTask(
-  occurrences: OccurrenceV2[],
-  groupByTask: boolean
-): OccurrenceCollectionData[] {
-  if (!groupByTask) {
-    return occurrences.map((occurrence) => ({
-      taskID: occurrence.task_id,
-      occurrences: [occurrence],
-    }))
-  }
-
-  const collections = new Map<string, OccurrenceCollectionData>()
-  occurrences.forEach((occurrence) => {
-    const collection = collections.get(occurrence.task_id)
-    if (collection) collection.occurrences.push(occurrence)
-    else {
-      collections.set(occurrence.task_id, {
-        taskID: occurrence.task_id,
-        occurrences: [occurrence],
-      })
-    }
-  })
-  return Array.from(collections.values())
-}
-
-function collectionStatusSummary(occurrences: OccurrenceV2[]) {
-  const counts = new Map<string, number>()
-  occurrences.forEach((occurrence) => {
-    counts.set(
-      occurrence.execution_status,
-      (counts.get(occurrence.execution_status) ?? 0) + 1
-    )
-  })
-  const labels: Array<[OccurrenceV2['execution_status'], string]> = [
-    ['open', '待执行'],
-    ['active', '进行中'],
-    ['blocked', '阻塞'],
-    ['done', '已完成'],
-    ['skipped', '已跳过'],
-    ['cancelled', '已取消'],
-  ]
-  return labels
-    .flatMap(([status, label]) => {
-      const count = counts.get(status) ?? 0
-      return count > 0 ? [`${count} ${label}`] : []
-    })
-    .join(' · ')
-}
-
-function collectionScheduleRange(occurrences: OccurrenceV2[]) {
-  const first = collectionDateLabel(occurrences[0])
-  const last = collectionDateLabel(occurrences.at(-1))
-  if (first === last) return first
-  return `${first} – ${last}`
-}
-
-function collectionDateLabel(occurrence?: OccurrenceV2) {
-  if (!occurrence) return '未安排'
-  if (occurrence.planned_date) {
-    const [, month, day] = occurrence.planned_date.split('-').map(Number)
-    return `${month}月${day}日`
-  }
-  if (!occurrence.planned_start_at) return '未安排'
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'long',
-    day: 'numeric',
-    timeZone: occurrence.timezone,
-  }).format(new Date(occurrence.planned_start_at))
 }
 
 function formatToday() {

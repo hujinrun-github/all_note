@@ -67,6 +67,11 @@ import {
   useUnblockOccurrenceMutation,
   useUpdateTaskDefinitionMutation,
 } from '../hooks/useTaskDomain'
+import { OccurrenceCollection } from '../components/taskDomain/OccurrenceCollection'
+import {
+  collectOccurrencesByTask,
+  type OccurrenceCollectionData,
+} from '../utils/occurrenceCollections'
 import { useUIStore } from '../stores/ui'
 
 type TaskTab =
@@ -122,6 +127,9 @@ export default function TaskOccurrenceWorkspace() {
 
   const projectFilterRef = useRef<HTMLSelectElement>(null)
 
+  const [expandedTaskIDs, setExpandedTaskIDs] = useState<Set<string>>(
+    () => new Set()
+  )
   const [editingOccurrenceID, setEditingOccurrenceID] = useState('')
   const [rescheduleDate, setRescheduleDate] = useState('')
   const [rescheduleTimingType, setRescheduleTimingType] =
@@ -471,6 +479,88 @@ export default function TaskOccurrenceWorkspace() {
     }
   }
 
+  const occurrenceCollections = collectOccurrencesByTask(activeOccurrences)
+  const hasCollections = occurrenceCollections.some(
+    (collection) => collection.occurrences.length > 1
+  )
+
+  function renderOccurrence(occurrence: OccurrenceV2) {
+    const task = definitionsByID.get(occurrence.task_id)
+    const project = task ? projectsByID.get(task.project_id) : undefined
+    const title = occurrenceTitle(occurrence, task)
+    return (
+      <OccurrenceRow
+        key={occurrence.id}
+        occurrence={occurrence}
+        task={task}
+        project={project}
+        selected={occurrence.id === selectedOccurrenceID}
+        onSelect={() =>
+          updateSearchParams({
+            occurrence_id: occurrence.id,
+            task_id: null,
+          })
+        }
+        onComplete={
+          task
+            ? () =>
+                completeOccurrence.mutateAsync(
+                  occurrenceCommandVariables(task, occurrence)
+                )
+            : undefined
+        }
+        trailingAction={
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`改期${title}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              beginReschedule(occurrence)
+            }}
+          >
+            <CalendarClock aria-hidden="true" />
+          </Button>
+        }
+      />
+    )
+  }
+
+  function renderOccurrenceCollection(collection: OccurrenceCollectionData) {
+    if (collection.occurrences.length === 1)
+      return renderOccurrence(collection.occurrences[0])
+    const task = definitionsByID.get(collection.taskID)
+    const projectID = collection.occurrences[0].project_id ?? task?.project_id
+    const containsSelection = collection.occurrences.some(
+      (occurrence) => occurrence.id === selectedOccurrenceID
+    )
+    const expanded = expandedTaskIDs.has(collection.taskID) || containsSelection
+    return (
+      <OccurrenceCollection
+        key={collection.taskID}
+        task={task}
+        projectName={projectID ? projectsByID.get(projectID)?.name : undefined}
+        occurrences={collection.occurrences}
+        expanded={expanded}
+        onToggle={() => {
+          setExpandedTaskIDs((current) => {
+            const next = new Set(current)
+            if (expanded) next.delete(collection.taskID)
+            else next.add(collection.taskID)
+            return next
+          })
+          if (expanded && containsSelection) {
+            updateSearchParams({ occurrence_id: null, task_id: null })
+            setEditingOccurrenceID('')
+          }
+        }}
+      >
+        {expanded ? collection.occurrences.map(renderOccurrence) : null}
+      </OccurrenceCollection>
+    )
+  }
+
   const activeCount =
     activeTab === 'draft' ? activeDrafts.length : activeOccurrences.length
   const listQuery = activeQuery ?? draftsQuery
@@ -615,7 +705,11 @@ export default function TaskOccurrenceWorkspace() {
             </label>
             <div className="planning-filter-summary">
               <span role="status">
-                当前显示 {listLoading || listError ? '—' : activeCount} 项
+                {listLoading || listError
+                  ? '当前显示 — 项'
+                  : activeTab !== 'draft' && hasCollections
+                    ? `当前显示 ${occurrenceCollections.length} 个任务 · ${activeCount} 次执行`
+                    : `当前显示 ${activeCount} 项`}
               </span>
               {hasFilters ? (
                 <Button
@@ -741,50 +835,7 @@ export default function TaskOccurrenceWorkspace() {
                     role="list"
                     aria-label="任务执行实例"
                   >
-                    {activeOccurrences.map((occurrence) => {
-                      const task = definitionsByID.get(occurrence.task_id)
-                      const project = task
-                        ? projectsByID.get(task.project_id)
-                        : undefined
-                      const title = occurrenceTitle(occurrence, task)
-                      return (
-                        <OccurrenceRow
-                          key={occurrence.id}
-                          occurrence={occurrence}
-                          task={task}
-                          project={project}
-                          selected={occurrence.id === selectedOccurrenceID}
-                          onSelect={() =>
-                            updateSearchParams({
-                              occurrence_id: occurrence.id,
-                              task_id: null,
-                            })
-                          }
-                          onComplete={
-                            task
-                              ? () =>
-                                  completeOccurrence.mutateAsync(
-                                    occurrenceCommandVariables(task, occurrence)
-                                  )
-                              : undefined
-                          }
-                          trailingAction={
-                            <Button
-                              type="button"
-                              size="icon-sm"
-                              variant="ghost"
-                              aria-label={`改期${title}`}
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                beginReschedule(occurrence)
-                              }}
-                            >
-                              <CalendarClock aria-hidden="true" />
-                            </Button>
-                          }
-                        />
-                      )
-                    })}
+                    {occurrenceCollections.map(renderOccurrenceCollection)}
                   </div>
                 </>
               )}
