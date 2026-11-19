@@ -1,8 +1,10 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { OccurrenceV2 } from '../../api/taskDomain'
-import { OccurrenceRow } from './TaskDomainWorkspace'
+import { OccurrenceRow, TaskDefinitionInspector } from './TaskDomainWorkspace'
 
 const occurrence: OccurrenceV2 = {
   id: 'occurrence',
@@ -15,6 +17,34 @@ const occurrence: OccurrenceV2 = {
 }
 
 describe('OccurrenceRow actions', () => {
+  it('links the task definition to Japanese integration with the explicit target', () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <TaskDefinitionInspector
+            task={{
+              id: 'task/japanese',
+              project_id: 'learning',
+              title: '听力练习',
+              priority: 0,
+              sort_order: 0,
+              lifecycle_status: 'active',
+              revision: 1,
+              schedule_revision: 1,
+            }}
+            occurrences={[]}
+            onClose={vi.fn()}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    expect(
+      screen.getByRole('link', { name: '设置日语任务自动完成' })
+    ).toHaveAttribute(
+      'href',
+      '/settings?integration_task=task%2Fjapanese#japanese'
+    )
+  })
   it('activates a focused completion button without also opening the inspector', async () => {
     const select = vi.fn()
     const complete = vi.fn().mockResolvedValue(undefined)

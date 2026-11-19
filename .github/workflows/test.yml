@@ -65,6 +65,8 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Check formatting
         run: make format-check
+      - name: Deployment workflow guard tests
+        run: python3 ../scripts/test_release_workflow.py
       - name: Vet
         run: make lint
       - name: Unit and SQLite contracts
@@ -155,5 +157,7 @@ jobs:
           exit 1
       - name: PostgreSQL contracts and migrations
         run: make test-contract-postgres
+      - name: Japanese integration PostgreSQL contracts
+        run: go test ./internal/japaneseintegration -count=1
       - name: MinIO adapter contract
         run: make test-object-minio

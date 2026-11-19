@@ -16,6 +16,9 @@ RUN GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux go build -p 1 -o /out/flowspace-admin 
 
 FROM alpine:3.22
 
+ARG VCS_REF=development
+LABEL org.opencontainers.image.revision=${VCS_REF}
+
 RUN sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://mirrors.cloud.tencent.com/alpine#g' /etc/apk/repositories \
     && apk add --no-cache ca-certificates tzdata ffmpeg
 

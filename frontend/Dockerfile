@@ -17,6 +17,9 @@ RUN npm run build
 
 FROM ${NGINX_IMAGE}
 
+ARG VCS_REF=development
+LABEL org.opencontainers.image.revision=${VCS_REF}
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 

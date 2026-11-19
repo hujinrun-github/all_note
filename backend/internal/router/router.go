@@ -8,6 +8,7 @@ import (
 	"github.com/hujinrun/flowspace/internal/config"
 	"github.com/hujinrun/flowspace/internal/contentimport"
 	"github.com/hujinrun/flowspace/internal/handler"
+	"github.com/hujinrun/flowspace/internal/japaneseintegration"
 	"github.com/hujinrun/flowspace/internal/middleware"
 	"github.com/hujinrun/flowspace/internal/model"
 	"github.com/hujinrun/flowspace/internal/objectstore"
@@ -40,6 +41,7 @@ type Config struct {
 	ContentImports           *contentimport.Service
 	WorkspaceQueries         handler.WorkspaceQueryApplication
 	WebPlanning              *webplanning.Service
+	JapaneseIntegration      *japaneseintegration.Service
 	// Task-domain model-aware routing is intentionally opt-in. With both values
 	// nil the existing legacy Web routes remain unchanged. Once configured, the
 	// selector must prove legacy or v2 from durable workspace state on every
@@ -79,6 +81,9 @@ func Setup(cfg Config) *gin.Engine {
 
 		protected := api.Group("")
 		protected.Use(authMiddleware.Required(), authMiddleware.RequirePasswordSettled())
+		integrationManagement := protected.Group("")
+		integrationManagement.Use(handler.JapaneseIntegrationManager(identityStore))
+		handler.RegisterJapaneseIntegrationRoutes(api, integrationManagement, cfg.JapaneseIntegration)
 
 		nativeProtected := api.Group("")
 		nativeProtected.Use(authMiddleware.RequiredSessionOrWatch(), authMiddleware.RequirePasswordSettled())

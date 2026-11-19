@@ -80,8 +80,8 @@ func TestMigrateControlCreatesVersionedControlSchema(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM control_schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count control migrations: %v", err)
 	}
-	if migrationCount != 5 {
-		t.Fatalf("control migration count = %d, want 5", migrationCount)
+	if migrationCount != 6 {
+		t.Fatalf("control migration count = %d, want 6", migrationCount)
 	}
 }
 

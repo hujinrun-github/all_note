@@ -33,8 +33,17 @@ jobs:
           FLOWSPACE_ALLOWED_ORIGINS: ${{ secrets.FLOWSPACE_ALLOWED_ORIGINS || vars.FLOWSPACE_ALLOWED_ORIGINS }}
           FLOWSPACE_TENANT_ADOPT_MANIFEST_ID: ${{ vars.FLOWSPACE_TENANT_ADOPT_MANIFEST_ID }}
           FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM: ${{ vars.FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM }}
+          FLOWSPACE_ENABLE_MOBILE_SYNC_V2: ${{ vars.FLOWSPACE_ENABLE_MOBILE_SYNC_V2 }}
+          FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING: ${{ vars.FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING }}
         run: |
           set -eu
+
+          # BEGIN REQUIRED V2 GUARD
+          if [ "${FLOWSPACE_ENABLE_MOBILE_SYNC_V2:-true}" != "true" ] || [ "${FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING:-true}" != "true" ]; then
+            echo "::error title=Invalid task runtime::This production release requires mobile-v2 and task-domain-v2 routing."
+            exit 1
+          fi
+          # END REQUIRED V2 GUARD
 
           missing=0
           for name in SERVER_HOST SERVER_USER APP_DIR; do
@@ -84,6 +93,7 @@ jobs:
         env:
           APP_DIR: ${{ secrets.APP_DIR || vars.APP_DIR }}
           DEPLOY_BRANCH: ${{ github.ref_name }}
+          DEPLOY_SHA: ${{ github.sha }}
           FLOWSPACE_DATABASE_URL: ${{ secrets.FLOWSPACE_DATABASE_URL }}
           FLOWSPACE_CONTROL_DATABASE_URL: ${{ secrets.FLOWSPACE_CONTROL_DATABASE_URL }}
           FLOWSPACE_PLATFORM_DATA_DATABASE_URL: ${{ secrets.FLOWSPACE_PLATFORM_DATA_DATABASE_URL }}
@@ -120,21 +130,33 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           port: ${{ secrets.SERVER_PORT || vars.SERVER_PORT || '22' }}
           command_timeout: 60m
-          envs: APP_DIR,DEPLOY_BRANCH,FLOWSPACE_DATABASE_URL,FLOWSPACE_CONTROL_DATABASE_URL,FLOWSPACE_PLATFORM_DATA_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,POSTGRES_MAINTENANCE_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FLOWSPACE_SESSION_SECRET,FLOWSPACE_ALLOWED_ORIGINS,FLOWSPACE_COOKIE_SECURE,FLOWSPACE_ENABLE_MOBILE_SYNC_V1,FLOWSPACE_ENABLE_MOBILE_SYNC_V2,FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING,FLOWSPACE_TENANT_ADOPT_MANIFEST_ID,FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM,FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL,FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD,FLOWSPACE_BOOTSTRAP_ADMIN_NAME,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
+          envs: APP_DIR,DEPLOY_BRANCH,DEPLOY_SHA,FLOWSPACE_DATABASE_URL,FLOWSPACE_CONTROL_DATABASE_URL,FLOWSPACE_PLATFORM_DATA_DATABASE_URL,POSTGRES_PASSWORD,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_DB,POSTGRES_MAINTENANCE_DB,MINIO_ENDPOINT,MINIO_ACCESS_KEY,MINIO_SECRET_KEY,AI_API_KEY,ARTICLE_SEARCH_API_KEY,FLOWSPACE_NOTION_TOKEN,FLOWSPACE_SESSION_SECRET,FLOWSPACE_ALLOWED_ORIGINS,FLOWSPACE_COOKIE_SECURE,FLOWSPACE_ENABLE_MOBILE_SYNC_V1,FLOWSPACE_ENABLE_MOBILE_SYNC_V2,FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING,FLOWSPACE_TENANT_ADOPT_MANIFEST_ID,FLOWSPACE_TENANT_ADOPT_MANIFEST_CHECKSUM,FLOWSPACE_BOOTSTRAP_ADMIN_EMAIL,FLOWSPACE_BOOTSTRAP_ADMIN_PASSWORD,FLOWSPACE_BOOTSTRAP_ADMIN_NAME,FRONTEND_PORT,BACKEND_PORT,VITE_APP_BASE
           script: |
             set -eu
 
             : "${APP_DIR:?APP_DIR is required}"
+            : "${DEPLOY_SHA:?DEPLOY_SHA is required}"
+            case "$DEPLOY_SHA" in
+              *[!0-9a-f]*|'') echo "DEPLOY_SHA must be a full commit SHA." >&2; exit 1 ;;
+            esac
+            [ "${#DEPLOY_SHA}" = 40 ] || { echo "DEPLOY_SHA must be a full commit SHA." >&2; exit 1; }
+            if [ "${FLOWSPACE_ENABLE_MOBILE_SYNC_V2:-true}" != "true" ] || [ "${FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING:-true}" != "true" ]; then
+              echo "This production release requires mobile-v2 and task-domain-v2 routing." >&2
+              exit 1
+            fi
             cd "$APP_DIR"
 
             echo "Deploy directory"
             pwd
             ls -la
 
-            echo "Pull latest code"
+            echo "Fetch tested release commit"
             git fetch --all
             DEPLOY_BRANCH="${DEPLOY_BRANCH:-master}"
-            git reset --hard "origin/${DEPLOY_BRANCH}"
+            git cat-file -e "${DEPLOY_SHA}^{commit}"
+            git merge-base --is-ancestor "$DEPLOY_SHA" "origin/${DEPLOY_BRANCH}"
+            git reset --hard "$DEPLOY_SHA"
+            [ "$(git rev-parse HEAD)" = "$DEPLOY_SHA" ]
             git rev-parse --show-toplevel
             git rev-parse --short HEAD
 
@@ -185,8 +207,8 @@ jobs:
 
             MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://119.91.114.203:19000}"
             FLOWSPACE_ENABLE_MOBILE_SYNC_V1="${FLOWSPACE_ENABLE_MOBILE_SYNC_V1:-false}"
-            FLOWSPACE_ENABLE_MOBILE_SYNC_V2="${FLOWSPACE_ENABLE_MOBILE_SYNC_V2:-false}"
-            FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING="${FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING:-false}"
+            FLOWSPACE_ENABLE_MOBILE_SYNC_V2="${FLOWSPACE_ENABLE_MOBILE_SYNC_V2:-true}"
+            FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING="${FLOWSPACE_ENABLE_TASK_DOMAIN_V2_ROUTING:-true}"
             FRONTEND_PORT="${FRONTEND_PORT:-4200}"
             BACKEND_PORT="${BACKEND_PORT:-4201}"
             VITE_APP_BASE="${VITE_APP_BASE:-/}"
@@ -284,7 +306,7 @@ jobs:
 
             echo "Build images"
             docker compose -f docker-compose.yml config >/dev/null
-            docker compose -f docker-compose.yml build
+            docker compose -f docker-compose.yml build --build-arg VCS_REF="$DEPLOY_SHA"
 
             echo "Restart service"
             if ! docker compose -f docker-compose.yml up -d --remove-orphans --wait; then
