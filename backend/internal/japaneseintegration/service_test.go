@@ -599,6 +599,65 @@ func TestPairingCodeOnlyResumesPendingInitialization(t *testing.T) {
 	}
 }
 
+func TestBindingAndCompletionWithZeroLengthScheduleHistory(t *testing.T) {
+	for _, driver := range []storage.Driver{storage.DriverSQLite, storage.DriverPostgres} {
+		t.Run(string(driver), func(t *testing.T) {
+			f := fixture(t, driver)
+			// Match the production reading task: a same-day replaced daily
+			// version, then weekdays, then the current Monday-Thursday rule.
+			tx, err := f.tenant.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for _, query := range []string{
+				`DELETE FROM domain_task_occurrences_v2 WHERE task_id='target' AND occurrence_key='2026-11-23'`,
+				`UPDATE domain_task_schedule_versions_v2 SET effective_from='2026-10-13',effective_to='2026-10-13',starts_on='2026-10-13',ends_on=NULL WHERE task_id='target'`,
+				`INSERT INTO domain_task_schedule_versions_v2(workspace_id,task_id,schedule_revision,effective_from,effective_to,recurrence_type,timing_type,timezone,starts_on,recurrence_rule,created_at) SELECT workspace_id,task_id,2,'2026-10-13','2026-10-23','weekly',timing_type,timezone,starts_on,'{"interval":1,"weekdays":[1,2,3,4,5]}',created_at FROM domain_task_schedule_versions_v2 WHERE task_id='target' AND schedule_revision=1`,
+				`INSERT INTO domain_task_schedule_versions_v2(workspace_id,task_id,schedule_revision,effective_from,recurrence_type,timing_type,timezone,starts_on,recurrence_rule,created_at) SELECT workspace_id,task_id,3,'2026-10-23','weekly',timing_type,timezone,starts_on,'{"interval":1,"weekdays":[1,2,3,4]}',created_at FROM domain_task_schedule_versions_v2 WHERE task_id='target' AND schedule_revision=1`,
+				`UPDATE domain_task_schedules_v2 SET revision=3,current_schedule_revision=3 WHERE task_id='target'`,
+			} {
+				if _, err = tx.ExecContext(t.Context(), query); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			catalog := f.catalog()
+			catalog.CatalogRevision = 2
+			catalog.Plan.Revision = 2
+			catalog.Plan.Weekdays = []int{1, 2, 3, 4}
+			if err = f.s.PutCatalog(t.Context(), f.connection, catalog); err != nil {
+				t.Fatal(err)
+			}
+			binding := f.binding(t, "target")
+			if binding.ScheduleRevision != 3 {
+				t.Fatalf("bound schedule revision=%d, want 3", binding.ScheduleRevision)
+			}
+			// No occurrence exists for the following Monday, so completion must
+			// traverse native history and materialize that date using version 3.
+			f.now = f.now.AddDate(0, 0, 4)
+			event := f.event("history-completion", 1, true)
+			event.CatalogRevision, event.PlanRevision = 2, 2
+			event.StudyDate = "2026-11-23"
+			receipt := f.send(t, event)
+			if receipt.Status != "applied" || f.state(t, event.StudyDate, "target") != taskdomain.ExecutionStatusDone {
+				t.Fatalf("completion receipt=%+v", receipt)
+			}
+			if got := f.count(t, `SELECT COUNT(*) FROM domain_task_schedule_versions_v2 WHERE task_id='target'`); got != 3 {
+				t.Fatalf("history changed: %d versions", got)
+			}
+			if got := f.count(t, `SELECT COUNT(*) FROM domain_task_occurrences_v2 WHERE task_id='target' AND generated_schedule_revision=3`); got != 1 {
+				t.Fatalf("current version occurrence count=%d, want 1", got)
+			}
+			if f.state(t, "2026-11-19", "target") != taskdomain.ExecutionStatusOpen {
+				t.Fatal("completion changed a different study date")
+			}
+		})
+	}
+}
+
 func TestBindingRequiresNativeScheduleCoverage(t *testing.T) {
 	for _, driver := range []storage.Driver{storage.DriverSQLite, storage.DriverPostgres} {
 		t.Run(string(driver), func(t *testing.T) {

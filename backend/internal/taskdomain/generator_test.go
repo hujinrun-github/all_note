@@ -229,6 +229,44 @@ func TestCalculateOccurrenceKeysNonRecurringScheduleUsesOnceKey(t *testing.T) {
 	}
 }
 
+func TestCalculateOccurrenceKeysZeroLengthSupersededVersion(t *testing.T) {
+	daily := mustNormalizeGeneratorSchedule(t, ScheduleInput{
+		RecurrenceType: RecurrenceDaily,
+		TimingType:     TimingDate,
+		Timezone:       "Asia/Shanghai",
+		StartsOn:       "2026-10-13",
+		Rule:           json.RawMessage(`{"interval":1}`),
+	})
+	// Migration 0013 preserves a version replaced on its first effective day
+	// with [date, date). It has no occurrence keys in any requested window.
+	for _, window := range []OccurrenceWindow{
+		{From: "2026-10-12", To: "2026-10-14"},
+		{From: "2026-11-20", To: "2026-12-14"},
+	} {
+		keys, err := CalculateOccurrenceKeys(daily, ScheduleEffectiveRange{From: "2026-10-13", To: "2026-10-13"}, window)
+		if err != nil || len(keys) != 0 {
+			t.Fatalf("empty superseded version in %+v: keys=%v err=%v", window, keys, err)
+		}
+	}
+	// Empty history must not suppress validation of malformed schedules.
+	for _, field := range []string{"rule", "starts_on", "ends_on"} {
+		t.Run(field, func(t *testing.T) {
+			invalid := daily
+			switch field {
+			case "rule":
+				invalid.Rule = nil
+			case "starts_on":
+				invalid.StartsOn = "2026-02-30"
+			case "ends_on":
+				invalid.EndsOn = "2026-02-30"
+			}
+			if _, err := CalculateOccurrenceKeys(invalid, ScheduleEffectiveRange{From: "2026-10-13", To: "2026-10-13"}, OccurrenceWindow{From: "2026-11-20", To: "2026-12-14"}); !errors.Is(err, ErrInvalidSchedule) {
+				t.Fatalf("invalid schedule accepted for empty version: %v", err)
+			}
+		})
+	}
+}
+
 func TestCalculateOccurrenceKeysRejectsInvalidRangesAndSchedule(t *testing.T) {
 	daily := mustNormalizeGeneratorSchedule(t, ScheduleInput{
 		RecurrenceType: RecurrenceDaily,

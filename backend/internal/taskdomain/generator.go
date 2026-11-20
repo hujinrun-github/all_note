@@ -55,8 +55,11 @@ func CalculateOccurrenceKeys(schedule Schedule, effective ScheduleEffectiveRange
 		if err != nil {
 			return nil, err
 		}
-		if !effectiveTo.After(effectiveFrom) {
-			return nil, invalidSchedule("effective range must be a non-empty half-open range")
+		// A version superseded on its first effective day is retained for
+		// occurrence lineage as [date, date) (tenant migration 0013).
+		// Allow that empty interval; the intersection below yields no keys.
+		if effectiveTo.Before(effectiveFrom) {
+			return nil, invalidSchedule("effective range must not end before it starts")
 		}
 	}
 
